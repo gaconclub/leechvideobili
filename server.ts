@@ -25,6 +25,40 @@ if (!fs.existsSync(RAW_CACHE_DIR)) {
   fs.mkdirSync(RAW_CACHE_DIR, { recursive: true });
 }
 
+// Clean up any abandoned temp files in C:\...\Temp\bili-downloads from previous closed runs
+function cleanupStaleFilesOnStartup(): void {
+  try {
+    for (const entry of fs.readdirSync(DOWNLOAD_DIR)) {
+      if (entry === 'raw_cache') continue;
+      const fullPath = path.join(DOWNLOAD_DIR, entry);
+      try {
+        const st = fs.statSync(fullPath);
+        if (st.isFile()) {
+          fs.unlink(fullPath, () => {});
+        }
+      } catch {
+        // ignore
+      }
+    }
+    const staleRawCutoff = Date.now() - 60 * 60 * 1000;
+    for (const entry of fs.readdirSync(RAW_CACHE_DIR)) {
+      const dirPath = path.join(RAW_CACHE_DIR, entry);
+      try {
+        const st = fs.statSync(dirPath);
+        const metaExists = fs.existsSync(path.join(dirPath, 'meta.json'));
+        if (st.isDirectory() && (!metaExists || st.mtimeMs < staleRawCutoff)) {
+          fs.rm(dirPath, { recursive: true, force: true }, () => {});
+        }
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+cleanupStaleFilesOnStartup();
+
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
@@ -184,6 +218,7 @@ interface JobState {
   fileSize?: number;
   fileName: string;
   filePath?: string;
+  rawCacheKey?: string;
   error?: string;
   createdAt: number;
 }
@@ -199,20 +234,43 @@ interface PreparedZipState {
 }
 const preparedZips = new Map<string, PreparedZipState>();
 
-// Periodically clean up old jobs & prepared zips (> 1 hour) and raw source caches (> 2 hours)
+function deleteJobTempOutputFile(job: JobState | undefined): void {
+  if (!job) return;
+  if (job.filePath && fs.existsSync(job.filePath)) {
+    const target = job.filePath;
+    job.filePath = undefined;
+    fs.unlink(target, () => {});
+  }
+}
+
+function cleanupRawCacheIfUnused(cacheKey: string | undefined, finishedJobId: string): void {
+  if (!cacheKey) return;
+  const stillInUse = Array.from(jobs.values()).some(
+    (j) =>
+      j.jobId !== finishedJobId &&
+      j.rawCacheKey === cacheKey &&
+      (j.status === 'queued' || j.status === 'downloading' || j.status === 'processing')
+  );
+  if (stillInUse) return;
+  const dirPath = getRawCacheDir(cacheKey);
+  if (fs.existsSync(dirPath)) {
+    fs.rm(dirPath, { recursive: true, force: true }, () => {});
+  }
+}
+
+// Periodically clean up old jobs (> 30 min), prepared zips (> 20 min), and failed raw caches (> 60 min)
 setInterval(() => {
-  const cutoff = Date.now() - 60 * 60 * 1000;
-  const rawCacheCutoff = Date.now() - 2 * 60 * 60 * 1000;
+  const jobCutoff = Date.now() - 30 * 60 * 1000;
+  const zipCutoff = Date.now() - 20 * 60 * 1000;
+  const rawCacheCutoff = Date.now() - 60 * 60 * 1000;
   for (const [id, job] of jobs.entries()) {
-    if (job.createdAt < cutoff) {
-      if (job.filePath && fs.existsSync(job.filePath)) {
-        fs.unlink(job.filePath, () => {});
-      }
+    if (job.createdAt < jobCutoff && job.status !== 'downloading' && job.status !== 'processing') {
+      deleteJobTempOutputFile(job);
       jobs.delete(id);
     }
   }
   for (const [zipId, zip] of preparedZips.entries()) {
-    if (zip.createdAt < cutoff) {
+    if (zip.createdAt < zipCutoff) {
       if (fs.existsSync(zip.zipPath)) {
         fs.unlink(zip.zipPath, () => {});
       }
@@ -236,7 +294,7 @@ setInterval(() => {
   } catch {
     // ignore
   }
-}, 10 * 60 * 1000);
+}, 5 * 60 * 1000);
 
 interface RawCacheMeta {
   ready: boolean;
@@ -1709,6 +1767,7 @@ async function processDownloadJob(
     const cachedDurl = !cachedAv ? readValidRawCache(durlCacheKey) : null;
 
     if (cachedAv && isAudioOnly && cachedAv.meta.files.audio) {
+      job.rawCacheKey = avCacheKey;
       const audioPath = cachedAv.meta.files.audio;
       hasCachedRawSource = true;
       job.status = 'processing';
@@ -1725,6 +1784,7 @@ async function processDownloadJob(
         await runFfmpeg(['-i', audioPath, '-vn', '-c:a', 'copy', finalPath]);
       }
     } else if (cachedAv && !isAudioOnly && cachedAv.meta.files.video) {
+      job.rawCacheKey = avCacheKey;
       const videoPath = cachedAv.meta.files.video;
       const audioPath = cachedAv.meta.files.audio;
       hasCachedRawSource = true;
@@ -1770,6 +1830,7 @@ async function processDownloadJob(
         transform,
       });
     } else if (cachedDurl && cachedDurl.meta.files.raw) {
+      job.rawCacheKey = durlCacheKey;
       const rawPath = cachedDurl.meta.files.raw;
       hasCachedRawSource = true;
       job.status = 'processing';
@@ -1858,6 +1919,7 @@ async function processDownloadJob(
           audios.length > 0 ? [...audios].sort((a, b) => b.bandwidth - a.bandwidth)[0] : null;
 
         const cacheDir = getRawCacheDir(avCacheKey);
+        job.rawCacheKey = avCacheKey;
         fs.mkdirSync(cacheDir, { recursive: true });
         const audioPath = path.join(cacheDir, 'audio.m4s');
         const videoPath = path.join(cacheDir, 'video.m4s');
@@ -1967,6 +2029,7 @@ async function processDownloadJob(
       } else if (data.durl?.length) {
         const durlCandidates = getCandidateUrls(data.durl[0]);
         const cacheDir = getRawCacheDir(durlCacheKey);
+        job.rawCacheKey = durlCacheKey;
         fs.mkdirSync(cacheDir, { recursive: true });
         const rawPath = path.join(cacheDir, 'raw.mp4');
         const rawPart = path.join(cacheDir, `raw_${jobId.slice(0, 8)}.part`);
@@ -2042,6 +2105,8 @@ async function processDownloadJob(
     job.fileSize = stat.size;
     job.progress = 100;
     job.status = 'completed';
+    // FFmpeg succeeded: immediately remove raw temporary video/audio files from C:\Temp\bili-downloads\raw_cache
+    cleanupRawCacheIfUnused(job.rawCacheKey, jobId);
   } catch (err: any) {
     job.status = 'error';
     const rawMsg = err?.message || 'Lỗi không xác định trong quá trình tải';
@@ -2103,6 +2168,7 @@ async function processYouTubeDownloadJob(
 
     const ytKey = params.bvid || crypto.createHash('md5').update(params.sourceUrl).digest('hex').slice(0, 12);
     const cacheKey = `yt_${ytKey}_qn${params.qn}_${isAudioOnly ? 'audio' : params.format === 'mp4' ? 'avc' : 'best'}`;
+    job.rawCacheKey = cacheKey;
     const cached = readValidRawCache(cacheKey);
     let rawPath = '';
 
@@ -2309,6 +2375,8 @@ async function processYouTubeDownloadJob(
     job.fileSize = stat.size;
     job.progress = 100;
     job.status = 'completed';
+    // FFmpeg succeeded: immediately remove raw temporary source file from C:\Temp\bili-downloads\raw_cache
+    cleanupRawCacheIfUnused(job.rawCacheKey, jobId);
   } catch (err: any) {
     job.status = 'error';
     const rawMsg = err?.message || 'Lỗi không xác định khi tải video YouTube';
@@ -2839,6 +2907,43 @@ async function startServer() {
         res.status(500).json({ error: 'Không thể gửi tệp video từ máy chủ' });
       }
     });
+  });
+
+  // Immediately delete temp output file on disk once browser finished saving it to user's destination
+  app.post('/api/bilibili/jobs/:jobId/ack-saved', (req, res) => {
+    const job = jobs.get(req.params.jobId);
+    if (job) {
+      deleteJobTempOutputFile(job);
+      cleanupRawCacheIfUnused(job.rawCacheKey, job.jobId);
+    }
+    res.json({ ok: true });
+  });
+
+  // Bulk cleanup temp files when user removes items or clears queue
+  app.post('/api/bilibili/jobs/cleanup', (req, res) => {
+    const { jobIds } = (req.body || {}) as { jobIds?: string[] };
+    if (Array.isArray(jobIds)) {
+      for (const id of jobIds) {
+        const job = jobs.get(id);
+        if (job && job.status !== 'downloading' && job.status !== 'processing') {
+          deleteJobTempOutputFile(job);
+          cleanupRawCacheIfUnused(job.rawCacheKey, job.jobId);
+        }
+      }
+    }
+    res.json({ ok: true });
+  });
+
+  // Clean up temporary ZIP file after download finishes
+  app.post('/api/bilibili/batch-zip/:zipId/cleanup', (req, res) => {
+    const zip = preparedZips.get(req.params.zipId);
+    if (zip) {
+      if (fs.existsSync(zip.zipPath)) {
+        fs.unlink(zip.zipPath, () => {});
+      }
+      preparedZips.delete(req.params.zipId);
+    }
+    res.json({ ok: true });
   });
 
   // Prepare batch ZIP on disk so large archives (>32MB) can be downloaded cleanly in chunks

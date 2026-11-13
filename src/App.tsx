@@ -388,6 +388,21 @@ export default function App() {
     return await parseJsonSafe<{ fileSize: number; fileName: string; contentType: string }>(infoRes);
   };
 
+  const notifyServerJobSaved = (jobId?: string) => {
+    if (!jobId) return;
+    fetch(`/api/bilibili/jobs/${jobId}/ack-saved`, { method: 'POST' }).catch(() => {});
+  };
+
+  const cleanupServerJobs = (jobIds: string[]) => {
+    const validIds = jobIds.filter(Boolean);
+    if (validIds.length === 0) return;
+    fetch('/api/bilibili/jobs/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobIds: validIds }),
+    }).catch(() => {});
+  };
+
   const triggerBrowserFileDownload = async (itemId: string, jobId: string, targetName: string) => {
     try {
       const info = await fetchJobFileInfo(jobId);
@@ -406,6 +421,8 @@ export default function App() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+
+      notifyServerJobSaved(jobId);
 
       setItems((prev) =>
         prev.map((it) =>
@@ -563,6 +580,7 @@ export default function App() {
                       }
                     );
                     await writable.close();
+                    notifyServerJobSaved(jobId);
                   } catch (writeErr) {
                     await writable.abort().catch(() => {});
                     throw writeErr;
@@ -766,10 +784,24 @@ export default function App() {
   };
 
   const handleRemoveItem = (id: string) => {
+    const target = itemsRef.current.find((it) => it.id === id);
+    if (target?.jobId && target.status !== 'downloading' && target.status !== 'processing') {
+      cleanupServerJobs([target.jobId]);
+    }
     setItems((prev) => prev.filter((it) => it.id !== id));
   };
 
   const handleRemoveSelected = () => {
+    const removedJobIds = itemsRef.current
+      .filter(
+        (it) =>
+          it.selected &&
+          it.status !== 'downloading' &&
+          it.status !== 'processing' &&
+          Boolean(it.jobId)
+      )
+      .map((it) => it.jobId!);
+    cleanupServerJobs(removedJobIds);
     setItems((prev) =>
       prev.filter(
         (it) =>
@@ -781,6 +813,15 @@ export default function App() {
   };
 
   const handleClearAll = () => {
+    const removedJobIds = itemsRef.current
+      .filter(
+        (it) =>
+          it.status !== 'downloading' &&
+          it.status !== 'processing' &&
+          Boolean(it.jobId)
+      )
+      .map((it) => it.jobId!);
+    cleanupServerJobs(removedJobIds);
     setItems((prev) =>
       prev.filter(
         (it) => it.status === 'downloading' || it.status === 'processing'
@@ -827,6 +868,7 @@ export default function App() {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    fetch(`/api/bilibili/batch-zip/${prepData.zipId}/cleanup`, { method: 'POST' }).catch(() => {});
   };
 
   const isAnyDownloading = items.some(
