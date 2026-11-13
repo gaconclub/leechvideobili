@@ -1,0 +1,6 @@
+{
+  "name": "BiliBatch",
+  "description": "Ứng dụng tải video hàng loạt từ Bilibili với tùy chọn độ phân giải và định dạng tệp đầu ra.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
