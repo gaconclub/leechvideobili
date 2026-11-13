@@ -590,13 +590,34 @@ function runFfmpeg(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn('ffmpeg', ['-y', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
+    const importantLines: string[] = [];
+    let lineBuf = '';
+
     proc.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-      if (stderr.length > 6000) stderr = stderr.slice(-6000);
+      const text = chunk.toString();
+      stderr += text;
+      if (stderr.length > 8000) stderr = stderr.slice(-8000);
+
+      lineBuf += text;
+      const lines = lineBuf.split(/\r?\n|\r/);
+      lineBuf = lines.pop() || '';
+      for (const ln of lines) {
+        const t = ln.trim();
+        if (!t) continue;
+        if (!/^frame=\s*\d+/.test(t) && !/^size=\s*\d+/.test(t)) {
+          importantLines.push(t);
+          if (importantLines.length > 25) importantLines.shift();
+        }
+      }
     });
+
     proc.on('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`FFmpeg lỗi (code ${code}): ${stderr.slice(-500).trim()}`));
+      else {
+        const detail =
+          importantLines.length > 0 ? importantLines.slice(-8).join(' | ') : stderr.slice(-500).trim();
+        reject(new Error(`FFmpeg lỗi (code ${code}): ${detail.slice(-700)}`));
+      }
     });
     proc.on('error', (err) => reject(err));
   });
@@ -604,7 +625,18 @@ function runFfmpeg(args: string[]): Promise<void> {
 
 type HwH264Encoder = 'h264_nvenc' | 'h264_amf' | 'h264_qsv';
 
-const CPU_ENCODE_THREADS = Math.max(2, Math.min(6, Math.floor(os.cpus().length / 3) || 2));
+const CPU_ENCODE_THREADS = Math.max(2, Math.min(8, Math.floor(os.cpus().length * 0.65) || 2));
+
+// Serialize heavy video re-encodes so concurrent downloads don't fight over 1 iGPU/VCN or peg CPU at 99%
+let ffmpegEncodeQueueTail: Promise<void> = Promise.resolve();
+function withFfmpegEncodeLock<T>(task: () => Promise<T>): Promise<T> {
+  const prev = ffmpegEncodeQueueTail;
+  let release!: () => void;
+  ffmpegEncodeQueueTail = new Promise<void>((res) => {
+    release = res;
+  });
+  return prev.then(task).finally(() => release());
+}
 
 function getHwH264CodecArgs(encoder: HwH264Encoder): string[] {
   if (encoder === 'h264_amf') {
@@ -621,13 +653,17 @@ function getHwH264CodecArgs(encoder: HwH264Encoder): string[] {
       '19',
       '-qp_p',
       '21',
+      '-bf',
+      '0',
+      '-pix_fmt',
+      'yuv420p',
     ];
   }
   if (encoder === 'h264_nvenc') {
-    return ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '20', '-b:v', '0'];
+    return ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '20', '-b:v', '0', '-pix_fmt', 'yuv420p'];
   }
   // h264_qsv
-  return ['-c:v', 'h264_qsv', '-preset', 'faster', '-global_quality', '20'];
+  return ['-c:v', 'h264_qsv', '-preset', 'faster', '-global_quality', '20', '-pix_fmt', 'yuv420p'];
 }
 
 let detectedHwEncoderPromise: Promise<HwH264Encoder | null> | null = null;
@@ -651,8 +687,6 @@ function detectAvailableHwH264Encoder(): Promise<HwH264Encoder | null> {
             'color=c=black:s=256x256:d=0.1',
             '-frames:v',
             '1',
-            '-pix_fmt',
-            'yuv420p',
             ...getHwH264CodecArgs(enc),
             '-f',
             'null',
@@ -690,40 +724,42 @@ async function runH264EncodeWithFallback(
   suffixArgs: string[],
   finalPath: string
 ): Promise<void> {
-  const hwEncoder = await detectAvailableHwH264Encoder();
-  if (hwEncoder) {
-    try {
-      await runFfmpeg([...prefixArgs, ...getHwH264CodecArgs(hwEncoder), ...suffixArgs, finalPath]);
-      return;
-    } catch (hwErr: any) {
-      console.warn(
-        `[FFmpeg] ${hwEncoder} failed (${hwErr?.message || 'unknown'}), falling back to libx264 CPU`
-      );
-      if (fs.existsSync(finalPath)) {
-        try {
-          fs.unlinkSync(finalPath);
-        } catch {
-          // ignore
+  return withFfmpegEncodeLock(async () => {
+    const hwEncoder = await detectAvailableHwH264Encoder();
+    if (hwEncoder) {
+      try {
+        await runFfmpeg([...prefixArgs, ...getHwH264CodecArgs(hwEncoder), ...suffixArgs, finalPath]);
+        return;
+      } catch (hwErr: any) {
+        console.warn(
+          `[FFmpeg] ${hwEncoder} failed (${hwErr?.message || 'unknown'}), falling back to libx264 CPU`
+        );
+        if (fs.existsSync(finalPath)) {
+          try {
+            fs.unlinkSync(finalPath);
+          } catch {
+            // ignore
+          }
         }
       }
     }
-  }
 
-  await runFfmpeg([
-    ...prefixArgs,
-    '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-crf',
-    '18',
-    '-threads',
-    String(CPU_ENCODE_THREADS),
-    '-pix_fmt',
-    'yuv420p',
-    ...suffixArgs,
-    finalPath,
-  ]);
+    await runFfmpeg([
+      ...prefixArgs,
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '18',
+      '-threads',
+      String(CPU_ENCODE_THREADS),
+      '-pix_fmt',
+      'yuv420p',
+      ...suffixArgs,
+      finalPath,
+    ]);
+  });
 }
 
 type WatermarkMode = 'auto' | 'none' | 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left';
@@ -1478,8 +1514,6 @@ async function renderVideoWithFfmpeg(opts: {
             ...(hasAudioStream ? ['-c:a', 'aac', '-b:a', '192k'] : ['-an']),
             '-max_muxing_queue_size',
             '4096',
-            '-movflags',
-            '+faststart',
           ],
           finalPath
         );
@@ -1578,11 +1612,7 @@ async function renderVideoWithFfmpeg(opts: {
   if (format === 'mp4' || format === 'mkv') {
     await runH264EncodeWithFallback(
       [...inputs, '-filter_complex', filterComplex, '-map', '[vout]', ...audioMapAndCodecArgs],
-      [
-        '-max_muxing_queue_size',
-        '4096',
-        ...(format === 'mp4' ? ['-movflags', '+faststart'] : []),
-      ],
+      ['-max_muxing_queue_size', '4096'],
       finalPath
     );
   } else {
