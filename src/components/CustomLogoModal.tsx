@@ -113,12 +113,12 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
       aria-modal="true"
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
     >
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 space-y-5">
+      <div className="bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 space-y-5">
         {/* Header */}
         <div className="flex items-start justify-between">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="p-1.5 rounded-lg bg-pink-50 dark:bg-pink-950/40 text-[#FB7299]">
+              <span className="p-1.5 rounded-lg bg-[#003B3E]/10 dark:bg-[#003B3E]/65 text-[#003B3E] dark:text-[#1BA8AD]">
                 <ImageIcon className="w-5 h-5" />
               </span>
               <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
@@ -151,7 +151,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
           {!dataUrl ? (
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-[#FB7299] dark:hover:border-[#FB7299] rounded-xl p-6 text-center cursor-pointer transition-colors bg-slate-50/50 dark:bg-slate-950/40 hover:bg-pink-50/20"
+              className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-[#003B3E] dark:hover:border-[#003B3E] rounded-xl p-6 text-center cursor-pointer transition-colors bg-slate-50/50 dark:bg-[#000A10]/60 hover:bg-[#003B3E]/[0.08]"
             >
               <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-2 text-slate-500 dark:text-slate-400">
                 <ImageIcon className="w-5 h-5" />
@@ -165,7 +165,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
             </div>
           ) : (
             <div className="space-y-3">
-              <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl">
+              <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-xl">
                 <div className="flex items-center gap-3 min-w-0">
                   <div className="w-10 h-10 rounded-lg bg-slate-200 dark:bg-slate-800 p-1 flex items-center justify-center shrink-0 overflow-hidden">
                     <img src={dataUrl} alt="Logo preview" className="max-w-full max-h-full object-contain" />
@@ -184,7 +184,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-lg transition-colors cursor-pointer"
+                    className="px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200 dark:border-[#00464A] rounded-lg transition-colors cursor-pointer"
                   >
                     Đổi ảnh
                   </button>
@@ -247,8 +247,8 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                       onClick={() => setPosition(pos.id as LogoPosition)}
                       className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
                         position === pos.id
-                          ? 'bg-[#FB7299] text-white border-[#FB7299]'
-                          : 'bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800'
+                          ? 'bg-[#003B3E] text-white border-[#003B3E]'
+                          : 'bg-slate-50 dark:bg-[#000A10] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-slate-800'
                       }`}
                     >
                       {pos.label}
@@ -271,7 +271,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                     id="logo-scale-select"
                     value={scalePercent}
                     onChange={(e) => setScalePercent(Number(e.target.value))}
-                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#FB7299] cursor-pointer"
+                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#003B3E] cursor-pointer"
                   >
                     <option value={10}>10% (Nhỏ gọn)</option>
                     <option value={15}>15% (Chuẩn đẹp)</option>
@@ -292,7 +292,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                     id="logo-opacity-select"
                     value={opacity}
                     onChange={(e) => setOpacity(Number(e.target.value))}
-                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#FB7299] cursor-pointer"
+                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#003B3E] cursor-pointer"
                   >
                     <option value={1.0}>100% (Đậm nét)</option>
                     <option value={0.85}>85% (Chuẩn đẹp)</option>
@@ -313,7 +313,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                     id="logo-margin-select"
                     value={margin}
                     onChange={(e) => setMargin(Number(e.target.value))}
-                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#FB7299] cursor-pointer"
+                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#003B3E] cursor-pointer"
                   >
                     <option value={16}>16 px (Sát mép)</option>
                     <option value={24}>24 px (Tiêu chuẩn)</option>
@@ -328,15 +328,15 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                   type="checkbox"
                   checked={enabled}
                   onChange={(e) => setEnabled(e.target.checked)}
-                  className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 accent-[#FB7299] cursor-pointer"
+                  className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 accent-[#003B3E] cursor-pointer"
                 />
                 <span className="text-xs font-medium text-slate-800 dark:text-slate-200">
                   Kích hoạt chèn logo này vào các video tải về
                 </span>
               </label>
 
-              <div className="flex items-start gap-2 p-2.5 bg-pink-50/60 dark:bg-pink-950/20 border border-pink-200/60 dark:border-pink-900/40 rounded-xl text-xs text-pink-900 dark:text-pink-300">
-                <Sparkles className="w-4 h-4 shrink-0 text-[#FB7299] mt-0.5" />
+              <div className="flex items-start gap-2 p-2.5 bg-[#003B3E]/10 border border-[#003B3E]/35 rounded-xl text-xs text-slate-700 dark:text-slate-300">
+                <Sparkles className="w-4 h-4 shrink-0 text-[#003B3E] dark:text-[#1BA8AD] mt-0.5" />
                 <span>
                   <strong>Mẹo kết hợp:</strong> Bạn có thể bật đồng thời mục <em>&quot;Tự động phát hiện & xóa&quot;</em> ở ngoài thanh cấu hình — hệ thống sẽ dùng FFmpeg xóa logo Bilibili gốc trước, sau đó chèn logo của bạn lên video!
                 </span>
@@ -346,7 +346,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
         </div>
 
         {/* Footer actions */}
-        <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+        <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-200 dark:border-[#00464A]">
           <button
             type="button"
             onClick={onClose}
@@ -357,7 +357,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
           <button
             type="button"
             onClick={handleSave}
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#FB7299] hover:bg-[#e55d85] rounded-lg transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors cursor-pointer"
           >
             <Check className="w-4 h-4" />
             <span>Lưu & Áp dụng</span>

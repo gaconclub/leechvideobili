@@ -890,7 +890,7 @@ export default function App() {
         onOpenUpdateModal={handleOpenUpdateModal}
       />
 
-      <main className="flex-1 w-full max-w-[1280px] mx-auto px-6 py-8 space-y-6">
+      <main className="flex-1 w-full max-w-[1320px] mx-auto px-6 py-7 space-y-5">
         <BatchInputPanel
           isInspecting={isInspecting}
           inspectErrors={inspectErrors}
@@ -945,9 +945,9 @@ export default function App() {
         />
       </main>
 
-      <footer className="border-t border-slate-200 dark:border-slate-800 py-5 px-6 text-xs text-slate-500 dark:text-slate-400">
-        <div className="max-w-[1280px] mx-auto flex flex-wrap items-center justify-between gap-4">
-          <span>BiliBatch · Công cụ tải video Bilibili &amp; YouTube hàng loạt</span>
+      <footer className="border-t border-slate-200/80 dark:border-[#00464A]/80 py-5 px-6 text-xs text-slate-500 dark:text-teal-100/80">
+        <div className="max-w-[1320px] mx-auto flex flex-wrap items-center justify-between gap-4">
+          <span>GaConPro V1.0 · Hỗ Trợ Phần Mềm : Zalo Đỗ Oanh 08.2626.8282</span>
           <span>Hỗ trợ MP4, MKV, WEBM, MP3, M4A · Xử lý ghép luồng bằng FFmpeg</span>
         </div>
       </footer>

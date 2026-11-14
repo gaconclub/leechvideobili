@@ -69,12 +69,12 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
       aria-modal="true"
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
     >
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 space-y-5">
+      <div className="bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 space-y-5">
         {/* Header */}
         <div className="flex items-start justify-between">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="p-1.5 rounded-lg bg-pink-50 dark:bg-pink-950/40 text-[#FB7299]">
+              <span className="p-1.5 rounded-lg bg-[#003B3E]/10 dark:bg-[#003B3E]/65 text-[#003B3E] dark:text-[#1BA8AD]">
                 <Sliders className="w-5 h-5" />
               </span>
               <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
@@ -102,13 +102,13 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
               {speed}x · {mirror === 'horizontal' ? 'Lật ngang' : mirror === 'vertical' ? 'Lật dọc' : 'Không lật'} · Zoom {zoomPercent}%
             </span>
           </div>
-          <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 flex items-center justify-center select-none">
+          <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-slate-200 dark:border-[#00464A] flex items-center justify-center select-none">
             <div
-              className="w-full h-full bg-gradient-to-br from-slate-800 via-slate-700 to-slate-900 flex flex-col items-center justify-center text-white transition-transform duration-150 border border-pink-400/30"
+              className="w-full h-full bg-gradient-to-br from-slate-800 via-slate-700 to-slate-900 flex flex-col items-center justify-center text-white transition-transform duration-150 border border-[#003B3E]/60"
               style={{ transform: previewTransform }}
             >
               <div className="text-lg font-display font-bold tracking-wide flex items-center gap-2">
-                <span className="px-2 py-0.5 rounded bg-[#FB7299] text-white text-xs">TRÁI</span>
+                <span className="px-2 py-0.5 rounded bg-[#003B3E] text-white text-xs">TRÁI</span>
                 <span>NỘI DUNG VIDEO</span>
                 <span className="px-2 py-0.5 rounded bg-sky-500 text-white text-xs">PHẢI</span>
               </div>
@@ -130,10 +130,10 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
               htmlFor="video-speed-range"
               className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200"
             >
-              <Gauge className="w-4 h-4 text-[#FB7299]" />
+              <Gauge className="w-4 h-4 text-[#003B3E] dark:text-[#1BA8AD]" />
               <span>Tốc độ video (Nhanh / Chậm)</span>
             </label>
-            <span className="text-xs font-mono font-semibold text-[#FB7299] tabular-nums">
+            <span className="text-xs font-mono font-semibold text-[#003B3E] dark:text-[#1BA8AD] tabular-nums">
               {speed.toFixed(2).replace(/\.00$/, '.0')}x
             </span>
           </div>
@@ -146,8 +146,8 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
                 onClick={() => setSpeed(val)}
                 className={`px-2.5 py-1 text-xs font-mono font-medium rounded-lg border transition-colors cursor-pointer ${
                   Math.abs(speed - val) < 0.01
-                    ? 'bg-[#FB7299] text-white border-[#FB7299]'
-                    : 'bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    ? 'bg-[#003B3E] text-white border-[#003B3E]'
+                    : 'bg-slate-50 dark:bg-[#000A10] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
                 {val === 1 ? '1.0x (Gốc)' : `${val}x`}
@@ -165,7 +165,7 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
               step={0.05}
               value={speed}
               onChange={(e) => setSpeed(Number(e.target.value))}
-              className="flex-1 accent-[#FB7299] cursor-pointer"
+              className="flex-1 accent-[#003B3E] cursor-pointer"
             />
             <span className="text-[11px] font-mono text-slate-400">2.0x</span>
           </div>
@@ -174,7 +174,7 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
         {/* Mirror Mode */}
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
-            <FlipHorizontal2 className="w-4 h-4 text-[#FB7299]" />
+            <FlipHorizontal2 className="w-4 h-4 text-[#003B3E] dark:text-[#1BA8AD]" />
             <span>Chế độ lật gương video</span>
           </div>
           <div className="grid grid-cols-3 gap-2">
@@ -189,8 +189,8 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
                 onClick={() => setMirror(opt.id as MirrorMode)}
                 className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
                   mirror === opt.id
-                    ? 'bg-[#FB7299] text-white border-[#FB7299]'
-                    : 'bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    ? 'bg-[#003B3E] text-white border-[#003B3E]'
+                    : 'bg-slate-50 dark:bg-[#000A10] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
                 {opt.label}
@@ -206,10 +206,10 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
               htmlFor="video-zoom-range"
               className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200"
             >
-              <ZoomIn className="w-4 h-4 text-[#FB7299]" />
+              <ZoomIn className="w-4 h-4 text-[#003B3E] dark:text-[#1BA8AD]" />
               <span>Thu nhỏ / Phóng to nội dung (giữ nguyên khung hình)</span>
             </label>
-            <span className="text-xs font-mono font-semibold text-[#FB7299] tabular-nums">
+            <span className="text-xs font-mono font-semibold text-[#003B3E] dark:text-[#1BA8AD] tabular-nums">
               {zoomPercent}%
             </span>
           </div>
@@ -222,8 +222,8 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
                 onClick={() => setZoomPercent(val)}
                 className={`px-2.5 py-1 text-xs font-mono font-medium rounded-lg border transition-colors cursor-pointer ${
                   zoomPercent === val
-                    ? 'bg-[#FB7299] text-white border-[#FB7299]'
-                    : 'bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    ? 'bg-[#003B3E] text-white border-[#003B3E]'
+                    : 'bg-slate-50 dark:bg-[#000A10] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
                 {val === 100 ? '100% (Gốc)' : `${val}%`}
@@ -241,14 +241,14 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
               step={1}
               value={zoomPercent}
               onChange={(e) => setZoomPercent(Number(e.target.value))}
-              className="flex-1 accent-[#FB7299] cursor-pointer"
+              className="flex-1 accent-[#003B3E] cursor-pointer"
             />
             <span className="text-[11px] font-mono text-slate-400">150%</span>
           </div>
         </div>
 
         {/* Footer actions */}
-        <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-slate-800">
+        <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-[#00464A]">
           <button
             type="button"
             onClick={handleReset}
@@ -269,7 +269,7 @@ export const VideoTransformModal: React.FC<VideoTransformModalProps> = ({
             <button
               type="button"
               onClick={handleSave}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#FB7299] hover:bg-[#e55d85] rounded-lg transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors cursor-pointer"
             >
               <Check className="w-4 h-4" />
               <span>Lưu &amp; Áp dụng</span>

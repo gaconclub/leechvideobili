@@ -48,10 +48,10 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
       aria-modal="true"
       aria-labelledby="sessdata-modal-title"
     >
-      <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl overflow-hidden">
+      <div className="w-full max-w-lg bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-xl shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-2.5">
-            <KeyRound className="w-4 h-4 text-[#FB7299]" />
+            <KeyRound className="w-4 h-4 text-[#003B3E] dark:text-[#1BA8AD]" />
             <h2
               id="sessdata-modal-title"
               className="font-display text-base font-semibold text-slate-900 dark:text-white"
@@ -70,7 +70,7 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
         </div>
 
         {/* Platform tabs */}
-        <div className="flex border-b border-slate-200 dark:border-slate-800 px-6 bg-slate-50/70 dark:bg-slate-950/40">
+        <div className="flex border-b border-slate-200 dark:border-slate-800 px-6 bg-slate-50/70 dark:bg-[#000A10]/70">
           <button
             type="button"
             onClick={() => setActiveTab('youtube')}
@@ -87,7 +87,7 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
             onClick={() => setActiveTab('bilibili')}
             className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
               activeTab === 'bilibili'
-                ? 'border-[#FB7299] text-[#FB7299]'
+                ? 'border-[#003B3E] text-[#003B3E] dark:text-[#1BA8AD]'
                 : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
             }`}
           >
@@ -135,7 +135,7 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
                 value={ytVal}
                 onChange={(e) => setYtVal(e.target.value)}
                 placeholder={'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t...\n\nhoặc dán chuỗi: SID=...; HSID=...; SAPISID=...'}
-                className="w-full px-3.5 py-2.5 text-xs font-mono bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-red-500 resize-y"
+                className="w-full px-3.5 py-2.5 text-xs font-mono bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-red-500 resize-y"
               />
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Cookie chỉ lưu cục bộ trên trình duyệt (localStorage) và chỉ dùng khi tải video YouTube.
@@ -164,7 +164,7 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
                 value={biliVal}
                 onChange={(e) => setBiliVal(e.target.value)}
                 placeholder="Ví dụ: 8a1b2c3d%2C173..."
-                className="w-full px-3.5 py-2.5 text-sm font-mono bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#FB7299]"
+                className="w-full px-3.5 py-2.5 text-sm font-mono bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#003B3E]"
               />
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Giá trị này chỉ được lưu cục bộ trên trình duyệt (localStorage) và gửi kèm khi gọi API Bilibili.
@@ -173,7 +173,7 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-3 px-6 py-4 bg-slate-50 dark:bg-slate-950/60 border-t border-slate-200 dark:border-slate-800">
+        <div className="flex items-center justify-end gap-3 px-6 py-4 bg-slate-50 dark:bg-[#000A10]/80 border-t border-slate-200 dark:border-slate-800">
           {(activeTab === 'youtube' ? ytVal : biliVal) && (
             <button
               type="button"
@@ -205,7 +205,7 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
               onSave(biliVal.trim(), ytVal.trim());
               onClose();
             }}
-            className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-[#FB7299] hover:bg-slate-800 dark:hover:bg-[#e55d85] rounded-lg transition-colors cursor-pointer"
+            className="px-4 py-2 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors cursor-pointer"
           >
             Lưu cấu hình
           </button>

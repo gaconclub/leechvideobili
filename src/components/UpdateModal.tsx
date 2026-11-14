@@ -51,10 +51,10 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       aria-modal="true"
       aria-labelledby="update-modal-title"
     >
-      <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl overflow-hidden">
+      <div className="w-full max-w-lg bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-xl shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-2.5">
-            <DownloadCloud className="w-4 h-4 text-[#FB7299]" />
+            <DownloadCloud className="w-4 h-4 text-[#003B3E] dark:text-[#1BA8AD]" />
             <h2
               id="update-modal-title"
               className="font-display text-base font-semibold text-slate-900 dark:text-white"
@@ -76,7 +76,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         <div className="p-6 space-y-4">
           {isChecking && !status ? (
             <div className="flex items-center gap-3 py-4 text-sm text-slate-600 dark:text-slate-300">
-              <RefreshCw className="w-4 h-4 animate-spin text-[#FB7299]" />
+              <RefreshCw className="w-4 h-4 animate-spin text-[#003B3E] dark:text-[#1BA8AD]" />
               <span>Đang kiểm tra phiên bản mới trên GitHub...</span>
             </div>
           ) : status && !status.supported ? (
@@ -94,7 +94,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             </div>
           ) : status ? (
             <div className="space-y-3.5">
-              <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-1.5 text-xs">
+              <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-slate-800 space-y-1.5 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
                     <GitBranch className="w-3.5 h-3.5" />
@@ -162,7 +162,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
           )}
         </div>
 
-        <div className="px-6 py-3.5 bg-slate-50 dark:bg-slate-950/60 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+        <div className="px-6 py-3.5 bg-slate-50 dark:bg-[#000A10]/80 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
           <button
             type="button"
             disabled={isChecking || busy || !status?.supported}
@@ -187,7 +187,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 type="button"
                 disabled={busy || isChecking}
                 onClick={onApplyUpdate}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-[#FB7299] hover:bg-[#e55d85] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg transition-colors cursor-pointer"
               >
                 {isUpdating ? (
                   <>
