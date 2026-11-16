@@ -46,7 +46,136 @@ export type JobStatus =
   | 'completed'
   | 'error';
 
-export type VideoPlatform = 'bilibili' | 'youtube';
+export type VideoPlatform =
+  | 'bilibili'
+  | 'youtube'
+  | 'tiktok'
+  | 'douyin'
+  | 'kuaishou'
+  | 'xiaohongshu'
+  | 'weibo'
+  | 'xigua'
+  | 'dailymotion'
+  | 'other';
+
+export type TrendingPlatformId =
+  | 'all'
+  | 'youtube'
+  | 'tiktok'
+  | 'douyin'
+  | 'bilibili'
+  | 'kuaishou'
+  | 'xiaohongshu'
+  | 'weibo'
+  | 'xigua'
+  | 'dailymotion';
+
+export type TrendingDurationFilter = 'all' | 'short' | 'medium' | 'long';
+export type TrendingOrientationFilter = 'all' | 'vertical' | 'horizontal';
+export type TrendingSortOption = 'best' | 'rising' | 'views' | 'engagement' | 'newest';
+export type SearchSortOption = 'relevance' | 'views' | 'newest' | 'engagement';
+
+export interface SearchApiResponse {
+  query: string;
+  videos: TrendingVideoItem[];
+  platformStatuses: TrendingPlatformStatus[];
+  updatedAt: number;
+  fromCache?: boolean;
+}
+
+export interface TrendingVideoItem {
+  id: string;
+  platform: VideoPlatform;
+  platformLabel: string;
+  title: string;
+  translatedTitle?: string;
+  author: string;
+  pic: string;
+  sourceUrl: string;
+  duration: number; // seconds
+  views: number;
+  likes?: number;
+  comments?: number;
+  pubdate?: number; // unix seconds
+  publishedText?: string;
+  score: number; // 0-99 composite trend score
+  velocityPerHour?: number;
+  category: string;
+  categoryLabel: string;
+  orientation: 'vertical' | 'horizontal' | 'unknown';
+  rank?: number;
+}
+
+export interface TrendingTopicItem {
+  id: string;
+  platform: VideoPlatform;
+  platformLabel: string;
+  rank: number;
+  title: string;
+  translatedTitle?: string;
+  hotValue: number;
+  videoCount?: number;
+  tag?: string;
+  pic?: string;
+  url: string;
+  eventTime?: number;
+}
+
+export interface TrendingPlatformStatus {
+  platform: TrendingPlatformId;
+  label: string;
+  status: 'ok' | 'partial' | 'cookie_required' | 'unavailable';
+  count: number;
+  message?: string;
+  exploreUrl: string;
+}
+
+export interface TrendingApiResponse {
+  videos: TrendingVideoItem[];
+  topics: TrendingTopicItem[];
+  platformStatuses: TrendingPlatformStatus[];
+  updatedAt: number;
+  fromCache?: boolean;
+}
+
+export const TRENDING_PLATFORMS: {
+  id: TrendingPlatformId;
+  label: string;
+  exploreUrl: string;
+}[] = [
+  { id: 'all', label: 'Tất cả', exploreUrl: '' },
+  { id: 'youtube', label: 'YouTube', exploreUrl: 'https://www.youtube.com' },
+  { id: 'tiktok', label: 'TikTok', exploreUrl: 'https://www.tiktok.com/explore' },
+  { id: 'douyin', label: 'Douyin', exploreUrl: 'https://www.douyin.com/hot' },
+  { id: 'bilibili', label: 'Bilibili', exploreUrl: 'https://www.bilibili.com/v/popular/all' },
+  { id: 'kuaishou', label: 'Kuaishou', exploreUrl: 'https://www.kuaishou.com/brilliant' },
+  { id: 'xiaohongshu', label: 'Xiaohongshu', exploreUrl: 'https://www.xiaohongshu.com/explore' },
+  { id: 'weibo', label: 'Weibo', exploreUrl: 'https://weibo.com/hot/search' },
+  { id: 'xigua', label: 'Xigua', exploreUrl: 'https://www.ixigua.com' },
+  { id: 'dailymotion', label: 'Dailymotion', exploreUrl: 'https://www.dailymotion.com' },
+];
+
+export const TRENDING_CATEGORIES: { id: string; label: string }[] = [
+  { id: 'all', label: 'Đang hot' },
+  { id: 'knowledge', label: 'Kiến thức' },
+  { id: 'shortfilm', label: 'Phim ngắn' },
+  { id: 'food', label: 'Ẩm thực' },
+  { id: 'pets', label: 'Thú cưng' },
+  { id: 'rural', label: 'Nông thôn' },
+  { id: 'travel', label: 'Du lịch' },
+  { id: 'auto', label: 'Ô tô' },
+  { id: 'tech', label: 'Công nghệ' },
+  { id: 'ai', label: 'AI' },
+  { id: 'entertainment', label: 'Giải trí' },
+  { id: 'sports', label: 'Thể thao' },
+  { id: 'diy', label: 'Thủ công' },
+  { id: 'vlog', label: 'Vlog' },
+  { id: 'gaming', label: 'Game' },
+  { id: 'anime', label: 'Anime' },
+  { id: 'music', label: 'Âm nhạc' },
+  { id: 'comedy', label: 'Chế / Hài' },
+  { id: 'dance', label: 'Nhảy' },
+];
 
 export interface QueueVideoItem {
   id: string;

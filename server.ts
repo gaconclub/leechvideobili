@@ -8,6 +8,15 @@ import { Readable } from 'stream';
 import { spawn } from 'child_process';
 import crypto from 'crypto';
 import { createRequire } from 'module';
+import {
+  detectPlatformFromUrl,
+  queryTrendingFeed,
+  searchVideosAcrossPlatforms,
+  SearchSortOption,
+  translateTitlesBatch,
+  TrendingPlatformId,
+  VideoPlatform,
+} from './server/trending';
 
 const require = createRequire(import.meta.url);
 const { ZipArchive } = require('archiver') as {
@@ -959,12 +968,39 @@ function writeYtCookiesFile(prefix: string, rawCookies?: string): string | null 
   if (!trimmed) return null;
 
   let content = '';
-  if (trimmed.startsWith('# Netscape') || trimmed.startsWith('# HTTP Cookie') || trimmed.includes('\t')) {
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.cookies) ? parsed.cookies : [];
+      if (Array.isArray(list) && list.length > 0) {
+        const lines = ['# Netscape HTTP Cookie File'];
+        for (const item of list) {
+          const name = String(item?.name || '').trim();
+          const value = String(item?.value ?? '').trim();
+          const domain = String(item?.domain || '').trim();
+          if (!name || !domain) continue;
+          const includeSubdomains = domain.startsWith('.') ? 'TRUE' : 'FALSE';
+          const pathVal = String(item?.path || '/');
+          const secureVal = item?.secure ? 'TRUE' : 'FALSE';
+          const expVal = item?.expirationDate ? String(Math.floor(Number(item.expirationDate))) : '0';
+          lines.push(`${domain}\t${includeSubdomains}\t${pathVal}\t${secureVal}\t${expVal}\t${name}\t${value}`);
+        }
+        if (lines.length > 1) {
+          content = lines.join('\n');
+        }
+      }
+    } catch {
+      // fall through to Netscape / header parsing
+    }
+  }
+
+  if (!content && (trimmed.startsWith('# Netscape') || trimmed.startsWith('# HTTP Cookie') || trimmed.includes('\t'))) {
     content = trimmed.startsWith('#') ? trimmed : `# Netscape HTTP Cookie File\n${trimmed}`;
-  } else {
+  } else if (!content) {
     // Convert browser Cookie header string (k=v; k2=v2) to Netscape cookies.txt
+    const headerClean = trimmed.replace(/^cookie:\s*/i, '');
     const lines = ['# Netscape HTTP Cookie File'];
-    for (const part of trimmed.split(';')) {
+    for (const part of headerClean.split(';')) {
       const idx = part.indexOf('=');
       if (idx <= 0) continue;
       const name = part.slice(0, idx).trim();
@@ -972,6 +1008,7 @@ function writeYtCookiesFile(prefix: string, rawCookies?: string): string | null 
       if (!name) continue;
       lines.push(`.youtube.com\tTRUE\t/\tTRUE\t0\t${name}\t${value}`);
       lines.push(`.google.com\tTRUE\t/\tTRUE\t0\t${name}\t${value}`);
+      lines.push(`.tiktok.com\tTRUE\t/\tTRUE\t0\t${name}\t${value}`);
     }
     if (lines.length === 1) return null;
     content = lines.join('\n');
@@ -1202,6 +1239,58 @@ async function inspectYouTubeUrl(rawUrl: string, ytCookies?: string): Promise<an
         },
       ];
     }
+  } finally {
+    if (tempCookiePath && fs.existsSync(tempCookiePath)) {
+      fs.unlink(tempCookiePath, () => {});
+    }
+  }
+}
+
+async function inspectGenericYtDlpUrl(
+  rawUrl: string,
+  platform: VideoPlatform,
+  rawCookies?: string
+): Promise<any[]> {
+  const ytDlpBin = await ensureYtDlpPath();
+  const tempCookiePath = writeYtCookiesFile(`generic_${crypto.randomBytes(4).toString('hex')}`, rawCookies);
+  const cookieArgs = tempCookiePath ? ['--cookies', tempCookiePath] : [];
+  const defaultQualities = [
+    { qn: 120, label: '4K (2160P)' },
+    { qn: 116, label: '1080P60' },
+    { qn: 80, label: '1080P' },
+    { qn: 64, label: '720P' },
+    { qn: 32, label: '480P' },
+    { qn: 16, label: '360P' },
+  ];
+
+  try {
+    const normalizedUrl = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
+    const info = await runYtDlpJson(
+      ytDlpBin,
+      ['--no-playlist', '-J', '--no-warnings', ...cookieArgs, normalizedUrl],
+      28_000
+    );
+    const vid = String(info?.id || crypto.createHash('md5').update(normalizedUrl).digest('hex').slice(0, 10));
+    return [
+      {
+        id: `${platform}_${vid}_${crypto.randomBytes(3).toString('hex')}`,
+        platform,
+        bvid: vid,
+        aid: 0,
+        cid: 0,
+        page: 1,
+        totalPages: 1,
+        title: info?.title || info?.fulltitle || vid,
+        partTitle: '',
+        author: info?.uploader || info?.creator || info?.channel || platform,
+        duration: Math.round(Number(info?.duration || 0)),
+        views: Number(info?.view_count || 0),
+        pubdate: parseUploadDateToUnix(info?.upload_date) || Number(info?.timestamp || 0),
+        pic: info?.thumbnail || '',
+        sourceUrl: normalizedUrl,
+        availableQualities: defaultQualities,
+      },
+    ];
   } finally {
     if (tempCookiePath && fs.existsSync(tempCookiePath)) {
       fs.unlink(tempCookiePath, () => {});
@@ -2396,19 +2485,39 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '20mb' }));
 
-  // Proxy Bilibili & YouTube thumbnails safely
+  // Proxy Bilibili & multi-platform thumbnails safely
   app.get('/api/bilibili/proxy-image', async (req, res) => {
     const rawUrl = String(req.query.url || '');
     if (!rawUrl.startsWith('http')) {
       return res.status(400).send('Invalid URL');
     }
     try {
-      const isBiliImg = rawUrl.includes('hdslb.com') || rawUrl.includes('bilibili.com');
+      let referer = '';
+      if (rawUrl.includes('hdslb.com') || rawUrl.includes('bilibili.com')) {
+        referer = 'https://www.bilibili.com/';
+      } else if (rawUrl.includes('douyinpic.com') || rawUrl.includes('douyin.com') || rawUrl.includes('byteimg.com')) {
+        referer = 'https://www.douyin.com/';
+      } else if (rawUrl.includes('yximgs.com') || rawUrl.includes('kwimgs.com') || rawUrl.includes('kuaishou.com')) {
+        referer = 'https://www.kuaishou.com/';
+      } else if (rawUrl.includes('sinaimg.cn') || rawUrl.includes('weibo.com')) {
+        referer = 'https://weibo.com/';
+      } else if (rawUrl.includes('xhscdn.com') || rawUrl.includes('xiaohongshu.com')) {
+        referer = 'https://www.xiaohongshu.com/';
+      } else if (
+        rawUrl.includes('tiktokcdn') ||
+        rawUrl.includes('tiktokv.com') ||
+        rawUrl.includes('ttwstatic.com') ||
+        rawUrl.includes('tiktok.com')
+      ) {
+        referer = 'https://www.tiktok.com/';
+      }
+
       const response = await fetch(rawUrl, {
         headers: {
           'User-Agent': USER_AGENT,
-          ...(isBiliImg ? { Referer: 'https://www.bilibili.com/' } : {}),
+          ...(referer ? { Referer: referer } : {}),
         },
+        signal: AbortSignal.timeout(8000),
       });
       if (!response.ok || !response.body) {
         return res.status(response.status).send('Image fetch failed');
@@ -2421,6 +2530,103 @@ async function startServer() {
       res.status(502).send('Failed to proxy image');
     }
   });
+
+  // Trending Videos & Hot Topics across global social platforms
+  const handleTrendingRequest = async (req: express.Request, res: express.Response) => {
+    try {
+      const source = req.method === 'POST' ? req.body || {} : req.query || {};
+      const platform = (String(source.platform || 'all') as TrendingPlatformId);
+      const category = String(source.category || 'all');
+      const duration = (String(source.duration || 'all') as 'all' | 'short' | 'medium' | 'long');
+      const orientation = (String(source.orientation || 'all') as 'all' | 'vertical' | 'horizontal');
+      const sort = (String(source.sort || 'best') as 'best' | 'rising' | 'views' | 'engagement' | 'newest');
+      const q = String(source.q || '');
+      const region = (['VN', 'GLOBAL', 'CN'].includes(String(source.region)) ? String(source.region) : 'VN') as
+        | 'VN'
+        | 'GLOBAL'
+        | 'CN';
+      const refresh = source.refresh === '1' || source.refresh === true;
+      const sessdata = typeof source.sessdata === 'string' ? source.sessdata : undefined;
+      const extraCookies = typeof source.extraCookies === 'string' ? source.extraCookies : undefined;
+
+      const data = await queryTrendingFeed({
+        platform,
+        category,
+        duration,
+        orientation,
+        sort,
+        q,
+        region,
+        refresh,
+        sessdata,
+        extraCookies,
+      });
+
+      res.json(data);
+    } catch (err: any) {
+      console.error('Trending API error:', err);
+      res.status(500).json({ error: err?.message || 'Không thể tải danh sách xu hướng' });
+    }
+  };
+
+  app.get('/api/trending', handleTrendingRequest);
+  app.post('/api/trending', handleTrendingRequest);
+
+  app.post('/api/trending/translate', async (req, res) => {
+    try {
+      const { titles } = (req.body || {}) as { titles?: { id: string; text: string }[] };
+      if (!Array.isArray(titles) || titles.length === 0) {
+        return res.json({ translations: {} });
+      }
+      const translations = await translateTitlesBatch(titles);
+      res.json({ translations });
+    } catch {
+      res.json({ translations: {} });
+    }
+  });
+
+  // Independent Multi-Platform Video Search API
+  const handleSearchRequest = async (req: express.Request, res: express.Response) => {
+    try {
+      const source = req.method === 'POST' ? req.body || {} : req.query || {};
+      const q = String(source.q || '').trim();
+      if (!q) {
+        return res.json({ query: '', videos: [], platformStatuses: [], updatedAt: Date.now() });
+      }
+      const platform = String(source.platform || 'all') as TrendingPlatformId;
+      const duration = String(source.duration || 'all') as 'all' | 'short' | 'medium' | 'long';
+      const orientation = String(source.orientation || 'all') as 'all' | 'vertical' | 'horizontal';
+      const sort = String(source.sort || 'relevance') as SearchSortOption;
+      const region = (['VN', 'GLOBAL', 'CN'].includes(String(source.region)) ? String(source.region) : 'VN') as
+        | 'VN'
+        | 'GLOBAL'
+        | 'CN';
+      const page = Math.max(1, parseInt(String(source.page || '1'), 10) || 1);
+      const refresh = source.refresh === '1' || source.refresh === true;
+      const sessdata = typeof source.sessdata === 'string' ? source.sessdata : undefined;
+      const extraCookies = typeof source.extraCookies === 'string' ? source.extraCookies : undefined;
+
+      const data = await searchVideosAcrossPlatforms({
+        q,
+        platform,
+        duration,
+        orientation,
+        sort,
+        region,
+        page,
+        refresh,
+        sessdata,
+        extraCookies,
+      });
+      res.json(data);
+    } catch (err: any) {
+      console.error('Search API error:', err);
+      res.status(500).json({ error: err?.message || 'Không thể tìm kiếm video' });
+    }
+  };
+
+  app.get('/api/search', handleSearchRequest);
+  app.post('/api/search', handleSearchRequest);
 
   // Inspect one or multiple Bilibili / YouTube URLs
   app.post('/api/bilibili/inspect', async (req, res) => {
@@ -2474,6 +2680,13 @@ async function startServer() {
         if (isYouTubeUrl(trimmed)) {
           const ytItems = await inspectYouTubeUrl(trimmed, ytCookies);
           items.push(...ytItems);
+          continue;
+        }
+
+        const detectedPlatform = detectPlatformFromUrl(trimmed);
+        if (detectedPlatform !== 'bilibili' && detectedPlatform !== 'other') {
+          const genericItems = await inspectGenericYtDlpUrl(trimmed, detectedPlatform, ytCookies);
+          items.push(...genericItems);
           continue;
         }
 
@@ -2714,7 +2927,7 @@ async function startServer() {
       customLogo,
       videoTransform,
     } = req.body as {
-      platform?: 'bilibili' | 'youtube';
+      platform?: VideoPlatform;
       sourceUrl?: string;
       bvid: string;
       cid: number;
@@ -2748,8 +2961,11 @@ async function startServer() {
       createdAt: Date.now(),
     });
 
-    // Run asynchronously
-    if (platform === 'youtube' || (sourceUrl && isYouTubeUrl(sourceUrl))) {
+    const detectedFromUrl = sourceUrl ? detectPlatformFromUrl(sourceUrl) : 'bilibili';
+    const effectivePlatform = platform || detectedFromUrl;
+
+    // Run asynchronously: Bilibili uses native DASH downloader; YouTube & other global platforms use yt-dlp + FFmpeg
+    if (effectivePlatform !== 'bilibili' && (sourceUrl || effectivePlatform === 'youtube')) {
       processYouTubeDownloadJob(jobId, {
         sourceUrl: sourceUrl || `https://www.youtube.com/watch?v=${bvid}`,
         bvid,

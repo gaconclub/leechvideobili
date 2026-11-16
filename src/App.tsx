@@ -1,16 +1,20 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   CustomLogoConfig,
   InspectError,
   OutputFormat,
   QueueVideoItem,
+  RESOLUTION_PRESETS,
+  TrendingVideoItem,
   VideoTransformConfig,
   WatermarkMode,
 } from './types/bilibili';
-import { TopBar } from './components/TopBar';
+import { TopBar, AppTab } from './components/TopBar';
 import { BatchInputPanel } from './components/BatchInputPanel';
 import { GlobalConfigBar } from './components/GlobalConfigBar';
 import { QueueTable } from './components/QueueTable';
+import { TrendingPanel } from './components/TrendingPanel';
+import { SearchPanel } from './components/SearchPanel';
 import { SessdataModal } from './components/SessdataModal';
 import { CustomLogoModal } from './components/CustomLogoModal';
 import { VideoTransformModal } from './components/VideoTransformModal';
@@ -38,6 +42,10 @@ async function parseJsonSafe<T = any>(res: Response): Promise<T> {
 }
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<AppTab>('batch');
+  const [mountedSearch, setMountedSearch] = useState(false);
+  const [mountedTrending, setMountedTrending] = useState(false);
+  const [searchQueryRequest, setSearchQueryRequest] = useState<{ query: string; nonce: number } | null>(null);
   const [items, setItems] = useState<QueueVideoItem[]>([]);
   const [globalQn, setGlobalQn] = useState<number>(0); // Default: Tốt nhất (Auto)
   const [globalFormat, setGlobalFormat] = useState<OutputFormat>('mp4');
@@ -871,6 +879,106 @@ export default function App() {
     fetch(`/api/bilibili/batch-zip/${prepData.zipId}/cleanup`, { method: 'POST' }).catch(() => {});
   };
 
+  const queuedSourceUrls = useMemo(() => new Set(items.map((it) => it.sourceUrl)), [items]);
+
+  const handleAddTrendingVideosToQueue = useCallback(
+    (videos: TrendingVideoItem[], startImmediately: boolean) => {
+      if (!videos || videos.length === 0) return;
+      const defaultQualities = RESOLUTION_PRESETS.filter((q) => q.qn !== 0);
+
+      setItems((prev) => {
+        const next = [...prev];
+        const byUrl = new Map(next.map((it, idx) => [it.sourceUrl, idx]));
+
+        for (const v of videos) {
+          const existingIdx = byUrl.get(v.sourceUrl);
+          if (existingIdx !== undefined) {
+            if (startImmediately) {
+              const cur = next[existingIdx];
+              if (cur.status === 'idle' || cur.status === 'error') {
+                next[existingIdx] = { ...cur, status: 'queued', progress: 0, error: undefined };
+              }
+            }
+            continue;
+          }
+
+          const cleanBvid =
+            v.platform === 'bilibili' ? v.id.replace(/^bili_/, '') : v.id;
+
+          const newItem: QueueVideoItem = {
+            id: `${v.id}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            platform: v.platform,
+            bvid: cleanBvid,
+            aid: 0,
+            cid: 0,
+            page: 1,
+            totalPages: 1,
+            title: v.translatedTitle || v.title,
+            partTitle: '',
+            author: v.author,
+            duration: v.duration || 0,
+            views: v.views,
+            pubdate: v.pubdate,
+            pic: v.pic,
+            sourceUrl: v.sourceUrl,
+            availableQualities: defaultQualities,
+            selectedQn: globalQn,
+            selectedFormat: globalFormat,
+            selectedWatermark: v.platform === 'youtube' ? 'none' : globalWatermark,
+            selected: true,
+            status: startImmediately ? 'queued' : 'idle',
+            progress: 0,
+          };
+          next.push(newItem);
+          byUrl.set(v.sourceUrl, next.length - 1);
+        }
+
+        return next;
+      });
+    },
+    [globalQn, globalFormat, globalWatermark]
+  );
+
+  const [bookmarks, setBookmarks] = useState<TrendingVideoItem[]>(() => {
+    try {
+      const raw = localStorage.getItem('gaconpro_trending_bookmarks_v1');
+      return raw ? (JSON.parse(raw) as TrendingVideoItem[]) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('gaconpro_trending_bookmarks_v1', JSON.stringify(bookmarks));
+    } catch {
+      // ignore
+    }
+  }, [bookmarks]);
+
+  const bookmarkIds = useMemo(() => new Set(bookmarks.map((b) => b.id)), [bookmarks]);
+
+  const handleToggleBookmark = useCallback((video: TrendingVideoItem) => {
+    setBookmarks((prev) => {
+      if (prev.some((b) => b.id === video.id)) {
+        return prev.filter((b) => b.id !== video.id);
+      }
+      return [video, ...prev];
+    });
+  }, []);
+
+  const handleChangeTab = useCallback((tab: AppTab) => {
+    setActiveTab(tab);
+    if (tab === 'search') setMountedSearch(true);
+    if (tab === 'trending') setMountedTrending(true);
+  }, []);
+
+  const handleSearchFromTopic = useCallback((topic: string) => {
+    setMountedSearch(true);
+    setActiveTab('search');
+    setSearchQueryRequest({ query: topic, nonce: Date.now() });
+  }, []);
+
   const isAnyDownloading = items.some(
     (it) =>
       it.status === 'queued' ||
@@ -881,68 +989,103 @@ export default function App() {
   return (
     <div id="top" className="min-h-screen flex flex-col">
       <TopBar
+        activeTab={activeTab}
         totalCount={items.length}
         isDownloading={isAnyDownloading}
         hasCookie={Boolean(sessdata.trim() || ytCookies.trim())}
         hasUpdate={Boolean(updateStatus?.supported && updateStatus?.hasUpdate)}
+        onChangeTab={handleChangeTab}
         onStartAll={handleStartAll}
         onOpenCookieModal={() => setIsCookieModalOpen(true)}
         onOpenUpdateModal={handleOpenUpdateModal}
       />
 
       <main className="flex-1 w-full max-w-[1320px] mx-auto px-6 py-7 space-y-5">
-        <BatchInputPanel
-          isInspecting={isInspecting}
-          inspectErrors={inspectErrors}
-          onInspect={handleInspect}
-          onClearErrors={() => setInspectErrors([])}
-        />
+        <div className={activeTab === 'batch' ? 'space-y-5' : 'hidden'}>
+          <BatchInputPanel
+            isInspecting={isInspecting}
+            inspectErrors={inspectErrors}
+            onInspect={handleInspect}
+            onClearErrors={() => setInspectErrors([])}
+          />
 
-        <GlobalConfigBar
-          globalQn={globalQn}
-          globalFormat={globalFormat}
-          globalWatermark={globalWatermark}
-          concurrency={concurrency}
-          autoSave={autoSave}
-          folderName={folderName}
-          subfolderName={subfolderName}
-          folderNotice={folderNotice}
-          darkMode={darkMode}
-          hasItems={items.length > 0}
-          customLogo={customLogo}
-          videoTransform={videoTransform}
-          onOpenLogoModal={() => setIsLogoModalOpen(true)}
-          onToggleCustomLogo={handleToggleCustomLogo}
-          onOpenTransformModal={() => setIsTransformModalOpen(true)}
-          onResetTransform={handleResetTransform}
-          onChangeGlobalQn={setGlobalQn}
-          onChangeGlobalFormat={setGlobalFormat}
-          onChangeGlobalWatermark={setGlobalWatermark}
-          onChangeConcurrency={setConcurrency}
-          onToggleAutoSave={handleToggleAutoSave}
-          onChangeSubfolderName={handleChangeSubfolderName}
-          onPickFolder={handlePickFolder}
-          onClearFolder={handleClearFolder}
-          onApplyToAll={handleApplyToAll}
-          onToggleDarkMode={() => setDarkMode((d) => !d)}
-        />
+          <GlobalConfigBar
+            globalQn={globalQn}
+            globalFormat={globalFormat}
+            globalWatermark={globalWatermark}
+            concurrency={concurrency}
+            autoSave={autoSave}
+            folderName={folderName}
+            subfolderName={subfolderName}
+            folderNotice={folderNotice}
+            darkMode={darkMode}
+            hasItems={items.length > 0}
+            customLogo={customLogo}
+            videoTransform={videoTransform}
+            onOpenLogoModal={() => setIsLogoModalOpen(true)}
+            onToggleCustomLogo={handleToggleCustomLogo}
+            onOpenTransformModal={() => setIsTransformModalOpen(true)}
+            onResetTransform={handleResetTransform}
+            onChangeGlobalQn={setGlobalQn}
+            onChangeGlobalFormat={setGlobalFormat}
+            onChangeGlobalWatermark={setGlobalWatermark}
+            onChangeConcurrency={setConcurrency}
+            onToggleAutoSave={handleToggleAutoSave}
+            onChangeSubfolderName={handleChangeSubfolderName}
+            onPickFolder={handlePickFolder}
+            onClearFolder={handleClearFolder}
+            onApplyToAll={handleApplyToAll}
+            onToggleDarkMode={() => setDarkMode((d) => !d)}
+          />
 
-        <QueueTable
-          items={items}
-          onToggleSelectVisible={handleToggleSelectVisible}
-          onToggleSelect={handleToggleSelect}
-          onUpdateItemConfig={handleUpdateItemConfig}
-          onStartSingle={handleStartSingle}
-          onRemoveItem={handleRemoveItem}
-          onRemoveSelected={handleRemoveSelected}
-          onStartSelected={handleStartSelected}
-          onRetryErrors={handleRetryErrors}
-          onClearAll={handleClearAll}
-          onSaveSingle={handleSaveSingle}
-          onDownloadZip={handleDownloadZip}
-          customLogo={customLogo}
-          videoTransform={videoTransform}
-        />
+          <QueueTable
+            items={items}
+            onToggleSelectVisible={handleToggleSelectVisible}
+            onToggleSelect={handleToggleSelect}
+            onUpdateItemConfig={handleUpdateItemConfig}
+            onStartSingle={handleStartSingle}
+            onRemoveItem={handleRemoveItem}
+            onRemoveSelected={handleRemoveSelected}
+            onStartSelected={handleStartSelected}
+            onRetryErrors={handleRetryErrors}
+            onClearAll={handleClearAll}
+            onSaveSingle={handleSaveSingle}
+            onDownloadZip={handleDownloadZip}
+            customLogo={customLogo}
+            videoTransform={videoTransform}
+          />
+        </div>
+
+        {mountedSearch && (
+          <div className={activeTab === 'search' ? 'block' : 'hidden'}>
+            <SearchPanel
+              sessdata={sessdata}
+              ytCookies={ytCookies}
+              externalQueryRequest={searchQueryRequest}
+              queuedSourceUrls={queuedSourceUrls}
+              bookmarkIds={bookmarkIds}
+              onToggleBookmark={handleToggleBookmark}
+              onAddVideosToQueue={handleAddTrendingVideosToQueue}
+              onOpenCookieModal={() => setIsCookieModalOpen(true)}
+            />
+          </div>
+        )}
+
+        {mountedTrending && (
+          <div className={activeTab === 'trending' ? 'block' : 'hidden'}>
+            <TrendingPanel
+              sessdata={sessdata}
+              ytCookies={ytCookies}
+              queuedSourceUrls={queuedSourceUrls}
+              bookmarks={bookmarks}
+              bookmarkIds={bookmarkIds}
+              onToggleBookmark={handleToggleBookmark}
+              onAddVideosToQueue={handleAddTrendingVideosToQueue}
+              onOpenCookieModal={() => setIsCookieModalOpen(true)}
+              onSearchTopic={handleSearchFromTopic}
+            />
+          </div>
+        )}
       </main>
 
       <footer className="border-t border-slate-200/80 dark:border-[#00464A]/80 py-5 px-6 text-xs text-slate-500 dark:text-teal-100/80">

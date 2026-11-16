@@ -35,6 +35,17 @@ export function parseUrlsFromText(text: string): string[] {
           s.includes('b23.tv') ||
           s.includes('youtube.com') ||
           s.includes('youtu.be') ||
+          s.includes('tiktok.com') ||
+          s.includes('douyin.com') ||
+          s.includes('iesdouyin.com') ||
+          s.includes('kuaishou.com') ||
+          s.includes('xiaohongshu.com') ||
+          s.includes('xhslink.com') ||
+          s.includes('weibo.com') ||
+          s.includes('weibo.cn') ||
+          s.includes('ixigua.com') ||
+          s.includes('dailymotion.com') ||
+          s.includes('dai.ly') ||
           /^(BV[1-9A-HJ-NP-Za-km-z]{10}|av\d+)$/i.test(s))
     );
 }
@@ -46,6 +57,14 @@ export function formatViews(views?: number): string {
   return `${views} lượt xem`;
 }
 
+export function formatCompactCount(n?: number): string {
+  if (n === undefined || n === null || n <= 0) return '—';
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1).replace('.', ',')} Tỷ`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace('.', ',')} Tr`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace('.', ',')} N`;
+  return String(Math.round(n));
+}
+
 export function formatPubdate(pubdate?: number): string {
   if (!pubdate || pubdate <= 0) return '';
   const d = new Date(pubdate * 1000);
@@ -53,4 +72,22 @@ export function formatPubdate(pubdate?: number): string {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const yyyy = d.getFullYear();
   return `${dd}/${mm}/${yyyy}`;
+}
+
+export function formatRelativeAge(pubdate?: number, fallbackText?: string): string {
+  if (pubdate && pubdate > 0) {
+    const diffSec = Math.max(0, Math.floor(Date.now() / 1000) - pubdate);
+    if (diffSec < 3600) {
+      const mins = Math.max(1, Math.floor(diffSec / 60));
+      return `${mins} phút trước`;
+    }
+    if (diffSec < 86400) {
+      return `${Math.floor(diffSec / 3600)} giờ trước`;
+    }
+    if (diffSec < 86400 * 7) {
+      return `${Math.floor(diffSec / 86400)} ngày trước`;
+    }
+    return formatPubdate(pubdate);
+  }
+  return fallbackText || '';
 }

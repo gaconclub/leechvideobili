@@ -80,7 +80,7 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
                 : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
             }`}
           >
-            YouTube Cookies {ytVal.trim() ? '· Đã nhập' : ''}
+            Cookie Trình duyệt (YT / TikTok / Douyin...) {ytVal.trim() ? '· Đã nhập' : ''}
           </button>
           <button
             type="button"
@@ -98,9 +98,9 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
         {activeTab === 'youtube' ? (
           <div className="p-6 space-y-4">
             <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-              Nếu YouTube yêu cầu xác minh (<em>&ldquo;Sign in to confirm you&apos;re not a bot&rdquo;</em>) hoặc tải video giới hạn độ tuổi / thành viên, hãy dán nội dung tệp{' '}
+              Dùng để vượt xác minh YouTube (<em>&ldquo;Sign in to confirm you&apos;re not a bot&rdquo;</em>) hoặc tải video &amp; mở khóa phiên đăng nhập trên TikTok, Douyin, Kuaishou, Xiaohongshu, Xigua. Hỗ trợ định dạng{' '}
               <code className="font-mono text-xs bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">cookies.txt</code>{' '}
-              (định dạng Netscape) hoặc chuỗi Cookie từ trình duyệt.
+              (Netscape), <code className="font-mono text-xs bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">JSON</code> (Cookie-Editor) hoặc chuỗi Cookie header.
             </p>
 
             <div className="space-y-2">
@@ -109,13 +109,13 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
                   htmlFor="yt-cookies-input"
                   className="block text-xs font-medium text-slate-700 dark:text-slate-300"
                 >
-                  YouTube Cookies
+                  Cookies đa nền tảng (Netscape / JSON / Header)
                 </label>
                 <div>
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".txt,text/plain"
+                    accept=".txt,.json,text/plain,application/json"
                     onChange={handleUploadCookiesFile}
                     className="hidden"
                   />
@@ -125,7 +125,7 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
                     className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/80 dark:hover:bg-slate-700 rounded-md transition-colors cursor-pointer"
                   >
                     <Upload className="w-3.5 h-3.5" />
-                    <span>Chọn tệp cookies.txt</span>
+                    <span>Chọn tệp cookies</span>
                   </button>
                 </div>
               </div>
@@ -134,11 +134,11 @@ export const SessdataModal: React.FC<SessdataModalProps> = ({
                 rows={5}
                 value={ytVal}
                 onChange={(e) => setYtVal(e.target.value)}
-                placeholder={'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t...\n\nhoặc dán chuỗi: SID=...; HSID=...; SAPISID=...'}
+                placeholder={'# Netscape HTTP Cookie File hoặc JSON từ Cookie-Editor\n.tiktok.com\tTRUE\t/\tTRUE\t...\n.youtube.com\tTRUE\t/\tTRUE\t...'}
                 className="w-full px-3.5 py-2.5 text-xs font-mono bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-red-500 resize-y"
               />
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Cookie chỉ lưu cục bộ trên trình duyệt (localStorage) và chỉ dùng khi tải video YouTube.
+                Cookie chỉ lưu cục bộ trên trình duyệt (localStorage), tự động lọc đúng tên miền khi gửi API và chuyển đổi tương thích cho yt-dlp.
               </p>
             </div>
           </div>

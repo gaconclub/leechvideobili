@@ -412,7 +412,18 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                                 : 'text-[#003B3E] dark:text-[#1BA8AD]'
                             }`}
                           >
-                            {item.platform === 'youtube' ? 'YouTube' : 'Bilibili'}
+                            {({
+                              bilibili: 'Bilibili',
+                              youtube: 'YouTube',
+                              tiktok: 'TikTok',
+                              douyin: 'Douyin',
+                              kuaishou: 'Kuaishou',
+                              xiaohongshu: 'Xiaohongshu',
+                              weibo: 'Weibo',
+                              xigua: 'Xigua',
+                              dailymotion: 'Dailymotion',
+                              other: 'Video',
+                            }[item.platform || 'bilibili'] || 'Bilibili')}
                           </span>
                           <span aria-hidden="true">·</span>
                           <span className="font-mono">{item.bvid}</span>

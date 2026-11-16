@@ -1,33 +1,35 @@
-import React, { useState } from 'react';
-import { Download, RefreshCw } from 'lucide-react';
+import React from 'react';
+import { Download, RefreshCw, Flame, Layers, Search } from 'lucide-react';
+
+export type AppTab = 'batch' | 'search' | 'trending';
 
 interface TopBarProps {
+  activeTab: AppTab;
   totalCount: number;
   isDownloading: boolean;
   hasCookie?: boolean;
   hasUpdate?: boolean;
+  onChangeTab: (tab: AppTab) => void;
   onStartAll: () => void;
   onOpenCookieModal: () => void;
   onOpenUpdateModal: () => void;
 }
 
-type NavKey = 'input' | 'config' | 'queue' | 'cookie' | 'update';
-
 export const TopBar: React.FC<TopBarProps> = ({
+  activeTab,
   totalCount,
   isDownloading,
   hasCookie,
   hasUpdate,
+  onChangeTab,
   onStartAll,
   onOpenCookieModal,
   onOpenUpdateModal,
 }) => {
-  const [activeNav, setActiveNav] = useState<NavKey>('input');
-
   const navItemClass = (isActive: boolean) =>
     `group relative py-2 text-sm font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#003B3E] rounded-sm ${
       isActive
-        ? 'text-[#003B3E] dark:text-[#1BA8AD]'
+        ? 'text-[#003B3E] dark:text-[#1BA8AD] font-semibold'
         : 'text-slate-600 dark:text-teal-100/85 hover:text-[#003B3E] dark:hover:text-white'
     }`;
 
@@ -38,64 +40,67 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <header className="sticky top-0 z-30 h-15 bg-white/92 dark:bg-[#000A10]/95 backdrop-blur-md border-b border-slate-200/90 dark:border-[#00464A]/80">
-      <div className="max-w-[1320px] mx-auto h-full px-6 flex items-center justify-between gap-8">
+      <div className="max-w-[1320px] mx-auto h-full px-4 sm:px-6 flex items-center justify-between gap-4 sm:gap-8">
         {/* Zone 1: Single-element Brand wordmark */}
-        <a
-          href="#top"
-          onClick={() => setActiveNav('input')}
-          className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white hover:text-[#003B3E] dark:hover:text-[#1BA8AD] transition-colors duration-150 whitespace-nowrap shrink-0"
+        <button
+          type="button"
+          onClick={() => onChangeTab('batch')}
+          className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white hover:text-[#003B3E] dark:hover:text-[#1BA8AD] transition-colors duration-150 whitespace-nowrap shrink-0 cursor-pointer"
         >
           GaConPro V1.0
-        </a>
+        </button>
 
         {/* Zone 2: Clean single-line navigation links with animated underline */}
-        <nav className="hidden md:flex items-center gap-7">
-          <a
-            href="#input-panel"
-            onClick={() => setActiveNav('input')}
-            className={navItemClass(activeNav === 'input')}
-          >
-            <span>Thêm liên kết</span>
-            <span aria-hidden="true" className={underlineClass(activeNav === 'input')} />
-          </a>
-          <a
-            href="#output-config"
-            onClick={() => setActiveNav('config')}
-            className={navItemClass(activeNav === 'config')}
-          >
-            <span>Cấu hình đầu ra</span>
-            <span aria-hidden="true" className={underlineClass(activeNav === 'config')} />
-          </a>
-          <a
-            href="#download-queue"
-            onClick={() => setActiveNav('queue')}
-            className={navItemClass(activeNav === 'queue')}
-          >
-            <span>Hàng đợi tải</span>
-            <span aria-hidden="true" className={underlineClass(activeNav === 'queue')} />
-          </a>
+        <nav className="flex items-center gap-4 sm:gap-7 overflow-x-auto no-scrollbar">
           <button
             type="button"
-            onClick={() => {
-              setActiveNav('cookie');
-              onOpenCookieModal();
-            }}
-            className={`inline-flex items-center gap-1.5 ${navItemClass(activeNav === 'cookie')}`}
+            onClick={() => onChangeTab('batch')}
+            className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'batch')}`}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>
+              Tải hàng loạt{totalCount > 0 ? ` (${totalCount})` : ''}
+            </span>
+            <span aria-hidden="true" className={underlineClass(activeTab === 'batch')} />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onChangeTab('search')}
+            className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'search')}`}
+          >
+            <Search className="w-3.5 h-3.5" />
+            <span>Tìm kiếm</span>
+            <span aria-hidden="true" className={underlineClass(activeTab === 'search')} />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onChangeTab('trending')}
+            className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'trending')}`}
+          >
+            <Flame className="w-3.5 h-3.5 text-amber-500" />
+            <span>Xu hướng</span>
+            <span aria-hidden="true" className={underlineClass(activeTab === 'trending')} />
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenCookieModal}
+            className={`hidden md:inline-flex items-center gap-1.5 ${navItemClass(false)}`}
           >
             <span>{hasCookie ? 'Cookie (Đã lưu)' : 'Cookie / Đăng nhập'}</span>
-            <span aria-hidden="true" className={underlineClass(activeNav === 'cookie')} />
+            <span aria-hidden="true" className={underlineClass(false)} />
           </button>
+
           <button
             type="button"
-            onClick={() => {
-              setActiveNav('update');
-              onOpenUpdateModal();
-            }}
-            className={`inline-flex items-center gap-1.5 ${navItemClass(activeNav === 'update')}`}
+            onClick={onOpenUpdateModal}
+            className={`hidden sm:inline-flex items-center gap-1.5 ${navItemClass(false)}`}
           >
             <RefreshCw className="w-3.5 h-3.5 transition-transform duration-300 group-hover:rotate-90" />
             <span>{hasUpdate ? 'Cập nhật (Mới)' : 'Cập nhật'}</span>
-            <span aria-hidden="true" className={underlineClass(activeNav === 'update')} />
+            <span aria-hidden="true" className={underlineClass(false)} />
           </button>
         </nav>
 
@@ -104,8 +109,11 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             type="button"
             disabled={totalCount === 0 || isDownloading}
-            onClick={onStartAll}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] active:scale-[0.98] disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-400 dark:disabled:text-slate-500 disabled:cursor-not-allowed rounded-lg shadow-xs transition-all duration-150 whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#003B3E]"
+            onClick={() => {
+              onChangeTab('batch');
+              onStartAll();
+            }}
+            className="inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] active:scale-[0.98] disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-400 dark:disabled:text-slate-500 disabled:cursor-not-allowed rounded-lg shadow-xs transition-all duration-150 whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#003B3E]"
           >
             <Download className="w-3.5 h-3.5" />
             <span>{isDownloading ? 'Đang tải...' : 'Tải tất cả'}</span>

@@ -42,10 +42,10 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
       <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
         <div className="space-y-1">
           <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white text-balance">
-            Tải video Bilibili &amp; YouTube hàng loạt
+            Tải video đa nền tảng hàng loạt
           </h1>
           <p className="text-sm text-slate-500 dark:text-teal-100/80">
-            Dán một hoặc nhiều liên kết Video, Shorts, Playlist hay Kênh để tự động tách danh sách và xử lý đồng loạt.
+            Dán một hoặc nhiều liên kết Video, Shorts, Playlist hay Kênh (Bilibili, YouTube, TikTok, Douyin, Kuaishou, Xiaohongshu, Xigua...) để tự động tách danh sách và xử lý đồng loạt.
           </p>
         </div>
 
@@ -80,7 +80,7 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
               setRawText(e.target.value);
               if (inspectErrors.length > 0) onClearErrors();
             }}
-            placeholder={`https://www.youtube.com/watch?v=...\nhttps://www.youtube.com/playlist?list=...\nhttps://www.youtube.com/@tenkenh\nhttps://www.bilibili.com/video/BV1xx411c7mD\nhttps://space.bilibili.com/vi/512113889/upload/video`}
+            placeholder={`https://www.youtube.com/watch?v=...\nhttps://www.bilibili.com/video/BV1xx411c7mD\nhttps://www.douyin.com/video/...\nhttps://www.kuaishou.com/short-video/...\nhttps://www.tiktok.com/@user/video/...`}
             className="w-full px-4 py-3.5 text-sm font-mono bg-[#F8FAFB] dark:bg-[#000A10] border border-slate-200/90 dark:border-[#00464A] rounded-xl text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-teal-200/45 focus:outline-none focus:border-[#003B3E] dark:focus:border-[#1BA8AD] focus:ring-3 focus:ring-[#003B3E]/15 transition-all resize-y"
           />
         </div>
