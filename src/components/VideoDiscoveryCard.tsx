@@ -11,6 +11,7 @@ import {
   Film,
   CheckSquare,
   Square,
+  Sparkles,
 } from 'lucide-react';
 import { TrendingVideoItem } from '../types/bilibili';
 import { formatCompactCount, formatDuration, formatRelativeAge } from '../utils/formatters';
@@ -80,6 +81,7 @@ interface VideoDiscoveryCardProps {
   onToggleSelect: (id: string) => void;
   onToggleBookmark: (video: TrendingVideoItem) => void;
   onAddSingle: (video: TrendingVideoItem, startImmediately: boolean) => void;
+  onCreateDerivative?: (video: TrendingVideoItem) => void;
 }
 
 export const VideoDiscoveryCard: React.FC<VideoDiscoveryCardProps> = ({
@@ -91,6 +93,7 @@ export const VideoDiscoveryCard: React.FC<VideoDiscoveryCardProps> = ({
   onToggleSelect,
   onToggleBookmark,
   onAddSingle,
+  onCreateDerivative,
 }) => {
   const translated = translatedTitle || video.translatedTitle;
   const displayTitle = translated || video.title;
@@ -227,6 +230,17 @@ export const VideoDiscoveryCard: React.FC<VideoDiscoveryCardProps> = ({
           >
             <Star className={`w-3.5 h-3.5 ${isSaved ? 'fill-current' : ''}`} />
           </button>
+
+          {onCreateDerivative && (
+            <button
+              type="button"
+              onClick={() => onCreateDerivative(video)}
+              title="AI học nội dung & tạo video phái sinh từ video này"
+              className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-[#00464A] text-[#003B3E] dark:text-[#1BA8AD] hover:bg-[#003B3E]/10 dark:hover:bg-[#003B3E]/60 transition-colors cursor-pointer shrink-0"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+            </button>
+          )}
 
           <a
             href={video.sourceUrl}

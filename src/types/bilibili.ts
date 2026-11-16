@@ -244,3 +244,55 @@ export const OUTPUT_FORMATS: { value: OutputFormat; label: string; desc: string 
   { value: 'mp3', label: 'MP3', desc: 'Chỉ âm thanh · 320 kbps' },
   { value: 'm4a', label: 'M4A', desc: 'Chỉ âm thanh · AAC gốc' },
 ];
+
+export type DerivativeVisualMode = 'remix' | 'storyboard_motion';
+export type DerivativeStylePreset = 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
+export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
+export type DerivativeAspectRatio = '9:16' | '16:9';
+
+export interface DerivativeScene {
+  id: string;
+  sceneIndex: number;
+  durationSec: number;
+  sourceVideoIndex: number;
+  sourceStartPercent: number;
+  onScreenText: string;
+  narration: string;
+  visualNote?: string;
+}
+
+export interface DerivativeSourceInsight {
+  index: number;
+  title: string;
+  platformLabel: string;
+  author: string;
+  hasDescription: boolean;
+  hasCaptions: boolean;
+  hasThumbnail: boolean;
+  keyPoint: string;
+}
+
+export interface DerivativeBlueprint {
+  learnedSummary: string;
+  keyTakeaways: string[];
+  hookFormula: string;
+  derivativeTitle: string;
+  derivativeHook: string;
+  hashtags: string[];
+  aspectRatio: DerivativeAspectRatio;
+  sourcesAnalyzed: DerivativeSourceInsight[];
+  scenes: DerivativeScene[];
+}
+
+export interface DerivativeJobState {
+  jobId: string;
+  status: 'queued' | 'learning' | 'downloading' | 'tts' | 'rendering' | 'completed' | 'error';
+  progress: number;
+  stepLabel: string;
+  fileName?: string;
+  fileSize?: number;
+  durationSec?: number;
+  resolution?: string;
+  error?: string;
+  warnings?: string[];
+}

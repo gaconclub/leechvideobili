@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
@@ -17,6 +18,17 @@ import {
   TrendingPlatformId,
   VideoPlatform,
 } from './server/trending';
+import {
+  DerivativeAspectRatio,
+  DerivativeBlueprint,
+  derivativeJobs,
+  DerivativeSourceInput,
+  DerivativeStylePreset,
+  DerivativeVisualMode,
+  DerivativeVoiceId,
+  learnVideosAndCreateBlueprint,
+  startDerivativeVideoJob,
+} from './server/derivative';
 
 const require = createRequire(import.meta.url);
 const { ZipArchive } = require('archiver') as {
@@ -2627,6 +2639,399 @@ async function startServer() {
 
   app.get('/api/search', handleSearchRequest);
   app.post('/api/search', handleSearchRequest);
+
+  // AI Video Content Learning & Derivative Video Studio
+  const downloadSourceVideoForDerivative = async (
+    source: DerivativeSourceInput,
+    outPath: string,
+    sessdata?: string,
+    ytCookies?: string
+  ): Promise<{ ok: boolean; reason?: string }> => {
+    const drvCacheKey = `drv_src_${crypto.createHash('md5').update(source.sourceUrl).digest('hex').slice(0, 16)}`;
+
+    // 1. Reuse cached derivative source clip if available
+    const existingCache = readValidRawCache(drvCacheKey);
+    if (existingCache?.meta.files.raw && fs.existsSync(existingCache.meta.files.raw)) {
+      try {
+        fs.copyFileSync(existingCache.meta.files.raw, outPath);
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 20_000) {
+          return { ok: true };
+        }
+      } catch {
+        // ignore cache copy failure and download fresh
+      }
+    }
+
+    const saveClipToCache = (filePath: string) => {
+      try {
+        const cacheDir = getRawCacheDir(drvCacheKey);
+        fs.mkdirSync(cacheDir, { recursive: true });
+        const cachedRaw = path.join(cacheDir, 'source.mp4');
+        fs.copyFileSync(filePath, cachedRaw);
+        writeRawCacheMeta(drvCacheKey, { files: { raw: cachedRaw } });
+      } catch {
+        // non-fatal cache write error
+      }
+    };
+
+    // 2. Native fast path for Bilibili sources (try_look=1 + Akamai CDN mirrors)
+    if (source.platform === 'bilibili') {
+      const bvidMatch = source.sourceUrl.match(/(BV[0-9A-Za-z]+)/) || source.id.match(/(BV[0-9A-Za-z]+)/);
+      if (bvidMatch) {
+        const tmpFiles: string[] = [];
+        try {
+          const bvid = bvidMatch[1];
+          const viewJson = await fetchBiliJson(
+            `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`,
+            sessdata
+          );
+          const cid = viewJson?.data?.cid;
+          if (viewJson?.code === 0 && cid) {
+            const playJson = await fetchBiliJson(
+              `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(
+                bvid
+              )}&cid=${cid}&qn=64&fnval=4048&try_look=1`,
+              sessdata
+            );
+            const data = playJson?.data;
+            const biliHeaders: Record<string, string> = {
+              'User-Agent': USER_AGENT,
+              Referer: 'https://www.bilibili.com/',
+              ...(sessdata?.trim() ? { Cookie: `SESSDATA=${sessdata.trim()}` } : {}),
+            };
+
+            if (playJson?.code === 0 && data?.dash?.video?.length) {
+              const sortedVideos = [...data.dash.video].sort(
+                (a: any, b: any) => b.id - a.id || (b.bandwidth || 0) - (a.bandwidth || 0)
+              );
+              let pickedVid =
+                sortedVideos.find((v: any) => v.id === 64 && v.codecid === 7) ||
+                sortedVideos.find((v: any) => v.id <= 64 && v.codecid === 7) ||
+                sortedVideos.find((v: any) => v.id <= 64) ||
+                sortedVideos[sortedVideos.length - 1];
+              const audios = data.dash.audio || [];
+              const pickedAud =
+                audios.length > 0 ? [...audios].sort((a: any, b: any) => b.bandwidth - a.bandwidth)[0] : null;
+              const vidUrls = getCandidateUrls(pickedVid);
+              const audUrls = getCandidateUrls(pickedAud);
+
+              if (vidUrls.length > 0) {
+                const vTmp = `${outPath}.vid.m4s`;
+                tmpFiles.push(vTmp);
+                await downloadFileWithProgress(vidUrls, vTmp, biliHeaders, () => {});
+                if (audUrls.length > 0) {
+                  const aTmp = `${outPath}.aud.m4s`;
+                  tmpFiles.push(aTmp);
+                  await downloadFileWithProgress(audUrls, aTmp, biliHeaders, () => {});
+                  await runFfmpeg(['-i', vTmp, '-i', aTmp, '-c', 'copy', '-movflags', '+faststart', outPath]);
+                } else {
+                  await runFfmpeg(['-i', vTmp, '-c', 'copy', '-movflags', '+faststart', outPath]);
+                }
+                if (fs.existsSync(outPath) && fs.statSync(outPath).size > 20_000) {
+                  saveClipToCache(outPath);
+                  return { ok: true };
+                }
+              }
+            } else if (playJson?.code === 0 && data?.durl?.length) {
+              const durlUrls = getCandidateUrls(data.durl[0]);
+              if (durlUrls.length > 0) {
+                const dTmp = `${outPath}.durl.tmp`;
+                tmpFiles.push(dTmp);
+                await downloadFileWithProgress(durlUrls, dTmp, biliHeaders, () => {});
+                await runFfmpeg(['-i', dTmp, '-c', 'copy', '-movflags', '+faststart', outPath]);
+                if (fs.existsSync(outPath) && fs.statSync(outPath).size > 20_000) {
+                  saveClipToCache(outPath);
+                  return { ok: true };
+                }
+              }
+            }
+          }
+        } catch {
+          // Fall through to yt-dlp fallback
+        } finally {
+          for (const f of tmpFiles) {
+            if (fs.existsSync(f)) fs.unlink(f, () => {});
+          }
+        }
+      }
+    }
+
+    // 3. yt-dlp extraction (with --js-runtimes node for YouTube EJS challenges + retries + stderr capture)
+    const ytDlpBin = await ensureYtDlpPath();
+    const tempCookiePath = writeYtCookiesFile(`drv_${crypto.randomBytes(4).toString('hex')}`, ytCookies);
+    const outDir = path.dirname(outPath);
+    const dlStem = `drv_dl_${crypto.randomBytes(4).toString('hex')}`;
+    const outPrefix = path.join(outDir, dlStem);
+
+    const args: string[] = [
+      '--no-playlist',
+      '--js-runtimes',
+      'node',
+      '--no-warnings',
+      '--concurrent-fragments',
+      '4',
+      '--retries',
+      '5',
+      '--fragment-retries',
+      '5',
+      '--socket-timeout',
+      '25',
+      '-f',
+      'best[height<=720][ext=mp4]/bestvideo[vcodec^=avc1][height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=480]/best',
+      '--merge-output-format',
+      'mp4',
+      '-o',
+      `${outPrefix}.%(ext)s`,
+    ];
+    if (tempCookiePath) {
+      args.push('--cookies', tempCookiePath);
+    }
+    if (source.platform === 'bilibili') {
+      args.push('--add-header', 'Referer:https://www.bilibili.com/');
+      if (sessdata?.trim()) {
+        args.push('--add-header', `Cookie:SESSDATA=${sessdata.trim()}`);
+      }
+    }
+    args.push(source.sourceUrl);
+
+    const cleanupPrefixFiles = () => {
+      try {
+        for (const entry of fs.readdirSync(outDir)) {
+          if (entry.startsWith(`${dlStem}.`)) {
+            fs.unlink(path.join(outDir, entry), () => {});
+          }
+        }
+      } catch {
+        // ignore cleanup error
+      }
+    };
+
+    try {
+      const result = await new Promise<{ code: number; stderr: string; timedOut: boolean }>((resolve) => {
+        const proc = spawn(ytDlpBin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+        let stderr = '';
+        let timedOut = false;
+
+        proc.stderr.on('data', (chunk) => {
+          stderr += chunk.toString();
+          if (stderr.length > 4000) stderr = stderr.slice(-4000);
+        });
+
+        const timer = setTimeout(() => {
+          timedOut = true;
+          proc.kill('SIGKILL');
+        }, 95_000);
+
+        proc.on('close', (code) => {
+          clearTimeout(timer);
+          resolve({ code: code ?? 1, stderr, timedOut });
+        });
+        proc.on('error', (err) => {
+          clearTimeout(timer);
+          resolve({ code: 1, stderr: err?.message || 'Không khởi chạy được yt-dlp', timedOut: false });
+        });
+      });
+
+      if (result.code === 0) {
+        const matched = fs
+          .readdirSync(outDir)
+          .find((f) => f.startsWith(`${dlStem}.`) && !f.endsWith('.part') && !f.endsWith('.ytdl'));
+        if (matched) {
+          const downloadedPath = path.join(outDir, matched);
+          if (fs.statSync(downloadedPath).size > 20_000) {
+            fs.renameSync(downloadedPath, outPath);
+            cleanupPrefixFiles();
+            saveClipToCache(outPath);
+            return { ok: true };
+          }
+        }
+      }
+
+      cleanupPrefixFiles();
+      const errText = result.stderr.trim();
+
+      if (result.timedOut) {
+        return { ok: false, reason: 'Quá thời gian tải video nguồn (>95 giây)' };
+      }
+      if (/Sign in to confirm you.?re not a bot|Use --cookies/i.test(errText)) {
+        return {
+          ok: false,
+          reason: tempCookiePath
+            ? 'Cookie YouTube hiện tại đã hết hạn hoặc bị yêu cầu xác minh lại (hãy cập nhật Cookie mới)'
+            : 'YouTube chặn IP máy chủ (yêu cầu xác minh chống bot). Hãy dán YouTube Cookies trong "Cookie / Đăng nhập" hoặc chạy trên máy cá nhân',
+        };
+      }
+      if (/HTTP Error 403|403 Forbidden/i.test(errText)) {
+        return { ok: false, reason: 'Nguồn video từ chối truy cập (HTTP 403 — có thể cần Cookie hoặc đổi mạng)' };
+      }
+      if (/Video unavailable|Private video|This video is unavailable|Premieres/i.test(errText)) {
+        return { ok: false, reason: 'Video nguồn không khả dụng hoặc ở chế độ riêng tư' };
+      }
+
+      const lastErrLine = errText
+        .split(/\r?\n/)
+        .filter((l) => l.trim().length > 0)
+        .pop()
+        ?.replace(/^ERROR:\s*/i, '')
+        .slice(0, 170);
+
+      return {
+        ok: false,
+        reason: lastErrLine || 'Không trích xuất được luồng video trực tiếp',
+      };
+    } finally {
+      if (tempCookiePath && fs.existsSync(tempCookiePath)) {
+        fs.unlink(tempCookiePath, () => {});
+      }
+    }
+  };
+
+  app.post('/api/derivative/learn', async (req, res) => {
+    try {
+      const {
+        query = '',
+        videos,
+        stylePreset = 'summary_fast',
+        aspectRatio = '9:16',
+        targetDuration = 'short',
+        customInstruction = '',
+      } = (req.body || {}) as {
+        query?: string;
+        videos?: DerivativeSourceInput[];
+        stylePreset?: DerivativeStylePreset;
+        aspectRatio?: DerivativeAspectRatio;
+        targetDuration?: 'short' | 'medium';
+        customInstruction?: string;
+      };
+
+      if (!Array.isArray(videos) || videos.length === 0) {
+        return res.status(400).json({ error: 'Vui lòng chọn ít nhất 1 video để AI học nội dung.' });
+      }
+
+      const blueprint = await learnVideosAndCreateBlueprint({
+        query: String(query || ''),
+        videos: videos.slice(0, 6),
+        stylePreset,
+        aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16',
+        targetDuration: targetDuration === 'medium' ? 'medium' : 'short',
+        customInstruction: String(customInstruction || ''),
+      });
+
+      res.json({ blueprint });
+    } catch (err: any) {
+      console.error('Derivative learn error:', err);
+      res.status(500).json({ error: err?.message || 'Không thể phân tích & học nội dung video.' });
+    }
+  });
+
+  app.post('/api/derivative/generate', async (req, res) => {
+    try {
+      const {
+        blueprint,
+        sources,
+        visualMode = 'remix',
+        voice = 'Kore',
+        voiceStyle = '',
+        keepSourceAudio = false,
+        sessdata,
+        ytCookies,
+      } = (req.body || {}) as {
+        blueprint?: DerivativeBlueprint;
+        sources?: DerivativeSourceInput[];
+        visualMode?: DerivativeVisualMode;
+        voice?: DerivativeVoiceId;
+        voiceStyle?: string;
+        keepSourceAudio?: boolean;
+        sessdata?: string;
+        ytCookies?: string;
+      };
+
+      if (!blueprint || !Array.isArray(blueprint.scenes) || blueprint.scenes.length === 0) {
+        return res.status(400).json({ error: 'Thiếu kịch bản phân cảnh để tạo video phái sinh.' });
+      }
+      if (!Array.isArray(sources) || sources.length === 0) {
+        return res.status(400).json({ error: 'Thiếu danh sách video nguồn.' });
+      }
+
+      const job = startDerivativeVideoJob({
+        blueprint,
+        sources: sources.slice(0, 6),
+        visualMode: visualMode === 'storyboard_motion' ? 'storyboard_motion' : 'remix',
+        voice: voice || 'Kore',
+        voiceStyle,
+        keepSourceAudio: Boolean(keepSourceAudio),
+        downloadSourceVideo: (src, outPath) =>
+          downloadSourceVideoForDerivative(src, outPath, sessdata, ytCookies),
+      });
+
+      res.json({
+        jobId: job.jobId,
+        status: job.status,
+        progress: job.progress,
+        stepLabel: job.stepLabel,
+        fileName: job.fileName,
+      });
+    } catch (err: any) {
+      console.error('Derivative generate error:', err);
+      res.status(500).json({ error: err?.message || 'Không thể khởi tạo tác vụ tạo video phái sinh.' });
+    }
+  });
+
+  app.get('/api/derivative/jobs/:jobId', (req, res) => {
+    const job = derivativeJobs.get(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ error: 'Tác vụ video phái sinh không tồn tại hoặc đã hết hạn.' });
+    }
+    res.json({
+      jobId: job.jobId,
+      status: job.status,
+      progress: job.progress,
+      stepLabel: job.stepLabel,
+      fileName: job.fileName,
+      fileSize: job.fileSize,
+      durationSec: job.durationSec,
+      resolution: job.resolution,
+      error: job.error,
+      warnings: job.warnings,
+    });
+  });
+
+  app.get('/api/derivative/jobs/:jobId/file', (req, res) => {
+    const job = derivativeJobs.get(req.params.jobId);
+    if (!job || job.status !== 'completed' || !job.outputPath || !fs.existsSync(job.outputPath)) {
+      return res.status(404).json({ error: 'Tệp video phái sinh chưa sẵn sàng hoặc đã bị xóa.' });
+    }
+
+    const stat = fs.statSync(job.outputPath);
+    const total = stat.size;
+    const isDownload = req.query.download === '1';
+    const encodedName = encodeURIComponent(job.fileName || 'derivative.mp4');
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Accept-Ranges', 'bytes');
+    if (isDownload) {
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedName}`);
+    }
+
+    const range = req.headers.range;
+    if (range) {
+      const m = range.match(/bytes=(\d+)-(\d*)/);
+      if (m) {
+        const start = parseInt(m[1], 10);
+        const end = m[2] ? Math.min(total - 1, parseInt(m[2], 10)) : total - 1;
+        if (start < total && end >= start) {
+          res.status(206);
+          res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+          res.setHeader('Content-Length', String(end - start + 1));
+          fs.createReadStream(job.outputPath, { start, end }).pipe(res);
+          return;
+        }
+      }
+    }
+
+    res.setHeader('Content-Length', String(total));
+    fs.createReadStream(job.outputPath).pipe(res);
+  });
 
   // Inspect one or multiple Bilibili / YouTube URLs
   app.post('/api/bilibili/inspect', async (req, res) => {

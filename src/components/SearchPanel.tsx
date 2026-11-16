@@ -10,6 +10,7 @@ import {
   AlertCircle,
   History,
   X,
+  Sparkles,
 } from 'lucide-react';
 import {
   SearchApiResponse,
@@ -31,6 +32,7 @@ interface SearchPanelProps {
   onToggleBookmark: (video: TrendingVideoItem) => void;
   onAddVideosToQueue: (videos: TrendingVideoItem[], startImmediately: boolean) => void;
   onOpenCookieModal: () => void;
+  onOpenDerivativeStudio: (videos: TrendingVideoItem[], query?: string) => void;
 }
 
 type SearchRegion = 'VN' | 'GLOBAL' | 'CN';
@@ -55,6 +57,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
   onToggleBookmark,
   onAddVideosToQueue,
   onOpenCookieModal,
+  onOpenDerivativeStudio,
 }) => {
   const [searchInput, setSearchInput] = useState('');
   const [appliedQuery, setAppliedQuery] = useState('');
@@ -442,9 +445,20 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
             </select>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-teal-200/75 tabular-nums">
-            {selectedIds.size > 0 && (
-              <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-500 dark:text-teal-200/75 tabular-nums">
+            {selectedIds.size > 0 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const chosen = videos.filter((v) => selectedIds.has(v.id));
+                    if (chosen.length > 0) onOpenDerivativeStudio(chosen, appliedQuery);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-white bg-gradient-to-r from-[#003B3E] to-[#005B60] hover:from-[#002729] hover:to-[#004A4F] rounded-md shadow-xs cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Học &amp; Tạo video phái sinh ({selectedIds.size})</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => handleBulkAdd(false)}
@@ -462,7 +476,16 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
                   <span>Tải ngay {selectedIds.size} video</span>
                 </button>
               </div>
-            )}
+            ) : videos.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => onOpenDerivativeStudio(videos.slice(0, 4), appliedQuery)}
+                className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-[#003B3E] dark:text-[#1BA8AD] bg-[#003B3E]/10 dark:bg-[#000A10] border border-[#003B3E]/35 dark:border-[#1BA8AD]/40 rounded-md hover:bg-[#003B3E]/20 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>AI học Top {Math.min(4, videos.length)} kết quả &amp; Tạo video phái sinh</span>
+              </button>
+            ) : null}
             {appliedQuery && (
               <span>
                 {videos.length} kết quả{updatedLabel ? ` · ${updatedLabel}` : ''}
@@ -592,6 +615,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({
               onToggleSelect={toggleSelectCard}
               onToggleBookmark={onToggleBookmark}
               onAddSingle={handleAddSingle}
+              onCreateDerivative={(v) => onOpenDerivativeStudio([v], appliedQuery)}
             />
           ))}
         </div>

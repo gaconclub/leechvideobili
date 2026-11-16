@@ -11,6 +11,7 @@ import {
   Clock,
   AlertCircle,
   Search,
+  Sparkles,
 } from 'lucide-react';
 import {
   TRENDING_CATEGORIES,
@@ -36,6 +37,7 @@ interface TrendingPanelProps {
   onAddVideosToQueue: (videos: TrendingVideoItem[], startImmediately: boolean) => void;
   onOpenCookieModal: () => void;
   onSearchTopic: (topic: string) => void;
+  onOpenDerivativeStudio: (videos: TrendingVideoItem[], query?: string) => void;
 }
 
 type TrendingSubTab = 'videos' | 'topics' | 'bookmarks';
@@ -51,6 +53,7 @@ export const TrendingPanel: React.FC<TrendingPanelProps> = ({
   onAddVideosToQueue,
   onOpenCookieModal,
   onSearchTopic,
+  onOpenDerivativeStudio,
 }) => {
   const [subTab, setSubTab] = useState<TrendingSubTab>('videos');
   const [platform, setPlatform] = useState<TrendingPlatformId>('all');
@@ -408,9 +411,20 @@ export const TrendingPanel: React.FC<TrendingPanelProps> = ({
                 </select>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-teal-200/75 tabular-nums">
-                {selectedIds.size > 0 && (
-                  <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-500 dark:text-teal-200/75 tabular-nums">
+                {selectedIds.size > 0 ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const chosen = displayedVideos.filter((v) => selectedIds.has(v.id));
+                        if (chosen.length > 0) onOpenDerivativeStudio(chosen, '');
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-white bg-gradient-to-r from-[#003B3E] to-[#005B60] hover:from-[#002729] hover:to-[#004A4F] rounded-md shadow-xs cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Học &amp; Tạo video phái sinh ({selectedIds.size})</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleBulkAdd(false)}
@@ -428,7 +442,16 @@ export const TrendingPanel: React.FC<TrendingPanelProps> = ({
                       <span>Tải ngay {selectedIds.size} video</span>
                     </button>
                   </div>
-                )}
+                ) : displayedVideos.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenDerivativeStudio(displayedVideos.slice(0, 4), '')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-[#003B3E] dark:text-[#1BA8AD] bg-[#003B3E]/10 dark:bg-[#000A10] border border-[#003B3E]/35 dark:border-[#1BA8AD]/40 rounded-md hover:bg-[#003B3E]/20 cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>AI học Top {Math.min(4, displayedVideos.length)} video &amp; Tạo phái sinh</span>
+                  </button>
+                ) : null}
                 <span>
                   {displayedVideos.length} video{updatedLabel ? ` · ${updatedLabel}` : ''}
                 </span>
@@ -542,6 +565,7 @@ export const TrendingPanel: React.FC<TrendingPanelProps> = ({
                   onToggleSelect={toggleSelectCard}
                   onToggleBookmark={onToggleBookmark}
                   onAddSingle={handleAddSingle}
+                  onCreateDerivative={(v) => onOpenDerivativeStudio([v], '')}
                 />
               ))}
             </div>

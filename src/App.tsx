@@ -19,6 +19,7 @@ import { SessdataModal } from './components/SessdataModal';
 import { CustomLogoModal } from './components/CustomLogoModal';
 import { VideoTransformModal } from './components/VideoTransformModal';
 import { UpdateModal, SystemUpdateStatus } from './components/UpdateModal';
+import { DerivativeStudioModal } from './components/DerivativeStudioModal';
 
 async function parseJsonSafe<T = any>(res: Response): Promise<T> {
   const text = await res.text();
@@ -72,6 +73,11 @@ export default function App() {
   const [isServerRestarting, setIsServerRestarting] = useState(false);
   const [updateError, setUpdateError] = useState('');
   const [updateSuccessMsg, setUpdateSuccessMsg] = useState('');
+  const [derivativeStudioState, setDerivativeStudioState] = useState<{
+    isOpen: boolean;
+    videos: TrendingVideoItem[];
+    query: string;
+  }>({ isOpen: false, videos: [], query: '' });
 
   const [videoTransform, setVideoTransform] = useState<VideoTransformConfig>(() => {
     try {
@@ -979,6 +985,11 @@ export default function App() {
     setSearchQueryRequest({ query: topic, nonce: Date.now() });
   }, []);
 
+  const handleOpenDerivativeStudio = useCallback((videos: TrendingVideoItem[], query = '') => {
+    if (!videos || videos.length === 0) return;
+    setDerivativeStudioState({ isOpen: true, videos, query });
+  }, []);
+
   const isAnyDownloading = items.some(
     (it) =>
       it.status === 'queued' ||
@@ -1067,6 +1078,7 @@ export default function App() {
               onToggleBookmark={handleToggleBookmark}
               onAddVideosToQueue={handleAddTrendingVideosToQueue}
               onOpenCookieModal={() => setIsCookieModalOpen(true)}
+              onOpenDerivativeStudio={handleOpenDerivativeStudio}
             />
           </div>
         )}
@@ -1083,6 +1095,7 @@ export default function App() {
               onAddVideosToQueue={handleAddTrendingVideosToQueue}
               onOpenCookieModal={() => setIsCookieModalOpen(true)}
               onSearchTopic={handleSearchFromTopic}
+              onOpenDerivativeStudio={handleOpenDerivativeStudio}
             />
           </div>
         )}
@@ -1128,6 +1141,15 @@ export default function App() {
         onCheckNow={checkSystemUpdate}
         onApplyUpdate={handleApplyUpdate}
         onClose={() => setIsUpdateModalOpen(false)}
+      />
+
+      <DerivativeStudioModal
+        isOpen={derivativeStudioState.isOpen}
+        initialVideos={derivativeStudioState.videos}
+        searchQuery={derivativeStudioState.query}
+        sessdata={sessdata}
+        ytCookies={ytCookies}
+        onClose={() => setDerivativeStudioState((prev) => ({ ...prev, isOpen: false }))}
       />
     </div>
   );
