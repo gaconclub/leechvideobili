@@ -245,13 +245,16 @@ export const OUTPUT_FORMATS: { value: OutputFormat; label: string; desc: string 
   { value: 'm4a', label: 'M4A', desc: 'Chỉ âm thanh · AAC gốc' },
 ];
 
-export type DerivativeVisualMode = 'remix' | 'storyboard_motion';
+export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse_edison';
 export type DerivativeStylePreset = 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
 export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
+export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
+export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploaded';
 export type DerivativeAspectRatio = '9:16' | '16:9';
+export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
 
-export type AiProviderId = 'gemini' | 'openai' | 'meta';
-export type BrollSourceId = 'none' | 'wikimedia' | 'pexels' | 'pixabay' | 'auto';
+export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse';
+export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
 
 export type CookieSiteId =
   | 'youtube'
@@ -271,10 +274,40 @@ export interface StudioDefaultConfig {
   brollSource: BrollSourceId;
   stylePreset: DerivativeStylePreset;
   aspectRatioMode: 'auto' | DerivativeAspectRatio;
-  targetDuration: 'short' | 'medium';
+  targetDurationSec: number; // 30 to 900 seconds (supports >5 min)
   visualMode: DerivativeVisualMode;
   voice: DerivativeVoiceId;
   keepSourceAudio: boolean;
+}
+
+export interface StudioUploadedAsset {
+  assetId: string;
+  fileName: string;
+  fileSize: number;
+  durationSec: number;
+  resolution: string;
+  keyframes: string[]; // base64 data URLs of extracted frames
+  previewUrl: string;
+  hasAudio: boolean;
+}
+
+export interface StudioCharacterRef {
+  id: string;
+  name: string;
+  dataUrl: string;
+  description?: string;
+  source: 'uploaded' | 'ai_generated';
+}
+
+export interface StudioMusicTrack {
+  id: string;
+  title: string;
+  source: 'ai_lyria' | 'wikimedia' | 'uploaded';
+  url?: string;
+  assetId?: string;
+  durationSec?: number;
+  mimeType?: string;
+  lyrics?: string;
 }
 
 export interface ServerCapabilitiesStatus {
@@ -282,6 +315,15 @@ export interface ServerCapabilitiesStatus {
     gemini: { configured: boolean; model: string; ttsModel: string; source: 'env' | 'none' };
     openai: { configured: boolean; model: string; source: 'env' | 'none' };
     meta: { configured: boolean; model: string; baseUrl: string; source: 'env' | 'none' };
+    muse: { configured: boolean; model: string; baseUrl: string; source: 'env' | 'none' };
+  };
+  paidModels: {
+    omniVideoModel: string;
+    imageModel: string;
+    imageProModel: string;
+    musicClipModel: string;
+    musicProModel: string;
+    proScriptModel: string;
   };
   brollProviders: {
     wikimedia: { configured: boolean; freeNoKey: boolean };
@@ -292,6 +334,7 @@ export interface ServerCapabilitiesStatus {
     ffmpeg: { available: boolean; version: string };
     ytDlp: { available: boolean; version: string };
     node: { available: boolean; version: string };
+    offlineTts: { available: boolean; engine: string };
   };
 }
 
@@ -304,6 +347,10 @@ export interface DerivativeScene {
   onScreenText: string;
   narration: string;
   visualNote?: string;
+  brollKeywordEn?: string;
+  sceneImageDataUrl?: string;
+  omniClipAssetId?: string;
+  omniClipPreviewUrl?: string;
 }
 
 export interface DerivativeSourceInsight {
@@ -328,6 +375,7 @@ export interface DerivativeBlueprint {
   sourcesAnalyzed: DerivativeSourceInsight[];
   scenes: DerivativeScene[];
   usedProvider?: AiProviderId;
+  usedModel?: string;
 }
 
 export interface DerivativeJobState {

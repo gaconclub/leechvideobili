@@ -100,10 +100,10 @@ export const EMPTY_PER_SITE_COOKIES: PerSiteCookies = {
 
 export const DEFAULT_STUDIO_CONFIG: StudioDefaultConfig = {
   aiProvider: 'gemini',
-  brollSource: 'auto',
+  brollSource: 'wikimedia',
   stylePreset: 'summary_fast',
   aspectRatioMode: 'auto',
-  targetDuration: 'short',
+  targetDurationSec: 60,
   visualMode: 'remix',
   voice: 'Kore',
   keepSourceAudio: false,

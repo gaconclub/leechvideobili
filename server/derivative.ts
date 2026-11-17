@@ -6,12 +6,15 @@ import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { VideoPlatform } from './trending';
 
-export type DerivativeVisualMode = 'remix' | 'storyboard_motion';
+export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni';
 export type DerivativeStylePreset = 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
 export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
+export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
+export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploaded';
 export type DerivativeAspectRatio = '9:16' | '16:9';
-export type AiProviderId = 'gemini' | 'openai' | 'meta';
-export type BrollSourceId = 'none' | 'wikimedia' | 'pexels' | 'pixabay' | 'auto';
+export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
+export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse';
+export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
 
 export interface DerivativeSourceInput {
   id: string;
@@ -26,6 +29,9 @@ export interface DerivativeSourceInput {
   views: number;
   likes?: number;
   categoryLabel?: string;
+  localAssetId?: string;
+  keyframes?: string[];
+  hasAudio?: boolean;
 }
 
 export interface DerivativeScene {
@@ -37,6 +43,10 @@ export interface DerivativeScene {
   onScreenText: string;
   narration: string;
   visualNote?: string;
+  brollKeywordEn?: string;
+  sceneImageDataUrl?: string;
+  omniClipAssetId?: string;
+  omniClipPreviewUrl?: string;
 }
 
 export interface DerivativeSourceInsight {
@@ -61,6 +71,7 @@ export interface DerivativeBlueprint {
   sourcesAnalyzed: DerivativeSourceInsight[];
   scenes: DerivativeScene[];
   usedProvider?: AiProviderId;
+  usedModel?: string;
 }
 
 export interface DerivativeJobRecord {
@@ -79,17 +90,33 @@ export interface DerivativeJobRecord {
   createdAt: number;
 }
 
+export interface StudioAssetRecord {
+  assetId: string;
+  filePath: string;
+  fileName: string;
+  mimeType: string;
+  durationSec: number;
+  resolution?: string;
+  hasAudio?: boolean;
+  createdAt: number;
+}
+
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
 const DERIVATIVE_BASE_DIR = path.join(os.tmpdir(), 'bili-downloads', 'derivative_jobs');
+const STUDIO_ASSETS_DIR = path.join(os.tmpdir(), 'bili-downloads', 'studio_assets');
 if (!fs.existsSync(DERIVATIVE_BASE_DIR)) {
   fs.mkdirSync(DERIVATIVE_BASE_DIR, { recursive: true });
 }
+if (!fs.existsSync(STUDIO_ASSETS_DIR)) {
+  fs.mkdirSync(STUDIO_ASSETS_DIR, { recursive: true });
+}
 
 export const derivativeJobs = new Map<string, DerivativeJobRecord>();
+export const studioAssets = new Map<string, StudioAssetRecord>();
 
-// Periodic cleanup of expired derivative job folders (> 2 hours old)
+// Periodic cleanup of expired derivative job folders & temporary studio assets (> 2 hours old)
 setInterval(() => {
   const cutoff = Date.now() - 2 * 60 * 60 * 1000;
   for (const [id, job] of derivativeJobs.entries()) {
@@ -100,6 +127,17 @@ setInterval(() => {
         // ignore
       }
       derivativeJobs.delete(id);
+    }
+  }
+  const assetCutoff = Date.now() - 4 * 60 * 60 * 1000;
+  for (const [assetId, rec] of studioAssets.entries()) {
+    if (rec.createdAt < assetCutoff) {
+      try {
+        if (fs.existsSync(rec.filePath)) fs.unlinkSync(rec.filePath);
+      } catch {
+        // ignore
+      }
+      studioAssets.delete(assetId);
     }
   }
 }, 15 * 60 * 1000).unref();
@@ -124,10 +162,10 @@ function getGeminiClient(): GoogleGenAI {
 function formatGeminiError(err: any): string {
   const raw = String(err?.message || err || 'Lỗi kết nối Gemini AI');
   if (raw.includes('PERMISSION_DENIED') || raw.includes('API_KEY_INVALID') || raw.includes('403') || raw.includes('API key not valid')) {
-    return 'GEMINI_API_KEY không hợp lệ hoặc bị từ chối quyền. Vui lòng kiểm tra lại khóa trong Settings > Secrets.';
+    return 'API Key Gemini không hợp lệ hoặc mô hình này yêu cầu API Key trả phí (có thanh toán). Vui lòng kiểm tra khóa trong Settings > Secrets hoặc tệp .env.';
   }
   if (raw.includes('RESOURCE_EXHAUSTED') || raw.includes('429')) {
-    return 'Đã chạm giới hạn tần suất Gemini API (429). Vui lòng đợi 30–60 giây rồi thử lại.';
+    return 'Đã chạm giới hạn tần suất / hạn mức gói miễn phí Gemini API (429). Nếu dùng mô hình nâng cao (Omni Flash, Lyria, tạo ảnh), hãy dùng API Key có bật thanh toán trong Settings > Secrets hoặc thử lại sau.';
   }
   if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.toLowerCase().includes('high demand')) {
     return 'Máy chủ Gemini đang có lượng truy cập cao tạm thời (503). Vui lòng đợi vài giây rồi thử lại.';
@@ -136,6 +174,244 @@ function formatGeminiError(err: any): string {
     return `Mô hình AI tạm không khả dụng (${raw}). Vui lòng thử lại.`;
   }
   return raw;
+}
+
+export function getStudioAsset(assetId: string): StudioAssetRecord | undefined {
+  const rec = studioAssets.get(assetId);
+  if (!rec || !fs.existsSync(rec.filePath)) return undefined;
+  return rec;
+}
+
+interface StudioChunkSession {
+  uploadId: string;
+  assetId: string;
+  kind: 'video' | 'audio';
+  originalName: string;
+  filePath: string;
+  receivedBytes: number;
+  createdAt: number;
+}
+
+const studioUploadSessions = new Map<string, StudioChunkSession>();
+
+function cleanupExpiredStudioUploadSessions(): void {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  for (const [id, sess] of studioUploadSessions.entries()) {
+    if (sess.createdAt < cutoff) {
+      studioUploadSessions.delete(id);
+      try {
+        if (fs.existsSync(sess.filePath)) fs.unlinkSync(sess.filePath);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+function extWhitelist(ext: string): string {
+  return ext.replace(/[^a-z0-9.]/gi, '');
+}
+
+function normalizeVideoExt(originalName: string): string {
+  const safeExt = path.extname(originalName || '').toLowerCase() || '.mp4';
+  return ['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v'].includes(extWhitelist(safeExt))
+    ? extWhitelist(safeExt)
+    : '.mp4';
+}
+
+function normalizeAudioExt(originalName: string): string {
+  const rawExt = path.extname(originalName || '').toLowerCase();
+  return ['.mp3', '.wav', '.m4a', '.ogg', '.aac', '.flac'].includes(rawExt) ? rawExt : '.mp3';
+}
+
+async function finalizeUploadedStudioVideoFile(
+  filePath: string,
+  originalName: string,
+  assetId: string,
+  fileSize?: number
+) {
+  const ext = normalizeVideoExt(originalName);
+  const actualSize = typeof fileSize === 'number' ? fileSize : fs.statSync(filePath).size;
+
+  const durationSec = Math.max(0, await probeDurationSeconds(filePath, STUDIO_ASSETS_DIR));
+  const dimsRes = await spawnPromise(
+    'ffprobe',
+    ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', filePath],
+    STUDIO_ASSETS_DIR,
+    10_000
+  ).catch(() => ({ code: 1, stdout: '', stderr: '' }));
+  const resolution = dimsRes.code === 0 && dimsRes.stdout.trim() ? dimsRes.stdout.trim() : 'unknown';
+
+  const audioCheck = await spawnPromise(
+    'ffprobe',
+    ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', filePath],
+    STUDIO_ASSETS_DIR,
+    10_000
+  ).catch(() => ({ code: 1, stdout: '', stderr: '' }));
+  const hasAudio = audioCheck.code === 0 && audioCheck.stdout.trim().length > 0;
+
+  // Extract up to 3 keyframes across the uploaded video
+  const keyframes: string[] = [];
+  const sampleFractions = durationSec >= 6 ? [0.15, 0.5, 0.82] : [0.2, 0.65];
+  for (let i = 0; i < sampleFractions.length; i += 1) {
+    const seekSec = Math.max(0.1, durationSec * sampleFractions[i]);
+    const frameOut = path.join(STUDIO_ASSETS_DIR, `${assetId}_kf_${i}.jpg`);
+    const frameRes = await spawnPromise(
+      'ffmpeg',
+      ['-y', '-ss', seekSec.toFixed(2), '-i', filePath, '-vframes', '1', '-vf', 'scale=640:-2', '-q:v', '4', frameOut],
+      STUDIO_ASSETS_DIR,
+      15_000
+    ).catch(() => ({ code: 1, stdout: '', stderr: '' }));
+    if (frameRes.code === 0 && fs.existsSync(frameOut)) {
+      const jpgBuf = fs.readFileSync(frameOut);
+      if (jpgBuf.byteLength > 500) {
+        keyframes.push(`data:image/jpeg;base64,${jpgBuf.toString('base64')}`);
+      }
+      try {
+        fs.unlinkSync(frameOut);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const record: StudioAssetRecord = {
+    assetId,
+    filePath,
+    fileName: originalName || `uploaded_${assetId}${ext}`,
+    mimeType: ext === '.webm' ? 'video/webm' : ext === '.mov' ? 'video/quicktime' : 'video/mp4',
+    durationSec: Math.round(durationSec * 10) / 10,
+    resolution,
+    hasAudio,
+    createdAt: Date.now(),
+  };
+  studioAssets.set(assetId, record);
+
+  return {
+    assetId,
+    fileName: record.fileName,
+    fileSize: actualSize,
+    durationSec: record.durationSec,
+    resolution,
+    keyframes,
+    previewUrl: `/api/studio/assets/${assetId}`,
+    hasAudio,
+  };
+}
+
+async function finalizeUploadedStudioAudioFile(filePath: string, originalName: string, assetId: string) {
+  const ext = normalizeAudioExt(originalName);
+  const durationSec = Math.max(0, await probeDurationSeconds(filePath, STUDIO_ASSETS_DIR));
+  const mimeMap: Record<string, string> = {
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.m4a': 'audio/mp4',
+    '.ogg': 'audio/ogg',
+    '.aac': 'audio/aac',
+    '.flac': 'audio/flac',
+  };
+  const record: StudioAssetRecord = {
+    assetId,
+    filePath,
+    fileName: originalName || `audio_${assetId}${ext}`,
+    mimeType: mimeMap[ext] || 'audio/mpeg',
+    durationSec: Math.round(durationSec * 10) / 10,
+    createdAt: Date.now(),
+  };
+  studioAssets.set(assetId, record);
+
+  return {
+    assetId,
+    fileName: record.fileName,
+    durationSec: record.durationSec,
+    mimeType: record.mimeType,
+    previewUrl: `/api/studio/assets/${assetId}`,
+  };
+}
+
+export function initStudioChunkedUpload(kind: 'video' | 'audio', originalName: string) {
+  cleanupExpiredStudioUploadSessions();
+  const uploadId = `up_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const assetId = `${kind === 'video' ? 'vid' : 'aud'}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const ext = kind === 'video' ? normalizeVideoExt(originalName) : normalizeAudioExt(originalName);
+  const filePath = path.join(STUDIO_ASSETS_DIR, `${assetId}${ext}`);
+  fs.writeFileSync(filePath, Buffer.alloc(0));
+
+  studioUploadSessions.set(uploadId, {
+    uploadId,
+    assetId,
+    kind,
+    originalName: originalName || (kind === 'video' ? `uploaded_${assetId}${ext}` : `audio_${assetId}${ext}`),
+    filePath,
+    receivedBytes: 0,
+    createdAt: Date.now(),
+  });
+
+  return { uploadId, assetId };
+}
+
+export function appendStudioUploadChunk(uploadId: string, chunk: Buffer) {
+  const sess = studioUploadSessions.get(uploadId);
+  if (!sess) {
+    throw new Error('Phiên tải lên không tồn tại hoặc đã hết hạn. Vui lòng thử tải lại.');
+  }
+  if (sess.receivedBytes + chunk.byteLength > 210 * 1024 * 1024) {
+    studioUploadSessions.delete(uploadId);
+    try {
+      if (fs.existsSync(sess.filePath)) fs.unlinkSync(sess.filePath);
+    } catch {
+      // ignore
+    }
+    throw new Error('Dung lượng tệp vượt quá giới hạn 200MB.');
+  }
+  fs.appendFileSync(sess.filePath, chunk);
+  sess.receivedBytes += chunk.byteLength;
+  return { receivedBytes: sess.receivedBytes };
+}
+
+export async function completeStudioChunkedUpload(uploadId: string) {
+  const sess = studioUploadSessions.get(uploadId);
+  if (!sess) {
+    throw new Error('Phiên tải lên không tồn tại hoặc đã hết hạn.');
+  }
+  studioUploadSessions.delete(uploadId);
+  if (!fs.existsSync(sess.filePath) || sess.receivedBytes < 512) {
+    try {
+      if (fs.existsSync(sess.filePath)) fs.unlinkSync(sess.filePath);
+    } catch {
+      // ignore
+    }
+    throw new Error('Dữ liệu tệp tải lên bị rỗng hoặc chưa hoàn chỉnh.');
+  }
+  if (sess.kind === 'video') {
+    return finalizeUploadedStudioVideoFile(sess.filePath, sess.originalName, sess.assetId, sess.receivedBytes);
+  }
+  return finalizeUploadedStudioAudioFile(sess.filePath, sess.originalName, sess.assetId);
+}
+
+export async function saveUploadedStudioVideo(buffer: Buffer, originalName: string) {
+  const assetId = `vid_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const ext = normalizeVideoExt(originalName);
+  const filePath = path.join(STUDIO_ASSETS_DIR, `${assetId}${ext}`);
+  fs.writeFileSync(filePath, buffer);
+  return finalizeUploadedStudioVideoFile(filePath, originalName, assetId, buffer.byteLength);
+}
+
+export async function saveUploadedStudioAudio(buffer: Buffer, originalName: string) {
+  const assetId = `aud_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const ext = normalizeAudioExt(originalName);
+  const filePath = path.join(STUDIO_ASSETS_DIR, `${assetId}${ext}`);
+  fs.writeFileSync(filePath, buffer);
+  return finalizeUploadedStudioAudioFile(filePath, originalName, assetId);
+}
+
+export async function saveUploadedStudioVideoFromDisk(sourceFilePath: string, originalName?: string) {
+  const baseName = originalName || path.basename(sourceFilePath);
+  const assetId = `vid_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const ext = normalizeVideoExt(baseName);
+  const destPath = path.join(STUDIO_ASSETS_DIR, `${assetId}${ext}`);
+  fs.copyFileSync(sourceFilePath, destPath);
+  return finalizeUploadedStudioVideoFile(destPath, baseName, assetId);
 }
 
 function getRefererForUrl(rawUrl: string): string {
@@ -297,10 +573,75 @@ async function fetchDailymotionContext(
   }
 }
 
+async function transcribeLocalVideoAudio(asset: StudioAssetRecord): Promise<string> {
+  if (!asset.hasAudio || !process.env.GEMINI_API_KEY?.trim()) return '';
+  const tmpMp3 = path.join(STUDIO_ASSETS_DIR, `${asset.assetId}_speech.mp3`);
+  try {
+    const extractRes = await spawnPromise(
+      'ffmpeg',
+      ['-y', '-i', asset.filePath, '-vn', '-t', '180', '-ar', '16000', '-ac', '1', '-b:a', '48k', tmpMp3],
+      STUDIO_ASSETS_DIR,
+      30_000
+    );
+    if (extractRes.code !== 0 || !fs.existsSync(tmpMp3)) return '';
+    const mp3Buf = fs.readFileSync(tmpMp3);
+    if (mp3Buf.byteLength < 1500 || mp3Buf.byteLength > 12_000_000) return '';
+
+    const ai = getGeminiClient();
+    const res = await ai.models.generateContent({
+      model: 'gemini-3.5-transcribe',
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType: 'audio/mp3',
+              data: mp3Buf.toString('base64'),
+            },
+          },
+          { text: 'Transcribe all spoken dialogue clearly, keeping original language.' },
+        ],
+      },
+    });
+    return String(res.text || '').trim().slice(0, 1800);
+  } catch {
+    return '';
+  } finally {
+    if (fs.existsSync(tmpMp3)) {
+      fs.unlink(tmpMp3, () => {});
+    }
+  }
+}
+
+function parseDataUrlToBuffer(dataUrl: string): { buffer: Buffer; mimeType: string } | null {
+  const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/s);
+  if (!m) return null;
+  try {
+    return { mimeType: m[1].trim(), buffer: Buffer.from(m[2], 'base64') };
+  } catch {
+    return null;
+  }
+}
+
 async function gatherSourceContexts(sources: DerivativeSourceInput[]): Promise<EnrichedVideoContext[]> {
-  const limited = sources.slice(0, 6);
+  const limited = sources.slice(0, 8);
   return Promise.all(
     limited.map(async (src, idx) => {
+      // Check if source is an uploaded local video asset
+      if (src.localAssetId) {
+        const asset = getStudioAsset(src.localAssetId);
+        const kfThumb =
+          src.keyframes && src.keyframes.length > 0 ? parseDataUrlToBuffer(src.keyframes[0]) : null;
+        const speechTranscript = asset ? await transcribeLocalVideoAudio(asset) : '';
+        return {
+          index: idx,
+          source: src,
+          description: `Video tải lên từ máy (${asset?.resolution || 'HD'}, ${src.duration}s).`,
+          tags: ['local_upload'],
+          captionsText: speechTranscript,
+          thumbnail: kfThumb || (await fetchImageBuffer(src.pic)),
+        };
+      }
+
       const [meta, thumb] = await Promise.all([
         src.platform === 'youtube'
           ? fetchYouTubeContext(src.sourceUrl)
@@ -331,38 +672,55 @@ const STYLE_LABELS: Record<DerivativeStylePreset, string> = {
   tips_tutorial: 'Chắt lọc mẹo hay & hướng dẫn thực hành dễ áp dụng',
 };
 
+function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta' | 'muse') {
+  if (provider === 'openai') {
+    return {
+      label: 'OpenAI ChatGPT',
+      envName: 'OPENAI_API_KEY',
+      apiKey: process.env.OPENAI_API_KEY?.trim() || '',
+      baseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
+      model: (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim(),
+    };
+  }
+  if (provider === 'muse') {
+    return {
+      label: 'Meta Muse AI',
+      envName: 'MUSE_API_KEY',
+      apiKey: process.env.MUSE_API_KEY?.trim() || '',
+      baseUrl: (process.env.MUSE_BASE_URL || 'https://api.llama.com/compat/v1').replace(/\/+$/, ''),
+      model: (process.env.MUSE_MODEL || 'Llama-4-Maverick-17B-128E-Instruct-FP8').trim(),
+    };
+  }
+  return {
+    label: 'Meta AI (Llama)',
+    envName: 'META_API_KEY',
+    apiKey: process.env.META_API_KEY?.trim() || '',
+    baseUrl: (process.env.META_BASE_URL || 'https://api.llama.com/compat/v1').replace(/\/+$/, ''),
+    model: (process.env.META_MODEL || 'Llama-4-Scout-17B-16E-Instruct-FP8').trim(),
+  };
+}
+
 async function generateBlueprintViaOpenAiCompatible(params: {
-  provider: 'openai' | 'meta';
+  provider: 'openai' | 'meta' | 'muse';
   contexts: EnrichedVideoContext[];
   promptText: string;
   desiredScenes: number;
+  avgSceneDur: number;
+  wordsMin: number;
+  wordsMax: number;
 }): Promise<any> {
-  const isOpenAi = params.provider === 'openai';
-  const apiKey = (isOpenAi ? process.env.OPENAI_API_KEY : process.env.META_API_KEY)?.trim();
-  if (!apiKey) {
+  const cfg = resolveOpenAiCompatibleConfig(params.provider);
+  if (!cfg.apiKey) {
     throw new Error(
-      isOpenAi
-        ? 'Chưa phát hiện OPENAI_API_KEY trên máy chủ. Hãy thêm OPENAI_API_KEY trong Settings > Secrets hoặc tệp .env trên máy.'
-        : 'Chưa phát hiện META_API_KEY trên máy chủ. Hãy thêm META_API_KEY trong Settings > Secrets hoặc tệp .env trên máy.'
+      `Chưa phát hiện ${cfg.envName} trên máy chủ. Hãy thêm ${cfg.envName} trong Settings > Secrets (hoặc tệp .env trên máy).`
     );
   }
-
-  const baseUrl = (
-    isOpenAi
-      ? process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
-      : process.env.META_BASE_URL || 'https://api.llama.com/compat/v1'
-  ).replace(/\/+$/, '');
-  const model = (
-    isOpenAi
-      ? process.env.OPENAI_MODEL || 'gpt-4o-mini'
-      : process.env.META_MODEL || 'Llama-4-Scout-17B-16E-Instruct-FP8'
-  ).trim();
 
   const schemaInstruction = `
 TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU (không markdown, không văn bản thừa):
 {
   "learnedSummary": "Tóm tắt 2-3 câu nội dung cốt lõi học được",
-  "keyTakeaways": ["ý 1", "ý 2", "ý 3"],
+  "keyTakeaways": ["ý 1", "ý 2", "ý 3", "ý 4"],
   "hookFormula": "Công thức mở đầu & giữ chân",
   "sourceKeyPoints": ["1 câu bài học video #1", ...],
   "derivativeTitle": "Tiêu đề video phái sinh mới",
@@ -371,12 +729,13 @@ TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU
   "scenes": [
     {
       "sceneIndex": 1,
-      "durationSec": 7,
+      "durationSec": ${params.avgSceneDur},
       "sourceVideoIndex": 0,
       "sourceStartPercent": 15,
       "onScreenText": "Chữ phụ đề ngắn tối đa 12 chữ",
-      "narration": "Lời đọc thuyết minh tiếng Việt tự nhiên 15-28 chữ",
-      "visualNote": "Ghi chú bối cảnh hình ảnh"
+      "narration": "Lời đọc thuyết minh tiếng Việt tự nhiên từ ${params.wordsMin} đến ${params.wordsMax} chữ khớp với ${params.avgSceneDur} giây",
+      "visualNote": "Ghi chú bối cảnh hình ảnh tiếng Việt",
+      "brollKeywordEn": "2-4 English keywords for Wikimedia Commons stock video lookup"
     }
   ]
 }
@@ -394,32 +753,32 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh tá
     }
   }
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
+  const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${cfg.apiKey}`,
     },
     body: JSON.stringify({
-      model,
+      model: cfg.model,
       messages: [
         {
           role: 'system',
           content:
-            'Bạn là Đạo diễn sáng tạo nội dung video ngắn. Luôn phản hồi duy nhất JSON thuần túy tiếng Việt đúng schema được yêu cầu.',
+            'Bạn là Đạo diễn sáng tạo nội dung video chuyên nghiệp. Luôn phản hồi duy nhất JSON thuần túy tiếng Việt đúng schema được yêu cầu.',
         },
         { role: 'user', content: userContent },
       ],
       response_format: { type: 'json_object' },
       temperature: 0.7,
     }),
-    signal: AbortSignal.timeout(45_000),
+    signal: AbortSignal.timeout(75_000),
   });
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
     throw new Error(
-      `${isOpenAi ? 'OpenAI' : 'Meta AI'} lỗi HTTP ${res.status}: ${errBody.slice(0, 180) || res.statusText}`
+      `${cfg.label} lỗi HTTP ${res.status}: ${errBody.slice(0, 180) || res.statusText}`
     );
   }
   const data = (await res.json()) as any;
@@ -431,81 +790,127 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh tá
 export async function testAiProviderConnection(provider: AiProviderId): Promise<{ ok: boolean; message: string; model: string }> {
   if (provider === 'gemini') {
     const model = 'gemini-4-hydrogen';
-    try {
-      const ai = getGeminiClient();
-      const res = await ai.models.generateContent({
-        model,
-        contents: 'Trả lời đúng 1 cụm từ: Sẵn sàng',
-      });
-      const text = (res.text || '').trim();
-      return { ok: true, model, message: `Kết nối Gemini (${model}) thành công: "${text.slice(0, 40) || 'OK'}"` };
-    } catch (err: any) {
-      return { ok: false, model, message: formatGeminiError(err) };
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const ai = getGeminiClient();
+        const res = await ai.models.generateContent({
+          model,
+          contents: 'Trả lời đúng 1 cụm từ: Sẵn sàng',
+        });
+        const text = (res.text || '').trim();
+        return { ok: true, model, message: `Kết nối Gemini (${model}) thành công: "${text.slice(0, 40) || 'OK'}"` };
+      } catch (err: any) {
+        const msg = String(err?.message || err || '');
+        if (attempt === 1 && (msg.includes('503') || msg.includes('UNAVAILABLE'))) {
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+        return { ok: false, model, message: formatGeminiError(err) };
+      }
     }
   }
 
-  const isOpenAi = provider === 'openai';
-  const apiKey = (isOpenAi ? process.env.OPENAI_API_KEY : process.env.META_API_KEY)?.trim();
-  const baseUrl = (
-    isOpenAi
-      ? process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
-      : process.env.META_BASE_URL || 'https://api.llama.com/compat/v1'
-  ).replace(/\/+$/, '');
-  const model = (
-    isOpenAi
-      ? process.env.OPENAI_MODEL || 'gpt-4o-mini'
-      : process.env.META_MODEL || 'Llama-4-Scout-17B-16E-Instruct-FP8'
-  ).trim();
-
-  if (!apiKey) {
+  const cfg = resolveOpenAiCompatibleConfig(provider === 'openai' || provider === 'muse' ? provider : 'meta');
+  if (!cfg.apiKey) {
     return {
       ok: false,
-      model,
-      message: `Chưa cấu hình ${isOpenAi ? 'OPENAI_API_KEY' : 'META_API_KEY'} trong Settings > Secrets hoặc tệp .env trên máy.`,
+      model: cfg.model,
+      message: `Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env trên máy.`,
     };
   }
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: 'Reply with OK' }],
-      max_tokens: 12,
-    }),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    return { ok: false, model, message: `HTTP ${res.status}: ${errBody.slice(0, 140) || res.statusText}` };
+  try {
+    const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages: [{ role: 'user', content: 'Reply with OK' }],
+        max_tokens: 12,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      return { ok: false, model: cfg.model, message: `HTTP ${res.status}: ${errBody.slice(0, 140) || res.statusText}` };
+    }
+    return { ok: true, model: cfg.model, message: `Kết nối ${cfg.label} (${cfg.model}) thành công.` };
+  } catch (err: any) {
+    return { ok: false, model: cfg.model, message: err?.message || `Không thể kết nối tới ${cfg.label}.` };
   }
-  return { ok: true, model, message: `Kết nối ${isOpenAi ? 'OpenAI ChatGPT' : 'Meta AI'} (${model}) thành công.` };
 }
+
+const OUTPUT_LANG_LABELS: Record<DerivativeOutputLanguage, string> = {
+  vi: 'Tiếng Việt hoàn toàn tự nhiên, hấp dẫn',
+  en: 'English (clear, conversational, high-retention narration)',
+  zh: '中文 (自然流畅的短视频解说口播)',
+  vi_en: 'Song ngữ Việt - Anh (mở câu Tiếng Việt chính xác, nhấn thuật ngữ Tiếng Anh tự nhiên)',
+};
 
 export async function learnVideosAndCreateBlueprint(params: {
   query?: string;
   videos: DerivativeSourceInput[];
   stylePreset: DerivativeStylePreset;
   aspectRatio: DerivativeAspectRatio;
-  targetDuration: 'short' | 'medium';
+  targetDurationSec?: number;
+  targetDuration?: 'short' | 'medium';
+  outputLanguage?: DerivativeOutputLanguage;
+  useProModel?: boolean;
+  characterSummary?: string;
   customInstruction?: string;
   aiProvider?: AiProviderId;
 }): Promise<DerivativeBlueprint> {
   if (!params.videos || params.videos.length === 0) {
-    throw new Error('Vui lòng chọn ít nhất 1 video nguồn để AI học nội dung.');
+    throw new Error('Vui lòng chọn hoặc tải lên ít nhất 1 video nguồn để AI học nội dung.');
   }
 
   const provider: AiProviderId =
-    params.aiProvider === 'openai' || params.aiProvider === 'meta' ? params.aiProvider : 'gemini';
+    params.aiProvider === 'openai' || params.aiProvider === 'meta' || params.aiProvider === 'muse'
+      ? params.aiProvider
+      : 'gemini';
 
   const contexts = await gatherSourceContexts(params.videos);
-  const desiredScenes = params.targetDuration === 'medium' ? 5 : 4;
-  const desiredTotalSec = params.targetDuration === 'medium' ? 45 : 28;
+
+  const rawSec =
+    typeof params.targetDurationSec === 'number' && Number.isFinite(params.targetDurationSec)
+      ? params.targetDurationSec
+      : params.targetDuration === 'medium'
+      ? 45
+      : 30;
+  const desiredTotalSec = Math.max(20, Math.min(900, Math.round(rawSec)));
+
+  let desiredScenes = 4;
+  if (desiredTotalSec <= 45) desiredScenes = 4;
+  else if (desiredTotalSec <= 90) desiredScenes = 6;
+  else if (desiredTotalSec <= 180) desiredScenes = 10;
+  else if (desiredTotalSec <= 300) desiredScenes = 14;
+  else if (desiredTotalSec <= 480) desiredScenes = 16;
+  else desiredScenes = 20;
+
+  const avgSceneDur = Math.max(5, Math.min(42, Math.round(desiredTotalSec / desiredScenes)));
+  const wordsMin = Math.max(15, Math.min(90, Math.round(avgSceneDur * 2.0)));
+  const wordsMax = Math.max(wordsMin + 8, Math.min(115, Math.round(avgSceneDur * 2.55)));
+  const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
 
   const parts: any[] = [];
 
   for (const ctx of contexts) {
-    if (ctx.thumbnail) {
+    if (ctx.source.keyframes && ctx.source.keyframes.length > 0) {
+      parts.push({
+        text: `[Các khung hình trích xuất từ Video tải lên #${ctx.index + 1}: ${ctx.source.title}]`,
+      });
+      for (const kf of ctx.source.keyframes.slice(0, 3)) {
+        const parsed = parseDataUrlToBuffer(kf);
+        if (parsed) {
+          parts.push({
+            inlineData: {
+              mimeType: parsed.mimeType,
+              data: parsed.buffer.toString('base64'),
+            },
+          });
+        }
+      }
+    } else if (ctx.thumbnail) {
       parts.push({
         text: `[Ảnh đại diện Video #${ctx.index + 1} (${ctx.source.platformLabel}): ${ctx.source.translatedTitle || ctx.source.title}]`,
       });
@@ -522,7 +927,7 @@ export async function learnVideosAndCreateBlueprint(params: {
     const s = ctx.source;
     return [
       `=== VIDEO NGUỒN #${ctx.index + 1} (index=${ctx.index}) ===`,
-      `- Nền tảng: ${s.platformLabel}`,
+      `- Nền tảng / Nguồn: ${s.localAssetId ? 'Video người dùng tải lên' : s.platformLabel}`,
       `- Tiêu đề: ${s.translatedTitle ? `${s.translatedTitle} (Gốc: ${s.title})` : s.title}`,
       `- Kênh/Tác giả: ${s.author}`,
       `- Thời lượng gốc: ${s.duration > 0 ? `${s.duration} giây` : 'Chưa rõ'} | Lượt xem: ${s.views.toLocaleString('en-US')}`,
@@ -534,112 +939,141 @@ export async function learnVideosAndCreateBlueprint(params: {
       .join('\n');
   });
 
-  const promptText = `Bạn là Đạo diễn & Biên tập viên sáng tạo nội dung video ngắn/trung chuyên nghiệp bằng tiếng Việt.
+  const targetMinutesLabel =
+    desiredTotalSec >= 60
+      ? `${desiredTotalSec} giây (~${(desiredTotalSec / 60).toFixed(1)} phút)`
+      : `${desiredTotalSec} giây`;
+
+  const promptText = `Bạn là Đạo diễn & Biên tập viên sáng tạo nội dung video chuyên sâu.
 Từ khóa/Chủ đề người dùng đang tìm kiếm: "${params.query?.trim() || 'Chủ đề tổng hợp từ các video đã chọn'}".
 Phong cách video phái sinh mong muốn: ${STYLE_LABELS[params.stylePreset]}.
+Ngôn ngữ lời thoại & phụ đề BẮT BUỘC cho kịch bản mới: ${OUTPUT_LANG_LABELS[outputLang]}.
 Tỉ lệ khung hình mục tiêu: ${params.aspectRatio}.
-Tổng thời lượng mục tiêu: khoảng ${desiredTotalSec} giây chia thành đúng ${desiredScenes} phân cảnh (scenes).
+Tổng thời lượng mục tiêu BẮT BUỘC: khoảng ${targetMinutesLabel} chia thành đúng ${desiredScenes} phân cảnh (scenes), trung bình mỗi cảnh dài ${avgSceneDur} giây để tổng cộng đạt khoảng ${desiredTotalSec} giây.
+${params.characterSummary?.trim() ? `Nhân vật tham chiếu xuyên suốt video: ${params.characterSummary.trim()}` : ''}
 ${params.customInstruction?.trim() ? `Yêu cầu bổ sung từ người dùng: ${params.customInstruction.trim()}` : ''}
 
 NHIỆM VỤ CỦA BẠN:
-1. HỌC SÂU nội dung từ ${contexts.length} video nguồn dưới đây (dựa vào tiêu đề, mô tả, lời thoại/phụ đề thực tế và ảnh đại diện đi kèm):
-   - Rút ra các kiến thức/luận điểm giá trị nhất, cách đặt hook thu hút, công thức giữ chân người xem.
-   - Không dịch máy móc hay sao chép nguyên xi 1 video, mà TỔNG HỢP & TÁI SÁNG TẠO thành 1 kịch bản video phái sinh hoàn toàn mới mẻ, tự nhiên, hấp dẫn bằng tiếng Việt.
+1. HỌC SÂU nội dung từ ${contexts.length} video nguồn dưới đây (dựa vào tiêu đề, mô tả, lời thoại/phụ đề thực tế và các khung hình đi kèm):
+   - Phân tích ngôn ngữ gốc, luận điểm giá trị nhất, cách đặt hook thu hút, công thức giữ chân người xem.
+   - Không dịch máy móc hay sao chép nguyên xi 1 video, mà TỔNG HỢP, PHÂN TÍCH MỞ RỘNG & TÁI SÁNG TẠO thành kịch bản video phái sinh có chiều sâu, mạch lạc, tự nhiên, hấp dẫn theo đúng ngôn ngữ lời thoại đầu ra đã chọn.
 2. Với mỗi phân cảnh (sceneIndex 1..${desiredScenes}):
-   - Chọn \`sourceVideoIndex\` (0 đến ${contexts.length - 1}) phù hợp nhất để lấy hình ảnh minh họa/trích đoạn.
+   - Chọn \`sourceVideoIndex\` (0 đến ${contexts.length - 1}) phù hợp nhất.
    - Chọn \`sourceStartPercent\` (số nguyên 5..75) gợi ý điểm cắt tiêu biểu trong video gốc đó.
-   - \`durationSec\`: thời lượng dự kiến của cảnh (6 đến 11 giây).
-   - \`onScreenText\`: dòng chữ tiêu đề hiển thị trên khung hình (ngắn gọn, tối đa 12 chữ tiếng Việt có dấu chuẩn xác, dễ đọc trên điện thoại).
-   - \`narration\`: lời thuyết minh tiếng Việt tự nhiên cho AI đọc lồng tiếng (khoảng 15–28 chữ khớp với \`durationSec\`, không dùng ký tự đặc biệt thừa hay hashtag trong lời đọc).
-   - \`visualNote\`: ghi chú ngắn về bối cảnh hình ảnh cảnh này.
+   - \`durationSec\`: thời lượng của cảnh (khoảng ${Math.max(4, avgSceneDur - 3)} đến ${Math.min(45, avgSceneDur + 4)} giây, sao cho tổng các cảnh xấp xỉ ${desiredTotalSec} giây).
+   - \`onScreenText\`: dòng chữ tiêu đề/ý chính hiển thị trên khung hình (ngắn gọn, tối đa 12 chữ).
+   - \`narration\`: lời thuyết minh tự nhiên cho lồng tiếng đúng ngôn ngữ đầu ra — PHẢI ĐỦ DÀI từ ${wordsMin} đến ${wordsMax} chữ mỗi cảnh để giọng đọc kéo dài tương ứng ${avgSceneDur} giây, viết thành văn nói cuốn hút, không dùng ký tự đặc biệt thừa hay hashtag.
+   - \`visualNote\`: mô tả chi tiết bối cảnh hình ảnh/hành động (kết hợp nhân vật tham chiếu nếu có) dùng để vẽ ảnh phân cảnh AI hoặc tạo video bằng Gemini Omni Flash.
+   - \`brollKeywordEn\`: 2 đến 4 từ khóa TIẾNG ANH ngắn gọn, phổ biến mô tả hình ảnh cảnh này để tìm video mẫu miễn phí trên Wikimedia Commons (VD: "city night timelapse", "robot technology lab", "chef cooking kitchen", "ocean waves nature").
 
 DỮ LIỆU CÁC VIDEO NGUỒN:
 ${dossierLines.join('\n\n')}`;
 
   parts.push({ text: promptText });
 
+  const geminiModel = params.useProModel ? 'gemini-4-argon' : 'gemini-4-hydrogen';
+
   try {
     let parsed: any = {};
+    let usedModel = geminiModel;
 
-    if (provider === 'openai' || provider === 'meta') {
+    if (provider === 'openai' || provider === 'meta' || provider === 'muse') {
+      usedModel = resolveOpenAiCompatibleConfig(provider).model;
       parsed = await generateBlueprintViaOpenAiCompatible({
         provider,
         contexts,
         promptText,
         desiredScenes,
+        avgSceneDur,
+        wordsMin,
+        wordsMax,
       });
     } else {
       const ai = getGeminiClient();
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: { parts },
-        config: {
-          systemInstruction:
-            'Luôn phản hồi bằng JSON thuần túy đúng schema, nội dung tiếng Việt tự nhiên, sắc bén, giàu giá trị thông tin và tôn trọng nguyên tác bằng cách phái sinh góc nhìn tổng hợp mới.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              learnedSummary: {
-                type: Type.STRING,
-                description: 'Tóm tắt ngắn 2-3 câu về những nội dung cốt lõi AI học được từ các video nguồn.',
-              },
-              keyTakeaways: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: '3 đến 5 gạch đầu dòng các kiến thức/ý tưởng đắt giá rút ra được.',
-              },
-              hookFormula: {
-                type: Type.STRING,
-                description: 'Công thức mở đầu & giữ chân người xem rút ra từ các video nguồn.',
-              },
-              sourceKeyPoints: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: 'Đúng bằng số lượng video nguồn: tóm tắt 1 câu bài học/điểm hay của từng video tương ứng theo thứ tự.',
-              },
-              derivativeTitle: {
-                type: Type.STRING,
-                description: 'Tiêu đề hấp dẫn cho video phái sinh mới.',
-              },
-              derivativeHook: {
-                type: Type.STRING,
-                description: 'Câu hook chữ nổi bật hiện 3.5 giây đầu video (tối đa 12 chữ).',
-              },
-              hashtags: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: '4 đến 6 hashtag phù hợp.',
-              },
-              scenes: {
-                type: Type.ARRAY,
-                description: `BẮT BUỘC phải trả về ĐÚNG ${desiredScenes} phân cảnh tách biệt (sceneIndex từ 1 đến ${desiredScenes}), không được gộp thành 1 cảnh duy nhất.`,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    sceneIndex: { type: Type.INTEGER },
-                    durationSec: { type: Type.NUMBER },
-                    sourceVideoIndex: { type: Type.INTEGER },
-                    sourceStartPercent: { type: Type.INTEGER },
-                    onScreenText: { type: Type.STRING },
-                    narration: { type: Type.STRING },
-                    visualNote: { type: Type.STRING },
+      let response: any;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          response = await ai.models.generateContent({
+            model: geminiModel,
+            contents: { parts },
+            config: {
+              systemInstruction:
+                'Luôn phản hồi bằng JSON thuần túy đúng schema, nội dung sắc bén, giàu giá trị thông tin, đúng ngôn ngữ yêu cầu, đủ độ dài và có mô tả hình ảnh + từ khóa tiếng Anh chuẩn.',
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  learnedSummary: {
+                    type: Type.STRING,
+                    description: 'Tóm tắt ngắn 2-3 câu về những nội dung cốt lõi AI học được từ các video nguồn.',
+                  },
+                  keyTakeaways: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: '3 đến 6 gạch đầu dòng các kiến thức/ý tưởng đắt giá rút ra được.',
+                  },
+                  hookFormula: {
+                    type: Type.STRING,
+                    description: 'Công thức mở đầu & giữ chân người xem rút ra từ các video nguồn.',
+                  },
+                  sourceKeyPoints: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: 'Đúng bằng số lượng video nguồn: tóm tắt 1 câu bài học/điểm hay của từng video tương ứng theo thứ tự.',
+                  },
+                  derivativeTitle: {
+                    type: Type.STRING,
+                    description: 'Tiêu đề hấp dẫn cho video phái sinh mới.',
+                  },
+                  derivativeHook: {
+                    type: Type.STRING,
+                    description: 'Câu hook chữ nổi bật hiện 3.5 giây đầu video (tối đa 12 chữ).',
+                  },
+                  hashtags: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: '4 đến 6 hashtag phù hợp.',
+                  },
+                  scenes: {
+                    type: Type.ARRAY,
+                    description: `BẮT BUỘC phải trả về ĐÚNG ${desiredScenes} phân cảnh tách biệt (sceneIndex từ 1 đến ${desiredScenes}), mỗi cảnh dài khoảng ${avgSceneDur} giây để tổng thời lượng đạt ${desiredTotalSec} giây.`,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        sceneIndex: { type: Type.INTEGER },
+                        durationSec: { type: Type.NUMBER },
+                        sourceVideoIndex: { type: Type.INTEGER },
+                        sourceStartPercent: { type: Type.INTEGER },
+                        onScreenText: { type: Type.STRING },
+                        narration: { type: Type.STRING },
+                        visualNote: { type: Type.STRING },
+                        brollKeywordEn: { type: Type.STRING },
+                      },
+                    },
                   },
                 },
               },
             },
-          },
-        },
-      });
+          });
+          break;
+        } catch (err: any) {
+          const msg = String(err?.message || err || '');
+          if (attempt === 1 && (msg.includes('503') || msg.includes('UNAVAILABLE'))) {
+            await new Promise((r) => setTimeout(r, 1500));
+            continue;
+          }
+          throw err;
+        }
+      }
 
-      const rawText = (response.text ?? '{}').trim();
+      const rawText = (response?.text ?? '{}').trim();
       parsed = JSON.parse(rawText);
     }
 
     const rawScenes: any[] = Array.isArray(parsed?.scenes) ? parsed.scenes : [];
-    const scenes: DerivativeScene[] = rawScenes.slice(0, 8).map((sc, i) => {
+    const scenes: DerivativeScene[] = rawScenes.slice(0, 24).map((sc, i) => {
       const idx = Math.max(0, Math.min(contexts.length - 1, Math.round(Number(sc?.sourceVideoIndex ?? i % contexts.length))));
-      const dur = Math.max(4, Math.min(15, Number(sc?.durationSec || 7)));
+      const dur = Math.max(4, Math.min(45, Number(sc?.durationSec || avgSceneDur)));
       const startPct = Math.max(0, Math.min(80, Math.round(Number(sc?.sourceStartPercent ?? (i * 18) % 70))));
       return {
         id: `scene_${i + 1}_${crypto.randomBytes(2).toString('hex')}`,
@@ -650,6 +1084,7 @@ ${dossierLines.join('\n\n')}`;
         onScreenText: String(sc?.onScreenText || `Phần ${i + 1}`).trim(),
         narration: String(sc?.narration || '').trim(),
         visualNote: String(sc?.visualNote || '').trim(),
+        brollKeywordEn: String(sc?.brollKeywordEn || '').trim(),
       };
     });
 
@@ -657,24 +1092,25 @@ ${dossierLines.join('\n\n')}`;
     const sourcesAnalyzed: DerivativeSourceInsight[] = contexts.map((ctx, i) => ({
       index: i,
       title: ctx.source.translatedTitle || ctx.source.title,
-      platformLabel: ctx.source.platformLabel,
+      platformLabel: ctx.source.localAssetId ? 'Video tải lên' : ctx.source.platformLabel,
       author: ctx.source.author,
       hasDescription: Boolean(ctx.description),
       hasCaptions: Boolean(ctx.captionsText),
-      hasThumbnail: Boolean(ctx.thumbnail),
+      hasThumbnail: Boolean(ctx.thumbnail) || Boolean(ctx.source.keyframes?.length),
       keyPoint: String(sourceKeyPoints[i] || ctx.description.slice(0, 120) || ctx.source.title),
     }));
 
     return {
       learnedSummary: String(parsed?.learnedSummary || 'Đã tổng hợp nội dung nổi bật từ các video đã chọn.'),
       keyTakeaways: Array.isArray(parsed?.keyTakeaways) ? parsed.keyTakeaways.map(String).slice(0, 6) : [],
-      hookFormula: String(parsed?.hookFormula || 'Mở đầu trực diện vấn đề + chuyển cảnh nhanh + kết luận thực tế.'),
+      hookFormula: String(parsed?.hookFormula || 'Mở đầu trực diện vấn đề + phân tích chiều sâu + kết luận thực tế.'),
       derivativeTitle: String(parsed?.derivativeTitle || 'Video tổng hợp kiến thức mới'),
       derivativeHook: String(parsed?.derivativeHook || 'Đừng bỏ qua điểm mấu chốt này!'),
       hashtags: Array.isArray(parsed?.hashtags) ? parsed.hashtags.map(String).slice(0, 8) : [],
       aspectRatio: params.aspectRatio,
       sourcesAnalyzed,
       usedProvider: provider,
+      usedModel,
       scenes:
         scenes.length > 0
           ? scenes
@@ -688,6 +1124,7 @@ ${dossierLines.join('\n\n')}`;
                 onScreenText: 'Tổng hợp nội dung nổi bật',
                 narration: 'Dưới đây là những điểm quan trọng nhất được rút ra từ các video nổi bật về chủ đề này.',
                 visualNote: 'Giới thiệu mở đầu',
+                brollKeywordEn: 'digital studio presentation',
               },
             ],
     };
@@ -697,6 +1134,366 @@ ${dossierLines.join('\n\n')}`;
     }
     throw new Error(String(err?.message || err || 'Lỗi kết nối nhà cung cấp AI'));
   }
+}
+
+// ==========================================
+// STUDIO AI MEDIA (CHARACTER/SCENE IMAGE, OMNI FLASH VIDEO, LYRIA MUSIC, OFFLINE TTS)
+// ==========================================
+
+export async function generateStudioImage(params: {
+  mode: 'character' | 'scene';
+  prompt: string;
+  aspectRatio?: '1:1' | '9:16' | '16:9';
+  quality?: 'standard' | 'pro';
+  characterRefs?: { dataUrl: string; name?: string }[];
+}): Promise<{ dataUrl: string; model: string }> {
+  const ai = getGeminiClient();
+  const model = params.quality === 'pro' ? 'gemini-nano-banana-2.1' : 'gemini-3.1-flash-lite-image';
+  const aspectRatio = params.aspectRatio || (params.mode === 'character' ? '1:1' : '16:9');
+
+  const parts: any[] = [];
+  if (Array.isArray(params.characterRefs)) {
+    for (const ref of params.characterRefs.slice(0, 3)) {
+      const parsed = parseDataUrlToBuffer(ref.dataUrl);
+      if (parsed) {
+        parts.push({
+          inlineData: {
+            mimeType: parsed.mimeType,
+            data: parsed.buffer.toString('base64'),
+          },
+        });
+      }
+    }
+  }
+
+  const finalPrompt =
+    params.mode === 'character'
+      ? `Create a clean, consistent studio character portrait sheet suitable for reusing across video scenes: ${params.prompt}. High clarity, balanced lighting, no overlaid watermarks or UI text.`
+      : params.characterRefs && params.characterRefs.length > 0
+      ? `Create a cinematic storyboard scene keeping the exact character appearance from the attached reference image(s). Scene description: ${params.prompt}. No overlaid subtitles or watermarks.`
+      : `Create a crisp, cinematic storyboard visual scene: ${params.prompt}. High aesthetic composition, no overlaid subtitles or watermarks.`;
+
+  parts.push({ text: finalPrompt });
+
+  try {
+    const response = await ai.models.generateContent({
+      model,
+      contents: { parts },
+      config: {
+        imageConfig: {
+          aspectRatio,
+          ...(model === 'gemini-nano-banana-2.1' ? { imageSize: '1K' } : {}),
+        },
+      },
+    });
+
+    for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+      if (part.inlineData?.data) {
+        const mime = part.inlineData.mimeType ?? 'image/png';
+        return { dataUrl: `data:${mime};base64,${part.inlineData.data}`, model };
+      }
+    }
+    throw new Error('Mô hình AI không trả về dữ liệu hình ảnh. Hãy thử mô tả cụ thể hơn.');
+  } catch (err: any) {
+    throw new Error(formatGeminiError(err));
+  }
+}
+
+export async function generateSceneVideoWithOmniFlash(params: {
+  prompt: string;
+  aspectRatio: DerivativeAspectRatio;
+  durationSec?: number;
+  sceneImageDataUrl?: string;
+  characterRefs?: { dataUrl: string; name?: string }[];
+}): Promise<{ assetId: string; previewUrl: string; durationSec: number; model: string }> {
+  const ai = getGeminiClient();
+  const clampedDur = Math.max(3, Math.min(15, Math.round(params.durationSec || 8)));
+  const inputParts: any[] = [];
+
+  if (params.sceneImageDataUrl) {
+    const parsed = parseDataUrlToBuffer(params.sceneImageDataUrl);
+    if (parsed) {
+      inputParts.push({
+        type: 'image',
+        mime_type: parsed.mimeType,
+        data: parsed.buffer.toString('base64'),
+      });
+    }
+  } else if (Array.isArray(params.characterRefs)) {
+    for (const ref of params.characterRefs.slice(0, 2)) {
+      const parsed = parseDataUrlToBuffer(ref.dataUrl);
+      if (parsed) {
+        inputParts.push({
+          type: 'image',
+          mime_type: parsed.mimeType,
+          data: parsed.buffer.toString('base64'),
+        });
+      }
+    }
+  }
+
+  const promptText = params.sceneImageDataUrl
+    ? `Animate this scene smoothly with natural camera motion matching the visual narrative: ${params.prompt}`
+    : `Cinematic high-definition video scene: ${params.prompt}. Smooth camera movement, cohesive lighting, no overlaid text or watermarks.`;
+
+  inputParts.push({ type: 'text', text: promptText });
+
+  try {
+    const interaction = await ai.interactions.create(
+      {
+        model: 'gemini-omni-1.2-flash',
+        input: inputParts,
+        background: false,
+        store: false,
+        stream: false,
+        response_format: {
+          type: 'video',
+          aspect_ratio: params.aspectRatio,
+          duration: `${clampedDur}s` as any,
+          resolution: '720p',
+        },
+      },
+      { timeout: 300_000 }
+    );
+
+    const videoPart = interaction.output_video;
+    if (!videoPart) {
+      throw new Error('Gemini Omni Flash không trả về luồng video.');
+    }
+
+    let videoBuffer: Buffer | null = null;
+    if (videoPart.data) {
+      videoBuffer = Buffer.from(videoPart.data, 'base64');
+    } else if (videoPart.uri) {
+      const dl = await fetch(videoPart.uri, {
+        headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY?.trim() || '' },
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (dl.ok) {
+        videoBuffer = Buffer.from(await dl.arrayBuffer());
+      }
+    }
+
+    if (!videoBuffer || videoBuffer.byteLength < 5000) {
+      throw new Error('Không tải được dữ liệu clip video từ Gemini Omni Flash.');
+    }
+
+    const assetId = `omni_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const outPath = path.join(STUDIO_ASSETS_DIR, `${assetId}.mp4`);
+    fs.writeFileSync(outPath, videoBuffer);
+    const probedDur = (await probeDurationSeconds(outPath, STUDIO_ASSETS_DIR)) || clampedDur;
+
+    studioAssets.set(assetId, {
+      assetId,
+      filePath: outPath,
+      fileName: `${assetId}.mp4`,
+      mimeType: 'video/mp4',
+      durationSec: probedDur,
+      createdAt: Date.now(),
+    });
+
+    return {
+      assetId,
+      previewUrl: `/api/studio/assets/${assetId}`,
+      durationSec: Math.round(probedDur * 10) / 10,
+      model: 'gemini-omni-1.2-flash',
+    };
+  } catch (err: any) {
+    throw new Error(formatGeminiError(err));
+  }
+}
+
+export async function generateStudioMusicWithLyria(params: {
+  prompt: string;
+  mode?: 'clip' | 'pro';
+}): Promise<{ assetId: string; previewUrl: string; mimeType: string; lyrics: string; durationSec: number; model: string }> {
+  const ai = getGeminiClient();
+  const model = params.mode === 'pro' ? 'lyria-3-pro-preview' : 'lyria-3-clip-preview';
+  const musicPrompt =
+    params.prompt.trim() ||
+    'Generate an instrumental uplifting modern cinematic background music track suitable for storytelling video narration.';
+
+  try {
+    const response = await ai.models.generateContentStream({
+      model,
+      contents: musicPrompt,
+    });
+
+    const audioChunks: Buffer[] = [];
+    let lyrics = '';
+    let mimeType = 'audio/mpeg';
+
+    for await (const chunk of response) {
+      const parts = chunk.candidates?.[0]?.content?.parts;
+      if (!parts) continue;
+      for (const part of parts) {
+        if (part.inlineData?.data) {
+          if (audioChunks.length === 0 && part.inlineData.mimeType) {
+            mimeType = part.inlineData.mimeType;
+          }
+          audioChunks.push(Buffer.from(part.inlineData.data, 'base64'));
+        }
+        if (part.text) {
+          lyrics += part.text;
+        }
+      }
+    }
+
+    if (audioChunks.length === 0) {
+      throw new Error('Lyria AI không trả về dữ liệu âm thanh.');
+    }
+
+    const audioBuf = Buffer.concat(audioChunks);
+    const ext = mimeType.includes('wav') ? '.wav' : '.mp3';
+    const assetId = `lyria_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const outPath = path.join(STUDIO_ASSETS_DIR, `${assetId}${ext}`);
+    fs.writeFileSync(outPath, audioBuf);
+    const durationSec = (await probeDurationSeconds(outPath, STUDIO_ASSETS_DIR)) || 30;
+
+    studioAssets.set(assetId, {
+      assetId,
+      filePath: outPath,
+      fileName: `AI_Music_${assetId}${ext}`,
+      mimeType,
+      durationSec,
+      createdAt: Date.now(),
+    });
+
+    return {
+      assetId,
+      previewUrl: `/api/studio/assets/${assetId}`,
+      mimeType,
+      lyrics: lyrics.trim(),
+      durationSec: Math.round(durationSec * 10) / 10,
+      model,
+    };
+  } catch (err: any) {
+    throw new Error(formatGeminiError(err));
+  }
+}
+
+export async function searchPublicFreeMusicFromWikimedia(query: string) {
+  const cleanQ = sanitizeStockQuery(query || 'ambient instrumental music') || 'ambient music';
+  const api =
+    `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6` +
+    `&gsrsearch=${encodeURIComponent(`${cleanQ} filetype:audio`)}&gsrlimit=18&prop=videoinfo&viprop=url|mime|size&format=json`;
+
+  const res = await fetch(api, {
+    headers: { 'User-Agent': WIKIMEDIA_UA },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!res.ok) {
+    throw new Error(`Không tra cứu được nhạc Wikimedia Commons (HTTP ${res.status})`);
+  }
+  const json = (await res.json()) as any;
+  const pages = Object.values(json?.query?.pages || {}) as any[];
+  const tracks: { id: string; title: string; url: string; mimeType: string; sizeBytes: number }[] = [];
+
+  for (const p of pages) {
+    const vi = p?.videoinfo?.[0];
+    const url = String(vi?.url || '');
+    const mime = String(vi?.mime || '').toLowerCase();
+    const size = Number(vi?.size || 0);
+    if (
+      url &&
+      size > 40_000 &&
+      size < 20_000_000 &&
+      (mime.includes('audio') || mime.includes('ogg') || mime.includes('mpeg') || mime.includes('wav') || mime.includes('flac'))
+    ) {
+      const rawTitle = String(p?.title || 'Public Domain Track')
+        .replace(/^File:/i, '')
+        .replace(/\.[a-z0-9]+$/i, '')
+        .replace(/_/g, ' ');
+      tracks.push({
+        id: `wiki_aud_${p.pageid || tracks.length}`,
+        title: rawTitle.slice(0, 80),
+        url,
+        mimeType: mime,
+        sizeBytes: size,
+      });
+    }
+  }
+
+  return tracks.slice(0, 10);
+}
+
+let cachedOfflineTts: { available: boolean; engine: string } | null = null;
+
+export async function detectOfflineTtsEngine(): Promise<{ available: boolean; engine: string }> {
+  if (cachedOfflineTts) return cachedOfflineTts;
+  const checkCmd = async (cmd: string, args: string[], label: string) => {
+    try {
+      const r = await spawnPromise(cmd, args, STUDIO_ASSETS_DIR, 4000);
+      return r.code === 0 ? label : '';
+    } catch {
+      return '';
+    }
+  };
+
+  if (process.platform === 'win32') {
+    const winOk = await checkCmd('powershell', ['-NoProfile', '-Command', 'Add-Type -AssemblyName System.Speech; "OK"'], 'Windows SAPI (Offline)');
+    if (winOk) {
+      cachedOfflineTts = { available: true, engine: winOk };
+      return cachedOfflineTts;
+    }
+  } else if (process.platform === 'darwin') {
+    const macOk = await checkCmd('which', ['say'], 'macOS say (Offline)');
+    if (macOk) {
+      cachedOfflineTts = { available: true, engine: macOk };
+      return cachedOfflineTts;
+    }
+  }
+
+  for (const bin of [
+    { cmd: 'espeak-ng', args: ['--version'], label: 'eSpeak-NG (Offline)' },
+    { cmd: 'espeak', args: ['--version'], label: 'eSpeak (Offline)' },
+  ]) {
+    const ok = await checkCmd(bin.cmd, bin.args, bin.label);
+    if (ok) {
+      cachedOfflineTts = { available: true, engine: ok };
+      return cachedOfflineTts;
+    }
+  }
+
+  cachedOfflineTts = { available: false, engine: '' };
+  return cachedOfflineTts;
+}
+
+async function synthesizeOfflineVoiceWav(text: string, outWavPath: string): Promise<boolean> {
+  const cleanText = text.replace(/[\r\n]+/g, ' ').trim();
+  if (!cleanText) return false;
+  const detected = await detectOfflineTtsEngine();
+  if (!detected.available) {
+    throw new Error(
+      'Máy chủ Linux hiện chưa cài công cụ đọc offline (espeak-ng / espeak). Hãy chuyển sang "Giọng đọc Online AI" hoặc chạy bản trên Windows/macOS để dùng giọng đọc hệ thống offline.'
+    );
+  }
+
+  if (process.platform === 'win32') {
+    const escapedText = cleanText.replace(/'/g, "''");
+    const psScript = `Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToWaveFile('${outWavPath.replace(/'/g, "''")}'); $s.Speak('${escapedText}'); $s.Dispose();`;
+    const r = await spawnPromise('powershell', ['-NoProfile', '-Command', psScript], path.dirname(outWavPath), 45_000);
+    return r.code === 0 && fs.existsSync(outWavPath);
+  }
+
+  if (process.platform === 'darwin') {
+    const aiffPath = `${outWavPath}.aiff`;
+    const r = await spawnPromise('say', ['-o', aiffPath, cleanText], path.dirname(outWavPath), 45_000);
+    if (r.code === 0 && fs.existsSync(aiffPath)) {
+      const conv = await spawnPromise('ffmpeg', ['-y', '-i', aiffPath, outWavPath], path.dirname(outWavPath), 20_000);
+      try { fs.unlinkSync(aiffPath); } catch { /* ignore */ }
+      return conv.code === 0 && fs.existsSync(outWavPath);
+    }
+    return false;
+  }
+
+  const bin = detected.engine.toLowerCase().includes('espeak-ng') ? 'espeak-ng' : 'espeak';
+  const r = await spawnPromise(bin, ['-v', 'vi', '-w', outWavPath, cleanText], path.dirname(outWavPath), 30_000);
+  if (r.code !== 0) {
+    const fallback = await spawnPromise(bin, ['-w', outWavPath, cleanText], path.dirname(outWavPath), 30_000);
+    return fallback.code === 0 && fs.existsSync(outWavPath);
+  }
+  return fs.existsSync(outWavPath);
 }
 
 // ==========================================
@@ -870,31 +1667,137 @@ export interface StartDerivativeJobParams {
   sources: DerivativeSourceInput[];
   visualMode: DerivativeVisualMode;
   voice: DerivativeVoiceId;
+  voiceMode?: DerivativeVoiceMode;
   voiceStyle?: string;
   keepSourceAudio: boolean;
   brollSource?: BrollSourceId;
+  musicMode?: DerivativeMusicMode;
+  musicAssetId?: string;
+  publicMusicUrl?: string;
+  musicPrompt?: string;
+  musicVolume?: number;
+  characterRefs?: { dataUrl: string; name?: string }[];
   downloadSourceVideo?: DownloadSourceClipFn;
 }
 
-async function fetchBrollVideoUrlFromWikimedia(query: string): Promise<string | null> {
-  const cleanQ = query.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().slice(0, 60) || 'nature city technology';
+const WIKIMEDIA_SAFE_FALLBACK_QUERIES = [
+  'nature landscape aerial',
+  'city street timelapse',
+  'technology computer work',
+  'ocean forest clouds',
+  'earth space universe',
+];
+
+function sanitizeStockQuery(raw: string): string {
+  return raw
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 55);
+}
+
+const WIKIMEDIA_UA = 'GaConPro/1.0 (https://commons.wikimedia.org; bot@gaconpro.local)';
+
+async function fetchBrollVideoUrlFromWikimedia(
+  queries: string[],
+  excludeUrls?: Set<string>
+): Promise<string | null> {
+  const candidates = Array.from(
+    new Set(
+      [...queries, ...WIKIMEDIA_SAFE_FALLBACK_QUERIES]
+        .map(sanitizeStockQuery)
+        .filter((q) => q.length >= 3)
+    )
+  ).slice(0, 5);
+
+  for (const cleanQ of candidates) {
+    try {
+      const api =
+        `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6` +
+        `&gsrsearch=${encodeURIComponent(`${cleanQ} filetype:video`)}&gsrlimit=20&prop=videoinfo&viprop=url|mime|size&format=json`;
+      const res = await fetch(api, {
+        headers: { 'User-Agent': WIKIMEDIA_UA },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) continue;
+      const json = (await res.json()) as any;
+      const pages = Object.values(json?.query?.pages || {}) as any[];
+      const eligible: { url: string; size: number }[] = [];
+      for (const p of pages) {
+        const vi = p?.videoinfo?.[0];
+        const mime = String(vi?.mime || '').toLowerCase();
+        const url = String(vi?.url || '');
+        const size = Number(vi?.size || 0);
+        const dur = Number(vi?.duration || 0);
+        if (
+          url &&
+          (!excludeUrls || !excludeUrls.has(url)) &&
+          (mime.includes('webm') || mime.includes('mp4') || mime.includes('ogg')) &&
+          size > 80_000 &&
+          size < 25_000_000 &&
+          (dur === 0 || dur >= 3)
+        ) {
+          eligible.push({ url, size });
+        }
+      }
+      if (eligible.length > 0) {
+        eligible.sort((a, b) => a.size - b.size);
+        const picked = eligible[0].url;
+        excludeUrls?.add(picked);
+        return picked;
+      }
+    } catch {
+      // try next keyword candidate
+    }
+  }
+  return null;
+}
+
+async function fetchBrollVideoUrlFromPexels(query: string, excludeUrls?: Set<string>): Promise<string | null> {
+  const apiKey = process.env.PEXELS_API_KEY?.trim();
+  if (!apiKey) return null;
+  const cleanQ = sanitizeStockQuery(query) || 'abstract background';
   try {
-    const api =
-      `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6` +
-      `&gsrsearch=${encodeURIComponent(`${cleanQ} filetype:video`)}&gsrlimit=6&prop=videoinfo&viprop=url|mime|size|duration&format=json`;
-    const res = await fetch(api, {
-      headers: { 'User-Agent': 'GaConPro/1.0 (https://commons.wikimedia.org)' },
+    const res = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(cleanQ)}&per_page=8`, {
+      headers: { Authorization: apiKey },
       signal: AbortSignal.timeout(7000),
     });
     if (!res.ok) return null;
     const json = (await res.json()) as any;
-    const pages = Object.values(json?.query?.pages || {}) as any[];
-    for (const p of pages) {
-      const vi = p?.videoinfo?.[0];
-      const mime = String(vi?.mime || '');
-      const url = String(vi?.url || '');
-      const size = Number(vi?.size || 0);
-      if (url && (mime.includes('webm') || mime.includes('mp4')) && size > 50_000 && size < 45_000_000) {
+    const videos: any[] = Array.isArray(json?.videos) ? json.videos : [];
+    for (const v of videos) {
+      const files: any[] = Array.isArray(v?.video_files) ? v.video_files : [];
+      const picked =
+        files.find((f) => f.file_type === 'video/mp4' && (f.width === 1280 || f.width === 720)) ||
+        files.find((f) => f.file_type === 'video/mp4') ||
+        files[0];
+      if (picked?.link && (!excludeUrls || !excludeUrls.has(picked.link))) {
+        excludeUrls?.add(picked.link);
+        return picked.link;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchBrollVideoUrlFromPixabay(query: string, excludeUrls?: Set<string>): Promise<string | null> {
+  const apiKey = process.env.PIXABAY_API_KEY?.trim();
+  if (!apiKey) return null;
+  const cleanQ = sanitizeStockQuery(query) || 'background';
+  try {
+    const res = await fetch(
+      `https://pixabay.com/api/videos/?key=${encodeURIComponent(apiKey)}&q=${encodeURIComponent(cleanQ)}&per_page=8`,
+      { signal: AbortSignal.timeout(7000) }
+    );
+    if (!res.ok) return null;
+    const json = (await res.json()) as any;
+    const hits: any[] = Array.isArray(json?.hits) ? json.hits : [];
+    for (const hit of hits) {
+      const url = hit?.videos?.medium?.url || hit?.videos?.small?.url || '';
+      if (url && (!excludeUrls || !excludeUrls.has(url))) {
+        excludeUrls?.add(url);
         return url;
       }
     }
@@ -904,83 +1807,46 @@ async function fetchBrollVideoUrlFromWikimedia(query: string): Promise<string | 
   }
 }
 
-async function fetchBrollVideoUrlFromPexels(query: string): Promise<string | null> {
-  const apiKey = process.env.PEXELS_API_KEY?.trim();
-  if (!apiKey) return null;
-  const cleanQ = query.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().slice(0, 60) || 'abstract background';
-  try {
-    const res = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(cleanQ)}&per_page=3`, {
-      headers: { Authorization: apiKey },
-      signal: AbortSignal.timeout(7000),
-    });
-    if (!res.ok) return null;
-    const json = (await res.json()) as any;
-    const first = json?.videos?.[0];
-    const files: any[] = Array.isArray(first?.video_files) ? first.video_files : [];
-    const picked =
-      files.find((f) => f.file_type === 'video/mp4' && (f.width === 1280 || f.width === 720)) ||
-      files.find((f) => f.file_type === 'video/mp4') ||
-      files[0];
-    return picked?.link || null;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchBrollVideoUrlFromPixabay(query: string): Promise<string | null> {
-  const apiKey = process.env.PIXABAY_API_KEY?.trim();
-  if (!apiKey) return null;
-  const cleanQ = query.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().slice(0, 60) || 'background';
-  try {
-    const res = await fetch(
-      `https://pixabay.com/api/videos/?key=${encodeURIComponent(apiKey)}&q=${encodeURIComponent(cleanQ)}&per_page=3`,
-      { signal: AbortSignal.timeout(7000) }
-    );
-    if (!res.ok) return null;
-    const json = (await res.json()) as any;
-    const hit = json?.hits?.[0];
-    return hit?.videos?.medium?.url || hit?.videos?.small?.url || null;
-  } catch {
-    return null;
-  }
-}
-
 async function tryDownloadBrollStockClip(
   brollSource: BrollSourceId,
-  query: string,
-  outPath: string
+  queries: string[],
+  outPath: string,
+  excludeUrls?: Set<string>
 ): Promise<{ ok: boolean; label?: string }> {
   if (brollSource === 'none') return { ok: false };
 
-  const order: ('pexels' | 'pixabay' | 'wikimedia')[] =
+  // Prioritize Wikimedia Commons first when 'wikimedia' or 'auto' is selected
+  const order: ('wikimedia' | 'pexels' | 'pixabay')[] =
     brollSource === 'pexels'
       ? ['pexels', 'wikimedia']
       : brollSource === 'pixabay'
       ? ['pixabay', 'wikimedia']
       : brollSource === 'wikimedia'
       ? ['wikimedia']
-      : ['pexels', 'pixabay', 'wikimedia'];
+      : ['wikimedia', 'pexels', 'pixabay'];
+
+  const primaryQuery = queries.find((q) => sanitizeStockQuery(q).length >= 3) || 'nature city technology';
 
   for (const src of order) {
     const clipUrl =
-      src === 'pexels'
-        ? await fetchBrollVideoUrlFromPexels(query)
-        : src === 'pixabay'
-        ? await fetchBrollVideoUrlFromPixabay(query)
-        : await fetchBrollVideoUrlFromWikimedia(query);
+      src === 'wikimedia'
+        ? await fetchBrollVideoUrlFromWikimedia(queries, excludeUrls)
+        : src === 'pexels'
+        ? await fetchBrollVideoUrlFromPexels(primaryQuery, excludeUrls)
+        : await fetchBrollVideoUrlFromPixabay(primaryQuery, excludeUrls);
 
     if (!clipUrl) continue;
     try {
       const dl = await fetch(clipUrl, {
-        headers: { 'User-Agent': UA },
-        signal: AbortSignal.timeout(25_000),
+        headers: { 'User-Agent': src === 'wikimedia' ? WIKIMEDIA_UA : UA },
+        signal: AbortSignal.timeout(35_000),
       });
       if (!dl.ok) continue;
       const arr = await dl.arrayBuffer();
       if (arr.byteLength > 30_000) {
         fs.writeFileSync(outPath, Buffer.from(arr));
         const label =
-          src === 'pexels' ? 'Pexels' : src === 'pixabay' ? 'Pixabay' : 'Wikimedia Commons (CC0/CC-BY)';
+          src === 'wikimedia' ? 'Wikimedia Commons (CC0/CC-BY)' : src === 'pexels' ? 'Pexels' : 'Pixabay';
         return { ok: true, label };
       }
     } catch {
@@ -995,7 +1861,12 @@ export function startDerivativeVideoJob(params: StartDerivativeJobParams): Deriv
   const workDir = path.join(DERIVATIVE_BASE_DIR, jobId);
   fs.mkdirSync(workDir, { recursive: true });
 
-  const safeTitle = params.blueprint.derivativeTitle
+  const rawTitle = String(
+    params.blueprint.derivativeTitle ||
+      (params.blueprint as unknown as { title?: string }).title ||
+      'GaConPro_Derivative'
+  );
+  const safeTitle = rawTitle
     .replace(/[<>:"/\\|?*]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -1025,7 +1896,7 @@ export function startDerivativeVideoJob(params: StartDerivativeJobParams): Deriv
 
 async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDerivativeJobParams): Promise<void> {
   const { blueprint, sources, visualMode, voice, keepSourceAudio, downloadSourceVideo } = params;
-  const scenes = blueprint.scenes.slice(0, 8);
+  const scenes = blueprint.scenes.slice(0, 24);
   if (scenes.length === 0) {
     throw new Error('Kịch bản không có phân cảnh nào để dựng video.');
   }
@@ -1035,55 +1906,141 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   const targetH = isVertical ? 1920 : 1080;
   job.resolution = `${targetW}x${targetH}`;
 
-  // 1. Voiceover TTS generation (if enabled)
+  const effectiveVoiceMode: DerivativeVoiceMode =
+    params.voiceMode || (voice === 'none' ? 'none' : 'ai_online');
+
+  // 1. Voiceover generation (Online AI TTS or Offline System TTS)
   const sceneAudioPaths: (string | null)[] = new Array(scenes.length).fill(null);
   const sceneTargetDurations: number[] = scenes.map((s) => Math.max(3.5, Number(s.durationSec || 6)));
+  const totalPlannedSec = sceneTargetDurations.reduce((a, b) => a + b, 0);
 
-  if (voice !== 'none') {
+  if (effectiveVoiceMode === 'offline_system') {
     job.status = 'tts';
-    job.progress = 12;
-    job.stepLabel = 'Đang tạo giọng đọc AI tiếng Việt cho từng phân cảnh...';
-    const ai = getGeminiClient();
-    const stylePrompt =
-      params.voiceStyle?.trim() || 'Clear, engaging Vietnamese social video narrator with natural pacing';
-
+    job.progress = 10;
+    job.stepLabel = `Đang tổng hợp giọng đọc Offline (0/${scenes.length} cảnh)...`;
     for (let i = 0; i < scenes.length; i += 1) {
       const sc = scenes[i];
-      job.stepLabel = `Đang tổng hợp giọng đọc AI (${i + 1}/${scenes.length})...`;
-      job.progress = 12 + Math.round(((i + 1) / scenes.length) * 23);
-
       const wavPath = path.join(job.workDir, `voice_${i}.wav`);
-      const ok = await synthesizeSceneVoiceWav(ai, sc.narration, voice, stylePrompt, wavPath);
-      if (ok) {
-        sceneAudioPaths[i] = wavPath;
-        const audioDur = await probeDurationSeconds(wavPath, job.workDir);
-        if (audioDur > 0.5) {
-          sceneTargetDurations[i] = Math.max(3.0, audioDur + 0.4);
+      if (sc.narration.trim()) {
+        const ok = await synthesizeOfflineVoiceWav(sc.narration, wavPath);
+        if (ok) {
+          sceneAudioPaths[i] = wavPath;
+          const audioDur = await probeDurationSeconds(wavPath, job.workDir);
+          if (audioDur > 0.5) {
+            sceneTargetDurations[i] = Math.max(3.0, audioDur + 0.45);
+          }
         }
-      } else if (sc.narration.trim()) {
-        job.warnings.push(`Cảnh ${i + 1}: Không tạo được giọng đọc, giữ nhạc/nền tĩnh cho cảnh này.`);
       }
+      job.stepLabel = `Đang tổng hợp giọng đọc Offline (${i + 1}/${scenes.length})...`;
+      job.progress = 10 + Math.round(((i + 1) / scenes.length) * 24);
     }
+  } else if (effectiveVoiceMode === 'ai_online' && voice !== 'none') {
+    job.status = 'tts';
+    job.progress = 10;
+    job.stepLabel = `Đang tạo giọng đọc AI trực tuyến (0/${scenes.length} cảnh)...`;
+    const ai = getGeminiClient();
+    const stylePrompt =
+      params.voiceStyle?.trim() || 'Clear, engaging video narrator with natural pacing';
+
+    let nextIdx = 0;
+    let completedTts = 0;
+    const workers = Array.from({ length: Math.min(2, scenes.length) }, async () => {
+      while (nextIdx < scenes.length) {
+        const i = nextIdx++;
+        const sc = scenes[i];
+        const wavPath = path.join(job.workDir, `voice_${i}.wav`);
+        const ok = await synthesizeSceneVoiceWav(ai, sc.narration, voice, stylePrompt, wavPath);
+        if (ok) {
+          sceneAudioPaths[i] = wavPath;
+          const audioDur = await probeDurationSeconds(wavPath, job.workDir);
+          if (audioDur > 0.5) {
+            sceneTargetDurations[i] = Math.max(3.0, audioDur + 0.45);
+          }
+        } else if (sc.narration.trim()) {
+          job.warnings.push(`Cảnh ${i + 1}: Không tạo được giọng đọc AI, giữ nhạc/nền tĩnh cho cảnh này.`);
+        }
+        completedTts += 1;
+        job.stepLabel = `Đang tổng hợp giọng đọc AI (${completedTts}/${scenes.length})...`;
+        job.progress = 10 + Math.round((completedTts / scenes.length) * 24);
+      }
+    });
+    await Promise.all(workers);
   } else {
-    job.progress = 30;
+    job.progress = 32;
   }
 
-  // 2. Gather visual assets (source videos if remix mode + thumbnails fallback)
-  const downloadedSourceVideos = new Map<number, { path: string; duration: number }>();
+  // 2. Gather visual assets (Omni clips, scene images, uploaded local videos, remote source videos, Wikimedia Commons, thumbnails)
+  const downloadedSourceVideos = new Map<number, { path: string; duration: number; isBroll?: boolean }>();
+  const sceneOmniVideos = new Map<number, { path: string; duration: number }>();
+  const sceneCustomImages = new Map<number, string>();
+  const sceneBrollVideos = new Map<number, { path: string; duration: number }>();
   const thumbnailPaths = new Map<number, string>();
+  const usedBrollUrls = new Set<string>();
+  const failedSourceReasons = new Map<number, string>();
 
   job.status = 'downloading';
-  job.stepLabel = 'Đang chuẩn bị tư liệu hình ảnh từ các video đã học...';
+  job.stepLabel = 'Đang chuẩn bị tư liệu hình ảnh & âm thanh...';
+
+  // Save per-scene custom/AI images onto disk if present
+  for (let i = 0; i < scenes.length; i += 1) {
+    const sc = scenes[i];
+    if (sc.sceneImageDataUrl) {
+      const parsedImg = parseDataUrlToBuffer(sc.sceneImageDataUrl);
+      if (parsedImg) {
+        const ext = parsedImg.mimeType.includes('png') ? 'png' : 'jpg';
+        const imgPath = path.join(job.workDir, `scene_img_${i}.${ext}`);
+        fs.writeFileSync(imgPath, parsedImg.buffer);
+        sceneCustomImages.set(i, imgPath);
+      }
+    }
+    if (sc.omniClipAssetId) {
+      const asset = getStudioAsset(sc.omniClipAssetId);
+      if (asset) {
+        sceneOmniVideos.set(i, { path: asset.filePath, duration: asset.durationSec || 8 });
+      }
+    }
+  }
+
+  // Generate missing Omni Flash clips if visualMode === 'gemini_omni'
+  if (visualMode === 'gemini_omni') {
+    for (let i = 0; i < scenes.length; i += 1) {
+      if (sceneOmniVideos.has(i)) continue;
+      const sc = scenes[i];
+      job.stepLabel = `Đang tạo video cảnh ${i + 1}/${scenes.length} bằng Gemini Omni Flash...`;
+      job.progress = 36 + Math.round(((i + 1) / scenes.length) * 20);
+      const clipRes = await generateSceneVideoWithOmniFlash({
+        prompt: `${sc.visualNote || sc.onScreenText}. ${sc.narration.slice(0, 140)}`,
+        aspectRatio: blueprint.aspectRatio,
+        durationSec: Math.min(15, Math.max(4, Math.round(sceneTargetDurations[i]))),
+        sceneImageDataUrl: sc.sceneImageDataUrl,
+        characterRefs: params.characterRefs,
+      });
+      const asset = getStudioAsset(clipRes.assetId);
+      if (asset) {
+        sceneOmniVideos.set(i, { path: asset.filePath, duration: asset.durationSec || 8 });
+      }
+    }
+  }
 
   const referencedIndices = Array.from(
     new Set(scenes.map((s) => Math.max(0, Math.min(sources.length - 1, s.sourceVideoIndex))))
   );
 
-  // Download thumbnails for all referenced videos first (fast fallback & slideshow source)
+  // Register uploaded local videos and fetch thumbnails for remote sources
   await Promise.all(
     referencedIndices.map(async (srcIdx) => {
       const src = sources[srcIdx];
       if (!src) return;
+      if (src.localAssetId) {
+        const asset = getStudioAsset(src.localAssetId);
+        if (asset) {
+          downloadedSourceVideos.set(srcIdx, {
+            path: asset.filePath,
+            duration: asset.durationSec > 0 ? asset.durationSec : 30,
+          });
+          return;
+        }
+      }
       const img = await fetchImageBuffer(src.pic);
       if (img) {
         const ext = img.mimeType.includes('png') ? 'png' : img.mimeType.includes('webp') ? 'webp' : 'jpg';
@@ -1094,15 +2051,16 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     })
   );
 
-  const brollPreference: BrollSourceId = params.brollSource || 'auto';
+  const brollPreference: BrollSourceId = params.brollSource || 'wikimedia';
 
   if (visualMode === 'remix' && downloadSourceVideo) {
     for (let k = 0; k < referencedIndices.length; k += 1) {
       const srcIdx = referencedIndices[k];
+      if (downloadedSourceVideos.has(srcIdx)) continue; // already registered local uploaded video
       const src = sources[srcIdx];
       if (!src) continue;
       job.stepLabel = `Đang tải video nguồn #${srcIdx + 1} (${src.platformLabel}) để trích đoạn...`;
-      job.progress = 36 + Math.round(((k + 1) / Math.max(1, referencedIndices.length)) * 24);
+      job.progress = 38 + Math.round(((k + 1) / Math.max(1, referencedIndices.length)) * 14);
       const vidOutPath = path.join(job.workDir, `src_video_${srcIdx}.mp4`);
       let fallbackReason = '';
       try {
@@ -1117,29 +2075,115 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       } catch (dlErr: any) {
         fallbackReason = String(dlErr?.message || '').trim();
       }
+      failedSourceReasons.set(srcIdx, fallbackReason);
+    }
 
-      // Source clip unavailable: try B-roll stock clip if configured before falling back to Ken Burns
-      const brollPath = path.join(job.workDir, `broll_${srcIdx}.mp4`);
-      const brollQuery = src.translatedTitle || src.title || blueprint.derivativeTitle;
-      const brollRes = await tryDownloadBrollStockClip(brollPreference, brollQuery, brollPath);
-      if (brollRes.ok && fs.existsSync(brollPath)) {
-        const dur = await probeDurationSeconds(brollPath, job.workDir);
-        downloadedSourceVideos.set(srcIdx, { path: brollPath, duration: dur > 0 ? dur : 15 });
-        job.warnings.push(
-          fallbackReason
-            ? `Video nguồn #${srcIdx + 1} (${src.platformLabel}): ${fallbackReason} — đã tự động lấy video nền từ ${brollRes.label}.`
-            : `Video nguồn #${srcIdx + 1} (${src.platformLabel}) chưa trích xuất được — đã tự động lấy video nền từ ${brollRes.label}.`
+    // Fetch distinct per-scene Wikimedia Commons / B-roll clips whenever a referenced source video is unavailable
+    const scenesNeedingBroll = scenes.filter((sc, idx) => {
+      if (sceneOmniVideos.has(idx) || sceneCustomImages.has(idx)) return false;
+      const srcIdx = Math.max(0, Math.min(sources.length - 1, sc.sourceVideoIndex));
+      return !downloadedSourceVideos.has(srcIdx);
+    });
+
+    if (scenesNeedingBroll.length > 0 && brollPreference !== 'none') {
+      const brollLabelUsed = new Set<string>();
+      for (let bIdx = 0; bIdx < scenes.length; bIdx += 1) {
+        if (sceneOmniVideos.has(bIdx) || sceneCustomImages.has(bIdx)) continue;
+        const sc = scenes[bIdx];
+        const srcIdx = Math.max(0, Math.min(sources.length - 1, sc.sourceVideoIndex));
+        if (downloadedSourceVideos.has(srcIdx)) continue;
+
+        job.stepLabel = `Đang tìm video mẫu từ ${brollPreference === 'wikimedia' ? 'Wikimedia Commons' : 'kho B-roll'} cho cảnh ${bIdx + 1}/${scenes.length}...`;
+        job.progress = 52 + Math.round(((bIdx + 1) / scenes.length) * 10);
+
+        const src = sources[srcIdx];
+        const brollPath = path.join(job.workDir, `scene_broll_${bIdx}.mp4`);
+        const queries = [
+          sc.brollKeywordEn || '',
+          sc.visualNote || '',
+          src?.translatedTitle || src?.title || '',
+          blueprint.derivativeTitle || '',
+        ].filter(Boolean);
+
+        const brollRes = await tryDownloadBrollStockClip(brollPreference, queries, brollPath, usedBrollUrls);
+        if (brollRes.ok && fs.existsSync(brollPath)) {
+          const dur = await probeDurationSeconds(brollPath, job.workDir);
+          sceneBrollVideos.set(bIdx, { path: brollPath, duration: dur > 0 ? dur : 12 });
+          if (brollRes.label) brollLabelUsed.add(brollRes.label);
+        }
+      }
+
+      for (const srcIdx of failedSourceReasons.keys()) {
+        const src = sources[srcIdx];
+        const reason = failedSourceReasons.get(srcIdx) || '';
+        const hasAnySceneClip = scenes.some(
+          (sc, idx) =>
+            Math.max(0, Math.min(sources.length - 1, sc.sourceVideoIndex)) === srcIdx &&
+            sceneBrollVideos.has(idx)
         );
-      } else {
+        if (hasAnySceneClip) {
+          const labels = Array.from(brollLabelUsed).join(', ') || 'Wikimedia Commons';
+          job.warnings.push(
+            reason
+              ? `Video nguồn #${srcIdx + 1} (${src?.platformLabel || ''}): ${reason} — đã tự động chèn các clip mẫu từ ${labels}.`
+              : `Video nguồn #${srcIdx + 1} (${src?.platformLabel || ''}) chưa trích xuất được — đã tự động chèn các clip mẫu từ ${labels}.`
+          );
+        } else {
+          job.warnings.push(
+            reason
+              ? `Video nguồn #${srcIdx + 1} (${src?.platformLabel || ''}): ${reason} — tự động chuyển sang ảnh chuyển động Ken Burns.`
+              : `Video nguồn #${srcIdx + 1} (${src?.platformLabel || ''}) chưa trích xuất trực tiếp được — tự động chuyển sang ảnh chuyển động Ken Burns.`
+          );
+        }
+      }
+    } else if (failedSourceReasons.size > 0) {
+      for (const [srcIdx, reason] of failedSourceReasons.entries()) {
+        const src = sources[srcIdx];
         job.warnings.push(
-          fallbackReason
-            ? `Video nguồn #${srcIdx + 1} (${src.platformLabel}): ${fallbackReason} — tự động chuyển sang ảnh chuyển động Ken Burns.`
-            : `Video nguồn #${srcIdx + 1} (${src.platformLabel}) chưa trích xuất trực tiếp được — tự động chuyển sang ảnh chuyển động Ken Burns.`
+          reason
+            ? `Video nguồn #${srcIdx + 1} (${src?.platformLabel || ''}): ${reason} — tự động chuyển sang ảnh chuyển động Ken Burns.`
+            : `Video nguồn #${srcIdx + 1} (${src?.platformLabel || ''}) chưa trích xuất trực tiếp được — tự động chuyển sang ảnh chuyển động Ken Burns.`
         );
       }
     }
   } else {
-    job.progress = 55;
+    job.progress = 56;
+  }
+
+  // Prepare background music track if requested
+  let bgmLocalPath: string | null = null;
+  const musicMode: DerivativeMusicMode = params.musicMode || 'none';
+  if (musicMode !== 'none') {
+    if (params.musicAssetId) {
+      const rec = getStudioAsset(params.musicAssetId);
+      if (rec) bgmLocalPath = rec.filePath;
+    } else if (musicMode === 'ai_lyria') {
+      job.stepLabel = 'Đang sáng tác nhạc nền AI bằng Lyria...';
+      const track = await generateStudioMusicWithLyria({
+        prompt: params.musicPrompt || `Cinematic instrumental soundtrack for: ${blueprint.derivativeTitle}`,
+        mode: totalPlannedSec > 45 ? 'pro' : 'clip',
+      });
+      const rec = getStudioAsset(track.assetId);
+      if (rec) bgmLocalPath = rec.filePath;
+    } else if (musicMode === 'public_free' && params.publicMusicUrl) {
+      job.stepLabel = 'Đang tải nhạc nền công cộng từ Wikimedia Commons...';
+      try {
+        const dl = await fetch(params.publicMusicUrl, {
+          headers: { 'User-Agent': WIKIMEDIA_UA },
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (dl.ok) {
+          const buf = Buffer.from(await dl.arrayBuffer());
+          if (buf.byteLength > 10_000) {
+            const bgmOut = path.join(job.workDir, 'public_bgm.audio');
+            fs.writeFileSync(bgmOut, buf);
+            bgmLocalPath = bgmOut;
+          }
+        }
+      } catch {
+        job.warnings.push('Không tải được nhạc nền công cộng đã chọn — giữ nguyên âm thanh thoại.');
+      }
+    }
   }
 
   // 3. Render each normalized scene clip (matching exact width, height, fps, audio)
@@ -1147,18 +2191,30 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   const sceneVideoFiles: string[] = [];
   const subtitleTimeline: { start: number; end: number; caption: string }[] = [];
   let cursorSec = 0;
+  const encodePreset = totalPlannedSec >= 120 ? 'ultrafast' : 'veryfast';
 
   for (let i = 0; i < scenes.length; i += 1) {
     const sc = scenes[i];
     const srcIdx = Math.max(0, Math.min(sources.length - 1, sc.sourceVideoIndex));
     const sceneDur = Number(sceneTargetDurations[i].toFixed(2));
     job.stepLabel = `Đang dựng phân cảnh ${i + 1}/${scenes.length} bằng FFmpeg...`;
-    job.progress = 62 + Math.round(((i + 1) / scenes.length) * 25);
+    job.progress = 62 + Math.round(((i + 1) / scenes.length) * 26);
 
     const outScenePath = path.join(job.workDir, `scene_${i}.mp4`);
     const audioWav = sceneAudioPaths[i];
-    const srcVideo = downloadedSourceVideos.get(srcIdx);
-    const thumbFile = thumbnailPaths.get(srcIdx);
+    const omniClip = sceneOmniVideos.get(i);
+    const brollClip = sceneBrollVideos.get(i);
+    const customImg = sceneCustomImages.get(i);
+    const srcVideo = omniClip
+      ? { path: omniClip.path, duration: omniClip.duration, isBroll: true }
+      : customImg
+      ? undefined
+      : brollClip
+      ? { path: brollClip.path, duration: brollClip.duration, isBroll: true }
+      : visualMode === 'storyboard_motion'
+      ? undefined
+      : downloadedSourceVideos.get(srcIdx);
+    const thumbFile = customImg || thumbnailPaths.get(srcIdx);
 
     const canvasFilter =
       `[0:v]split[bg][fg];` +
@@ -1169,19 +2225,18 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     let args: string[] = [];
 
     if (srcVideo) {
-      const startSec = Math.max(
-        0,
-        Math.min(Math.max(0, srcVideo.duration - sceneDur), (sc.sourceStartPercent / 100) * srcVideo.duration)
-      );
-      if (audioWav && keepSourceAudio) {
+      const needsLoop = srcVideo.duration <= sceneDur + 1;
+      const startSec = needsLoop
+        ? 0
+        : Math.max(0, Math.min(srcVideo.duration - sceneDur - 0.5, (sc.sourceStartPercent / 100) * srcVideo.duration));
+      const inputArgs = needsLoop
+        ? ['-stream_loop', '-1', '-i', srcVideo.path]
+        : ['-ss', startSec.toFixed(2), '-t', sceneDur.toFixed(2), '-i', srcVideo.path];
+
+      if (audioWav && keepSourceAudio && !srcVideo.isBroll) {
         args = [
           '-y',
-          '-ss',
-          startSec.toFixed(2),
-          '-t',
-          sceneDur.toFixed(2),
-          '-i',
-          path.basename(srcVideo.path),
+          ...inputArgs,
           '-i',
           path.basename(audioWav),
           '-filter_complex',
@@ -1195,7 +2250,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
           '-c:v',
           'libx264',
           '-preset',
-          'veryfast',
+          encodePreset,
           '-crf',
           '22',
           '-c:a',
@@ -1211,12 +2266,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       } else if (audioWav) {
         args = [
           '-y',
-          '-ss',
-          startSec.toFixed(2),
-          '-t',
-          sceneDur.toFixed(2),
-          '-i',
-          path.basename(srcVideo.path),
+          ...inputArgs,
           '-i',
           path.basename(audioWav),
           '-filter_complex',
@@ -1230,7 +2280,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
           '-c:v',
           'libx264',
           '-preset',
-          'veryfast',
+          encodePreset,
           '-crf',
           '22',
           '-c:a',
@@ -1244,15 +2294,9 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
           path.basename(outScenePath),
         ];
       } else {
-        // No TTS voice: either keep original audio or generate silence
         args = [
           '-y',
-          '-ss',
-          startSec.toFixed(2),
-          '-t',
-          sceneDur.toFixed(2),
-          '-i',
-          path.basename(srcVideo.path),
+          ...inputArgs,
           '-f',
           'lavfi',
           '-t',
@@ -1264,13 +2308,13 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
           '-map',
           '[vout]',
           '-map',
-          keepSourceAudio ? '0:a?' : '1:a',
+          keepSourceAudio && !srcVideo.isBroll ? '0:a?' : '1:a',
           '-t',
           sceneDur.toFixed(2),
           '-c:v',
           'libx264',
           '-preset',
-          'veryfast',
+          encodePreset,
           '-crf',
           '22',
           '-c:a',
@@ -1283,7 +2327,6 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         ];
       }
     } else if (thumbFile) {
-      // Motion Ken Burns on thumbnail image
       const frames = Math.max(90, Math.round(sceneDur * 30));
       const zoomExpr =
         i % 2 === 0
@@ -1316,7 +2359,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
           '-c:v',
           'libx264',
           '-preset',
-          'veryfast',
+          encodePreset,
           '-crf',
           '22',
           '-c:a',
@@ -1353,7 +2396,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
           '-c:v',
           'libx264',
           '-preset',
-          'veryfast',
+          encodePreset,
           '-crf',
           '22',
           '-c:a',
@@ -1366,7 +2409,6 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         ];
       }
     } else {
-      // Solid styled brand backdrop fallback if neither video nor thumbnail downloaded
       const solidFilter = `color=c=#001722:s=${targetW}x${targetH}:d=${sceneDur.toFixed(2)}:r=30,format=yuv420p[vout]`;
       if (audioWav) {
         args = [
@@ -1384,7 +2426,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
           '-c:v',
           'libx264',
           '-preset',
-          'veryfast',
+          encodePreset,
           '-c:a',
           'aac',
           '-ar',
@@ -1413,7 +2455,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
           '-c:v',
           'libx264',
           '-preset',
-          'veryfast',
+          encodePreset,
           '-c:a',
           'aac',
           '-ar',
@@ -1425,17 +2467,14 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       }
     }
 
-    let renderRes = await spawnPromise('ffmpeg', args, job.workDir, 120_000);
-    // Fallback if source video lacked an audio stream when keepSourceAudio=true or filter rejected
+    let renderRes = await spawnPromise('ffmpeg', args, job.workDir, 300_000);
     if (renderRes.code !== 0 && srcVideo) {
       const noAudioFallbackArgs = [
         '-y',
-        '-ss',
-        '0',
-        '-t',
-        sceneDur.toFixed(2),
+        '-stream_loop',
+        '-1',
         '-i',
-        path.basename(srcVideo.path),
+        srcVideo.path,
         ...(audioWav
           ? ['-i', path.basename(audioWav)]
           : ['-f', 'lavfi', '-t', sceneDur.toFixed(2), '-i', 'anullsrc=r=44100:cl=stereo']),
@@ -1450,7 +2489,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         '-c:v',
         'libx264',
         '-preset',
-        'veryfast',
+        encodePreset,
         '-crf',
         '22',
         '-c:a',
@@ -1461,7 +2500,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         '2',
         path.basename(outScenePath),
       ];
-      renderRes = await spawnPromise('ffmpeg', noAudioFallbackArgs, job.workDir, 120_000);
+      renderRes = await spawnPromise('ffmpeg', noAudioFallbackArgs, job.workDir, 300_000);
     }
 
     if (renderRes.code !== 0 || !fs.existsSync(outScenePath)) {
@@ -1478,8 +2517,10 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     sceneVideoFiles.push(path.basename(outScenePath));
   }
 
-  // 4. Concatenate all scenes + burn Vietnamese ASS hook & captions + faststart
-  job.stepLabel = 'Đang ghép hoàn thiện video phái sinh & chèn phụ đề...';
+  // 4. Concatenate all scenes + burn ASS subtitles + mix optional background music + faststart
+  job.stepLabel = bgmLocalPath
+    ? 'Đang ghép video hoàn chỉnh, trộn nhạc nền & chèn phụ đề...'
+    : 'Đang ghép hoàn thiện video phái sinh & chèn phụ đề...';
   job.progress = 91;
 
   const concatTxtPath = path.join(job.workDir, 'concat.txt');
@@ -1489,13 +2530,52 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     'utf8'
   );
 
-  const assContent = buildAssSubtitlesFile(targetW, targetH, blueprint.derivativeHook, subtitleTimeline);
+  const assContent = buildAssSubtitlesFile(targetW, targetH, blueprint.derivativeHook || '', subtitleTimeline);
   fs.writeFileSync(path.join(job.workDir, 'subtitles.ass'), assContent, 'utf8');
 
   const finalOutPath = path.join(job.workDir, 'final_derivative.mp4');
-  let finalRes = await spawnPromise(
-    'ffmpeg',
-    [
+  const musicVol = Math.max(0.05, Math.min(0.6, Number(params.musicVolume ?? 0.18)));
+
+  let finalArgs: string[] = [];
+  if (bgmLocalPath && fs.existsSync(bgmLocalPath)) {
+    finalArgs = [
+      '-y',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      'concat.txt',
+      '-stream_loop',
+      '-1',
+      '-i',
+      bgmLocalPath,
+      '-filter_complex',
+      `[0:a]aresample=44100[avoice];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[avoice][abgm]amix=inputs=2:duration=first:dropout_transition=0.3[aout]`,
+      '-map',
+      '0:v',
+      '-map',
+      '[aout]',
+      '-vf',
+      'ass=subtitles.ass',
+      '-c:v',
+      'libx264',
+      '-preset',
+      encodePreset,
+      '-crf',
+      '21',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '192k',
+      '-movflags',
+      '+faststart',
+      'final_derivative.mp4',
+    ];
+  } else {
+    finalArgs = [
       '-y',
       '-f',
       'concat',
@@ -1508,7 +2588,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       '-c:v',
       'libx264',
       '-preset',
-      'veryfast',
+      encodePreset,
       '-crf',
       '21',
       '-pix_fmt',
@@ -1520,33 +2600,58 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       '-movflags',
       '+faststart',
       'final_derivative.mp4',
-    ],
-    job.workDir,
-    180_000
-  );
+    ];
+  }
 
-  // If libass is unavailable on a minimal FFmpeg build, gracefully concat without ASS subtitles
+  let finalRes = await spawnPromise('ffmpeg', finalArgs, job.workDir, 600_000);
+
+  // Fallback without libass if libass fails
   if (finalRes.code !== 0 || !fs.existsSync(finalOutPath)) {
-    job.warnings.push('FFmpeg trên máy không hỗ trợ libass, đã xuất video không kèm chữ phụ đề.');
-    finalRes = await spawnPromise(
-      'ffmpeg',
-      [
-        '-y',
-        '-f',
-        'concat',
-        '-safe',
-        '0',
-        '-i',
-        'concat.txt',
-        '-c',
-        'copy',
-        '-movflags',
-        '+faststart',
-        'final_derivative.mp4',
-      ],
-      job.workDir,
-      120_000
-    );
+    job.warnings.push('FFmpeg không áp dụng được phụ đề libass, đã xuất video kèm đầy đủ âm thanh/nhạc nền.');
+    const noAssArgs = bgmLocalPath && fs.existsSync(bgmLocalPath)
+      ? [
+          '-y',
+          '-f',
+          'concat',
+          '-safe',
+          '0',
+          '-i',
+          'concat.txt',
+          '-stream_loop',
+          '-1',
+          '-i',
+          bgmLocalPath,
+          '-filter_complex',
+          `[0:a]aresample=44100[avoice];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[avoice][abgm]amix=inputs=2:duration=first:dropout_transition=0.3[aout]`,
+          '-map',
+          '0:v',
+          '-map',
+          '[aout]',
+          '-c:v',
+          'copy',
+          '-c:a',
+          'aac',
+          '-b:a',
+          '192k',
+          '-movflags',
+          '+faststart',
+          'final_derivative.mp4',
+        ]
+      : [
+          '-y',
+          '-f',
+          'concat',
+          '-safe',
+          '0',
+          '-i',
+          'concat.txt',
+          '-c',
+          'copy',
+          '-movflags',
+          '+faststart',
+          'final_derivative.mp4',
+        ];
+    finalRes = await spawnPromise('ffmpeg', noAssArgs, job.workDir, 240_000);
   }
 
   if (finalRes.code !== 0 || !fs.existsSync(finalOutPath)) {

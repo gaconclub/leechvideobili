@@ -1,7 +1,7 @@
 import React from 'react';
-import { Download, RefreshCw, Flame, Layers, Search, Settings } from 'lucide-react';
+import { Download, RefreshCw, Flame, Layers, Search, Settings, Clapperboard } from 'lucide-react';
 
-export type AppTab = 'batch' | 'search' | 'trending' | 'settings';
+export type AppTab = 'batch' | 'search' | 'trending' | 'studio' | 'settings';
 
 interface TopBarProps {
   activeTab: AppTab;
@@ -11,7 +11,6 @@ interface TopBarProps {
   hasUpdate?: boolean;
   onChangeTab: (tab: AppTab) => void;
   onStartAll: () => void;
-  onOpenCookieModal: () => void;
   onOpenUpdateModal: () => void;
 }
 
@@ -23,7 +22,6 @@ export const TopBar: React.FC<TopBarProps> = ({
   hasUpdate,
   onChangeTab,
   onStartAll,
-  onOpenCookieModal,
   onOpenUpdateModal,
 }) => {
   const navItemClass = (isActive: boolean) =>
@@ -86,21 +84,22 @@ export const TopBar: React.FC<TopBarProps> = ({
 
           <button
             type="button"
+            onClick={() => onChangeTab('studio')}
+            className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'studio')}`}
+          >
+            <Clapperboard className="w-3.5 h-3.5 text-[#003B3E] dark:text-[#1BA8AD]" />
+            <span>Studio</span>
+            <span aria-hidden="true" className={underlineClass(activeTab === 'studio')} />
+          </button>
+
+          <button
+            type="button"
             onClick={() => onChangeTab('settings')}
             className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'settings')}`}
           >
             <Settings className="w-3.5 h-3.5" />
             <span>Cấu hình{hasCookie ? ' · Đã lưu' : ''}</span>
             <span aria-hidden="true" className={underlineClass(activeTab === 'settings')} />
-          </button>
-
-          <button
-            type="button"
-            onClick={onOpenCookieModal}
-            className={`hidden xl:inline-flex items-center gap-1.5 ${navItemClass(false)}`}
-          >
-            <span>Cookie nhanh</span>
-            <span aria-hidden="true" className={underlineClass(false)} />
           </button>
 
           <button

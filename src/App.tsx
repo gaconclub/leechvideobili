@@ -19,11 +19,10 @@ import { QueueTable } from './components/QueueTable';
 import { TrendingPanel } from './components/TrendingPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { SettingsPanel } from './components/SettingsPanel';
-import { SessdataModal } from './components/SessdataModal';
 import { CustomLogoModal } from './components/CustomLogoModal';
 import { VideoTransformModal } from './components/VideoTransformModal';
 import { UpdateModal, SystemUpdateStatus } from './components/UpdateModal';
-import { DerivativeStudioModal } from './components/DerivativeStudioModal';
+import { StudioPanel } from './components/StudioPanel';
 import {
   buildCombinedCookiesString,
   DEFAULT_STUDIO_CONFIG,
@@ -56,6 +55,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('batch');
   const [mountedSearch, setMountedSearch] = useState(false);
   const [mountedTrending, setMountedTrending] = useState(false);
+  const [mountedStudio, setMountedStudio] = useState(false);
   const [searchQueryRequest, setSearchQueryRequest] = useState<{ query: string; nonce: number } | null>(null);
   const [items, setItems] = useState<QueueVideoItem[]>([]);
   const [globalQn, setGlobalQn] = useState<number>(0); // Default: Tốt nhất (Auto)
@@ -73,7 +73,6 @@ export default function App() {
   const [folderNotice, setFolderNotice] = useState<string>('');
   const [isInspecting, setIsInspecting] = useState(false);
   const [inspectErrors, setInspectErrors] = useState<InspectError[]>([]);
-  const [isCookieModalOpen, setIsCookieModalOpen] = useState(false);
   const [isLogoModalOpen, setIsLogoModalOpen] = useState(false);
   const [isTransformModalOpen, setIsTransformModalOpen] = useState(false);
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
@@ -83,11 +82,11 @@ export default function App() {
   const [isServerRestarting, setIsServerRestarting] = useState(false);
   const [updateError, setUpdateError] = useState('');
   const [updateSuccessMsg, setUpdateSuccessMsg] = useState('');
-  const [derivativeStudioState, setDerivativeStudioState] = useState<{
-    isOpen: boolean;
+  const [studioIncoming, setStudioIncoming] = useState<{
     videos: TrendingVideoItem[];
     query: string;
-  }>({ isOpen: false, videos: [], query: '' });
+    nonce: number;
+  }>({ videos: [], query: '', nonce: 0 });
 
   const [videoTransform, setVideoTransform] = useState<VideoTransformConfig>(() => {
     try {
@@ -232,7 +231,18 @@ export default function App() {
     try {
       const saved = localStorage.getItem('bilibatch_studio_defaults');
       if (saved) {
-        return { ...DEFAULT_STUDIO_CONFIG, ...(JSON.parse(saved) as Partial<StudioDefaultConfig>) };
+        const parsed = JSON.parse(saved) as Partial<StudioDefaultConfig> & { targetDuration?: string };
+        const migratedSec =
+          typeof parsed.targetDurationSec === 'number' && parsed.targetDurationSec >= 20
+            ? parsed.targetDurationSec
+            : parsed.targetDuration === 'medium'
+            ? 45
+            : DEFAULT_STUDIO_CONFIG.targetDurationSec;
+        return {
+          ...DEFAULT_STUDIO_CONFIG,
+          ...parsed,
+          targetDurationSec: migratedSec,
+        };
       }
     } catch {
       // ignore
@@ -361,11 +371,6 @@ export default function App() {
     },
     [perSiteCookies, persistPerSiteCookies]
   );
-
-  const handleSaveCookies = (nextSessdata: string, nextYtCookies: string) => {
-    const migrated = migrateLegacyCookies(nextYtCookies, nextSessdata);
-    persistPerSiteCookies(migrated);
-  };
 
   const handleUpdateStudioDefaults = useCallback((next: StudioDefaultConfig) => {
     setStudioDefaults(next);
@@ -1028,6 +1033,7 @@ export default function App() {
     setActiveTab(tab);
     if (tab === 'search') setMountedSearch(true);
     if (tab === 'trending') setMountedTrending(true);
+    if (tab === 'studio') setMountedStudio(true);
   }, []);
 
   const handleSearchFromTopic = useCallback((topic: string) => {
@@ -1038,7 +1044,9 @@ export default function App() {
 
   const handleOpenDerivativeStudio = useCallback((videos: TrendingVideoItem[], query = '') => {
     if (!videos || videos.length === 0) return;
-    setDerivativeStudioState({ isOpen: true, videos, query });
+    setMountedStudio(true);
+    setStudioIncoming({ videos, query, nonce: Date.now() });
+    setActiveTab('studio');
   }, []);
 
   const isAnyDownloading = items.some(
@@ -1058,7 +1066,6 @@ export default function App() {
         hasUpdate={Boolean(updateStatus?.supported && updateStatus?.hasUpdate)}
         onChangeTab={handleChangeTab}
         onStartAll={handleStartAll}
-        onOpenCookieModal={() => setIsCookieModalOpen(true)}
         onOpenUpdateModal={handleOpenUpdateModal}
       />
 
@@ -1128,7 +1135,7 @@ export default function App() {
               bookmarkIds={bookmarkIds}
               onToggleBookmark={handleToggleBookmark}
               onAddVideosToQueue={handleAddTrendingVideosToQueue}
-              onOpenCookieModal={() => setIsCookieModalOpen(true)}
+              onOpenCookieModal={() => handleChangeTab('settings')}
               onOpenDerivativeStudio={handleOpenDerivativeStudio}
             />
           </div>
@@ -1144,9 +1151,23 @@ export default function App() {
               bookmarkIds={bookmarkIds}
               onToggleBookmark={handleToggleBookmark}
               onAddVideosToQueue={handleAddTrendingVideosToQueue}
-              onOpenCookieModal={() => setIsCookieModalOpen(true)}
+              onOpenCookieModal={() => handleChangeTab('settings')}
               onSearchTopic={handleSearchFromTopic}
               onOpenDerivativeStudio={handleOpenDerivativeStudio}
+            />
+          </div>
+        )}
+
+        {mountedStudio && (
+          <div className={activeTab === 'studio' ? 'block' : 'hidden'}>
+            <StudioPanel
+              incomingVideos={studioIncoming.videos}
+              incomingQuery={studioIncoming.query}
+              incomingNonce={studioIncoming.nonce}
+              sessdata={sessdata}
+              ytCookies={ytCookies}
+              studioDefaults={studioDefaults}
+              onOpenSettings={() => handleChangeTab('settings')}
             />
           </div>
         )}
@@ -1168,14 +1189,6 @@ export default function App() {
           <span>Hỗ trợ MP4, MKV, WEBM, MP3, M4A · Xử lý ghép luồng bằng FFmpeg</span>
         </div>
       </footer>
-
-      <SessdataModal
-        isOpen={isCookieModalOpen}
-        sessdata={sessdata}
-        ytCookies={ytCookies}
-        onSave={handleSaveCookies}
-        onClose={() => setIsCookieModalOpen(false)}
-      />
 
       <CustomLogoModal
         isOpen={isLogoModalOpen}
@@ -1202,16 +1215,6 @@ export default function App() {
         onCheckNow={checkSystemUpdate}
         onApplyUpdate={handleApplyUpdate}
         onClose={() => setIsUpdateModalOpen(false)}
-      />
-
-      <DerivativeStudioModal
-        isOpen={derivativeStudioState.isOpen}
-        initialVideos={derivativeStudioState.videos}
-        searchQuery={derivativeStudioState.query}
-        sessdata={sessdata}
-        ytCookies={ytCookies}
-        studioDefaults={studioDefaults}
-        onClose={() => setDerivativeStudioState((prev) => ({ ...prev, isOpen: false }))}
       />
     </div>
   );

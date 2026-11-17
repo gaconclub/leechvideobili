@@ -164,6 +164,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       configured: Boolean(capabilities?.aiProviders.meta.configured),
       modelName: capabilities?.aiProviders.meta.model || 'Llama-4-Scout-17B',
     },
+    {
+      id: 'muse',
+      title: 'Meta Muse AI',
+      subtitle: 'Sáng tạo kịch bản chuyên sâu & phân tích video dài',
+      envVar: 'MUSE_API_KEY',
+      configured: Boolean(capabilities?.aiProviders.muse?.configured),
+      modelName: capabilities?.aiProviders.muse?.model || 'Llama-4-Maverick-17B',
+    },
   ];
 
   const brollCards: {
@@ -174,17 +182,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     available: boolean;
   }[] = [
     {
-      id: 'auto',
-      title: 'Tự động kết hợp (Khuyên dùng)',
-      desc: 'Ưu tiên video nguồn gốc; nếu bị chặn bot thì tự tìm B-roll từ Pexels, Pixabay, Wikimedia Commons rồi mới dùng Ken Burns.',
-      statusLabel: 'Luôn bật',
+      id: 'wikimedia',
+      title: 'Wikimedia Commons (Ưu tiên mặc định)',
+      desc: 'Kho video phạm vi công cộng CC0 / CC BY. Studio ưu tiên tham khảo & lấy nhiều clip chuyển động thực tế từ Wikimedia cho từng cảnh, miễn phí 100%, không cần API key.',
+      statusLabel: 'Ưu tiên · Không cần key',
       available: true,
     },
     {
-      id: 'wikimedia',
-      title: 'Wikimedia Commons',
-      desc: 'Kho video phạm vi công cộng CC0 / CC BY. Tìm và chèn clip chuyển động thực tế ngay lập tức, không cần API key.',
-      statusLabel: 'Không cần key',
+      id: 'auto',
+      title: 'Tự động kết hợp (Wikimedia trước)',
+      desc: 'Ưu tiên video nguồn gốc -> Wikimedia Commons -> Pexels -> Pixabay -> cuối cùng mới dùng hiệu ứng Ken Burns.',
+      statusLabel: 'Luôn bật',
       available: true,
     },
     {
@@ -407,7 +415,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
           {aiCards.map((card) => {
             const isActive = studioDefaults.aiProvider === card.id;
             return (
@@ -438,8 +446,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 </div>
                 <p className="text-xs text-slate-600 dark:text-teal-100/75">{card.subtitle}</p>
                 <div className="pt-1 flex items-center justify-between gap-2 text-[11px] font-mono text-slate-500 dark:text-teal-200/65">
-                  <span>{card.modelName}</span>
-                  <span>{card.envVar}</span>
+                  <span className="truncate">{card.modelName}</span>
+                  <span className="shrink-0">{card.envVar}</span>
                 </div>
               </button>
             );
@@ -464,7 +472,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         )}
 
         <p className="text-xs text-slate-500 dark:text-teal-200/70 leading-relaxed">
-          Khóa dịch vụ AI (<code className="font-mono">GEMINI_API_KEY</code>, <code className="font-mono">OPENAI_API_KEY</code>, <code className="font-mono">META_API_KEY</code>) được máy chủ đọc trực tiếp từ <strong>Settings &gt; Secrets</strong> trên AI Studio hoặc tệp <code className="font-mono">.env</code> trong thư mục ứng dụng trên máy tính để đảm bảo an toàn, không lưu trong trình duyệt.
+          Bảo mật khóa API: Các khóa (<code className="font-mono">GEMINI_API_KEY</code>, <code className="font-mono">OPENAI_API_KEY</code>, <code className="font-mono">META_API_KEY</code>, <code className="font-mono">MUSE_API_KEY</code>) được ẩn và đọc an toàn phía máy chủ từ <strong>Settings &gt; Secrets</strong> hoặc tệp <code className="font-mono">.env</code> trên máy tính, không lộ trên trình duyệt.
         </p>
       </section>
 
@@ -578,22 +586,52 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             </select>
           </label>
 
-          <label className="space-y-1">
-            <span className="block text-xs font-medium text-slate-600 dark:text-teal-200/80">Thời lượng dự kiến</span>
-            <select
-              value={studioDefaults.targetDuration}
-              onChange={(e) =>
-                onUpdateStudioDefaults({
-                  ...studioDefaults,
-                  targetDuration: e.target.value as 'short' | 'medium',
-                })
-              }
-              className="w-full h-9 px-3 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white focus:outline-none focus:border-[#003B3E]"
-            >
-              <option value="short">Ngắn (~25–30s · 4 cảnh)</option>
-              <option value="medium">Trung bình (~40–50s · 5 cảnh)</option>
-            </select>
-          </label>
+          <div className="space-y-1">
+            <span className="block text-xs font-medium text-slate-600 dark:text-teal-200/80">
+              Thời lượng dự kiến ({Math.floor(studioDefaults.targetDurationSec / 60)}p {studioDefaults.targetDurationSec % 60}s)
+            </span>
+            <div className="flex items-center gap-2">
+              <select
+                value={[30, 60, 180, 300, 360, 480, 600].includes(studioDefaults.targetDurationSec) ? String(studioDefaults.targetDurationSec) : 'custom'}
+                onChange={(e) => {
+                  if (e.target.value !== 'custom') {
+                    onUpdateStudioDefaults({
+                      ...studioDefaults,
+                      targetDurationSec: Number(e.target.value),
+                    });
+                  }
+                }}
+                className="flex-1 h-9 px-2.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white focus:outline-none focus:border-[#003B3E]"
+              >
+                <option value="30">30 giây (Ngắn · 4 cảnh)</option>
+                <option value="60">1 phút (60s · 6 cảnh)</option>
+                <option value="180">3 phút (180s · 10 cảnh)</option>
+                <option value="300">5 phút (300s · 14 cảnh)</option>
+                <option value="360">6 phút (360s · 16 cảnh)</option>
+                <option value="480">8 phút (480s · 16 cảnh)</option>
+                <option value="600">10 phút (600s · 20 cảnh)</option>
+                {![30, 60, 180, 300, 360, 480, 600].includes(studioDefaults.targetDurationSec) && (
+                  <option value="custom">Tùy chỉnh ({studioDefaults.targetDurationSec}s)</option>
+                )}
+              </select>
+              <input
+                type="number"
+                min={20}
+                max={900}
+                step={15}
+                value={studioDefaults.targetDurationSec}
+                onChange={(e) =>
+                  onUpdateStudioDefaults({
+                    ...studioDefaults,
+                    targetDurationSec: Math.max(20, Math.min(900, Number(e.target.value) || 30)),
+                  })
+                }
+                aria-label="Số giây mục tiêu"
+                title="Nhập tùy ý từ 20 đến 900 giây (15 phút)"
+                className="w-20 h-9 px-2 text-xs font-mono bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white text-center focus:outline-none focus:border-[#003B3E]"
+              />
+            </div>
+          </div>
 
           <label className="space-y-1">
             <span className="block text-xs font-medium text-slate-600 dark:text-teal-200/80">Chế độ dựng hình ảnh</span>
@@ -609,6 +647,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             >
               <option value="remix">Remix cắt ghép video nguồn + AI voice</option>
               <option value="storyboard_motion">Ảnh chuyển động Ken Burns (Nhanh)</option>
+              <option value="gemini_omni">Gemini Omni Flash (gemini-omni-1.2-flash · Cần key trả phí)</option>
+              <option value="muse_edison">Muse AI (Edison Bridge · qua Tunnel)</option>
             </select>
           </label>
 

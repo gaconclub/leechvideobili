@@ -20,15 +20,30 @@ import {
 } from './server/trending';
 import {
   AiProviderId,
+  appendStudioUploadChunk,
   BrollSourceId,
+  completeStudioChunkedUpload,
   DerivativeAspectRatio,
   DerivativeBlueprint,
   derivativeJobs,
+  DerivativeMusicMode,
+  DerivativeOutputLanguage,
   DerivativeSourceInput,
   DerivativeStylePreset,
   DerivativeVisualMode,
   DerivativeVoiceId,
+  DerivativeVoiceMode,
+  detectOfflineTtsEngine,
+  generateSceneVideoWithOmniFlash,
+  generateStudioImage,
+  generateStudioMusicWithLyria,
+  getStudioAsset,
+  initStudioChunkedUpload,
   learnVideosAndCreateBlueprint,
+  saveUploadedStudioAudio,
+  saveUploadedStudioVideo,
+  saveUploadedStudioVideoFromDisk,
+  searchPublicFreeMusicFromWikimedia,
   startDerivativeVideoJob,
   testAiProviderConnection,
 } from './server/derivative';
@@ -2498,7 +2513,7 @@ async function processYouTubeDownloadJob(
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '20mb' }));
+  app.use(express.json({ limit: '50mb' }));
 
   // Proxy Bilibili & multi-platform thumbnails safely
   app.get('/api/bilibili/proxy-image', async (req, res) => {
@@ -2926,6 +2941,7 @@ async function startServer() {
     }
 
     const ffmpegCheck = await checkBinVersion('ffmpeg', ['-version']);
+    const offlineTtsCheck = await detectOfflineTtsEngine();
 
     res.json({
       aiProviders: {
@@ -2946,6 +2962,20 @@ async function startServer() {
           baseUrl: (process.env.META_BASE_URL || 'https://api.llama.com/compat/v1').trim(),
           source: process.env.META_API_KEY?.trim() ? 'env' : 'none',
         },
+        muse: {
+          configured: Boolean(process.env.MUSE_API_KEY?.trim()),
+          model: (process.env.MUSE_MODEL || 'Llama-4-Maverick-17B-128E-Instruct-FP8').trim(),
+          baseUrl: (process.env.MUSE_BASE_URL || 'https://api.llama.com/compat/v1').trim(),
+          source: process.env.MUSE_API_KEY?.trim() ? 'env' : 'none',
+        },
+      },
+      paidModels: {
+        omniVideoModel: 'gemini-omni-1.2-flash',
+        imageModel: 'gemini-3.1-flash-lite-image',
+        imageProModel: 'gemini-nano-banana-2.1',
+        musicClipModel: 'lyria-3-clip-preview',
+        musicProModel: 'lyria-3-pro-preview',
+        proScriptModel: 'gemini-4-argon',
       },
       brollProviders: {
         wikimedia: { configured: true, freeNoKey: true },
@@ -2956,6 +2986,7 @@ async function startServer() {
         ffmpeg: ffmpegCheck,
         ytDlp: ytDlpCheck,
         node: { available: true, version: process.version },
+        offlineTts: offlineTtsCheck,
       },
     });
   });
@@ -2964,11 +2995,214 @@ async function startServer() {
     try {
       const rawProvider = String(req.body?.provider || 'gemini');
       const provider: AiProviderId =
-        rawProvider === 'openai' || rawProvider === 'meta' ? rawProvider : 'gemini';
+        rawProvider === 'openai' || rawProvider === 'meta' || rawProvider === 'muse'
+          ? rawProvider
+          : 'gemini';
       const result = await testAiProviderConnection(provider);
       res.status(result.ok ? 200 : 400).json(result);
     } catch (err: any) {
       res.status(500).json({ ok: false, message: err?.message || 'Kiểm tra kết nối thất bại.' });
+    }
+  });
+
+  // ==========================================
+  // STUDIO MEDIA & AI CREATOR ENDPOINTS
+  // ==========================================
+
+  app.post('/api/studio/uploads/init', (req, res) => {
+    try {
+      const { kind = 'video', fileName = 'uploaded_video.mp4' } = (req.body || {}) as {
+        kind?: 'video' | 'audio';
+        fileName?: string;
+      };
+      const session = initStudioChunkedUpload(kind === 'audio' ? 'audio' : 'video', String(fileName || 'uploaded_file'));
+      res.json(session);
+    } catch (err: any) {
+      console.error('Studio chunk init error:', err);
+      res.status(500).json({ error: err?.message || 'Không thể khởi tạo phiên tải tệp.' });
+    }
+  });
+
+  app.post(
+    '/api/studio/uploads/:uploadId/chunk',
+    express.raw({ type: '*/*', limit: '16mb' }),
+    (req, res) => {
+      try {
+        const chunk = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+        if (chunk.byteLength === 0) {
+          return res.status(400).json({ error: 'Đoạn dữ liệu tải lên bị rỗng.' });
+        }
+        const status = appendStudioUploadChunk(req.params.uploadId, chunk);
+        res.json({ ok: true, ...status });
+      } catch (err: any) {
+        console.error('Studio chunk append error:', err);
+        res.status(400).json({ error: err?.message || 'Không thể ghi đoạn dữ liệu tải lên.' });
+      }
+    }
+  );
+
+  app.post('/api/studio/uploads/:uploadId/complete', async (req, res) => {
+    try {
+      const asset = await completeStudioChunkedUpload(req.params.uploadId);
+      res.json({ asset });
+    } catch (err: any) {
+      console.error('Studio chunk complete error:', err);
+      res.status(500).json({ error: err?.message || 'Không thể hoàn tất xử lý tệp tải lên.' });
+    }
+  });
+
+  app.post(
+    '/api/studio/upload-video',
+    express.raw({ type: '*/*', limit: '200mb' }),
+    async (req, res) => {
+      try {
+        const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+        if (buf.byteLength < 1024) {
+          return res.status(400).json({ error: 'Tệp video tải lên rỗng hoặc quá nhỏ.' });
+        }
+        const rawNameHeader = String(req.headers['x-file-name'] || req.query.name || 'uploaded_video.mp4');
+        let fileName = 'uploaded_video.mp4';
+        try {
+          fileName = decodeURIComponent(rawNameHeader);
+        } catch {
+          fileName = rawNameHeader;
+        }
+        const asset = await saveUploadedStudioVideo(buf, fileName);
+        res.json({ asset });
+      } catch (err: any) {
+        console.error('Studio video upload error:', err);
+        res.status(500).json({ error: err?.message || 'Không thể xử lý video tải lên.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/studio/upload-audio',
+    express.raw({ type: '*/*', limit: '50mb' }),
+    async (req, res) => {
+      try {
+        const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+        if (buf.byteLength < 512) {
+          return res.status(400).json({ error: 'Tệp âm thanh tải lên rỗng hoặc quá nhỏ.' });
+        }
+        const rawNameHeader = String(req.headers['x-file-name'] || req.query.name || 'uploaded_music.mp3');
+        let fileName = 'uploaded_music.mp3';
+        try {
+          fileName = decodeURIComponent(rawNameHeader);
+        } catch {
+          fileName = rawNameHeader;
+        }
+        const asset = await saveUploadedStudioAudio(buf, fileName);
+        res.json({ asset });
+      } catch (err: any) {
+        console.error('Studio audio upload error:', err);
+        res.status(500).json({ error: err?.message || 'Không thể xử lý tệp âm thanh tải lên.' });
+      }
+    }
+  );
+
+  app.get('/api/studio/assets/:assetId', (req, res) => {
+    const asset = getStudioAsset(req.params.assetId);
+    if (!asset) {
+      return res.status(404).json({ error: 'Tư liệu Studio không tồn tại hoặc đã hết hạn.' });
+    }
+    const stat = fs.statSync(asset.filePath);
+    const total = stat.size;
+    res.setHeader('Content-Type', asset.mimeType || 'application/octet-stream');
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    const range = req.headers.range;
+    if (range) {
+      const m = range.match(/bytes=(\d+)-(\d*)/);
+      if (m) {
+        const start = parseInt(m[1], 10);
+        const end = m[2] ? Math.min(total - 1, parseInt(m[2], 10)) : total - 1;
+        if (start < total && end >= start) {
+          res.status(206);
+          res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+          res.setHeader('Content-Length', end - start + 1);
+          fs.createReadStream(asset.filePath, { start, end }).pipe(res);
+          return;
+        }
+      }
+    }
+
+    res.setHeader('Content-Length', total);
+    fs.createReadStream(asset.filePath).pipe(res);
+  });
+
+  app.post('/api/studio/generate-image', async (req, res) => {
+    try {
+      const { mode = 'scene', prompt = '', aspectRatio = '16:9', quality = 'standard', characterRefs = [] } =
+        (req.body || {}) as {
+          mode?: 'character' | 'scene';
+          prompt?: string;
+          aspectRatio?: '1:1' | '9:16' | '16:9';
+          quality?: 'standard' | 'pro';
+          characterRefs?: { dataUrl: string; name?: string }[];
+        };
+      if (!String(prompt).trim()) {
+        return res.status(400).json({ error: 'Vui lòng nhập mô tả để AI tạo hình ảnh.' });
+      }
+      const result = await generateStudioImage({
+        mode: mode === 'character' ? 'character' : 'scene',
+        prompt: String(prompt),
+        aspectRatio,
+        quality: quality === 'pro' ? 'pro' : 'standard',
+        characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể tạo ảnh AI.' });
+    }
+  });
+
+  app.post('/api/studio/generate-scene-video', async (req, res) => {
+    try {
+      const { prompt = '', aspectRatio = '16:9', durationSec = 8, sceneImageDataUrl, characterRefs = [] } =
+        (req.body || {}) as {
+          prompt?: string;
+          aspectRatio?: DerivativeAspectRatio;
+          durationSec?: number;
+          sceneImageDataUrl?: string;
+          characterRefs?: { dataUrl: string; name?: string }[];
+        };
+      if (!String(prompt).trim()) {
+        return res.status(400).json({ error: 'Thiếu mô tả phân cảnh để dựng clip Omni Flash.' });
+      }
+      const result = await generateSceneVideoWithOmniFlash({
+        prompt: String(prompt),
+        aspectRatio: aspectRatio === '9:16' ? '9:16' : '16:9',
+        durationSec: Number(durationSec) || 8,
+        sceneImageDataUrl,
+        characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể tạo clip bằng Gemini Omni Flash.' });
+    }
+  });
+
+  app.post('/api/studio/generate-music', async (req, res) => {
+    try {
+      const { prompt = '', mode = 'clip' } = (req.body || {}) as { prompt?: string; mode?: 'clip' | 'pro' };
+      const result = await generateStudioMusicWithLyria({
+        prompt: String(prompt || ''),
+        mode: mode === 'pro' ? 'pro' : 'clip',
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể sáng tác nhạc nền bằng Lyria AI.' });
+    }
+  });
+
+  app.get('/api/studio/public-music', async (req, res) => {
+    try {
+      const q = String(req.query.q || 'ambient instrumental music');
+      const tracks = await searchPublicFreeMusicFromWikimedia(q);
+      res.json({ tracks });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không tìm được nhạc nền công cộng.' });
     }
   });
 
@@ -2979,7 +3213,11 @@ async function startServer() {
         videos,
         stylePreset = 'summary_fast',
         aspectRatio = '9:16',
+        targetDurationSec,
         targetDuration = 'short',
+        outputLanguage = 'vi',
+        useProModel = false,
+        characterSummary = '',
         customInstruction = '',
         aiProvider = 'gemini',
       } = (req.body || {}) as {
@@ -2987,23 +3225,34 @@ async function startServer() {
         videos?: DerivativeSourceInput[];
         stylePreset?: DerivativeStylePreset;
         aspectRatio?: DerivativeAspectRatio;
+        targetDurationSec?: number;
         targetDuration?: 'short' | 'medium';
+        outputLanguage?: DerivativeOutputLanguage;
+        useProModel?: boolean;
+        characterSummary?: string;
         customInstruction?: string;
         aiProvider?: AiProviderId;
       };
 
       if (!Array.isArray(videos) || videos.length === 0) {
-        return res.status(400).json({ error: 'Vui lòng chọn ít nhất 1 video để AI học nội dung.' });
+        return res.status(400).json({ error: 'Vui lòng chọn hoặc tải lên ít nhất 1 video để AI học nội dung.' });
       }
+
+      const validProvider: AiProviderId =
+        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse' ? aiProvider : 'gemini';
 
       const blueprint = await learnVideosAndCreateBlueprint({
         query: String(query || ''),
-        videos: videos.slice(0, 6),
+        videos: videos.slice(0, 8),
         stylePreset,
         aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16',
+        targetDurationSec: typeof targetDurationSec === 'number' ? targetDurationSec : undefined,
         targetDuration: targetDuration === 'medium' ? 'medium' : 'short',
+        outputLanguage,
+        useProModel: Boolean(useProModel),
+        characterSummary: String(characterSummary || ''),
         customInstruction: String(customInstruction || ''),
-        aiProvider: aiProvider === 'openai' || aiProvider === 'meta' ? aiProvider : 'gemini',
+        aiProvider: validProvider,
       });
 
       res.json({ blueprint });
@@ -3020,9 +3269,16 @@ async function startServer() {
         sources,
         visualMode = 'remix',
         voice = 'Kore',
+        voiceMode,
         voiceStyle = '',
         keepSourceAudio = false,
-        brollSource = 'auto',
+        brollSource = 'wikimedia',
+        musicMode = 'none',
+        musicAssetId,
+        publicMusicUrl,
+        musicPrompt = '',
+        musicVolume = 0.18,
+        characterRefs = [],
         sessdata,
         ytCookies,
       } = (req.body || {}) as {
@@ -3030,9 +3286,16 @@ async function startServer() {
         sources?: DerivativeSourceInput[];
         visualMode?: DerivativeVisualMode;
         voice?: DerivativeVoiceId;
+        voiceMode?: DerivativeVoiceMode;
         voiceStyle?: string;
         keepSourceAudio?: boolean;
         brollSource?: BrollSourceId;
+        musicMode?: DerivativeMusicMode;
+        musicAssetId?: string;
+        publicMusicUrl?: string;
+        musicPrompt?: string;
+        musicVolume?: number;
+        characterRefs?: { dataUrl: string; name?: string }[];
         sessdata?: string;
         ytCookies?: string;
       };
@@ -3044,14 +3307,26 @@ async function startServer() {
         return res.status(400).json({ error: 'Thiếu danh sách video nguồn.' });
       }
 
+      const validVisualMode: DerivativeVisualMode =
+        visualMode === 'gemini_omni' || visualMode === 'storyboard_motion'
+          ? visualMode
+          : 'remix';
+
       const job = startDerivativeVideoJob({
         blueprint,
-        sources: sources.slice(0, 6),
-        visualMode: visualMode === 'storyboard_motion' ? 'storyboard_motion' : 'remix',
+        sources: sources.slice(0, 8),
+        visualMode: validVisualMode,
         voice: voice || 'Kore',
+        voiceMode,
         voiceStyle,
         keepSourceAudio: Boolean(keepSourceAudio),
         brollSource,
+        musicMode,
+        musicAssetId,
+        publicMusicUrl,
+        musicPrompt,
+        musicVolume,
+        characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
         downloadSourceVideo: (src, outPath) =>
           downloadSourceVideoForDerivative(src, outPath, sessdata, ytCookies),
       });
@@ -3066,6 +3341,190 @@ async function startServer() {
     } catch (err: any) {
       console.error('Derivative generate error:', err);
       res.status(500).json({ error: err?.message || 'Không thể khởi tạo tác vụ tạo video phái sinh.' });
+    }
+  });
+
+  // ==========================================
+  // MUSE AI (EDISON BRIDGE) ENDPOINTS
+  // ==========================================
+  const getEdisonDownloadDir = (): string => {
+    const root = process.cwd();
+    for (const name of ['BiliBatch_Downloads', 'Downloads']) {
+      const candidate = path.join(root, name);
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        return candidate;
+      }
+    }
+    const target = path.join(root, 'BiliBatch_Downloads');
+    fs.mkdirSync(target, { recursive: true });
+    return target;
+  };
+
+  const safeEdisonFileName = (raw: unknown): string | null => {
+    if (!raw || typeof raw !== 'string') return null;
+    if (raw.includes('/') || raw.includes('\\') || raw.includes('..')) return null;
+    return raw;
+  };
+
+  const readEdisonRequests = (): any[] => {
+    const reqFile = path.join(process.cwd(), 'edison-requests.json');
+    if (!fs.existsSync(reqFile)) return [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(reqFile, 'utf8'));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  app.get('/api/edison/status', (_req, res) => {
+    const downloadDir = getEdisonDownloadDir();
+    res.json({
+      ok: true,
+      app: 'BiliBatch',
+      version: '1.0',
+      time: new Date().toISOString(),
+      downloadDir: path.basename(downloadDir),
+      requestsCount: readEdisonRequests().length,
+    });
+  });
+
+  app.get('/api/edison/downloads', (_req, res) => {
+    try {
+      const downloadDir = getEdisonDownloadDir();
+      const files = fs
+        .readdirSync(downloadDir)
+        .filter((f) => {
+          try {
+            return fs.statSync(path.join(downloadDir, f)).isFile();
+          } catch {
+            return false;
+          }
+        })
+        .map((f) => {
+          const st = fs.statSync(path.join(downloadDir, f));
+          return { name: f, size: st.size, mtime: st.mtime.toISOString() };
+        })
+        .sort((a, b) => b.mtime.localeCompare(a.mtime));
+      res.json({ ok: true, folder: path.basename(downloadDir), files });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Không thể đọc thư mục tải về.' });
+    }
+  });
+
+  app.get('/api/edison/video', (req, res) => {
+    const name = safeEdisonFileName(req.query.name);
+    if (!name) return res.status(400).json({ ok: false, error: 'invalid name' });
+    const downloadDir = getEdisonDownloadDir();
+    const filePath = path.join(downloadDir, name);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ ok: false, error: 'not found' });
+
+    const stat = fs.statSync(filePath);
+    const total = stat.size;
+    const ext = path.extname(name).toLowerCase();
+    const mimeType = ext === '.webm' ? 'video/webm' : ext === '.mov' ? 'video/quicktime' : 'video/mp4';
+
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Accept-Ranges', 'bytes');
+    if (!req.headers.range) {
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(name)}"`);
+    }
+
+    const range = req.headers.range;
+    if (range) {
+      const m = range.match(/bytes=(\d+)-(\d*)/);
+      if (m) {
+        const start = parseInt(m[1], 10);
+        const end = m[2] ? Math.min(total - 1, parseInt(m[2], 10)) : total - 1;
+        if (start < total && end >= start) {
+          res.status(206);
+          res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+          res.setHeader('Content-Length', end - start + 1);
+          fs.createReadStream(filePath, { start, end }).pipe(res);
+          return;
+        }
+      }
+    }
+
+    res.setHeader('Content-Length', total);
+    fs.createReadStream(filePath).pipe(res);
+  });
+
+  app.post('/api/edison/derivative-request', (req, res) => {
+    try {
+      const body = (req.body || {}) as {
+        source?: unknown;
+        direction?: unknown;
+        note?: unknown;
+      };
+      const id = `req-${Date.now()}`;
+      const record = {
+        id,
+        time: new Date().toISOString(),
+        source: body.source ?? null,
+        direction: body.direction ?? null,
+        note: body.note ?? null,
+        status: 'pending',
+      };
+      const reqFile = path.join(process.cwd(), 'edison-requests.json');
+      const list = readEdisonRequests();
+      list.push(record);
+      fs.writeFileSync(reqFile, JSON.stringify(list, null, 2));
+      res.json({ ok: true, id, status: 'pending', record });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Không thể lưu yêu cầu Edison.' });
+    }
+  });
+
+  app.get('/api/edison/requests', (_req, res) => {
+    const list = readEdisonRequests().slice().reverse();
+    res.json({ ok: true, requests: list });
+  });
+
+  app.post('/api/edison/sync-studio', async (req, res) => {
+    try {
+      const { action, assetIds = [], fileName } = (req.body || {}) as {
+        action?: 'push_sources' | 'import_download';
+        assetIds?: string[];
+        fileName?: string;
+      };
+      const downloadDir = getEdisonDownloadDir();
+
+      if (action === 'push_sources') {
+        const exported: { assetId: string; fileName: string; size: number }[] = [];
+        for (const id of assetIds) {
+          const rec = getStudioAsset(id);
+          if (!rec || !fs.existsSync(rec.filePath)) continue;
+          const cleanName = rec.fileName
+            .replace(/[<>:"/\\|?*]+/g, '_')
+            .replace(/\s+/g, '_')
+            .slice(0, 80);
+          const targetName = cleanName.includes('.') ? cleanName : `${cleanName}.mp4`;
+          const targetPath = path.join(downloadDir, targetName);
+          fs.copyFileSync(rec.filePath, targetPath);
+          const st = fs.statSync(targetPath);
+          exported.push({ assetId: id, fileName: targetName, size: st.size });
+        }
+        return res.json({ ok: true, folder: path.basename(downloadDir), exported });
+      }
+
+      if (action === 'import_download') {
+        const safe = safeEdisonFileName(fileName);
+        if (!safe) {
+          return res.status(400).json({ ok: false, error: 'Tên tệp không hợp lệ.' });
+        }
+        const sourcePath = path.join(downloadDir, safe);
+        if (!fs.existsSync(sourcePath)) {
+          return res.status(404).json({ ok: false, error: 'Không tìm thấy tệp trong BiliBatch_Downloads.' });
+        }
+        const asset = await saveUploadedStudioVideoFromDisk(sourcePath, safe);
+        return res.json({ ok: true, asset });
+      }
+
+      return res.status(400).json({ ok: false, error: 'Hành động sync-studio không hợp lệ.' });
+    } catch (err: any) {
+      console.error('Edison sync-studio error:', err);
+      res.status(500).json({ ok: false, error: err?.message || 'Lỗi đồng bộ Studio với BiliBatch_Downloads.' });
     }
   });
 
