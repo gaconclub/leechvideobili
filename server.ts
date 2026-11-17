@@ -2963,10 +2963,10 @@ async function startServer() {
           source: process.env.META_API_KEY?.trim() ? 'env' : 'none',
         },
         muse: {
-          configured: Boolean(process.env.MUSE_API_KEY?.trim()),
-          model: (process.env.MUSE_MODEL || 'Llama-4-Maverick-17B-128E-Instruct-FP8').trim(),
-          baseUrl: (process.env.MUSE_BASE_URL || 'https://api.llama.com/compat/v1').trim(),
-          source: process.env.MUSE_API_KEY?.trim() ? 'env' : 'none',
+          configured: true,
+          model: 'Edison Bridge (Không cần API key)',
+          baseUrl: '/api/edison/*',
+          source: 'bridge',
         },
       },
       paidModels: {

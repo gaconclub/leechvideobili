@@ -315,7 +315,7 @@ export interface ServerCapabilitiesStatus {
     gemini: { configured: boolean; model: string; ttsModel: string; source: 'env' | 'none' };
     openai: { configured: boolean; model: string; source: 'env' | 'none' };
     meta: { configured: boolean; model: string; baseUrl: string; source: 'env' | 'none' };
-    muse: { configured: boolean; model: string; baseUrl: string; source: 'env' | 'none' };
+    muse: { configured: boolean; model: string; baseUrl: string; source: 'env' | 'none' | 'bridge' };
   };
   paidModels: {
     omniVideoModel: string;

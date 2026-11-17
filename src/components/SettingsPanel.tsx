@@ -166,11 +166,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     },
     {
       id: 'muse',
-      title: 'Meta Muse AI',
-      subtitle: 'Sáng tạo kịch bản chuyên sâu & phân tích video dài',
-      envVar: 'MUSE_API_KEY',
-      configured: Boolean(capabilities?.aiProviders.muse?.configured),
-      modelName: capabilities?.aiProviders.muse?.model || 'Llama-4-Maverick-17B',
+      title: 'Muse AI (Edison Bridge)',
+      subtitle: 'Phân tích & tạo clip qua chat Edison (/api/edison/*), không dùng API key',
+      envVar: 'Không cần API key',
+      configured: true,
+      modelName: capabilities?.aiProviders.muse?.model || 'Edison Bridge',
     },
   ];
 
@@ -472,7 +472,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         )}
 
         <p className="text-xs text-slate-500 dark:text-teal-200/70 leading-relaxed">
-          Bảo mật khóa API: Các khóa (<code className="font-mono">GEMINI_API_KEY</code>, <code className="font-mono">OPENAI_API_KEY</code>, <code className="font-mono">META_API_KEY</code>, <code className="font-mono">MUSE_API_KEY</code>) được ẩn và đọc an toàn phía máy chủ từ <strong>Settings &gt; Secrets</strong> hoặc tệp <code className="font-mono">.env</code> trên máy tính, không lộ trên trình duyệt.
+          Bảo mật khóa API: Các khóa (<code className="font-mono">GEMINI_API_KEY</code>, <code className="font-mono">OPENAI_API_KEY</code>, <code className="font-mono">META_API_KEY</code>) được ẩn và đọc an toàn phía máy chủ từ <strong>Settings &gt; Secrets</strong> hoặc tệp <code className="font-mono">.env</code> trên máy tính, không lộ trên trình duyệt. Riêng <strong>Muse AI (Edison)</strong> kết nối trực tiếp qua cầu nối <code className="font-mono">/api/edison/*</code> và không yêu cầu API key.
         </p>
       </section>
 

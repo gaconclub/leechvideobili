@@ -256,6 +256,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
   const [isLearning, setIsLearning] = useState(false);
   const [learnError, setLearnError] = useState('');
+  const [learnSuccess, setLearnSuccess] = useState('');
   const [blueprint, setBlueprint] = useState<DerivativeBlueprint | null>(null);
 
   // 3. Per-scene generation states
@@ -521,14 +522,94 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // AI Learn & Create Script
-  const handleLearnAndCreateScript = async () => {
+  // Muse AI phân tích -> Không gọi API key, chỉ gửi yêu cầu sang Edison Bridge
+  const handleMuseAnalyzeRequest = async () => {
     if (sources.length === 0) {
       setLearnError('Vui lòng tải lên hoặc thêm ít nhất 1 video nguồn ở Bước 1.');
       return;
     }
     setIsLearning(true);
     setLearnError('');
+    setLearnSuccess('');
+    try {
+      const localIds = sources
+        .map((s) => s.localAssetId)
+        .filter((id): id is string => Boolean(id));
+      let exportedNames: string[] = [];
+      if (localIds.length > 0) {
+        const syncRes = await fetch('/api/edison/sync-studio', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'push_sources', assetIds: localIds }),
+        });
+        const syncData = await parseJsonSafe<{
+          ok?: boolean;
+          exported?: { fileName: string }[];
+        }>(syncRes);
+        if (syncRes.ok && syncData.ok) {
+          exportedNames = (syncData.exported || []).map((e) => e.fileName);
+        }
+      }
+
+      const sourceNames =
+        exportedNames.length > 0
+          ? exportedNames.join(', ')
+          : sources.map((s) => s.translatedTitle || s.title || s.sourceUrl).join(', ');
+
+      const styleLabel = STYLE_OPTIONS.find((o) => o.value === stylePreset)?.label || stylePreset;
+      const langLabel = LANGUAGE_OPTIONS.find((l) => l.value === outputLanguage)?.label || outputLanguage;
+      const directionText = `${styleLabel} · ${aspectRatio} · ~${targetDurationSec}s · ${langLabel}`;
+
+      const noteParts: string[] = [];
+      if (customInstruction.trim()) noteParts.push(customInstruction.trim());
+      if (edisonNote.trim()) noteParts.push(edisonNote.trim());
+      const sourceUrls = sources
+        .filter((s) => !s.localAssetId && s.sourceUrl)
+        .map((s) => s.sourceUrl);
+      if (sourceUrls.length > 0) {
+        noteParts.push(`Link nguồn: ${sourceUrls.join(' | ')}`);
+      }
+
+      const res = await fetch('/api/edison/derivative-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: sourceNames,
+          direction: directionText,
+          note: noteParts.join('\n') || 'Phân tích nội dung video và tạo video phái sinh mới.',
+        }),
+      });
+      const data = await parseJsonSafe<{ ok?: boolean; id?: string; error?: string }>(res);
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      setLearnSuccess(
+        'Đã gửi yêu cầu cho Edison, mở chat Edison để Edison phân tích và tạo video phái sinh'
+      );
+      if (visualMode === 'muse_edison') {
+        void refreshEdisonBridge();
+      }
+    } catch (err: any) {
+      setLearnError(err?.message || 'Không thể gửi yêu cầu tới Edison Bridge.');
+    } finally {
+      setIsLearning(false);
+    }
+  };
+
+  // AI Learn & Create Script
+  const handleLearnAndCreateScript = async () => {
+    if (aiProvider === 'muse') {
+      await handleMuseAnalyzeRequest();
+      return;
+    }
+    if (sources.length === 0) {
+      setLearnError('Vui lòng tải lên hoặc thêm ít nhất 1 video nguồn ở Bước 1.');
+      return;
+    }
+    setIsLearning(true);
+    setLearnError('');
+    setLearnSuccess('');
     setSceneMediaError('');
     setJob(null);
     stopPolling();
@@ -1342,15 +1423,33 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            disabled={isLearning || sources.length === 0}
-            onClick={handleLearnAndCreateScript}
-            className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            {isLearning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            <span>{isLearning ? 'AI đang phân tích đa phương tiện...' : 'AI học video & Lập kịch bản'}</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={isLearning || sources.length === 0}
+              onClick={handleMuseAnalyzeRequest}
+              className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-[#003B3E] dark:text-[#1BA8AD] bg-[#003B3E]/10 hover:bg-[#003B3E]/15 dark:bg-[#1BA8AD]/15 dark:hover:bg-[#1BA8AD]/25 border border-[#003B3E]/30 dark:border-[#1BA8AD]/40 rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {isLearning && aiProvider === 'muse' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+              <span>Muse AI phân tích</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={isLearning || sources.length === 0}
+              onClick={handleLearnAndCreateScript}
+              className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {isLearning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              <span>
+                {isLearning
+                  ? 'Đang xử lý...'
+                  : aiProvider === 'muse'
+                  ? 'Gửi sang Muse AI / Edison'
+                  : 'AI học video & Lập kịch bản'}
+              </span>
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -1367,7 +1466,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 Google Gemini {capabilities?.aiProviders.gemini.configured ? '(Sẵn sàng)' : '(Chưa đặt key)'}
               </option>
               <option value="muse">
-                Meta Muse AI {capabilities?.aiProviders.muse?.configured ? '(Sẵn sàng)' : '(Chưa đặt key)'}
+                Muse AI / Edison (Không cần API key)
               </option>
               <option value="openai">
                 OpenAI ChatGPT {capabilities?.aiProviders.openai.configured ? '(Sẵn sàng)' : '(Chưa đặt key)'}
@@ -1483,6 +1582,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             </label>
           )}
         </div>
+
+        {learnSuccess && (
+          <div className="flex items-start gap-2 p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/35 border border-emerald-200 dark:border-emerald-900/60 text-xs text-emerald-700 dark:text-emerald-300 font-medium">
+            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{learnSuccess}</span>
+          </div>
+        )}
 
         {learnError && (
           <div className="flex items-start gap-2 p-3 rounded-lg bg-rose-50 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-900/60 text-xs text-rose-700 dark:text-rose-300">

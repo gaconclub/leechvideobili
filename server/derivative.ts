@@ -672,7 +672,7 @@ const STYLE_LABELS: Record<DerivativeStylePreset, string> = {
   tips_tutorial: 'Chắt lọc mẹo hay & hướng dẫn thực hành dễ áp dụng',
 };
 
-function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta' | 'muse') {
+function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta') {
   if (provider === 'openai') {
     return {
       label: 'OpenAI ChatGPT',
@@ -680,15 +680,6 @@ function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta' | 'muse') {
       apiKey: process.env.OPENAI_API_KEY?.trim() || '',
       baseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
       model: (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim(),
-    };
-  }
-  if (provider === 'muse') {
-    return {
-      label: 'Meta Muse AI',
-      envName: 'MUSE_API_KEY',
-      apiKey: process.env.MUSE_API_KEY?.trim() || '',
-      baseUrl: (process.env.MUSE_BASE_URL || 'https://api.llama.com/compat/v1').replace(/\/+$/, ''),
-      model: (process.env.MUSE_MODEL || 'Llama-4-Maverick-17B-128E-Instruct-FP8').trim(),
     };
   }
   return {
@@ -701,7 +692,7 @@ function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta' | 'muse') {
 }
 
 async function generateBlueprintViaOpenAiCompatible(params: {
-  provider: 'openai' | 'meta' | 'muse';
+  provider: 'openai' | 'meta';
   contexts: EnrichedVideoContext[];
   promptText: string;
   desiredScenes: number;
@@ -788,6 +779,14 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh tá
 }
 
 export async function testAiProviderConnection(provider: AiProviderId): Promise<{ ok: boolean; message: string; model: string }> {
+  if (provider === 'muse') {
+    return {
+      ok: true,
+      model: 'Edison Bridge',
+      message: 'Muse AI (Edison Bridge) hoạt động qua /api/edison/* và không cần API key.',
+    };
+  }
+
   if (provider === 'gemini') {
     const model = 'gemini-4-hydrogen';
     for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -810,7 +809,7 @@ export async function testAiProviderConnection(provider: AiProviderId): Promise<
     }
   }
 
-  const cfg = resolveOpenAiCompatibleConfig(provider === 'openai' || provider === 'muse' ? provider : 'meta');
+  const cfg = resolveOpenAiCompatibleConfig(provider === 'openai' ? 'openai' : 'meta');
   if (!cfg.apiKey) {
     return {
       ok: false,
@@ -865,7 +864,7 @@ export async function learnVideosAndCreateBlueprint(params: {
   }
 
   const provider: AiProviderId =
-    params.aiProvider === 'openai' || params.aiProvider === 'meta' || params.aiProvider === 'muse'
+    params.aiProvider === 'openai' || params.aiProvider === 'meta'
       ? params.aiProvider
       : 'gemini';
 
@@ -977,7 +976,7 @@ ${dossierLines.join('\n\n')}`;
     let parsed: any = {};
     let usedModel = geminiModel;
 
-    if (provider === 'openai' || provider === 'meta' || provider === 'muse') {
+    if (provider === 'openai' || provider === 'meta') {
       usedModel = resolveOpenAiCompatibleConfig(provider).model;
       parsed = await generateBlueprintViaOpenAiCompatible({
         provider,
