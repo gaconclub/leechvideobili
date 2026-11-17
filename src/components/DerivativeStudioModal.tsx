@@ -15,6 +15,8 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import {
+  AiProviderId,
+  BrollSourceId,
   DerivativeAspectRatio,
   DerivativeBlueprint,
   DerivativeJobState,
@@ -22,6 +24,7 @@ import {
   DerivativeStylePreset,
   DerivativeVisualMode,
   DerivativeVoiceId,
+  StudioDefaultConfig,
   TrendingVideoItem,
 } from '../types/bilibili';
 import { formatBytes, formatDuration } from '../utils/formatters';
@@ -33,6 +36,7 @@ interface DerivativeStudioModalProps {
   searchQuery?: string;
   sessdata: string;
   ytCookies: string;
+  studioDefaults?: StudioDefaultConfig;
   onClose: () => void;
 }
 
@@ -58,9 +62,12 @@ export const DerivativeStudioModal: React.FC<DerivativeStudioModalProps> = ({
   searchQuery = '',
   sessdata,
   ytCookies,
+  studioDefaults,
   onClose,
 }) => {
   const [sources, setSources] = useState<TrendingVideoItem[]>([]);
+  const [aiProvider, setAiProvider] = useState<AiProviderId>('gemini');
+  const [brollSource, setBrollSource] = useState<BrollSourceId>('auto');
   const [stylePreset, setStylePreset] = useState<DerivativeStylePreset>('summary_fast');
   const [aspectRatio, setAspectRatio] = useState<DerivativeAspectRatio>('9:16');
   const [targetDuration, setTargetDuration] = useState<'short' | 'medium'>('short');
@@ -84,7 +91,24 @@ export const DerivativeStudioModal: React.FC<DerivativeStudioModalProps> = ({
       const sliced = initialVideos.slice(0, 6);
       setSources(sliced);
       const verticalCount = sliced.filter((v) => v.orientation === 'vertical').length;
-      setAspectRatio(verticalCount >= Math.ceil(sliced.length / 2) ? '9:16' : '16:9');
+      const autoRatio: DerivativeAspectRatio =
+        verticalCount >= Math.ceil(sliced.length / 2) ? '9:16' : '16:9';
+
+      if (studioDefaults) {
+        setAiProvider(studioDefaults.aiProvider);
+        setBrollSource(studioDefaults.brollSource);
+        setStylePreset(studioDefaults.stylePreset);
+        setAspectRatio(
+          studioDefaults.aspectRatioMode === 'auto' ? autoRatio : studioDefaults.aspectRatioMode
+        );
+        setTargetDuration(studioDefaults.targetDuration);
+        setVisualMode(studioDefaults.visualMode);
+        setVoice(studioDefaults.voice);
+        setKeepSourceAudio(studioDefaults.keepSourceAudio);
+      } else {
+        setAspectRatio(autoRatio);
+      }
+
       setBlueprint(null);
       setLearnError('');
       setJob(null);
@@ -98,7 +122,7 @@ export const DerivativeStudioModal: React.FC<DerivativeStudioModalProps> = ({
         pollTimerRef.current = null;
       }
     };
-  }, [isOpen, initialVideos]);
+  }, [isOpen, initialVideos, studioDefaults]);
 
   if (!isOpen) return null;
 
@@ -135,6 +159,7 @@ export const DerivativeStudioModal: React.FC<DerivativeStudioModalProps> = ({
           aspectRatio,
           targetDuration,
           customInstruction,
+          aiProvider,
         }),
       });
       const text = await res.text();
@@ -213,6 +238,7 @@ export const DerivativeStudioModal: React.FC<DerivativeStudioModalProps> = ({
           voice,
           voiceStyle: selectedVoiceObj?.style || '',
           keepSourceAudio,
+          brollSource,
           sessdata,
           ytCookies,
         }),
@@ -360,7 +386,22 @@ export const DerivativeStudioModal: React.FC<DerivativeStudioModalProps> = ({
 
           {/* 2. Learning Parameters & Trigger */}
           <section className="p-4 rounded-xl bg-[#F8FAFB] dark:bg-[#000A10]/90 border border-slate-200/90 dark:border-[#00464A] space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <label className="space-y-1">
+                <span className="block text-[11px] font-semibold text-slate-600 dark:text-teal-200/80">
+                  AI học & viết kịch bản
+                </span>
+                <select
+                  value={aiProvider}
+                  onChange={(e) => setAiProvider(e.target.value as AiProviderId)}
+                  className="w-full h-9 px-2.5 text-xs font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white focus:outline-none focus:border-[#003B3E]"
+                >
+                  <option value="gemini">Google Gemini (Mặc định)</option>
+                  <option value="openai">OpenAI (ChatGPT)</option>
+                  <option value="meta">Meta AI (Llama)</option>
+                </select>
+              </label>
+
               <label className="space-y-1">
                 <span className="block text-[11px] font-semibold text-slate-600 dark:text-teal-200/80">
                   Phong cách nội dung phái sinh
@@ -640,7 +681,7 @@ export const DerivativeStudioModal: React.FC<DerivativeStudioModalProps> = ({
                   3. Cấu hình dựng Video Phái Sinh (MP4)
                 </h3>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <label className="space-y-1">
                     <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-teal-200/80">
                       <Film className="w-3.5 h-3.5" />
@@ -671,6 +712,24 @@ export const DerivativeStudioModal: React.FC<DerivativeStudioModalProps> = ({
                           {v.label}
                         </option>
                       ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-1">
+                    <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-teal-200/80">
+                      <Film className="w-3.5 h-3.5" />
+                      <span>Video nền dự phòng (B-roll)</span>
+                    </span>
+                    <select
+                      value={brollSource}
+                      onChange={(e) => setBrollSource(e.target.value as BrollSourceId)}
+                      className="w-full h-9 px-2.5 text-xs font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white focus:outline-none focus:border-[#003B3E]"
+                    >
+                      <option value="auto">Tự động (Pexels / Pixabay / Wikimedia)</option>
+                      <option value="wikimedia">Wikimedia Commons (CC0 · Miễn phí)</option>
+                      <option value="pexels">Pexels Video</option>
+                      <option value="pixabay">Pixabay Video</option>
+                      <option value="none">Chỉ dùng Ken Burns từ ảnh gốc</option>
                     </select>
                   </label>
                 </div>

@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
+  CookieSiteId,
   CustomLogoConfig,
   InspectError,
   OutputFormat,
+  PerSiteCookies,
   QueueVideoItem,
   RESOLUTION_PRESETS,
+  StudioDefaultConfig,
   TrendingVideoItem,
   VideoTransformConfig,
   WatermarkMode,
@@ -15,11 +18,18 @@ import { GlobalConfigBar } from './components/GlobalConfigBar';
 import { QueueTable } from './components/QueueTable';
 import { TrendingPanel } from './components/TrendingPanel';
 import { SearchPanel } from './components/SearchPanel';
+import { SettingsPanel } from './components/SettingsPanel';
 import { SessdataModal } from './components/SessdataModal';
 import { CustomLogoModal } from './components/CustomLogoModal';
 import { VideoTransformModal } from './components/VideoTransformModal';
 import { UpdateModal, SystemUpdateStatus } from './components/UpdateModal';
 import { DerivativeStudioModal } from './components/DerivativeStudioModal';
+import {
+  buildCombinedCookiesString,
+  DEFAULT_STUDIO_CONFIG,
+  EMPTY_PER_SITE_COOKIES,
+  migrateLegacyCookies,
+} from './utils/cookies';
 
 async function parseJsonSafe<T = any>(res: Response): Promise<T> {
   const text = await res.text();
@@ -203,13 +213,35 @@ export default function App() {
     setFolderNotice('');
   };
 
-  const [sessdata, setSessdata] = useState<string>(() => {
-    return localStorage.getItem('bilibatch_sessdata') || '';
+  const [perSiteCookies, setPerSiteCookies] = useState<PerSiteCookies>(() => {
+    try {
+      const saved = localStorage.getItem('bilibatch_per_site_cookies');
+      if (saved) {
+        return { ...EMPTY_PER_SITE_COOKIES, ...(JSON.parse(saved) as Partial<PerSiteCookies>) };
+      }
+    } catch {
+      // ignore parse failure
+    }
+    return migrateLegacyCookies(
+      localStorage.getItem('bilibatch_yt_cookies') || '',
+      localStorage.getItem('bilibatch_sessdata') || ''
+    );
   });
 
-  const [ytCookies, setYtCookies] = useState<string>(() => {
-    return localStorage.getItem('bilibatch_yt_cookies') || '';
+  const [studioDefaults, setStudioDefaults] = useState<StudioDefaultConfig>(() => {
+    try {
+      const saved = localStorage.getItem('bilibatch_studio_defaults');
+      if (saved) {
+        return { ...DEFAULT_STUDIO_CONFIG, ...(JSON.parse(saved) as Partial<StudioDefaultConfig>) };
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_STUDIO_CONFIG;
   });
+
+  const sessdata = perSiteCookies.bilibili || '';
+  const ytCookies = useMemo(() => buildCombinedCookiesString(perSiteCookies), [perSiteCookies]);
 
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('bilibatch_theme') === 'dark';
@@ -306,20 +338,39 @@ export default function App() {
     }
   };
 
-  const handleSaveCookies = (nextSessdata: string, nextYtCookies: string) => {
-    setSessdata(nextSessdata);
-    setYtCookies(nextYtCookies);
-    if (nextSessdata) {
-      localStorage.setItem('bilibatch_sessdata', nextSessdata);
+  const persistPerSiteCookies = useCallback((next: PerSiteCookies) => {
+    setPerSiteCookies(next);
+    localStorage.setItem('bilibatch_per_site_cookies', JSON.stringify(next));
+    const nextBili = next.bilibili?.trim() || '';
+    const nextCombined = buildCombinedCookiesString(next);
+    if (nextBili) {
+      localStorage.setItem('bilibatch_sessdata', nextBili);
     } else {
       localStorage.removeItem('bilibatch_sessdata');
     }
-    if (nextYtCookies) {
-      localStorage.setItem('bilibatch_yt_cookies', nextYtCookies);
+    if (nextCombined) {
+      localStorage.setItem('bilibatch_yt_cookies', nextCombined);
     } else {
       localStorage.removeItem('bilibatch_yt_cookies');
     }
+  }, []);
+
+  const handleSaveSiteCookie = useCallback(
+    (siteId: CookieSiteId, value: string) => {
+      persistPerSiteCookies({ ...perSiteCookies, [siteId]: value });
+    },
+    [perSiteCookies, persistPerSiteCookies]
+  );
+
+  const handleSaveCookies = (nextSessdata: string, nextYtCookies: string) => {
+    const migrated = migrateLegacyCookies(nextYtCookies, nextSessdata);
+    persistPerSiteCookies(migrated);
   };
+
+  const handleUpdateStudioDefaults = useCallback((next: StudioDefaultConfig) => {
+    setStudioDefaults(next);
+    localStorage.setItem('bilibatch_studio_defaults', JSON.stringify(next));
+  }, []);
 
   const fetchChunkWithRetry = async (url: string): Promise<ArrayBuffer> => {
     let lastErr: Error | null = null;
@@ -1099,6 +1150,16 @@ export default function App() {
             />
           </div>
         )}
+
+        {activeTab === 'settings' && (
+          <SettingsPanel
+            perSiteCookies={perSiteCookies}
+            studioDefaults={studioDefaults}
+            onSaveSiteCookie={handleSaveSiteCookie}
+            onSaveAllCookies={persistPerSiteCookies}
+            onUpdateStudioDefaults={handleUpdateStudioDefaults}
+          />
+        )}
       </main>
 
       <footer className="border-t border-slate-200/80 dark:border-[#00464A]/80 py-5 px-6 text-xs text-slate-500 dark:text-teal-100/80">
@@ -1149,6 +1210,7 @@ export default function App() {
         searchQuery={derivativeStudioState.query}
         sessdata={sessdata}
         ytCookies={ytCookies}
+        studioDefaults={studioDefaults}
         onClose={() => setDerivativeStudioState((prev) => ({ ...prev, isOpen: false }))}
       />
     </div>

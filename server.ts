@@ -19,6 +19,8 @@ import {
   VideoPlatform,
 } from './server/trending';
 import {
+  AiProviderId,
+  BrollSourceId,
   DerivativeAspectRatio,
   DerivativeBlueprint,
   derivativeJobs,
@@ -28,6 +30,7 @@ import {
   DerivativeVoiceId,
   learnVideosAndCreateBlueprint,
   startDerivativeVideoJob,
+  testAiProviderConnection,
 } from './server/derivative';
 
 const require = createRequire(import.meta.url);
@@ -2886,6 +2889,89 @@ async function startServer() {
     }
   };
 
+  // Server Capabilities & AI Provider Connection Check
+  app.get('/api/config/capabilities', async (_req, res) => {
+    const checkBinVersion = (cmd: string, args: string[]) =>
+      new Promise<{ available: boolean; version: string }>((resolve) => {
+        try {
+          const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+          let out = '';
+          const timer = setTimeout(() => {
+            proc.kill('SIGKILL');
+            resolve({ available: false, version: '' });
+          }, 4000);
+          proc.stdout.on('data', (d) => {
+            out += d.toString();
+          });
+          proc.on('close', (code) => {
+            clearTimeout(timer);
+            const firstLine = out.split(/\r?\n/)[0]?.trim() || '';
+            resolve({ available: code === 0 && Boolean(firstLine), version: firstLine.slice(0, 64) });
+          });
+          proc.on('error', () => {
+            clearTimeout(timer);
+            resolve({ available: false, version: '' });
+          });
+        } catch {
+          resolve({ available: false, version: '' });
+        }
+      });
+
+    let ytDlpCheck = { available: false, version: '' };
+    try {
+      const bin = await ensureYtDlpPath();
+      ytDlpCheck = await checkBinVersion(bin, ['--version']);
+    } catch {
+      ytDlpCheck = { available: false, version: '' };
+    }
+
+    const ffmpegCheck = await checkBinVersion('ffmpeg', ['-version']);
+
+    res.json({
+      aiProviders: {
+        gemini: {
+          configured: Boolean(process.env.GEMINI_API_KEY?.trim()),
+          model: 'gemini-4-hydrogen',
+          ttsModel: 'gemini-3.8-flash-lite-tts',
+          source: process.env.GEMINI_API_KEY?.trim() ? 'env' : 'none',
+        },
+        openai: {
+          configured: Boolean(process.env.OPENAI_API_KEY?.trim()),
+          model: (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim(),
+          source: process.env.OPENAI_API_KEY?.trim() ? 'env' : 'none',
+        },
+        meta: {
+          configured: Boolean(process.env.META_API_KEY?.trim()),
+          model: (process.env.META_MODEL || 'Llama-4-Scout-17B-16E-Instruct-FP8').trim(),
+          baseUrl: (process.env.META_BASE_URL || 'https://api.llama.com/compat/v1').trim(),
+          source: process.env.META_API_KEY?.trim() ? 'env' : 'none',
+        },
+      },
+      brollProviders: {
+        wikimedia: { configured: true, freeNoKey: true },
+        pexels: { configured: Boolean(process.env.PEXELS_API_KEY?.trim()) },
+        pixabay: { configured: Boolean(process.env.PIXABAY_API_KEY?.trim()) },
+      },
+      localTools: {
+        ffmpeg: ffmpegCheck,
+        ytDlp: ytDlpCheck,
+        node: { available: true, version: process.version },
+      },
+    });
+  });
+
+  app.post('/api/config/test-ai', async (req, res) => {
+    try {
+      const rawProvider = String(req.body?.provider || 'gemini');
+      const provider: AiProviderId =
+        rawProvider === 'openai' || rawProvider === 'meta' ? rawProvider : 'gemini';
+      const result = await testAiProviderConnection(provider);
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, message: err?.message || 'Kiểm tra kết nối thất bại.' });
+    }
+  });
+
   app.post('/api/derivative/learn', async (req, res) => {
     try {
       const {
@@ -2895,6 +2981,7 @@ async function startServer() {
         aspectRatio = '9:16',
         targetDuration = 'short',
         customInstruction = '',
+        aiProvider = 'gemini',
       } = (req.body || {}) as {
         query?: string;
         videos?: DerivativeSourceInput[];
@@ -2902,6 +2989,7 @@ async function startServer() {
         aspectRatio?: DerivativeAspectRatio;
         targetDuration?: 'short' | 'medium';
         customInstruction?: string;
+        aiProvider?: AiProviderId;
       };
 
       if (!Array.isArray(videos) || videos.length === 0) {
@@ -2915,6 +3003,7 @@ async function startServer() {
         aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16',
         targetDuration: targetDuration === 'medium' ? 'medium' : 'short',
         customInstruction: String(customInstruction || ''),
+        aiProvider: aiProvider === 'openai' || aiProvider === 'meta' ? aiProvider : 'gemini',
       });
 
       res.json({ blueprint });
@@ -2933,6 +3022,7 @@ async function startServer() {
         voice = 'Kore',
         voiceStyle = '',
         keepSourceAudio = false,
+        brollSource = 'auto',
         sessdata,
         ytCookies,
       } = (req.body || {}) as {
@@ -2942,6 +3032,7 @@ async function startServer() {
         voice?: DerivativeVoiceId;
         voiceStyle?: string;
         keepSourceAudio?: boolean;
+        brollSource?: BrollSourceId;
         sessdata?: string;
         ytCookies?: string;
       };
@@ -2960,6 +3051,7 @@ async function startServer() {
         voice: voice || 'Kore',
         voiceStyle,
         keepSourceAudio: Boolean(keepSourceAudio),
+        brollSource,
         downloadSourceVideo: (src, outPath) =>
           downloadSourceVideoForDerivative(src, outPath, sessdata, ytCookies),
       });

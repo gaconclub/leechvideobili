@@ -1,7 +1,7 @@
 import React from 'react';
-import { Download, RefreshCw, Flame, Layers, Search } from 'lucide-react';
+import { Download, RefreshCw, Flame, Layers, Search, Settings } from 'lucide-react';
 
-export type AppTab = 'batch' | 'search' | 'trending';
+export type AppTab = 'batch' | 'search' | 'trending' | 'settings';
 
 interface TopBarProps {
   activeTab: AppTab;
@@ -51,7 +51,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         </button>
 
         {/* Zone 2: Clean single-line navigation links with animated underline */}
-        <nav className="flex items-center gap-4 sm:gap-7 overflow-x-auto no-scrollbar">
+        <nav className="flex items-center gap-4 sm:gap-6 overflow-x-auto no-scrollbar">
           <button
             type="button"
             onClick={() => onChangeTab('batch')}
@@ -86,10 +86,20 @@ export const TopBar: React.FC<TopBarProps> = ({
 
           <button
             type="button"
-            onClick={onOpenCookieModal}
-            className={`hidden md:inline-flex items-center gap-1.5 ${navItemClass(false)}`}
+            onClick={() => onChangeTab('settings')}
+            className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'settings')}`}
           >
-            <span>{hasCookie ? 'Cookie (Đã lưu)' : 'Cookie / Đăng nhập'}</span>
+            <Settings className="w-3.5 h-3.5" />
+            <span>Cấu hình{hasCookie ? ' · Đã lưu' : ''}</span>
+            <span aria-hidden="true" className={underlineClass(activeTab === 'settings')} />
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenCookieModal}
+            className={`hidden xl:inline-flex items-center gap-1.5 ${navItemClass(false)}`}
+          >
+            <span>Cookie nhanh</span>
             <span aria-hidden="true" className={underlineClass(false)} />
           </button>
 
