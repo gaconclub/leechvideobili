@@ -108,6 +108,23 @@ async function parseJsonSafe<T = any>(res: Response): Promise<T> {
   }
 }
 
+async function fetchStudioJsonWithAutoRetry<T>(
+  url: string,
+  init: RequestInit,
+  onRetrying?: () => void
+): Promise<{ res: Response; data: T }> {
+  let res = await fetch(url, init);
+  let data = await parseJsonSafe<T>(res);
+  const errStr = String((data as any)?.error || '');
+  if (!res.ok && (res.status === 503 || errStr.includes('503') || errStr.includes('truy cập cao'))) {
+    onRetrying?.();
+    await new Promise((r) => setTimeout(r, 3200));
+    res = await fetch(url, init);
+    data = await parseJsonSafe<T>(res);
+  }
+  return { res, data };
+}
+
 const STUDIO_UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024; // 4 MiB chunks (safely under Cloud Run 32 MiB limit)
 
 async function uploadMediaFileToStudio<T>(
@@ -491,17 +508,19 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setIsGeneratingChar(true);
     setCharError('');
     try {
-      const res = await fetch('/api/studio/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode: 'character',
-          prompt: desc,
-          aspectRatio: '1:1',
-          quality: imageQuality,
-        }),
-      });
-      const data = await parseJsonSafe<{ dataUrl?: string; error?: string }>(res);
+      const { res, data } = await fetchStudioJsonWithAutoRetry<{ dataUrl?: string; error?: string }>(
+        '/api/studio/generate-image',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'character',
+            prompt: desc,
+            aspectRatio: '1:1',
+            quality: imageQuality,
+          }),
+        }
+      );
       if (!res.ok || !data.dataUrl) throw new Error(data.error || `HTTP ${res.status}`);
       const generatedUrl = data.dataUrl;
       setCharacters((prev) => [
@@ -619,7 +638,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       .join('; ');
 
     try {
-      const res = await fetch('/api/derivative/learn', {
+      const { res, data } = await fetchStudioJsonWithAutoRetry<{
+        blueprint?: DerivativeBlueprint;
+        error?: string;
+      }>('/api/derivative/learn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -635,7 +657,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           aiProvider,
         }),
       });
-      const data = await parseJsonSafe<{ blueprint?: DerivativeBlueprint; error?: string }>(res);
       if (!res.ok || !data.blueprint) {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
@@ -693,18 +714,20 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setBusySceneImageIds((prev) => new Set(prev).add(sc.id));
     setSceneMediaError('');
     try {
-      const res = await fetch('/api/studio/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode: 'scene',
-          prompt: `${sc.visualNote || sc.onScreenText}. Context: ${sc.narration.slice(0, 140)}`,
-          aspectRatio,
-          quality: imageQuality,
-          characterRefs: characters.map((c) => ({ dataUrl: c.dataUrl, name: c.name })),
-        }),
-      });
-      const data = await parseJsonSafe<{ dataUrl?: string; error?: string }>(res);
+      const { res, data } = await fetchStudioJsonWithAutoRetry<{ dataUrl?: string; error?: string }>(
+        '/api/studio/generate-image',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'scene',
+            prompt: `${sc.visualNote || sc.onScreenText}. Context: ${sc.narration.slice(0, 140)}`,
+            aspectRatio,
+            quality: imageQuality,
+            characterRefs: characters.map((c) => ({ dataUrl: c.dataUrl, name: c.name })),
+          }),
+        }
+      );
       if (!res.ok || !data.dataUrl) throw new Error(data.error || `HTTP ${res.status}`);
       updateScene(sc.id, { sceneImageDataUrl: data.dataUrl });
     } catch (err: any) {
@@ -743,7 +766,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setBusySceneVideoIds((prev) => new Set(prev).add(sc.id));
     setSceneMediaError('');
     try {
-      const res = await fetch('/api/studio/generate-scene-video', {
+      const { res, data } = await fetchStudioJsonWithAutoRetry<{
+        assetId?: string;
+        previewUrl?: string;
+        error?: string;
+      }>('/api/studio/generate-scene-video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -754,11 +781,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           characterRefs: characters.map((c) => ({ dataUrl: c.dataUrl, name: c.name })),
         }),
       });
-      const data = await parseJsonSafe<{
-        assetId?: string;
-        previewUrl?: string;
-        error?: string;
-      }>(res);
       if (!res.ok || !data.assetId) throw new Error(data.error || `HTTP ${res.status}`);
       updateScene(sc.id, {
         omniClipAssetId: data.assetId,
@@ -789,15 +811,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setIsGeneratingMusic(true);
     setMusicError('');
     try {
-      const res = await fetch('/api/studio/generate-music', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: musicPrompt.trim() || `Instrumental soundtrack for ${blueprint?.derivativeTitle || 'video'}`,
-          mode: musicTrackTier,
-        }),
-      });
-      const data = await parseJsonSafe<{
+      const { res, data } = await fetchStudioJsonWithAutoRetry<{
         assetId?: string;
         previewUrl?: string;
         mimeType?: string;
@@ -805,7 +819,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         durationSec?: number;
         model?: string;
         error?: string;
-      }>(res);
+      }>('/api/studio/generate-music', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: musicPrompt.trim() || `Instrumental soundtrack for ${blueprint?.derivativeTitle || 'video'}`,
+          mode: musicTrackTier,
+        }),
+      });
       if (!res.ok || !data.assetId) throw new Error(data.error || `HTTP ${res.status}`);
       setGeneratedAiTrack({
         id: data.assetId,
@@ -1591,9 +1612,19 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         )}
 
         {learnError && (
-          <div className="flex items-start gap-2 p-3 rounded-lg bg-rose-50 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-900/60 text-xs text-rose-700 dark:text-rose-300">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>{learnError}</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-lg bg-rose-50 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-900/60 text-xs text-rose-700 dark:text-rose-300">
+            <div className="flex items-start gap-2 min-w-0 flex-1">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{learnError}</span>
+            </div>
+            <button
+              type="button"
+              disabled={isLearning}
+              onClick={handleLearnAndCreateScript}
+              className="px-3 py-1.5 text-[11px] font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Thử lại ngay
+            </button>
           </div>
         )}
       </section>

@@ -159,6 +159,54 @@ function getGeminiClient(): GoogleGenAI {
   });
 }
 
+function isTransientGemini503Error(err: any): boolean {
+  const raw = String(err?.message || err || '').toLowerCase();
+  const status = Number(err?.status ?? err?.code ?? 0);
+  if (status === 503 || status === 502 || status === 504) return true;
+  return (
+    raw.includes('503') ||
+    raw.includes('unavailable') ||
+    raw.includes('high demand') ||
+    raw.includes('overloaded') ||
+    raw.includes('502') ||
+    raw.includes('504') ||
+    raw.includes('econnreset') ||
+    raw.includes('etimedout') ||
+    raw.includes('fetch failed')
+  );
+}
+
+function isGeminiRateLimit429Error(err: any): boolean {
+  const raw = String(err?.message || err || '').toLowerCase();
+  const status = Number(err?.status ?? err?.code ?? 0);
+  return status === 429 || raw.includes('429') || raw.includes('resource_exhausted');
+}
+
+function shouldFallbackGeminiModel(err: any): boolean {
+  return isTransientGemini503Error(err) || isGeminiRateLimit429Error(err);
+}
+
+async function retryWithGeminiBackoff<T>(
+  fn: () => Promise<T>,
+  delaysMs: number[] = [1500, 3200, 5500]
+): Promise<T> {
+  let lastErr: any;
+  for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt < delaysMs.length && isTransientGemini503Error(err)) {
+        const jitter = Math.floor(Math.random() * 450);
+        await new Promise((r) => setTimeout(r, delaysMs[attempt] + jitter));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 function formatGeminiError(err: any): string {
   const raw = String(err?.message || err || 'Lỗi kết nối Gemini AI');
   if (raw.includes('PERMISSION_DENIED') || raw.includes('API_KEY_INVALID') || raw.includes('403') || raw.includes('API key not valid')) {
@@ -167,8 +215,8 @@ function formatGeminiError(err: any): string {
   if (raw.includes('RESOURCE_EXHAUSTED') || raw.includes('429')) {
     return 'Đã chạm giới hạn tần suất / hạn mức gói miễn phí Gemini API (429). Nếu dùng mô hình nâng cao (Omni Flash, Lyria, tạo ảnh), hãy dùng API Key có bật thanh toán trong Settings > Secrets hoặc thử lại sau.';
   }
-  if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.toLowerCase().includes('high demand')) {
-    return 'Máy chủ Gemini đang có lượng truy cập cao tạm thời (503). Vui lòng đợi vài giây rồi thử lại.';
+  if (isTransientGemini503Error(err) || raw.includes('truy cập cao tạm thời')) {
+    return 'Máy chủ Gemini đang có lượng truy cập cao tạm thời (503) trên cả mô hình chính và dự phòng. Hệ thống đã tự thử lại nhưng chưa thành công — bạn vui lòng đợi vài giây rồi bấm thử lại hoặc chuyển sang Muse AI / nhà cung cấp khác.';
   }
   if (raw.includes('NOT_FOUND') || raw.includes('404')) {
     return `Mô hình AI tạm không khả dụng (${raw}). Vui lòng thử lại.`;
@@ -588,20 +636,24 @@ async function transcribeLocalVideoAudio(asset: StudioAssetRecord): Promise<stri
     if (mp3Buf.byteLength < 1500 || mp3Buf.byteLength > 12_000_000) return '';
 
     const ai = getGeminiClient();
-    const res = await ai.models.generateContent({
-      model: 'gemini-3.5-transcribe',
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: 'audio/mp3',
-              data: mp3Buf.toString('base64'),
-            },
+    const res = await retryWithGeminiBackoff(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-3.5-transcribe',
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: 'audio/mp3',
+                  data: mp3Buf.toString('base64'),
+                },
+              },
+              { text: 'Transcribe all spoken dialogue clearly, keeping original language.' },
+            ],
           },
-          { text: 'Transcribe all spoken dialogue clearly, keeping original language.' },
-        ],
-      },
-    });
+        }),
+      [1200, 2600]
+    );
     return String(res.text || '').trim().slice(0, 1800);
   } catch {
     return '';
@@ -788,25 +840,33 @@ export async function testAiProviderConnection(provider: AiProviderId): Promise<
   }
 
   if (provider === 'gemini') {
-    const model = 'gemini-4-hydrogen';
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const models = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+    let lastErr: any;
+    for (const model of models) {
       try {
         const ai = getGeminiClient();
-        const res = await ai.models.generateContent({
-          model,
-          contents: 'Trả lời đúng 1 cụm từ: Sẵn sàng',
-        });
+        const res = await retryWithGeminiBackoff(
+          () =>
+            ai.models.generateContent({
+              model,
+              contents: 'Trả lời đúng 1 cụm từ: Sẵn sàng',
+            }),
+          [1200, 2500]
+        );
         const text = (res.text || '').trim();
-        return { ok: true, model, message: `Kết nối Gemini (${model}) thành công: "${text.slice(0, 40) || 'OK'}"` };
+        const note =
+          model === 'gemini-4-hydrogen'
+            ? `Kết nối Gemini (${model}) thành công: "${text.slice(0, 40) || 'OK'}"`
+            : `Gemini 4 đang quá tải tạm thời, đã chuyển tự động sang ${model} thành công: "${text.slice(0, 40) || 'OK'}"`;
+        return { ok: true, model, message: note };
       } catch (err: any) {
-        const msg = String(err?.message || err || '');
-        if (attempt === 1 && (msg.includes('503') || msg.includes('UNAVAILABLE'))) {
-          await new Promise((r) => setTimeout(r, 1500));
-          continue;
+        lastErr = err;
+        if (!shouldFallbackGeminiModel(err)) {
+          return { ok: false, model, message: formatGeminiError(err) };
         }
-        return { ok: false, model, message: formatGeminiError(err) };
       }
     }
+    return { ok: false, model: models[0], message: formatGeminiError(lastErr) };
   }
 
   const cfg = resolveOpenAiCompatibleConfig(provider === 'openai' ? 'openai' : 'meta');
@@ -989,84 +1049,118 @@ ${dossierLines.join('\n\n')}`;
       });
     } else {
       const ai = getGeminiClient();
-      let response: any;
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const candidateModels = params.useProModel
+        ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
+        : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+
+      const compactParts = parts.filter((p, idx) => p.text || idx < 2);
+      let response: any = null;
+      let lastGeminiErr: any = null;
+
+      for (const candidateModel of candidateModels) {
+        const activeParts = candidateModel === 'gemini-3.1-flash-lite' ? compactParts : parts;
         try {
-          response = await ai.models.generateContent({
-            model: geminiModel,
-            contents: { parts },
-            config: {
-              systemInstruction:
-                'Luôn phản hồi bằng JSON thuần túy đúng schema, nội dung sắc bén, giàu giá trị thông tin, đúng ngôn ngữ yêu cầu, đủ độ dài và có mô tả hình ảnh + từ khóa tiếng Anh chuẩn.',
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  learnedSummary: {
-                    type: Type.STRING,
-                    description: 'Tóm tắt ngắn 2-3 câu về những nội dung cốt lõi AI học được từ các video nguồn.',
-                  },
-                  keyTakeaways: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                    description: '3 đến 6 gạch đầu dòng các kiến thức/ý tưởng đắt giá rút ra được.',
-                  },
-                  hookFormula: {
-                    type: Type.STRING,
-                    description: 'Công thức mở đầu & giữ chân người xem rút ra từ các video nguồn.',
-                  },
-                  sourceKeyPoints: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                    description: 'Đúng bằng số lượng video nguồn: tóm tắt 1 câu bài học/điểm hay của từng video tương ứng theo thứ tự.',
-                  },
-                  derivativeTitle: {
-                    type: Type.STRING,
-                    description: 'Tiêu đề hấp dẫn cho video phái sinh mới.',
-                  },
-                  derivativeHook: {
-                    type: Type.STRING,
-                    description: 'Câu hook chữ nổi bật hiện 3.5 giây đầu video (tối đa 12 chữ).',
-                  },
-                  hashtags: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                    description: '4 đến 6 hashtag phù hợp.',
-                  },
-                  scenes: {
-                    type: Type.ARRAY,
-                    description: `BẮT BUỘC phải trả về ĐÚNG ${desiredScenes} phân cảnh tách biệt (sceneIndex từ 1 đến ${desiredScenes}), mỗi cảnh dài khoảng ${avgSceneDur} giây để tổng thời lượng đạt ${desiredTotalSec} giây.`,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        sceneIndex: { type: Type.INTEGER },
-                        durationSec: { type: Type.NUMBER },
-                        sourceVideoIndex: { type: Type.INTEGER },
-                        sourceStartPercent: { type: Type.INTEGER },
-                        onScreenText: { type: Type.STRING },
-                        narration: { type: Type.STRING },
-                        visualNote: { type: Type.STRING },
-                        brollKeywordEn: { type: Type.STRING },
+          response = await retryWithGeminiBackoff(
+            () =>
+              ai.models.generateContent({
+                model: candidateModel,
+                contents: { parts: activeParts },
+                config: {
+                  systemInstruction:
+                    'Luôn phản hồi bằng JSON thuần túy đúng schema, nội dung sắc bén, giàu giá trị thông tin, đúng ngôn ngữ yêu cầu, đủ độ dài và có mô tả hình ảnh + từ khóa tiếng Anh chuẩn.',
+                  responseMimeType: 'application/json',
+                  responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                      learnedSummary: {
+                        type: Type.STRING,
+                        description: 'Tóm tắt ngắn 2-3 câu về những nội dung cốt lõi AI học được từ các video nguồn.',
+                      },
+                      keyTakeaways: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING },
+                        description: '3 đến 6 gạch đầu dòng các kiến thức/ý tưởng đắt giá rút ra được.',
+                      },
+                      hookFormula: {
+                        type: Type.STRING,
+                        description: 'Công thức mở đầu & giữ chân người xem rút ra từ các video nguồn.',
+                      },
+                      sourceKeyPoints: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING },
+                        description: 'Đúng bằng số lượng video nguồn: tóm tắt 1 câu bài học/điểm hay của từng video tương ứng theo thứ tự.',
+                      },
+                      derivativeTitle: {
+                        type: Type.STRING,
+                        description: 'Tiêu đề hấp dẫn cho video phái sinh mới.',
+                      },
+                      derivativeHook: {
+                        type: Type.STRING,
+                        description: 'Câu hook chữ nổi bật hiện 3.5 giây đầu video (tối đa 12 chữ).',
+                      },
+                      hashtags: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING },
+                        description: '4 đến 6 hashtag phù hợp.',
+                      },
+                      scenes: {
+                        type: Type.ARRAY,
+                        description: `BẮT BUỘC phải trả về ĐÚNG ${desiredScenes} phân cảnh tách biệt (sceneIndex từ 1 đến ${desiredScenes}), mỗi cảnh dài khoảng ${avgSceneDur} giây để tổng thời lượng đạt ${desiredTotalSec} giây.`,
+                        items: {
+                          type: Type.OBJECT,
+                          properties: {
+                            sceneIndex: { type: Type.INTEGER },
+                            durationSec: { type: Type.NUMBER },
+                            sourceVideoIndex: { type: Type.INTEGER },
+                            sourceStartPercent: { type: Type.INTEGER },
+                            onScreenText: { type: Type.STRING },
+                            narration: { type: Type.STRING },
+                            visualNote: { type: Type.STRING },
+                            brollKeywordEn: { type: Type.STRING },
+                          },
+                        },
                       },
                     },
                   },
                 },
-              },
-            },
-          });
+              }),
+            [1400, 3000]
+          );
+          usedModel = candidateModel;
           break;
         } catch (err: any) {
-          const msg = String(err?.message || err || '');
-          if (attempt === 1 && (msg.includes('503') || msg.includes('UNAVAILABLE'))) {
-            await new Promise((r) => setTimeout(r, 1500));
-            continue;
+          lastGeminiErr = err;
+          if (!shouldFallbackGeminiModel(err)) {
+            throw err;
           }
-          throw err;
         }
       }
 
-      const rawText = (response?.text ?? '{}').trim();
-      parsed = JSON.parse(rawText);
+      if (response) {
+        const rawText = (response?.text ?? '{}').trim();
+        parsed = JSON.parse(rawText);
+      } else {
+        // Automatic failover to configured OpenAI or Meta if all Gemini models are 503 unavailable
+        const altProvider: 'openai' | 'meta' | null = process.env.OPENAI_API_KEY?.trim()
+          ? 'openai'
+          : process.env.META_API_KEY?.trim()
+          ? 'meta'
+          : null;
+        if (altProvider) {
+          usedModel = `${resolveOpenAiCompatibleConfig(altProvider).model} (auto-fallback)`;
+          parsed = await generateBlueprintViaOpenAiCompatible({
+            provider: altProvider,
+            contexts,
+            promptText,
+            desiredScenes,
+            avgSceneDur,
+            wordsMin,
+            wordsMax,
+          });
+        } else {
+          throw lastGeminiErr;
+        }
+      }
     }
 
     const rawScenes: any[] = Array.isArray(parsed?.scenes) ? parsed.scenes : [];
@@ -1174,28 +1268,44 @@ export async function generateStudioImage(params: {
 
   parts.push({ text: finalPrompt });
 
-  try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: { parts },
-      config: {
-        imageConfig: {
-          aspectRatio,
-          ...(model === 'gemini-nano-banana-2.1' ? { imageSize: '1K' } : {}),
-        },
-      },
-    });
+  const candidateModels =
+    params.quality === 'pro'
+      ? ['gemini-nano-banana-2.1', 'gemini-3.1-flash-lite-image']
+      : ['gemini-3.1-flash-lite-image', 'gemini-nano-banana-2.1'];
 
-    for (const part of response.candidates?.[0]?.content?.parts ?? []) {
-      if (part.inlineData?.data) {
-        const mime = part.inlineData.mimeType ?? 'image/png';
-        return { dataUrl: `data:${mime};base64,${part.inlineData.data}`, model };
+  let lastErr: any;
+  for (const model of candidateModels) {
+    try {
+      const response = await retryWithGeminiBackoff(
+        () =>
+          ai.models.generateContent({
+            model,
+            contents: { parts },
+            config: {
+              imageConfig: {
+                aspectRatio,
+                ...(model === 'gemini-nano-banana-2.1' ? { imageSize: '1K' } : {}),
+              },
+            },
+          }),
+        [1500, 3200]
+      );
+
+      for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+        if (part.inlineData?.data) {
+          const mime = part.inlineData.mimeType ?? 'image/png';
+          return { dataUrl: `data:${mime};base64,${part.inlineData.data}`, model };
+        }
+      }
+      throw new Error('Mô hình AI không trả về dữ liệu hình ảnh. Hãy thử mô tả cụ thể hơn.');
+    } catch (err: any) {
+      lastErr = err;
+      if (!shouldFallbackGeminiModel(err)) {
+        throw new Error(formatGeminiError(err));
       }
     }
-    throw new Error('Mô hình AI không trả về dữ liệu hình ảnh. Hãy thử mô tả cụ thể hơn.');
-  } catch (err: any) {
-    throw new Error(formatGeminiError(err));
   }
+  throw new Error(formatGeminiError(lastErr));
 }
 
 export async function generateSceneVideoWithOmniFlash(params: {
@@ -1238,21 +1348,25 @@ export async function generateSceneVideoWithOmniFlash(params: {
   inputParts.push({ type: 'text', text: promptText });
 
   try {
-    const interaction = await ai.interactions.create(
-      {
-        model: 'gemini-omni-1.2-flash',
-        input: inputParts,
-        background: false,
-        store: false,
-        stream: false,
-        response_format: {
-          type: 'video',
-          aspect_ratio: params.aspectRatio,
-          duration: `${clampedDur}s` as any,
-          resolution: '720p',
-        },
-      },
-      { timeout: 300_000 }
+    const interaction = await retryWithGeminiBackoff(
+      () =>
+        ai.interactions.create(
+          {
+            model: 'gemini-omni-1.2-flash',
+            input: inputParts,
+            background: false,
+            store: false,
+            stream: false,
+            response_format: {
+              type: 'video',
+              aspect_ratio: params.aspectRatio,
+              duration: `${clampedDur}s` as any,
+              resolution: '720p',
+            },
+          },
+          { timeout: 300_000 }
+        ),
+      [2500, 5000]
     );
 
     const videoPart = interaction.output_video;
@@ -1307,68 +1421,79 @@ export async function generateStudioMusicWithLyria(params: {
   mode?: 'clip' | 'pro';
 }): Promise<{ assetId: string; previewUrl: string; mimeType: string; lyrics: string; durationSec: number; model: string }> {
   const ai = getGeminiClient();
-  const model = params.mode === 'pro' ? 'lyria-3-pro-preview' : 'lyria-3-clip-preview';
+  const musicModels =
+    params.mode === 'pro' ? ['lyria-3-pro-preview', 'lyria-3-clip-preview'] : ['lyria-3-clip-preview'];
   const musicPrompt =
     params.prompt.trim() ||
     'Generate an instrumental uplifting modern cinematic background music track suitable for storytelling video narration.';
 
-  try {
-    const response = await ai.models.generateContentStream({
-      model,
-      contents: musicPrompt,
-    });
+  let lastErr: any;
+  for (const model of musicModels) {
+    try {
+      const { audioChunks, lyrics, mimeType } = await retryWithGeminiBackoff(async () => {
+        const response = await ai.models.generateContentStream({
+          model,
+          contents: musicPrompt,
+        });
 
-    const audioChunks: Buffer[] = [];
-    let lyrics = '';
-    let mimeType = 'audio/mpeg';
+        const chunks: Buffer[] = [];
+        let lyr = '';
+        let mType = 'audio/mpeg';
 
-    for await (const chunk of response) {
-      const parts = chunk.candidates?.[0]?.content?.parts;
-      if (!parts) continue;
-      for (const part of parts) {
-        if (part.inlineData?.data) {
-          if (audioChunks.length === 0 && part.inlineData.mimeType) {
-            mimeType = part.inlineData.mimeType;
+        for await (const chunk of response) {
+          const parts = chunk.candidates?.[0]?.content?.parts;
+          if (!parts) continue;
+          for (const part of parts) {
+            if (part.inlineData?.data) {
+              if (chunks.length === 0 && part.inlineData.mimeType) {
+                mType = part.inlineData.mimeType;
+              }
+              chunks.push(Buffer.from(part.inlineData.data, 'base64'));
+            }
+            if (part.text) {
+              lyr += part.text;
+            }
           }
-          audioChunks.push(Buffer.from(part.inlineData.data, 'base64'));
         }
-        if (part.text) {
-          lyrics += part.text;
-        }
+        return { audioChunks: chunks, lyrics: lyr, mimeType: mType };
+      }, [2000, 4200]);
+
+      if (audioChunks.length === 0) {
+        throw new Error('Lyria AI không trả về dữ liệu âm thanh.');
+      }
+
+      const audioBuf = Buffer.concat(audioChunks);
+      const ext = mimeType.includes('wav') ? '.wav' : '.mp3';
+      const assetId = `lyria_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+      const outPath = path.join(STUDIO_ASSETS_DIR, `${assetId}${ext}`);
+      fs.writeFileSync(outPath, audioBuf);
+      const durationSec = (await probeDurationSeconds(outPath, STUDIO_ASSETS_DIR)) || 30;
+
+      studioAssets.set(assetId, {
+        assetId,
+        filePath: outPath,
+        fileName: `AI_Music_${assetId}${ext}`,
+        mimeType,
+        durationSec,
+        createdAt: Date.now(),
+      });
+
+      return {
+        assetId,
+        previewUrl: `/api/studio/assets/${assetId}`,
+        mimeType,
+        lyrics: lyrics.trim(),
+        durationSec: Math.round(durationSec * 10) / 10,
+        model,
+      };
+    } catch (err: any) {
+      lastErr = err;
+      if (!isTransientGemini503Error(err)) {
+        throw new Error(formatGeminiError(err));
       }
     }
-
-    if (audioChunks.length === 0) {
-      throw new Error('Lyria AI không trả về dữ liệu âm thanh.');
-    }
-
-    const audioBuf = Buffer.concat(audioChunks);
-    const ext = mimeType.includes('wav') ? '.wav' : '.mp3';
-    const assetId = `lyria_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
-    const outPath = path.join(STUDIO_ASSETS_DIR, `${assetId}${ext}`);
-    fs.writeFileSync(outPath, audioBuf);
-    const durationSec = (await probeDurationSeconds(outPath, STUDIO_ASSETS_DIR)) || 30;
-
-    studioAssets.set(assetId, {
-      assetId,
-      filePath: outPath,
-      fileName: `AI_Music_${assetId}${ext}`,
-      mimeType,
-      durationSec,
-      createdAt: Date.now(),
-    });
-
-    return {
-      assetId,
-      previewUrl: `/api/studio/assets/${assetId}`,
-      mimeType,
-      lyrics: lyrics.trim(),
-      durationSec: Math.round(durationSec * 10) / 10,
-      model,
-    };
-  } catch (err: any) {
-    throw new Error(formatGeminiError(err));
   }
+  throw new Error(formatGeminiError(lastErr));
 }
 
 export async function searchPublicFreeMusicFromWikimedia(query: string) {
@@ -1555,27 +1680,32 @@ async function synthesizeSceneVoiceWav(
   const cleanText = text.trim();
   if (!cleanText) return false;
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  const ttsModels = ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'];
+  for (const ttsModel of ttsModels) {
     try {
-      const interaction = await ai.interactions.create({
-        model: 'gemini-3.8-flash-lite-tts',
-        input: [
-          {
-            type: 'text',
-            text: cleanText,
-            annotations: [
+      const interaction = await retryWithGeminiBackoff(
+        () =>
+          ai.interactions.create({
+            model: ttsModel,
+            input: [
               {
-                type: 'speech_metadata',
-                style: stylePrompt,
+                type: 'text',
+                text: cleanText,
+                annotations: [
+                  {
+                    type: 'speech_metadata',
+                    style: stylePrompt,
+                  },
+                ],
               },
             ],
-          },
-        ],
-        response_format: { type: 'audio' },
-        generation_config: {
-          speech_config: [{ voice }],
-        },
-      });
+            response_format: { type: 'audio' },
+            generation_config: {
+              speech_config: [{ voice }],
+            },
+          }),
+        [1200, 2600]
+      );
 
       const audio = interaction.output_audio;
       if (audio?.data) {
@@ -1583,14 +1713,13 @@ async function synthesizeSceneVoiceWav(
         return true;
       }
     } catch (err: any) {
-      if (attempt === 2) {
-        const msg = String(err?.message || err || '');
-        if (msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID') || msg.includes('403')) {
-          throw new Error(formatGeminiError(err));
-        }
+      const msg = String(err?.message || err || '');
+      if (msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID') || msg.includes('403')) {
+        throw new Error(formatGeminiError(err));
+      }
+      if (!isTransientGemini503Error(err)) {
         return false;
       }
-      await new Promise((r) => setTimeout(r, 900));
     }
   }
   return false;
@@ -1948,7 +2077,16 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         const i = nextIdx++;
         const sc = scenes[i];
         const wavPath = path.join(job.workDir, `voice_${i}.wav`);
-        const ok = await synthesizeSceneVoiceWav(ai, sc.narration, voice, stylePrompt, wavPath);
+        let ok = await synthesizeSceneVoiceWav(ai, sc.narration, voice, stylePrompt, wavPath);
+        if (!ok && sc.narration.trim()) {
+          const offlineEngine = await detectOfflineTtsEngine();
+          if (offlineEngine.available) {
+            ok = await synthesizeOfflineVoiceWav(sc.narration, wavPath);
+            if (ok) {
+              job.warnings.push(`Cảnh ${i + 1}: Gemini TTS tạm bận (503), đã tự chuyển sang giọng đọc Offline (${offlineEngine.engine}).`);
+            }
+          }
+        }
         if (ok) {
           sceneAudioPaths[i] = wavPath;
           const audioDur = await probeDurationSeconds(wavPath, job.workDir);

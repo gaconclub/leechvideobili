@@ -3153,7 +3153,8 @@ async function startServer() {
       });
       res.json(result);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || 'Không thể tạo ảnh AI.' });
+      const msg = String(err?.message || 'Không thể tạo ảnh AI.');
+      res.status(msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500).json({ error: msg });
     }
   });
 
@@ -3179,7 +3180,8 @@ async function startServer() {
       });
       res.json(result);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || 'Không thể tạo clip bằng Gemini Omni Flash.' });
+      const msg = String(err?.message || 'Không thể tạo clip bằng Gemini Omni Flash.');
+      res.status(msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500).json({ error: msg });
     }
   });
 
@@ -3192,7 +3194,8 @@ async function startServer() {
       });
       res.json(result);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || 'Không thể sáng tác nhạc nền bằng Lyria AI.' });
+      const msg = String(err?.message || 'Không thể sáng tác nhạc nền bằng Lyria AI.');
+      res.status(msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500).json({ error: msg });
     }
   });
 
@@ -3258,7 +3261,8 @@ async function startServer() {
       res.json({ blueprint });
     } catch (err: any) {
       console.error('Derivative learn error:', err);
-      res.status(500).json({ error: err?.message || 'Không thể phân tích & học nội dung video.' });
+      const msg = String(err?.message || 'Không thể phân tích & học nội dung video.');
+      res.status(msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500).json({ error: msg });
     }
   });
 
