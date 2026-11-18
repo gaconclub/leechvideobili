@@ -56,6 +56,7 @@ export type VideoPlatform =
   | 'weibo'
   | 'xigua'
   | 'dailymotion'
+  | 'facebook'
   | 'other';
 
 export type TrendingPlatformId =
@@ -265,6 +266,7 @@ export type CookieSiteId =
   | 'xiaohongshu'
   | 'weibo'
   | 'xigua'
+  | 'facebook'
   | 'muse'
   | 'other';
 

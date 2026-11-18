@@ -46,6 +46,9 @@ export function parseUrlsFromText(text: string): string[] {
           s.includes('ixigua.com') ||
           s.includes('dailymotion.com') ||
           s.includes('dai.ly') ||
+          s.includes('facebook.com') ||
+          s.includes('fb.watch') ||
+          /(?:^|\/)fb\.com\//i.test(s) ||
           /^(BV[1-9A-HJ-NP-Za-km-z]{10}|av\d+)$/i.test(s))
     );
 }
