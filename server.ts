@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import http from 'http';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
@@ -1058,6 +1059,7 @@ function writeYtCookiesFile(prefix: string, rawCookies?: string): string | null 
       lines.push(`.youtube.com\tTRUE\t/\tTRUE\t0\t${name}\t${value}`);
       lines.push(`.google.com\tTRUE\t/\tTRUE\t0\t${name}\t${value}`);
       lines.push(`.tiktok.com\tTRUE\t/\tTRUE\t0\t${name}\t${value}`);
+      lines.push(`.facebook.com\tTRUE\t/\tTRUE\t0\t${name}\t${value}`);
     }
     if (lines.length === 1) return null;
     content = lines.join('\n');
@@ -1340,6 +1342,464 @@ async function inspectGenericYtDlpUrl(
         availableQualities: defaultQualities,
       },
     ];
+  } finally {
+    if (tempCookiePath && fs.existsSync(tempCookiePath)) {
+      fs.unlink(tempCookiePath, () => {});
+    }
+  }
+}
+
+function isFacebookUrl(urlStr: string): boolean {
+  return /(?:facebook\.com|fb\.watch|(?:^|\/)fb\.com\/)/i.test(urlStr);
+}
+
+function buildFacebookCookieHeader(rawCookies?: string): string {
+  const trimmed = (rawCookies || '').trim();
+  if (!trimmed) return '';
+  const pairs: string[] = [];
+
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.cookies) ? parsed.cookies : [];
+      for (const item of list) {
+        const domain = String(item?.domain || '').toLowerCase();
+        if (domain && !domain.includes('facebook.com') && !domain.includes('fb.com')) continue;
+        const name = String(item?.name || '').trim();
+        const value = String(item?.value ?? '').trim();
+        if (name) pairs.push(`${name}=${value}`);
+      }
+      if (pairs.length > 0) return pairs.join('; ');
+    } catch {
+      // fall through
+    }
+  }
+
+  if (trimmed.startsWith('# Netscape') || trimmed.startsWith('# HTTP Cookie') || trimmed.includes('\t')) {
+    for (const line of trimmed.split(/\r?\n/)) {
+      const l = line.trim();
+      if (!l || l.startsWith('#')) continue;
+      const cols = l.split('\t');
+      if (cols.length >= 7) {
+        const domain = (cols[0] || '').toLowerCase();
+        if (domain.includes('facebook.com') || domain.includes('fb.com')) {
+          const name = cols[5].trim();
+          const value = cols.slice(6).join('\t').trim();
+          if (name) pairs.push(`${name}=${value}`);
+        }
+      }
+    }
+    return pairs.join('; ');
+  }
+
+  return trimmed.replace(/^cookie:\s*/i, '');
+}
+
+function normalizeFacebookUrl(rawUrl: string): string {
+  const withProto = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
+  try {
+    const u = new URL(withProto);
+    const host = u.hostname.toLowerCase();
+    if (
+      host === 'm.facebook.com' ||
+      host === 'mbasic.facebook.com' ||
+      host === 'web.facebook.com' ||
+      host === 'touch.facebook.com' ||
+      host === 'l.facebook.com'
+    ) {
+      u.hostname = 'www.facebook.com';
+    }
+    const stripParams = [
+      'mibextid',
+      'rdid',
+      'share_url',
+      'fs',
+      '__tn__',
+      'ref',
+      'refsrc',
+      'paipv',
+      'eav',
+    ];
+    for (const p of stripParams) u.searchParams.delete(p);
+    for (const key of Array.from(u.searchParams.keys())) {
+      if (key.startsWith('__cft__')) u.searchParams.delete(key);
+    }
+    return u.toString();
+  } catch {
+    return withProto;
+  }
+}
+
+async function resolveFacebookShareUrl(rawUrl: string, rawCookies?: string): Promise<string> {
+  const normalized = normalizeFacebookUrl(rawUrl);
+  if (!/(?:fb\.watch|facebook\.com\/share\/|fb\.com\/)/i.test(normalized)) {
+    return normalized;
+  }
+  try {
+    const fbCookie = buildFacebookCookieHeader(rawCookies);
+    const res = await fetch(normalized, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+        ...(fbCookie ? { Cookie: fbCookie } : {}),
+      },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (res.url && res.url.startsWith('http') && !res.url.includes('/login')) {
+      return normalizeFacebookUrl(res.url);
+    }
+  } catch {
+    // ignore redirect failure and pass original normalized URL to yt-dlp
+  }
+  return normalized;
+}
+
+function unescapeFbJsonString(s: string): string {
+  return s
+    .replace(/\\\//g, '/')
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&amp;/g, '&');
+}
+
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;|&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#(\d+);/g, (_m, dec) => String.fromCharCode(parseInt(dec, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function extractFacebookIdFromUrl(urlStr: string): string {
+  const m =
+    urlStr.match(/\/(?:reel|reels|videos)\/(\d{5,})/i) ||
+    urlStr.match(/[?&](?:v|story_fbid)=(\d{5,})/i) ||
+    urlStr.match(/fb\.watch\/([A-Za-z0-9_-]+)/i);
+  if (m) return m[1];
+  return crypto.createHash('md5').update(urlStr).digest('hex').slice(0, 10);
+}
+
+async function extractFacebookFallbackFromHtml(
+  urlStr: string,
+  rawCookies?: string
+): Promise<{
+  id: string;
+  title: string;
+  author: string;
+  pic: string;
+  duration: number;
+  hdUrl?: string;
+  sdUrl?: string;
+  loginRequired?: boolean;
+} | null> {
+  const fbCookie = buildFacebookCookieHeader(rawCookies);
+  const normalized = normalizeFacebookUrl(urlStr);
+  const candidates = [normalized];
+  if (normalized.includes('www.facebook.com')) {
+    candidates.push(normalized.replace('www.facebook.com', 'mbasic.facebook.com'));
+  }
+
+  for (const target of candidates) {
+    try {
+      const res = await fetch(target, {
+        redirect: 'follow',
+        headers: {
+          'User-Agent': USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          ...(fbCookie ? { Cookie: fbCookie } : {}),
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+      if (!html) continue;
+
+      const isLoginWall =
+        res.url.includes('/login') ||
+        (/id="login_form"|name="login"|Log into Facebook|Đăng nhập Facebook/i.test(html) &&
+          !/(?:browser_native_hd_url|browser_native_sd_url|playable_url|og:video)/i.test(html));
+
+      const matchFirst = (patterns: RegExp[]): string => {
+        for (const p of patterns) {
+          const m = html.match(p);
+          if (m?.[1]) return unescapeFbJsonString(m[1]).trim();
+        }
+        return '';
+      };
+
+      const hdUrl = matchFirst([
+        /"browser_native_hd_url"\s*:\s*"([^"]+)"/i,
+        /"playable_url_quality_hd"\s*:\s*"([^"]+)"/i,
+        /"hd_src_no_ratelimit"\s*:\s*"([^"]+)"/i,
+        /"hd_src"\s*:\s*"([^"]+)"/i,
+      ]);
+
+      const sdUrl = matchFirst([
+        /"browser_native_sd_url"\s*:\s*"([^"]+)"/i,
+        /"playable_url"\s*:\s*"([^"]+)"/i,
+        /"sd_src_no_ratelimit"\s*:\s*"([^"]+)"/i,
+        /"sd_src"\s*:\s*"([^"]+)"/i,
+        /<meta[^>]+property=["']og:video:secure_url["'][^>]+content=["']([^"']+)["']/i,
+        /<meta[^>]+property=["']og:video["'][^>]+content=["']([^"']+)["']/i,
+      ]);
+
+      const rawTitle = matchFirst([
+        /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i,
+        /<meta[^>]+name=["']twitter:title["'][^>]+content=["']([^"']+)["']/i,
+        /<title>([^<]+)<\/title>/i,
+      ]);
+      const rawPic = matchFirst([
+        /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+        /"preferred_thumbnail"\s*:\s*\{[^}]*"image"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"/i,
+      ]);
+      const rawAuthor = matchFirst([
+        /"ownerName"\s*:\s*"([^"]+)"/i,
+        /"author_name"\s*:\s*"([^"]+)"/i,
+        /"actors"\s*:\s*\[\s*\{\s*"__typename"\s*:\s*"[^"]+"\s*,\s*"name"\s*:\s*"([^"]+)"/i,
+      ]);
+      const durMsMatch = html.match(/"playable_duration_in_ms"\s*:\s*(\d+)/i);
+      const duration = durMsMatch ? Math.round(Number(durMsMatch[1]) / 1000) : 0;
+
+      if (hdUrl || sdUrl) {
+        const cleanTitle = decodeHtmlEntities(rawTitle)
+          .replace(/\s*\|\s*Facebook$/i, '')
+          .trim();
+        const vid = extractFacebookIdFromUrl(res.url || normalized);
+        return {
+          id: vid,
+          title: cleanTitle || `Facebook Video ${vid}`,
+          author: decodeHtmlEntities(rawAuthor) || 'Facebook',
+          pic: decodeHtmlEntities(rawPic),
+          duration,
+          hdUrl: hdUrl ? decodeHtmlEntities(hdUrl) : undefined,
+          sdUrl: sdUrl ? decodeHtmlEntities(sdUrl) : undefined,
+          loginRequired: false,
+        };
+      }
+
+      if (isLoginWall) {
+        return {
+          id: extractFacebookIdFromUrl(normalized),
+          title: '',
+          author: 'Facebook',
+          pic: '',
+          duration: 0,
+          loginRequired: true,
+        };
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return null;
+}
+
+function buildQualitiesFromYtdlpFormats(formats: any[] | undefined): { qn: number; label: string }[] {
+  const defaultQualities = [
+    { qn: 120, label: '4K (2160P)' },
+    { qn: 116, label: '1080P60' },
+    { qn: 80, label: '1080P' },
+    { qn: 64, label: '720P' },
+    { qn: 32, label: '480P' },
+    { qn: 16, label: '360P' },
+  ];
+  if (!Array.isArray(formats) || formats.length === 0) return defaultQualities;
+
+  const maxHeights = new Set<number>();
+  let hasHighFps1080 = false;
+  for (const f of formats) {
+    if (f?.vcodec && f.vcodec !== 'none' && Number(f.height) > 0) {
+      const h = Number(f.height);
+      maxHeights.add(h);
+      if (h >= 1080 && Number(f.fps) > 45) hasHighFps1080 = true;
+    }
+  }
+  const qualities: { qn: number; label: string }[] = [];
+  if ([...maxHeights].some((h) => h >= 2160)) qualities.push({ qn: 120, label: '4K (2160P)' });
+  if (hasHighFps1080) qualities.push({ qn: 116, label: '1080P60' });
+  if ([...maxHeights].some((h) => h >= 1080)) qualities.push({ qn: 80, label: '1080P' });
+  if ([...maxHeights].some((h) => h >= 720)) qualities.push({ qn: 64, label: '720P' });
+  if ([...maxHeights].some((h) => h >= 480)) qualities.push({ qn: 32, label: '480P' });
+  if ([...maxHeights].some((h) => h >= 360)) qualities.push({ qn: 16, label: '360P' });
+  return qualities.length > 0 ? qualities : defaultQualities;
+}
+
+async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<any[]> {
+  const ytDlpBin = await ensureYtDlpPath();
+  const tempCookiePath = writeYtCookiesFile(`fb_${crypto.randomBytes(4).toString('hex')}`, rawCookies);
+  const cookieArgs = tempCookiePath ? ['--cookies', tempCookiePath] : [];
+  const defaultFbQualities = [
+    { qn: 80, label: '1080P' },
+    { qn: 64, label: '720P' },
+    { qn: 32, label: '480P' },
+    { qn: 16, label: '360P' },
+  ];
+
+  try {
+    const resolvedUrl = await resolveFacebookShareUrl(rawUrl, rawCookies);
+    const isPageOrList =
+      /facebook\.com\/(?:[^/?#]+\/(?:videos|reels)|profile\.php\?[^#]*sk=(?:videos|reels_tab)|watch\/latest)/i.test(
+        resolvedUrl
+      );
+
+    if (isPageOrList) {
+      try {
+        const listJson = await runYtDlpJson(
+          ytDlpBin,
+          ['--flat-playlist', '--playlist-end', '100', '-J', '--no-warnings', ...cookieArgs, resolvedUrl],
+          60_000
+        );
+        const entries: any[] = Array.isArray(listJson?.entries) ? listJson.entries : [];
+        const fallbackAuthor = listJson?.uploader || listJson?.channel || listJson?.title || 'Facebook';
+        const results: any[] = [];
+        for (const entry of entries) {
+          if (!entry) continue;
+          const entryUrl =
+            (typeof entry.webpage_url === 'string' && entry.webpage_url.startsWith('http') && entry.webpage_url) ||
+            (typeof entry.url === 'string' && entry.url.startsWith('http') && entry.url) ||
+            (entry.id ? `https://www.facebook.com/watch/?v=${entry.id}` : '');
+          if (!entryUrl) continue;
+          const vid = String(entry.id || extractFacebookIdFromUrl(entryUrl));
+          const thumbs: any[] = Array.isArray(entry.thumbnails) ? entry.thumbnails : [];
+          const pic = entry.thumbnail || thumbs[thumbs.length - 1]?.url || '';
+          results.push({
+            id: `fb_${vid}_${crypto.randomBytes(3).toString('hex')}`,
+            platform: 'facebook',
+            bvid: vid,
+            aid: 0,
+            cid: 0,
+            page: 1,
+            totalPages: 1,
+            title: entry.title || entry.fulltitle || `Facebook Video ${vid}`,
+            partTitle: '',
+            author: entry.uploader || entry.creator || entry.channel || fallbackAuthor,
+            duration: Math.round(Number(entry.duration || 0)),
+            views: Number(entry.view_count || 0),
+            pubdate: parseUploadDateToUnix(entry.upload_date) || Number(entry.timestamp || 0),
+            pic,
+            sourceUrl: entryUrl,
+            availableQualities: defaultFbQualities,
+          });
+        }
+        if (results.length > 0) return results;
+      } catch {
+        // fall through to single/multi-entry extraction
+      }
+    }
+
+    try {
+      const info = await runYtDlpJson(
+        ytDlpBin,
+        ['-J', '--no-warnings', '--playlist-end', '30', ...cookieArgs, resolvedUrl],
+        35_000
+      );
+
+      if (Array.isArray(info?.entries) && info.entries.length > 0) {
+        const fallbackAuthor = info?.uploader || info?.channel || info?.title || 'Facebook';
+        const results: any[] = [];
+        for (let idx = 0; idx < info.entries.length; idx += 1) {
+          const entry = info.entries[idx];
+          if (!entry) continue;
+          const entryUrl =
+            (typeof entry.webpage_url === 'string' && entry.webpage_url.startsWith('http') && entry.webpage_url) ||
+            (typeof entry.url === 'string' && entry.url.startsWith('http') && entry.url) ||
+            resolvedUrl;
+          const vid = String(entry.id || `${extractFacebookIdFromUrl(resolvedUrl)}_${idx + 1}`);
+          const thumbs: any[] = Array.isArray(entry.thumbnails) ? entry.thumbnails : [];
+          const pic = entry.thumbnail || thumbs[thumbs.length - 1]?.url || '';
+          results.push({
+            id: `fb_${vid}_${crypto.randomBytes(3).toString('hex')}`,
+            platform: 'facebook',
+            bvid: vid,
+            aid: 0,
+            cid: 0,
+            page: idx + 1,
+            totalPages: info.entries.length,
+            title: entry.title || entry.fulltitle || info?.title || `Facebook Video ${vid}`,
+            partTitle: info.entries.length > 1 ? `Clip ${idx + 1}` : '',
+            author: entry.uploader || entry.creator || entry.channel || fallbackAuthor,
+            duration: Math.round(Number(entry.duration || 0)),
+            views: Number(entry.view_count || 0),
+            pubdate: parseUploadDateToUnix(entry.upload_date) || Number(entry.timestamp || 0),
+            pic,
+            sourceUrl: entryUrl,
+            availableQualities: buildQualitiesFromYtdlpFormats(entry.formats),
+          });
+        }
+        if (results.length > 0) return results;
+      }
+
+      const vid = String(info?.id || extractFacebookIdFromUrl(resolvedUrl));
+      const thumbs: any[] = Array.isArray(info?.thumbnails) ? info.thumbnails : [];
+      const pic = info?.thumbnail || thumbs[thumbs.length - 1]?.url || '';
+      return [
+        {
+          id: `fb_${vid}_${crypto.randomBytes(3).toString('hex')}`,
+          platform: 'facebook',
+          bvid: vid,
+          aid: 0,
+          cid: 0,
+          page: 1,
+          totalPages: 1,
+          title: info?.title || info?.fulltitle || `Facebook Video ${vid}`,
+          partTitle: '',
+          author: info?.uploader || info?.creator || info?.channel || 'Facebook',
+          duration: Math.round(Number(info?.duration || 0)),
+          views: Number(info?.view_count || 0),
+          pubdate: parseUploadDateToUnix(info?.upload_date) || Number(info?.timestamp || 0),
+          pic,
+          sourceUrl: info?.webpage_url || resolvedUrl,
+          availableQualities: buildQualitiesFromYtdlpFormats(info?.formats),
+        },
+      ];
+    } catch (ytDlpErr: any) {
+      const fbFallback = await extractFacebookFallbackFromHtml(resolvedUrl, rawCookies);
+      if (fbFallback && (fbFallback.hdUrl || fbFallback.sdUrl)) {
+        return [
+          {
+            id: `fb_${fbFallback.id}_${crypto.randomBytes(3).toString('hex')}`,
+            platform: 'facebook',
+            bvid: fbFallback.id,
+            aid: 0,
+            cid: 0,
+            page: 1,
+            totalPages: 1,
+            title: fbFallback.title,
+            partTitle: '',
+            author: fbFallback.author,
+            duration: fbFallback.duration,
+            views: 0,
+            pubdate: 0,
+            pic: fbFallback.pic,
+            sourceUrl: resolvedUrl,
+            availableQualities: fbFallback.hdUrl ? defaultFbQualities : [{ qn: 32, label: '480P' }, { qn: 16, label: '360P' }],
+          },
+        ];
+      }
+
+      const errMsg = String(ytDlpErr?.message || '');
+      if (
+        fbFallback?.loginRequired ||
+        /login|cookie|registered users|Private video|Cannot parse data|This video isn't available/i.test(errMsg)
+      ) {
+        throw new Error(
+          'Video Facebook này yêu cầu đăng nhập hoặc thuộc nhóm riêng tư. Vui lòng vào Cài đặt → tab Facebook và dán cookie facebook.com rồi thử lại.'
+        );
+      }
+      throw new Error(
+        `Không thể trích xuất video Facebook (${errMsg.slice(-180) || 'vui lòng kiểm tra liên kết hoặc thêm Cookie Facebook'}).`
+      );
+    }
   } finally {
     if (tempCookiePath && fs.existsSync(tempCookiePath)) {
       fs.unlink(tempCookiePath, () => {});
@@ -2263,6 +2723,7 @@ async function processDownloadJob(
 async function processYouTubeDownloadJob(
   jobId: string,
   params: {
+    platform?: VideoPlatform;
     sourceUrl: string;
     bvid: string;
     title: string;
@@ -2276,6 +2737,14 @@ async function processYouTubeDownloadJob(
 ) {
   const job = jobs.get(jobId);
   if (!job) return;
+  const effectivePlatform: VideoPlatform =
+    params.platform || (isFacebookUrl(params.sourceUrl) ? 'facebook' : 'youtube');
+  const platformDisplayName =
+    effectivePlatform === 'facebook'
+      ? 'Facebook'
+      : effectivePlatform === 'youtube'
+      ? 'YouTube'
+      : effectivePlatform.charAt(0).toUpperCase() + effectivePlatform.slice(1);
 
   const tempFiles: string[] = [];
   const transform = normalizeVideoTransform(params.videoTransform);
@@ -2350,7 +2819,11 @@ async function processYouTubeDownloadJob(
         mergeArgs.push('--merge-output-format', 'mkv');
       }
 
-      const targetUrl = params.sourceUrl || `https://www.youtube.com/watch?v=${params.bvid}`;
+      const rawTargetUrl = params.sourceUrl || `https://www.youtube.com/watch?v=${params.bvid}`;
+      const targetUrl =
+        effectivePlatform === 'facebook'
+          ? await resolveFacebookShareUrl(rawTargetUrl, params.ytCookies)
+          : rawTargetUrl;
       const ytArgs = [
         '--no-playlist',
         '--js-runtimes',
@@ -2414,32 +2887,80 @@ async function processYouTubeDownloadJob(
           proc.on('close', (code) => {
             if (code === 0) {
               resolve();
-            } else if (/Sign in to confirm you.?re not a bot|cookies/i.test(stderr)) {
+            } else if (/Sign in to confirm you.?re not a bot/i.test(stderr)) {
               reject(
                 new Error(
                   'YouTube yêu cầu xác minh chống bot. Vui lòng bấm "Cookie / Đăng nhập" trên thanh trên cùng -> tab YouTube Cookies và dán cookies.txt của bạn rồi bấm Thử lại.'
                 )
               );
+            } else if (
+              effectivePlatform === 'facebook' &&
+              /login|cookie|registered users|Private video|Cannot parse data/i.test(stderr)
+            ) {
+              reject(
+                new Error(
+                  'Facebook yêu cầu đăng nhập hoặc cookie để tải video này. Vui lòng vào Cài đặt -> tab Facebook và dán cookie facebook.com rồi bấm Thử lại.'
+                )
+              );
             } else {
-              reject(new Error(`Lỗi tải YouTube (code ${code}): ${stderr.slice(-260).trim()}`));
+              reject(new Error(`Lỗi tải ${platformDisplayName} (code ${code}): ${stderr.slice(-260).trim()}`));
             }
           });
           proc.on('error', (err) => reject(err));
         });
       } catch (dlErr) {
-        // Clean partial files on failed download
+        // Clean partial files on failed yt-dlp attempt
         for (const f of fs.readdirSync(cacheDir)) {
           if (f.startsWith(stem)) {
             fs.unlink(path.join(cacheDir, f), () => {});
           }
         }
-        throw dlErr;
+
+        // For Facebook, try direct HTML HD/SD stream extraction as a resilient fallback
+        let recoveredViaFacebookFallback = false;
+        if (effectivePlatform === 'facebook') {
+          try {
+            const fbFallback = await extractFacebookFallbackFromHtml(targetUrl, params.ytCookies);
+            const candidates = (
+              maxH > 0 && maxH <= 480
+                ? [fbFallback?.sdUrl, fbFallback?.hdUrl]
+                : [fbFallback?.hdUrl, fbFallback?.sdUrl]
+            ).filter((u): u is string => Boolean(u));
+            if (candidates.length > 0) {
+              const fbCookie = buildFacebookCookieHeader(params.ytCookies);
+              await downloadFileWithProgress(
+                candidates,
+                `${rawPrefix}.mp4`,
+                {
+                  'User-Agent': USER_AGENT,
+                  Referer: 'https://www.facebook.com/',
+                  ...(fbCookie ? { Cookie: fbCookie } : {}),
+                },
+                (downloaded, total, speed) => {
+                  job.downloadedBytes = downloaded;
+                  if (total > 0) {
+                    job.totalBytes = total;
+                    job.progress = Math.min(78, Math.max(4, Math.round((downloaded / total) * 78)));
+                  }
+                  job.speedBytesPerSec = speed;
+                }
+              );
+              recoveredViaFacebookFallback = true;
+            }
+          } catch {
+            // fall through and rethrow original error
+          }
+        }
+
+        if (!recoveredViaFacebookFallback) {
+          throw dlErr;
+        }
       }
 
       const dirEntries = fs.readdirSync(cacheDir);
       const matchedRaw = dirEntries.find((f) => f.startsWith(`${stem}.`) && !f.endsWith('.part') && !f.endsWith('.ytdl'));
       if (!matchedRaw) {
-        throw new Error('Không tìm thấy tệp sau khi tải từ YouTube');
+        throw new Error(`Không tìm thấy tệp sau khi tải từ ${platformDisplayName}`);
       }
       const ext = path.extname(matchedRaw) || '.mkv';
       const stableRawPath = path.join(cacheDir, `source${ext}`);
@@ -2456,7 +2977,7 @@ async function processYouTubeDownloadJob(
 
     if (isAudioOnly) {
       const hasAudio = await probeHasAudio(rawPath);
-      if (!hasAudio) throw new Error('Video YouTube này không có luồng âm thanh');
+      if (!hasAudio) throw new Error(`Video ${platformDisplayName} này không có luồng âm thanh`);
       const codecs = await probeStreamCodecs(rawPath);
       const afArgs = transform.hasSpeed ? ['-af', `asetpts=PTS-STARTPTS,${buildAtempoFilter(transform.speed)}`] : [];
       if (params.format === 'mp3') {
@@ -2517,7 +3038,7 @@ async function processYouTubeDownloadJob(
     cleanupRawCacheIfUnused(job.rawCacheKey, jobId);
   } catch (err: any) {
     job.status = 'error';
-    const rawMsg = err?.message || 'Lỗi không xác định khi tải video YouTube';
+    const rawMsg = err?.message || `Lỗi không xác định khi tải video ${platformDisplayName}`;
     job.error = hasCachedRawSource
       ? `Đã giữ lại video gốc đã tải (bấm Thử lại để xuất lại không cần tải lại từ đầu): ${rawMsg}`
       : rawMsg;
@@ -2559,6 +3080,8 @@ async function startServer() {
         rawUrl.includes('tiktok.com')
       ) {
         referer = 'https://www.tiktok.com/';
+      } else if (rawUrl.includes('fbcdn.net') || rawUrl.includes('fbsbx.com') || rawUrl.includes('facebook.com')) {
+        referer = 'https://www.facebook.com/';
       }
 
       const response = await fetch(rawUrl, {
@@ -3634,10 +4157,19 @@ async function startServer() {
           } catch {
             suggestedFolder = sanitizeFilename(ytLegacy);
           }
+          return;
+        }
+        const fbPage = urlStr.match(/facebook\.com\/(?!watch\b|reel\b|reels\b|share\b|video\.php\b|story\.php\b|profile\.php\b)([^/?#\s]+)/i)?.[1];
+        if (fbPage) {
+          try {
+            suggestedFolder = sanitizeFilename(decodeURIComponent(fbPage));
+          } catch {
+            suggestedFolder = sanitizeFilename(fbPage);
+          }
         }
       };
 
-    for (const rawInput of urls.slice(0, 30)) {
+    for (const rawInput of urls.slice(0, 100)) {
       const trimmed = rawInput.trim();
       if (!trimmed) continue;
 
@@ -3646,6 +4178,12 @@ async function startServer() {
         if (isYouTubeUrl(trimmed)) {
           const ytItems = await inspectYouTubeUrl(trimmed, ytCookies);
           items.push(...ytItems);
+          continue;
+        }
+
+        if (isFacebookUrl(trimmed)) {
+          const fbItems = await inspectFacebookUrl(trimmed, ytCookies);
+          items.push(...fbItems);
           continue;
         }
 
@@ -3930,9 +4468,10 @@ async function startServer() {
     const detectedFromUrl = sourceUrl ? detectPlatformFromUrl(sourceUrl) : 'bilibili';
     const effectivePlatform = platform || detectedFromUrl;
 
-    // Run asynchronously: Bilibili uses native DASH downloader; YouTube & other global platforms use yt-dlp + FFmpeg
+    // Run asynchronously: Bilibili uses native DASH downloader; YouTube, Facebook & other global platforms use yt-dlp + FFmpeg
     if (effectivePlatform !== 'bilibili' && (sourceUrl || effectivePlatform === 'youtube')) {
       processYouTubeDownloadJob(jobId, {
+        platform: effectivePlatform,
         sourceUrl: sourceUrl || `https://www.youtube.com/watch?v=${bvid}`,
         bvid,
         title,
@@ -4602,9 +5141,11 @@ async function startServer() {
     next(err);
   });
 
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: false },
+      server: { middlewareMode: true, hmr: false, ws: { server: httpServer } },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -4616,7 +5157,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`BiliBatch server running at http://localhost:${PORT}`);
     void autoStartLocalMuse2ApiOnServerBoot();
   });

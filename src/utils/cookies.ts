@@ -77,6 +77,14 @@ export const COOKIE_SITES: CookieSiteDescriptor[] = [
     placeholder: '# Netscape cookies.txt, JSON hoặc Cookie header của ixigua.com...',
   },
   {
+    id: 'facebook',
+    label: 'Facebook',
+    domain: '.facebook.com',
+    domainsMatch: ['facebook.com', 'fb.com', 'fb.watch'],
+    description: 'Hỗ trợ tải video/Reels từ nhóm riêng tư, trang cá nhân hoặc khi Facebook yêu cầu đăng nhập.',
+    placeholder: '# Netscape cookies.txt, Cookie-Editor JSON hoặc Cookie header (c_user=...; xs=...) của facebook.com...',
+  },
+  {
     id: 'muse',
     label: 'Muse AI (muse.ai)',
     domain: '.muse.ai',
@@ -86,10 +94,10 @@ export const COOKIE_SITES: CookieSiteDescriptor[] = [
   },
   {
     id: 'other',
-    label: 'Trang khác (FB / IG / X...)',
+    label: 'Trang khác (IG / X / Vimeo...)',
     domain: '',
     domainsMatch: [],
-    description: 'Cookie cho Dailymotion, Vimeo, Facebook, Instagram, X/Twitter...',
+    description: 'Cookie cho Dailymotion, Vimeo, Instagram, X/Twitter...',
     placeholder: '# Dán Netscape cookies.txt hoặc Cookie-Editor JSON có sẵn tên miền...',
   },
 ];
@@ -103,6 +111,7 @@ export const EMPTY_PER_SITE_COOKIES: PerSiteCookies = {
   xiaohongshu: '',
   weibo: '',
   xigua: '',
+  facebook: '',
   muse: '',
   other: '',
 };
@@ -211,6 +220,7 @@ export function migrateLegacyCookies(legacyYtCookies: string, legacySessdata: st
     xiaohongshu: [],
     weibo: [],
     xigua: [],
+    facebook: [],
     muse: [],
     other: [],
   };

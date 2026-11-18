@@ -409,6 +409,8 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                             className={`font-semibold ${
                               item.platform === 'youtube'
                                 ? 'text-red-600 dark:text-red-400'
+                                : item.platform === 'facebook'
+                                ? 'text-blue-600 dark:text-blue-400'
                                 : 'text-[#003B3E] dark:text-[#1BA8AD]'
                             }`}
                           >
@@ -422,6 +424,7 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                               weibo: 'Weibo',
                               xigua: 'Xigua',
                               dailymotion: 'Dailymotion',
+                              facebook: 'Facebook',
                               other: 'Video',
                             }[item.platform || 'bilibili'] || 'Bilibili')}
                           </span>

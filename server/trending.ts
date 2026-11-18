@@ -10,6 +10,7 @@ export type VideoPlatform =
   | 'weibo'
   | 'xigua'
   | 'dailymotion'
+  | 'facebook'
   | 'other';
 
 export type TrendingPlatformId =
@@ -318,6 +319,9 @@ export function detectPlatformFromUrl(urlStr: string): VideoPlatform {
   if (lower.includes('weibo.com') || lower.includes('weibo.cn')) return 'weibo';
   if (lower.includes('ixigua.com')) return 'xigua';
   if (lower.includes('dailymotion.com') || lower.includes('dai.ly')) return 'dailymotion';
+  if (lower.includes('facebook.com') || lower.includes('fb.watch') || /(?:^|\/)fb\.com\//i.test(lower)) {
+    return 'facebook';
+  }
   return 'other';
 }
 

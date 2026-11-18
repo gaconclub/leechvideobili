@@ -477,6 +477,9 @@ function getRefererForUrl(rawUrl: string): string {
   if (rawUrl.includes('tiktokcdn') || rawUrl.includes('tiktokv.com') || rawUrl.includes('ttwstatic.com') || rawUrl.includes('tiktok.com')) {
     return 'https://www.tiktok.com/';
   }
+  if (rawUrl.includes('fbcdn.net') || rawUrl.includes('fbsbx.com') || rawUrl.includes('facebook.com')) {
+    return 'https://www.facebook.com/';
+  }
   return '';
 }
 

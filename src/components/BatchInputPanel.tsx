@@ -45,7 +45,7 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
             Tải video đa nền tảng hàng loạt
           </h1>
           <p className="text-sm text-slate-500 dark:text-teal-100/80">
-            Dán một hoặc nhiều liên kết Video, Shorts, Playlist hay Kênh (Bilibili, YouTube, TikTok, Douyin, Kuaishou, Xiaohongshu, Xigua...) để tự động tách danh sách và xử lý đồng loạt.
+            Dán một hoặc nhiều liên kết Video, Reels, Watch, Playlist hay Kênh (Facebook, Bilibili, YouTube, TikTok, Douyin, Kuaishou, Xiaohongshu, Xigua...) để tự động tách danh sách và tải đồng loạt.
           </p>
         </div>
 
@@ -80,7 +80,7 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
               setRawText(e.target.value);
               if (inspectErrors.length > 0) onClearErrors();
             }}
-            placeholder={`https://www.youtube.com/watch?v=...\nhttps://www.bilibili.com/video/BV1xx411c7mD\nhttps://www.douyin.com/video/...\nhttps://www.kuaishou.com/short-video/...\nhttps://www.tiktok.com/@user/video/...`}
+            placeholder={`https://www.facebook.com/watch/?v=...\nhttps://www.facebook.com/reel/...\nhttps://fb.watch/...\nhttps://www.youtube.com/watch?v=...\nhttps://www.bilibili.com/video/BV1xx411c7mD\nhttps://www.tiktok.com/@user/video/...`}
             className="w-full px-4 py-3.5 text-sm font-mono bg-[#F8FAFB] dark:bg-[#000A10] border border-slate-200/90 dark:border-[#00464A] rounded-xl text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-teal-200/45 focus:outline-none focus:border-[#003B3E] dark:focus:border-[#1BA8AD] focus:ring-3 focus:ring-[#003B3E]/15 transition-all resize-y"
           />
         </div>
@@ -106,7 +106,7 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
             >
               {detectedUrls.length > 0
                 ? `${detectedUrls.length} liên kết hợp lệ được nhận diện`
-                : 'Hỗ trợ YouTube (Video, Shorts, Playlist, Kênh) & Bilibili (BV/av, b23.tv, Kênh)'}
+                : 'Hỗ trợ Facebook (Video, Reels, Watch, Trang), YouTube, Bilibili, TikTok, Douyin...'}
             </span>
           </div>
 

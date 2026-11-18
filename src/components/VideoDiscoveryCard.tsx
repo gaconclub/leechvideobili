@@ -28,7 +28,9 @@ function needsImageProxy(url: string): boolean {
     url.includes('xhscdn.com') ||
     url.includes('tiktokcdn') ||
     url.includes('tiktokv.com') ||
-    url.includes('ttwstatic.com')
+    url.includes('ttwstatic.com') ||
+    url.includes('fbcdn.net') ||
+    url.includes('fbsbx.com')
   );
 }
 
