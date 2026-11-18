@@ -985,7 +985,7 @@ async function ensureYtDlpPath(): Promise<string> {
     ytDlpPathPromise = (async () => {
       // Try system yt-dlp first
       const systemFound = await new Promise<boolean>((resolve) => {
-        const p = spawn('yt-dlp', ['--version'], { shell: isWin });
+        const p = spawn('yt-dlp', ['--version'], { stdio: 'ignore', windowsHide: true });
         p.on('close', (code) => resolve(code === 0));
         p.on('error', () => resolve(false));
       });
@@ -4834,10 +4834,13 @@ async function startServer() {
     timeoutMs = 20_000
   ): Promise<{ code: number; stdout: string; stderr: string }> => {
     return new Promise((resolve, reject) => {
-      const proc = spawn(cmd, args, {
+      const useCmdWrapper = process.platform === 'win32' && cmd === 'npm';
+      const actualCmd = useCmdWrapper ? 'cmd.exe' : cmd;
+      const actualArgs = useCmdWrapper ? ['/d', '/s', '/c', 'npm', ...args] : args;
+      const proc = spawn(actualCmd, actualArgs, {
         cwd: process.cwd(),
-        shell: process.platform === 'win32' && cmd === 'npm',
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       });
       let stdout = '';
       let stderr = '';

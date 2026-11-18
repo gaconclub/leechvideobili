@@ -104,13 +104,13 @@ export function resolveMuse2ApiConfig(): Muse2ApiConfig {
   };
 }
 
-function checkCmdSync(cmd: string, args: string[], timeoutMs = 2500): Promise<boolean> {
+function checkCmdSync(cmd: string, args: string[], timeoutMs = 6000): Promise<boolean> {
   return new Promise((resolve) => {
     try {
       const p = spawn(cmd, args, { stdio: 'ignore', windowsHide: true });
       const timer = setTimeout(() => {
         try {
-          p.kill('SIGKILL');
+          p.kill();
         } catch {
           // ignore
         }
@@ -232,8 +232,8 @@ export async function probeLocalMuse2ApiRuntime(force = false) {
   };
 }
 
-export async function startLocalMuse2ApiProcess(): Promise<{ ok: boolean; message: string }> {
-  const runtime = await probeLocalMuse2ApiRuntime(true);
+export async function startLocalMuse2ApiProcess(forceProbe = true): Promise<{ ok: boolean; message: string }> {
+  const runtime = await probeLocalMuse2ApiRuntime(forceProbe);
   if (!runtime.bundledDirExists) {
     return { ok: false, message: 'Không tìm thấy thư mục /muse2api trên máy chủ.' };
   }
@@ -356,7 +356,7 @@ export async function autoStartLocalMuse2ApiOnServerBoot(): Promise<void> {
   }
 
   console.log(`[Muse2API] Đang tự động khởi chạy máy chủ ${cfg.baseUrl} cùng phiên làm việc...`);
-  const res = await startLocalMuse2ApiProcess();
+  const res = await startLocalMuse2ApiProcess(false);
   console.log(`[Muse2API] ${res.message}`);
 }
 

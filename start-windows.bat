@@ -33,7 +33,13 @@ if not exist "node_modules" (
 
 rem --- Tu dong chuan bi moi truong Muse2API (127.0.0.1:18610) ---
 if not exist "muse2api\app.py" goto after_muse2api_setup
-if exist "muse2api\.venv\Scripts\python.exe" goto after_muse2api_setup
+if exist "muse2api\.venv\Scripts\python.exe" (
+  "muse2api\.venv\Scripts\python.exe" -c "import fastapi, uvicorn, pydantic, requests, websocket" >nul 2>&1
+  if not errorlevel 1 goto after_muse2api_setup
+  echo [Muse2API] Phat hien thieu thu vien trong .venv, dang cai dat bo sung...
+  "muse2api\.venv\Scripts\python.exe" -m pip install -r "muse2api\requirements.txt"
+  goto after_muse2api_setup
+)
 
 set "PY_CMD="
 python --version >nul 2>&1
