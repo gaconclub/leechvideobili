@@ -245,7 +245,7 @@ export const OUTPUT_FORMATS: { value: OutputFormat; label: string; desc: string 
   { value: 'm4a', label: 'M4A', desc: 'Chỉ âm thanh · AAC gốc' },
 ];
 
-export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse_edison' | 'muse2api_video';
+export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video';
 export type DerivativeStylePreset = 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
 export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
@@ -253,7 +253,7 @@ export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploade
 export type DerivativeAspectRatio = '9:16' | '16:9';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
 
-export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse' | 'muse2api';
+export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api';
 export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
 
 export type CookieSiteId =
@@ -270,6 +270,11 @@ export type CookieSiteId =
 
 export type PerSiteCookies = Record<CookieSiteId, string>;
 
+export interface OfflineTtsVoiceOption {
+  id: string;
+  description: string;
+}
+
 export interface StudioDefaultConfig {
   aiProvider: AiProviderId;
   brollSource: BrollSourceId;
@@ -278,6 +283,7 @@ export interface StudioDefaultConfig {
   targetDurationSec: number; // 30 to 900 seconds (supports >5 min)
   visualMode: DerivativeVisualMode;
   voice: DerivativeVoiceId;
+  offlineVoice?: string;
   keepSourceAudio: boolean;
 }
 
@@ -316,7 +322,6 @@ export interface ServerCapabilitiesStatus {
     gemini: { configured: boolean; model: string; ttsModel: string; source: 'env' | 'none' };
     openai: { configured: boolean; model: string; source: 'env' | 'none' };
     meta: { configured: boolean; model: string; baseUrl: string; source: 'env' | 'none' };
-    muse: { configured: boolean; model: string; baseUrl: string; source: 'env' | 'none' | 'bridge' };
     muse2api: {
       configured: boolean;
       reachable: boolean;
@@ -347,7 +352,11 @@ export interface ServerCapabilitiesStatus {
     ffmpeg: { available: boolean; version: string };
     ytDlp: { available: boolean; version: string };
     node: { available: boolean; version: string };
-    offlineTts: { available: boolean; engine: string };
+    offlineTts: {
+      available: boolean;
+      engine: string;
+      engineId?: 'vieneu' | 'win_sapi' | 'macos_say' | 'espeak';
+    };
   };
 }
 

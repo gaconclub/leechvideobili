@@ -39,12 +39,15 @@ import {
   generateStudioMusicWithLyria,
   getStudioAsset,
   initStudioChunkedUpload,
+  installAndWarmupVieNeu,
   learnVideosAndCreateBlueprint,
+  listVieNeuVoices,
   saveUploadedStudioAudio,
   saveUploadedStudioVideo,
   saveUploadedStudioVideoFromDisk,
   searchPublicFreeMusicFromWikimedia,
   startDerivativeVideoJob,
+  synthesizeOfflineVoicePreview,
   testAiProviderConnection,
 } from './server/derivative';
 import {
@@ -2978,12 +2981,6 @@ async function startServer() {
           baseUrl: (process.env.META_BASE_URL || 'https://api.llama.com/compat/v1').trim(),
           source: process.env.META_API_KEY?.trim() ? 'env' : 'none',
         },
-        muse: {
-          configured: true,
-          model: 'Edison Bridge (Không cần API key)',
-          baseUrl: '/api/edison/*',
-          source: 'bridge',
-        },
         muse2api: {
           configured: Boolean(muse2apiStatus?.ready),
           reachable: Boolean(muse2apiStatus?.reachable),
@@ -3023,7 +3020,7 @@ async function startServer() {
     try {
       const rawProvider = String(req.body?.provider || 'gemini');
       const provider: AiProviderId =
-        rawProvider === 'openai' || rawProvider === 'meta' || rawProvider === 'muse' || rawProvider === 'muse2api'
+        rawProvider === 'openai' || rawProvider === 'meta' || rawProvider === 'muse2api'
           ? rawProvider
           : 'gemini';
       const result = await testAiProviderConnection(provider);
@@ -3274,7 +3271,7 @@ async function startServer() {
       }
 
       const validProvider: AiProviderId =
-        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse' || aiProvider === 'muse2api'
+        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse2api'
           ? aiProvider
           : 'gemini';
 
@@ -3300,15 +3297,47 @@ async function startServer() {
     }
   });
 
+  app.get('/api/tts/offline/voices', async (_req, res) => {
+    try {
+      const data = await listVieNeuVoices();
+      res.json({ ok: true, ...data });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, available: false, voices: [], error: err?.message || 'Không lấy được danh sách giọng VieNeu-TTS.' });
+    }
+  });
+
+  app.post('/api/tts/offline/setup', async (_req, res) => {
+    try {
+      const result = await installAndWarmupVieNeu();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Không thể cài đặt thư viện VieNeu-TTS Offline.' });
+    }
+  });
+
+  app.post('/api/tts/offline/preview', async (req, res) => {
+    try {
+      const { text = '', voice = '' } = (req.body || {}) as { text?: string; voice?: string };
+      const wavBuf = await synthesizeOfflineVoicePreview(String(text || ''), String(voice || ''));
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Length', String(wavBuf.byteLength));
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(wavBuf);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tổng hợp giọng đọc thử VieNeu-TTS.' });
+    }
+  });
+
   app.post('/api/derivative/generate', async (req, res) => {
     try {
       const {
         blueprint,
         sources,
-        visualMode = 'remix',
+        visualMode = 'muse2api_video',
         voice = 'Kore',
         voiceMode,
         voiceStyle = '',
+        offlineVoice = '',
         keepSourceAudio = false,
         brollSource = 'wikimedia',
         musicMode = 'none',
@@ -3326,6 +3355,7 @@ async function startServer() {
         voice?: DerivativeVoiceId;
         voiceMode?: DerivativeVoiceMode;
         voiceStyle?: string;
+        offlineVoice?: string;
         keepSourceAudio?: boolean;
         brollSource?: BrollSourceId;
         musicMode?: DerivativeMusicMode;
@@ -3348,8 +3378,7 @@ async function startServer() {
       const validVisualMode: DerivativeVisualMode =
         visualMode === 'gemini_omni' ||
         visualMode === 'storyboard_motion' ||
-        visualMode === 'muse2api_video' ||
-        visualMode === 'muse_edison'
+        visualMode === 'muse2api_video'
           ? visualMode
           : 'remix';
 
@@ -3360,6 +3389,7 @@ async function startServer() {
         voice: voice || 'Kore',
         voiceMode,
         voiceStyle,
+        offlineVoice: String(offlineVoice || '').trim() || undefined,
         keepSourceAudio: Boolean(keepSourceAudio),
         brollSource,
         musicMode,
@@ -3504,190 +3534,6 @@ async function startServer() {
       res.json(data);
     } catch (err: any) {
       res.status(502).json({ error: err?.message || 'Không lấy được danh sách tệp media Muse2API.' });
-    }
-  });
-
-  // ==========================================
-  // MUSE AI (EDISON BRIDGE) ENDPOINTS
-  // ==========================================
-  const getEdisonDownloadDir = (): string => {
-    const root = process.cwd();
-    for (const name of ['BiliBatch_Downloads', 'Downloads']) {
-      const candidate = path.join(root, name);
-      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
-        return candidate;
-      }
-    }
-    const target = path.join(root, 'BiliBatch_Downloads');
-    fs.mkdirSync(target, { recursive: true });
-    return target;
-  };
-
-  const safeEdisonFileName = (raw: unknown): string | null => {
-    if (!raw || typeof raw !== 'string') return null;
-    if (raw.includes('/') || raw.includes('\\') || raw.includes('..')) return null;
-    return raw;
-  };
-
-  const readEdisonRequests = (): any[] => {
-    const reqFile = path.join(process.cwd(), 'edison-requests.json');
-    if (!fs.existsSync(reqFile)) return [];
-    try {
-      const parsed = JSON.parse(fs.readFileSync(reqFile, 'utf8'));
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  };
-
-  app.get('/api/edison/status', (_req, res) => {
-    const downloadDir = getEdisonDownloadDir();
-    res.json({
-      ok: true,
-      app: 'BiliBatch',
-      version: '1.0',
-      time: new Date().toISOString(),
-      downloadDir: path.basename(downloadDir),
-      requestsCount: readEdisonRequests().length,
-    });
-  });
-
-  app.get('/api/edison/downloads', (_req, res) => {
-    try {
-      const downloadDir = getEdisonDownloadDir();
-      const files = fs
-        .readdirSync(downloadDir)
-        .filter((f) => {
-          try {
-            return fs.statSync(path.join(downloadDir, f)).isFile();
-          } catch {
-            return false;
-          }
-        })
-        .map((f) => {
-          const st = fs.statSync(path.join(downloadDir, f));
-          return { name: f, size: st.size, mtime: st.mtime.toISOString() };
-        })
-        .sort((a, b) => b.mtime.localeCompare(a.mtime));
-      res.json({ ok: true, folder: path.basename(downloadDir), files });
-    } catch (err: any) {
-      res.status(500).json({ ok: false, error: err?.message || 'Không thể đọc thư mục tải về.' });
-    }
-  });
-
-  app.get('/api/edison/video', (req, res) => {
-    const name = safeEdisonFileName(req.query.name);
-    if (!name) return res.status(400).json({ ok: false, error: 'invalid name' });
-    const downloadDir = getEdisonDownloadDir();
-    const filePath = path.join(downloadDir, name);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ ok: false, error: 'not found' });
-
-    const stat = fs.statSync(filePath);
-    const total = stat.size;
-    const ext = path.extname(name).toLowerCase();
-    const mimeType = ext === '.webm' ? 'video/webm' : ext === '.mov' ? 'video/quicktime' : 'video/mp4';
-
-    res.setHeader('Content-Type', mimeType);
-    res.setHeader('Accept-Ranges', 'bytes');
-    if (!req.headers.range) {
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(name)}"`);
-    }
-
-    const range = req.headers.range;
-    if (range) {
-      const m = range.match(/bytes=(\d+)-(\d*)/);
-      if (m) {
-        const start = parseInt(m[1], 10);
-        const end = m[2] ? Math.min(total - 1, parseInt(m[2], 10)) : total - 1;
-        if (start < total && end >= start) {
-          res.status(206);
-          res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
-          res.setHeader('Content-Length', end - start + 1);
-          fs.createReadStream(filePath, { start, end }).pipe(res);
-          return;
-        }
-      }
-    }
-
-    res.setHeader('Content-Length', total);
-    fs.createReadStream(filePath).pipe(res);
-  });
-
-  app.post('/api/edison/derivative-request', (req, res) => {
-    try {
-      const body = (req.body || {}) as {
-        source?: unknown;
-        direction?: unknown;
-        note?: unknown;
-      };
-      const id = `req-${Date.now()}`;
-      const record = {
-        id,
-        time: new Date().toISOString(),
-        source: body.source ?? null,
-        direction: body.direction ?? null,
-        note: body.note ?? null,
-        status: 'pending',
-      };
-      const reqFile = path.join(process.cwd(), 'edison-requests.json');
-      const list = readEdisonRequests();
-      list.push(record);
-      fs.writeFileSync(reqFile, JSON.stringify(list, null, 2));
-      res.json({ ok: true, id, status: 'pending', record });
-    } catch (err: any) {
-      res.status(500).json({ ok: false, error: err?.message || 'Không thể lưu yêu cầu Edison.' });
-    }
-  });
-
-  app.get('/api/edison/requests', (_req, res) => {
-    const list = readEdisonRequests().slice().reverse();
-    res.json({ ok: true, requests: list });
-  });
-
-  app.post('/api/edison/sync-studio', async (req, res) => {
-    try {
-      const { action, assetIds = [], fileName } = (req.body || {}) as {
-        action?: 'push_sources' | 'import_download';
-        assetIds?: string[];
-        fileName?: string;
-      };
-      const downloadDir = getEdisonDownloadDir();
-
-      if (action === 'push_sources') {
-        const exported: { assetId: string; fileName: string; size: number }[] = [];
-        for (const id of assetIds) {
-          const rec = getStudioAsset(id);
-          if (!rec || !fs.existsSync(rec.filePath)) continue;
-          const cleanName = rec.fileName
-            .replace(/[<>:"/\\|?*]+/g, '_')
-            .replace(/\s+/g, '_')
-            .slice(0, 80);
-          const targetName = cleanName.includes('.') ? cleanName : `${cleanName}.mp4`;
-          const targetPath = path.join(downloadDir, targetName);
-          fs.copyFileSync(rec.filePath, targetPath);
-          const st = fs.statSync(targetPath);
-          exported.push({ assetId: id, fileName: targetName, size: st.size });
-        }
-        return res.json({ ok: true, folder: path.basename(downloadDir), exported });
-      }
-
-      if (action === 'import_download') {
-        const safe = safeEdisonFileName(fileName);
-        if (!safe) {
-          return res.status(400).json({ ok: false, error: 'Tên tệp không hợp lệ.' });
-        }
-        const sourcePath = path.join(downloadDir, safe);
-        if (!fs.existsSync(sourcePath)) {
-          return res.status(404).json({ ok: false, error: 'Không tìm thấy tệp trong BiliBatch_Downloads.' });
-        }
-        const asset = await saveUploadedStudioVideoFromDisk(sourcePath, safe);
-        return res.json({ ok: true, asset });
-      }
-
-      return res.status(400).json({ ok: false, error: 'Hành động sync-studio không hợp lệ.' });
-    } catch (err: any) {
-      console.error('Edison sync-studio error:', err);
-      res.status(500).json({ ok: false, error: err?.message || 'Lỗi đồng bộ Studio với BiliBatch_Downloads.' });
     }
   });
 
@@ -4560,8 +4406,9 @@ async function startServer() {
     }
   });
 
-  app.post('/api/system/self-update', async (_req, res) => {
+  app.post('/api/system/self-update', async (req, res) => {
     try {
+      const forceReset = Boolean(req.body?.force);
       const hasActiveJobs = Array.from(jobs.values()).some(
         (j) => j.status === 'downloading' || j.status === 'processing'
       );
@@ -4592,16 +4439,109 @@ async function startServer() {
         });
       }
 
-      // Stash local tracked edits (if any) so pull --ff-only won't be blocked
-      const diffRes = await runExec('git', ['diff', '--name-only'], 8000);
-      if (diffRes.code === 0 && diffRes.stdout) {
+      const backupDir = path.join(cwd, '.update-backup', String(Date.now()));
+      const moveCollidingPathsToBackup = (relPaths: string[]): string[] => {
+        const moved: string[] = [];
+        for (const rawRel of relPaths) {
+          const rel = rawRel.trim().replace(/\\/g, '/');
+          if (!rel || rel.startsWith('/') || rel.includes('..') || rel.startsWith('.git/')) continue;
+          const absSrc = path.resolve(cwd, rel);
+          if (!absSrc.startsWith(path.resolve(cwd) + path.sep) || !fs.existsSync(absSrc)) continue;
+          try {
+            const absDst = path.resolve(backupDir, rel);
+            fs.mkdirSync(path.dirname(absDst), { recursive: true });
+            fs.renameSync(absSrc, absDst);
+            moved.push(rel);
+          } catch {
+            // ignore move failure
+          }
+        }
+        return moved;
+      };
+
+      const parseUntrackedConflictPaths = (stderrText: string): string[] => {
+        const lines = String(stderrText || '').split(/\r?\n/);
+        const results: string[] = [];
+        let capture = false;
+        for (const line of lines) {
+          if (
+            line.includes('untracked working tree files would be overwritten') ||
+            line.includes('Untracked working tree file')
+          ) {
+            capture = true;
+            const singleMatch = line.match(/Untracked working tree file ['"](.+?)['"]/);
+            if (singleMatch?.[1]) results.push(singleMatch[1]);
+            continue;
+          }
+          if (capture) {
+            if (line.includes('Please move or remove') || line.includes('Aborting')) {
+              capture = false;
+              continue;
+            }
+            const trimmed = line.trim();
+            if (trimmed && !trimmed.startsWith('error:') && !trimmed.startsWith('fatal:')) {
+              results.push(trimmed);
+            }
+          }
+        }
+        return results;
+      };
+
+      // Stash local tracked edits (staged or unstaged) so pull --ff-only won't be blocked
+      const statusTrackedRes = await runExec(
+        'git',
+        ['status', '--porcelain', '--untracked-files=no'],
+        8000
+      );
+      if (statusTrackedRes.code === 0 && statusTrackedRes.stdout) {
         await runExec('git', ['stash', 'push', '-m', 'bilibatch-auto-update'], 10_000).catch(() => {});
       }
 
-      const pullRes = await runExec('git', ['pull', '--ff-only', 'origin', branch], 30_000);
+      // Detect untracked local files that collide with files tracked on origin/<branch>
+      const [untrackedRes, remoteTreeRes] = await Promise.all([
+        runExec('git', ['ls-files', '--others', '--exclude-standard'], 8000),
+        runExec('git', ['ls-tree', '-r', '--name-only', `origin/${branch}`], 8000),
+      ]);
+      if (untrackedRes.code === 0 && remoteTreeRes.code === 0 && untrackedRes.stdout && remoteTreeRes.stdout) {
+        const remoteSet = new Set(remoteTreeRes.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+        const colliding = untrackedRes.stdout
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter((f) => f && remoteSet.has(f));
+        if (colliding.length > 0) {
+          moveCollidingPathsToBackup(colliding);
+        }
+      }
+
+      let pullRes = await runExec('git', ['pull', '--ff-only', 'origin', branch], 30_000);
+      if (pullRes.code !== 0) {
+        const extraUntracked = parseUntrackedConflictPaths(pullRes.stderr);
+        if (extraUntracked.length > 0) {
+          moveCollidingPathsToBackup(extraUntracked);
+          pullRes = await runExec('git', ['pull', '--ff-only', 'origin', branch], 30_000);
+        }
+      }
+
+      if (pullRes.code !== 0 && forceReset) {
+        const resetRes = await runExec('git', ['reset', '--hard', `origin/${branch}`], 30_000);
+        if (resetRes.code !== 0) {
+          const resetConflicts = parseUntrackedConflictPaths(resetRes.stderr);
+          if (resetConflicts.length > 0) {
+            moveCollidingPathsToBackup(resetConflicts);
+            pullRes = await runExec('git', ['reset', '--hard', `origin/${branch}`], 30_000);
+          } else {
+            pullRes = resetRes;
+          }
+        } else {
+          pullRes = resetRes;
+        }
+      }
+
       if (pullRes.code !== 0) {
         return res.status(500).json({
-          error: `Không thể tự gộp code mới (${pullRes.stderr || 'git pull thất bại'}). Bạn hãy chạy "git reset --hard origin/${branch}" trong thư mục dự án.`,
+          canForceReset: true,
+          branch,
+          error: `Không thể tự gộp code mới (${pullRes.stderr || 'git pull thất bại'}). Bạn hãy bấm "Ghi đè xung đột & Cập nhật" bên dưới hoặc chạy "git reset --hard origin/${branch}" trong thư mục dự án.`,
         });
       }
 

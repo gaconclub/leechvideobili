@@ -20,6 +20,7 @@ import {
   Activity,
   UserPlus,
   Power,
+  Mic,
 } from 'lucide-react';
 import {
   AiProviderId,
@@ -89,6 +90,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [museAccLabel, setMuseAccLabel] = useState('Tài khoản Muse #1');
   const [museAccCookie, setMuseAccCookie] = useState('');
   const [busyMuse2Action, setBusyMuse2Action] = useState<string>('');
+  const [installingVieNeu, setInstallingVieNeu] = useState(false);
+  const [vieNeuNotice, setVieNeuNotice] = useState('');
 
   useEffect(() => {
     setCookieDraft(perSiteCookies[selectedSite] || '');
@@ -122,6 +125,24 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       // ignore network error
     } finally {
       setLoadingCaps(false);
+    }
+  };
+
+  const handleInstallVieNeu = async () => {
+    setInstallingVieNeu(true);
+    setVieNeuNotice('');
+    try {
+      const res = await fetch('/api/tts/offline/setup', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      setVieNeuNotice(data.message || 'Đã sẵn sàng thư viện VieNeu-TTS Offline.');
+      await fetchCapabilities();
+    } catch (err: any) {
+      setVieNeuNotice(err?.message || 'Lỗi cài đặt VieNeu-TTS Offline.');
+    } finally {
+      setInstallingVieNeu(false);
     }
   };
 
@@ -215,14 +236,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       envVar: 'META_API_KEY',
       configured: Boolean(capabilities?.aiProviders.meta.configured),
       modelName: capabilities?.aiProviders.meta.model || 'Llama-4-Scout-17B',
-    },
-    {
-      id: 'muse',
-      title: 'Muse AI (Edison Bridge)',
-      subtitle: 'Phân tích & tạo clip qua chat Edison (/api/edison/*), không dùng API key',
-      envVar: 'Không cần API key',
-      configured: true,
-      modelName: capabilities?.aiProviders.muse?.model || 'Edison Bridge',
     },
     {
       id: 'muse2api',
@@ -642,7 +655,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         )}
 
         <p className="text-xs text-slate-500 dark:text-teal-200/70 leading-relaxed">
-          Bảo mật khóa API: Các khóa (<code className="font-mono">GEMINI_API_KEY</code>, <code className="font-mono">OPENAI_API_KEY</code>, <code className="font-mono">META_API_KEY</code>, <code className="font-mono">MUSE2API_KEY</code>) được đọc an toàn phía máy chủ từ <strong>Settings &gt; Secrets</strong> hoặc tệp <code className="font-mono">.env</code> / <code className="font-mono">muse2api/.env</code>. Riêng <strong>Muse AI (Edison)</strong> kết nối trực tiếp qua cầu nối <code className="font-mono">/api/edison/*</code> và không yêu cầu API key.
+          Bảo mật khóa API: Các khóa (<code className="font-mono">GEMINI_API_KEY</code>, <code className="font-mono">OPENAI_API_KEY</code>, <code className="font-mono">META_API_KEY</code>, <code className="font-mono">MUSE2API_KEY</code>) được đọc an toàn phía máy chủ từ <strong>Settings &gt; Secrets</strong> hoặc tệp <code className="font-mono">.env</code> / <code className="font-mono">muse2api/.env</code>.
         </p>
       </section>
 
@@ -1116,11 +1129,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               }
               className="w-full h-9 px-3 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white focus:outline-none focus:border-[#003B3E]"
             >
+              <option value="muse2api_video">Muse2API Video (muse-video · Ưu tiên · Tự host)</option>
+              <option value="gemini_omni">Gemini Omni Flash (gemini-omni-1.2-flash · Cần key trả phí)</option>
               <option value="remix">Remix cắt ghép video nguồn + AI voice</option>
               <option value="storyboard_motion">Ảnh chuyển động Ken Burns (Nhanh)</option>
-              <option value="gemini_omni">Gemini Omni Flash (gemini-omni-1.2-flash · Cần key trả phí)</option>
-              <option value="muse2api_video">Muse2API Video (muse-video · Tự host)</option>
-              <option value="muse_edison">Muse AI (Edison Bridge · qua Tunnel)</option>
             </select>
           </label>
 
@@ -1187,7 +1199,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="p-3.5 rounded-xl bg-slate-50/70 dark:bg-[#000A10]/60 border border-slate-200 dark:border-[#00464A] space-y-1.5">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-slate-900 dark:text-white">FFmpeg + Libass</span>
@@ -1246,6 +1258,50 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <p className="text-[11px] font-mono text-slate-500 dark:text-teal-200/65 tabular-nums">
                 {capabilities.localTools.node.version}
               </p>
+            )}
+          </div>
+
+          <div className="p-3.5 rounded-xl bg-slate-50/70 dark:bg-[#000A10]/60 border border-slate-200 dark:border-[#00464A] space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="inline-flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white">
+                <Mic className="w-3.5 h-3.5 text-[#003B3E] dark:text-[#1BA8AD]" />
+                <span>VieNeu-TTS Offline</span>
+              </span>
+              <span
+                className={
+                  capabilities?.localTools.offlineTts.available
+                    ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                    : 'text-amber-600 dark:text-amber-400 font-medium'
+                }
+              >
+                {capabilities?.localTools.offlineTts.available ? 'Sẵn sàng' : 'Chưa cài'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-teal-100/75">
+              Đọc tiếng Việt tự nhiên ngoại tuyến (ONNX CPU), thay thế bộ đọc hệ thống.
+            </p>
+            {capabilities?.localTools.offlineTts.engine && (
+              <p className="text-[11px] font-mono text-slate-500 dark:text-teal-200/65 truncate">
+                {capabilities.localTools.offlineTts.engine}
+              </p>
+            )}
+            <button
+              type="button"
+              disabled={installingVieNeu}
+              onClick={() => void handleInstallVieNeu()}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold text-white bg-[#003B3E] hover:bg-[#002729] rounded-md transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {installingVieNeu ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              <span>
+                {installingVieNeu
+                  ? 'Đang tải & nạp...'
+                  : capabilities?.localTools.offlineTts.engineId === 'vieneu'
+                  ? 'Nạp lại model VieNeu'
+                  : 'Tải & Cài VieNeu Offline'}
+              </span>
+            </button>
+            {vieNeuNotice && (
+              <p className="text-[11px] text-emerald-700 dark:text-emerald-300 leading-snug">{vieNeuNotice}</p>
             )}
           </div>
         </div>

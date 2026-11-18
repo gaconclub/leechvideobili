@@ -81,6 +81,7 @@ export default function App() {
   const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
   const [isServerRestarting, setIsServerRestarting] = useState(false);
   const [updateError, setUpdateError] = useState('');
+  const [updateCanForceReset, setUpdateCanForceReset] = useState(false);
   const [updateSuccessMsg, setUpdateSuccessMsg] = useState('');
   const [studioIncoming, setStudioIncoming] = useState<{
     videos: TrendingVideoItem[];
@@ -238,9 +239,19 @@ export default function App() {
             : parsed.targetDuration === 'medium'
             ? 45
             : DEFAULT_STUDIO_CONFIG.targetDurationSec;
+        const migratedAiProvider =
+          (parsed.aiProvider as string) === 'muse'
+            ? 'gemini'
+            : parsed.aiProvider || DEFAULT_STUDIO_CONFIG.aiProvider;
+        const migratedVisualMode =
+          (parsed.visualMode as string) === 'muse_edison'
+            ? 'remix'
+            : parsed.visualMode || DEFAULT_STUDIO_CONFIG.visualMode;
         return {
           ...DEFAULT_STUDIO_CONFIG,
           ...parsed,
+          aiProvider: migratedAiProvider,
+          visualMode: migratedVisualMode,
           targetDurationSec: migratedSec,
         };
       }
@@ -292,24 +303,32 @@ export default function App() {
   const handleOpenUpdateModal = () => {
     setUpdateSuccessMsg('');
     setUpdateError('');
+    setUpdateCanForceReset(false);
     setIsUpdateModalOpen(true);
     checkSystemUpdate();
   };
 
-  const handleApplyUpdate = async () => {
+  const handleApplyUpdate = async (force = false) => {
     setIsApplyingUpdate(true);
     setUpdateError('');
+    setUpdateCanForceReset(false);
     setUpdateSuccessMsg('');
     try {
-      const res = await fetch('/api/system/self-update', { method: 'POST' });
+      const res = await fetch('/api/system/self-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force }),
+      });
       const data = await parseJsonSafe<{
         ok?: boolean;
         restarting?: boolean;
         commit?: string;
         message?: string;
+        canForceReset?: boolean;
         error?: string;
       }>(res);
       if (!res.ok) {
+        if (data.canForceReset) setUpdateCanForceReset(true);
         throw new Error(data.error || 'Cập nhật thất bại');
       }
 
@@ -1211,9 +1230,11 @@ export default function App() {
         isUpdating={isApplyingUpdate}
         isRestarting={isServerRestarting}
         updateError={updateError}
+        canForceReset={updateCanForceReset}
         updateSuccessMsg={updateSuccessMsg}
         onCheckNow={checkSystemUpdate}
-        onApplyUpdate={handleApplyUpdate}
+        onApplyUpdate={() => handleApplyUpdate(false)}
+        onForceUpdate={() => handleApplyUpdate(true)}
         onClose={() => setIsUpdateModalOpen(false)}
       />
     </div>

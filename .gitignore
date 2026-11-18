@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+edison-requests.json
+BiliBatch_Downloads/
+studio_assets/
+muse2api/data/
+.update-backup/
+cookies*.txt
+.venv*/

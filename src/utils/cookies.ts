@@ -113,7 +113,7 @@ export const DEFAULT_STUDIO_CONFIG: StudioDefaultConfig = {
   stylePreset: 'summary_fast',
   aspectRatioMode: 'auto',
   targetDurationSec: 60,
-  visualMode: 'remix',
+  visualMode: 'muse2api_video',
   voice: 'Kore',
   keepSourceAudio: false,
 };

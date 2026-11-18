@@ -34,6 +34,7 @@ import {
   DerivativeVisualMode,
   DerivativeVoiceId,
   DerivativeVoiceMode,
+  OfflineTtsVoiceOption,
   ServerCapabilitiesStatus,
   StudioCharacterRef,
   StudioDefaultConfig,
@@ -257,7 +258,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const charUploadInputRef = useRef<HTMLInputElement>(null);
 
   // 2. Learning & Script Config
-  const [aiProvider, setAiProvider] = useState<AiProviderId>(studioDefaults.aiProvider || 'gemini');
+  const [aiProvider, setAiProvider] = useState<AiProviderId>(
+    (studioDefaults.aiProvider as string) === 'muse' ? 'gemini' : studioDefaults.aiProvider || 'gemini'
+  );
   const [useProModel, setUseProModel] = useState(false);
   const [outputLanguage, setOutputLanguage] = useState<DerivativeOutputLanguage>('vi');
   const [stylePreset, setStylePreset] = useState<DerivativeStylePreset>(
@@ -278,10 +281,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
   // 3. Per-scene generation states
   const [imageEngineMode, setImageEngineMode] = useState<'gemini_standard' | 'gemini_pro' | 'muse2api'>(
-    studioDefaults.aiProvider === 'muse2api' ? 'muse2api' : 'gemini_standard'
+    studioDefaults.visualMode === 'gemini_omni' ? 'gemini_standard' : 'muse2api'
   );
   const [sceneVideoEngine, setSceneVideoEngine] = useState<'gemini' | 'muse2api'>(
-    studioDefaults.visualMode === 'muse2api_video' ? 'muse2api' : 'gemini'
+    studioDefaults.visualMode === 'gemini_omni' ? 'gemini' : 'muse2api'
   );
   const [busySceneImageIds, setBusySceneImageIds] = useState<Set<string>>(new Set());
   const [busySceneVideoIds, setBusySceneVideoIds] = useState<Set<string>>(new Set());
@@ -289,23 +292,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [sceneMediaError, setSceneMediaError] = useState('');
 
   // 4. Production: Visual engine + Music + Voice + Final Render
-  const [visualMode, setVisualMode] = useState<DerivativeVisualMode>(studioDefaults.visualMode || 'remix');
+  const [visualMode, setVisualMode] = useState<DerivativeVisualMode>(
+    (studioDefaults.visualMode as string) === 'muse_edison'
+      ? 'muse2api_video'
+      : studioDefaults.visualMode || 'muse2api_video'
+  );
   const [brollSource, setBrollSource] = useState<BrollSourceId>(studioDefaults.brollSource || 'wikimedia');
-
-  // Muse AI (Edison Bridge) state
-  const [edisonStatus, setEdisonStatus] = useState<{
-    ok: boolean;
-    downloadDir?: string;
-    requestsCount?: number;
-  } | null>(null);
-  const [edisonFiles, setEdisonFiles] = useState<{ name: string; size: number; mtime: string }[]>([]);
-  const [edisonRequests, setEdisonRequests] = useState<
-    { id: string; time: string; source: any; direction: any; note: any; status: string }[]
-  >([]);
-  const [edisonNote, setEdisonNote] = useState('');
-  const [isSyncingEdison, setIsSyncingEdison] = useState(false);
-  const [edisonNotice, setEdisonNotice] = useState('');
-  const [edisonError, setEdisonError] = useState('');
 
   const [musicMode, setMusicMode] = useState<DerivativeMusicMode>('none');
   const [musicPrompt, setMusicPrompt] = useState('Nhạc nền hiện đại, truyền cảm hứng, tiết tấu vừa phải cho video review');
@@ -327,6 +319,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [voice, setVoice] = useState<Exclude<DerivativeVoiceId, 'none'>>(
     studioDefaults.voice === 'none' ? 'Kore' : studioDefaults.voice
   );
+  const [offlineVoices, setOfflineVoices] = useState<OfflineTtsVoiceOption[]>([]);
+  const [offlineVoice, setOfflineVoice] = useState<string>(studioDefaults.offlineVoice || '');
+  const [isInstallingVieNeu, setIsInstallingVieNeu] = useState(false);
+  const [offlineTtsNotice, setOfflineTtsNotice] = useState('');
+  const [previewingSceneId, setPreviewingSceneId] = useState<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewObjectUrlRef = useRef<string | null>(null);
   const [keepSourceAudio, setKeepSourceAudio] = useState(studioDefaults.keepSourceAudio);
 
   const [job, setJob] = useState<DerivativeJobState | null>(null);
@@ -334,18 +333,46 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [genError, setGenError] = useState('');
   const pollTimerRef = useRef<number | null>(null);
 
+  const fetchCapabilitiesAndVoices = async () => {
+    try {
+      const r = await fetch('/api/config/capabilities');
+      if (r.ok) {
+        const data = await parseJsonSafe<ServerCapabilitiesStatus>(r);
+        setCapabilities(data);
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const vr = await fetch('/api/tts/offline/voices');
+      if (vr.ok) {
+        const vData = await parseJsonSafe<{ voices?: OfflineTtsVoiceOption[] }>(vr);
+        const list = Array.isArray(vData.voices) ? vData.voices : [];
+        setOfflineVoices(list);
+        if (list.length > 0) {
+          setOfflineVoice((prev) => (prev && list.some((v) => v.id === prev) ? prev : list[0].id));
+        }
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   useEffect(() => {
-    fetch('/api/config/capabilities')
-      .then((r) => (r.ok ? parseJsonSafe<ServerCapabilitiesStatus>(r) : null))
-      .then((data) => {
-        if (data) setCapabilities(data as ServerCapabilitiesStatus);
-      })
-      .catch(() => {});
+    void fetchCapabilitiesAndVoices();
 
     return () => {
       if (pollTimerRef.current) {
         window.clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
+      }
+      if (previewAudioRef.current) {
+        previewAudioRef.current.pause();
+        previewAudioRef.current = null;
+      }
+      if (previewObjectUrlRef.current) {
+        URL.revokeObjectURL(previewObjectUrlRef.current);
+        previewObjectUrlRef.current = null;
       }
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
@@ -547,87 +574,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // Muse AI phân tích -> Không gọi API key, chỉ gửi yêu cầu sang Edison Bridge
-  const handleMuseAnalyzeRequest = async () => {
-    if (sources.length === 0) {
-      setLearnError('Vui lòng tải lên hoặc thêm ít nhất 1 video nguồn ở Bước 1.');
-      return;
-    }
-    setIsLearning(true);
-    setLearnError('');
-    setLearnSuccess('');
-    try {
-      const localIds = sources
-        .map((s) => s.localAssetId)
-        .filter((id): id is string => Boolean(id));
-      let exportedNames: string[] = [];
-      if (localIds.length > 0) {
-        const syncRes = await fetch('/api/edison/sync-studio', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'push_sources', assetIds: localIds }),
-        });
-        const syncData = await parseJsonSafe<{
-          ok?: boolean;
-          exported?: { fileName: string }[];
-        }>(syncRes);
-        if (syncRes.ok && syncData.ok) {
-          exportedNames = (syncData.exported || []).map((e) => e.fileName);
-        }
-      }
-
-      const sourceNames =
-        exportedNames.length > 0
-          ? exportedNames.join(', ')
-          : sources.map((s) => s.translatedTitle || s.title || s.sourceUrl).join(', ');
-
-      const styleLabel = STYLE_OPTIONS.find((o) => o.value === stylePreset)?.label || stylePreset;
-      const langLabel = LANGUAGE_OPTIONS.find((l) => l.value === outputLanguage)?.label || outputLanguage;
-      const directionText = `${styleLabel} · ${aspectRatio} · ~${targetDurationSec}s · ${langLabel}`;
-
-      const noteParts: string[] = [];
-      if (customInstruction.trim()) noteParts.push(customInstruction.trim());
-      if (edisonNote.trim()) noteParts.push(edisonNote.trim());
-      const sourceUrls = sources
-        .filter((s) => !s.localAssetId && s.sourceUrl)
-        .map((s) => s.sourceUrl);
-      if (sourceUrls.length > 0) {
-        noteParts.push(`Link nguồn: ${sourceUrls.join(' | ')}`);
-      }
-
-      const res = await fetch('/api/edison/derivative-request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source: sourceNames,
-          direction: directionText,
-          note: noteParts.join('\n') || 'Phân tích nội dung video và tạo video phái sinh mới.',
-        }),
-      });
-      const data = await parseJsonSafe<{ ok?: boolean; id?: string; error?: string }>(res);
-      if (!res.ok || !data.ok) {
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
-
-      setLearnSuccess(
-        'Đã gửi yêu cầu cho Edison, mở chat Edison để Edison phân tích và tạo video phái sinh'
-      );
-      if (visualMode === 'muse_edison') {
-        void refreshEdisonBridge();
-      }
-    } catch (err: any) {
-      setLearnError(err?.message || 'Không thể gửi yêu cầu tới Edison Bridge.');
-    } finally {
-      setIsLearning(false);
-    }
-  };
-
   // AI Learn & Create Script
   const handleLearnAndCreateScript = async () => {
-    if (aiProvider === 'muse') {
-      await handleMuseAnalyzeRequest();
-      return;
-    }
     if (sources.length === 0) {
       setLearnError('Vui lòng tải lên hoặc thêm ít nhất 1 video nguồn ở Bước 1.');
       return;
@@ -808,11 +756,73 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // Rehearse offline browser speech
-  const handleSpeakOfflineBrowserPreview = (text: string) => {
-    if (!('speechSynthesis' in window) || !text.trim()) return;
+  // Install or warm up VieNeu-TTS offline voice model
+  const handleInstallVieNeuOffline = async () => {
+    setIsInstallingVieNeu(true);
+    setOfflineTtsNotice('');
+    setGenError('');
+    try {
+      const res = await fetch('/api/tts/offline/setup', { method: 'POST' });
+      const data = await parseJsonSafe<{ ok?: boolean; message?: string; error?: string }>(res);
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      setOfflineTtsNotice(data.message || 'Đã sẵn sàng thư viện giọng VieNeu-TTS Offline.');
+      await fetchCapabilitiesAndVoices();
+    } catch (err: any) {
+      setGenError(err?.message || 'Không thể cài đặt thư viện VieNeu-TTS Offline.');
+    } finally {
+      setIsInstallingVieNeu(false);
+    }
+  };
+
+  // Rehearse offline speech (uses VieNeu-TTS WAV preview when offline VieNeu is active, else browser speechSynthesis)
+  const handleSpeakOfflineBrowserPreview = async (text: string, sceneKey = 'sample') => {
+    const cleanText = text.trim();
+    if (!cleanText) return;
+
+    if (
+      voiceMode === 'offline_system' &&
+      capabilities?.localTools.offlineTts.engineId === 'vieneu'
+    ) {
+      setPreviewingSceneId(sceneKey);
+      setOfflineTtsNotice('');
+      try {
+        const res = await fetch('/api/tts/offline/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: cleanText.slice(0, 400),
+            voice: offlineVoice,
+          }),
+        });
+        if (!res.ok) {
+          const errData = await parseJsonSafe<{ error?: string }>(res).catch(() => ({} as { error?: string }));
+          throw new Error(errData.error || `HTTP ${res.status}`);
+        }
+        const wavBlob = await res.blob();
+        if (previewAudioRef.current) {
+          previewAudioRef.current.pause();
+        }
+        if (previewObjectUrlRef.current) {
+          URL.revokeObjectURL(previewObjectUrlRef.current);
+        }
+        const blobUrl = URL.createObjectURL(wavBlob);
+        previewObjectUrlRef.current = blobUrl;
+        const audio = new Audio(blobUrl);
+        previewAudioRef.current = audio;
+        await audio.play();
+        return;
+      } catch (err: any) {
+        setOfflineTtsNotice(err?.message || 'Không phát được giọng VieNeu, chuyển sang trình duyệt.');
+      } finally {
+        setPreviewingSceneId(null);
+      }
+    }
+
+    if (!('speechSynthesis' in window)) return;
     window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
+    const utter = new SpeechSynthesisUtterance(cleanText);
     utter.lang = outputLanguage === 'en' ? 'en-US' : outputLanguage === 'zh' ? 'zh-CN' : 'vi-VN';
     window.speechSynthesis.speak(utter);
   };
@@ -911,152 +921,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // Muse AI (Edison Bridge) Helpers
-  const refreshEdisonBridge = async () => {
-    setEdisonError('');
-    try {
-      const [stRes, dlRes, rqRes] = await Promise.all([
-        fetch('/api/edison/status'),
-        fetch('/api/edison/downloads'),
-        fetch('/api/edison/requests'),
-      ]);
-      if (stRes.ok) {
-        const st = await parseJsonSafe<{ ok: boolean; downloadDir?: string; requestsCount?: number }>(stRes);
-        setEdisonStatus(st);
-      }
-      if (dlRes.ok) {
-        const dl = await parseJsonSafe<{ files?: { name: string; size: number; mtime: string }[] }>(dlRes);
-        setEdisonFiles(dl.files || []);
-      }
-      if (rqRes.ok) {
-        const rq = await parseJsonSafe<{
-          requests?: { id: string; time: string; source: any; direction: any; note: any; status: string }[];
-        }>(rqRes);
-        setEdisonRequests(rq.requests || []);
-      }
-    } catch (err: any) {
-      setEdisonError(err?.message || 'Không thể kiểm tra trạng thái Edison Bridge.');
-    }
-  };
-
-  useEffect(() => {
-    if (visualMode === 'muse_edison') {
-      void refreshEdisonBridge();
-    }
-  }, [visualMode]);
-
-  const handleSendToEdisonBridge = async () => {
-    setIsSyncingEdison(true);
-    setEdisonError('');
-    setEdisonNotice('');
-    try {
-      const localIds = sources
-        .map((s) => s.localAssetId)
-        .filter((id): id is string => Boolean(id));
-      let exportedNames: string[] = [];
-      if (localIds.length > 0) {
-        const syncRes = await fetch('/api/edison/sync-studio', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'push_sources', assetIds: localIds }),
-        });
-        const syncData = await parseJsonSafe<{
-          ok?: boolean;
-          exported?: { fileName: string }[];
-          error?: string;
-        }>(syncRes);
-        if (!syncRes.ok || !syncData.ok) {
-          throw new Error(syncData.error || 'Không thể đồng bộ video nguồn vào BiliBatch_Downloads.');
-        }
-        exportedNames = (syncData.exported || []).map((e) => e.fileName);
-      }
-
-      const sourcePayload =
-        exportedNames.length > 0
-          ? exportedNames.join(', ')
-          : sources.map((s) => `${s.translatedTitle || s.title} (${s.sourceUrl})`).join(' | ');
-
-      const directionPayload = blueprint
-        ? `${blueprint.derivativeTitle} · ${blueprint.aspectRatio} · ${blueprint.scenes.length} cảnh · ${blueprint.learnedSummary}`
-        : `Phong cách ${stylePreset} · ${aspectRatio} · ~${targetDurationSec}s`;
-
-      const sceneSummary = blueprint
-        ? blueprint.scenes
-            .map((sc) => `[Cảnh ${sc.sceneIndex} ${sc.durationSec}s] ${sc.visualNote || sc.onScreenText} | Lời: ${sc.narration}`)
-            .join('\n')
-        : '';
-
-      const reqRes = await fetch('/api/edison/derivative-request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source: sourcePayload || 'Studio sources',
-          direction: directionPayload,
-          note: [edisonNote.trim(), sceneSummary].filter(Boolean).join('\n\n'),
-        }),
-      });
-      const reqData = await parseJsonSafe<{ ok?: boolean; id?: string; error?: string }>(reqRes);
-      if (!reqRes.ok || !reqData.ok) {
-        throw new Error(reqData.error || 'Không thể gửi yêu cầu cho Edison Bridge.');
-      }
-
-      setEdisonNotice(
-        `Đã tạo yêu cầu ${reqData.id}${
-          exportedNames.length > 0 ? ` và đẩy ${exportedNames.length} video vào BiliBatch_Downloads` : ''
-        }. Edison có thể đọc qua GET /api/edison/downloads & edison-requests.json.`
-      );
-      await refreshEdisonBridge();
-    } catch (err: any) {
-      setEdisonError(err?.message || 'Lỗi gửi dữ liệu tới Edison Bridge.');
-    } finally {
-      setIsSyncingEdison(false);
-    }
-  };
-
-  const handleImportEdisonDownloadToStudio = async (fileName: string) => {
-    setIsSyncingEdison(true);
-    setEdisonError('');
-    setEdisonNotice('');
-    try {
-      const res = await fetch('/api/edison/sync-studio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'import_download', fileName }),
-      });
-      const data = await parseJsonSafe<{ ok?: boolean; asset?: StudioUploadedAsset; error?: string }>(res);
-      if (!res.ok || !data.ok || !data.asset) {
-        throw new Error(data.error || `Không thể nạp "${fileName}" vào Studio.`);
-      }
-      const asset = data.asset;
-      setSources((prev) => [
-        {
-          id: `edison_${asset.assetId}`,
-          platform: 'other',
-          platformLabel: 'Muse AI (Edison)',
-          title: asset.fileName.replace(/\.[^.]+$/, ''),
-          author: 'Edison · BiliBatch_Downloads',
-          pic: asset.keyframes[0] || '',
-          sourceUrl: asset.previewUrl,
-          duration: Math.round(asset.durationSec),
-          views: 0,
-          score: 100,
-          category: 'edison',
-          categoryLabel: asset.resolution,
-          orientation: 'unknown',
-          localAssetId: asset.assetId,
-          keyframes: asset.keyframes,
-          hasAudio: asset.hasAudio,
-        },
-        ...prev.slice(0, 7),
-      ]);
-      setEdisonNotice(`Đã nạp "${fileName}" lên đầu danh sách nguồn để ghép giọng đọc / nhạc nền & xuất MP4.`);
-    } catch (err: any) {
-      setEdisonError(err?.message || 'Không thể nạp video từ BiliBatch_Downloads.');
-    } finally {
-      setIsSyncingEdison(false);
-    }
-  };
-
   // Final Render Pipeline
   const handleRenderFinalVideo = async () => {
     if (!blueprint || sources.length === 0) return;
@@ -1089,6 +953,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           voice: voiceMode === 'ai_online' ? voice : 'none',
           voiceMode,
           voiceStyle: voiceObj?.style || '',
+          offlineVoice: voiceMode === 'offline_system' ? offlineVoice : undefined,
           keepSourceAudio,
           brollSource,
           musicMode,
@@ -1392,11 +1257,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   aria-label="Mô hình tạo ảnh"
                   className="h-8 px-2 text-[11px] bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-700 dark:text-teal-100 focus:outline-none"
                 >
+                  <option value="muse2api">
+                    Muse2API (muse-image · Ưu tiên · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
+                  </option>
                   <option value="gemini_standard">Gemini Flash Image (gemini-3.1-flash-lite-image)</option>
                   <option value="gemini_pro">Nano Banana 2.1 (Chất lượng cao 1K)</option>
-                  <option value="muse2api">
-                    Muse2API (muse-image {capabilities?.aiProviders.muse2api?.configured ? '· Sẵn sàng' : '· Tự host'})
-                  </option>
                 </select>
                 <button
                   type="button"
@@ -1462,16 +1327,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             <button
               type="button"
               disabled={isLearning || sources.length === 0}
-              onClick={handleMuseAnalyzeRequest}
-              className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-[#003B3E] dark:text-[#1BA8AD] bg-[#003B3E]/10 hover:bg-[#003B3E]/15 dark:bg-[#1BA8AD]/15 dark:hover:bg-[#1BA8AD]/25 border border-[#003B3E]/30 dark:border-[#1BA8AD]/40 rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              {isLearning && aiProvider === 'muse' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
-              <span>Muse AI phân tích</span>
-            </button>
-
-            <button
-              type="button"
-              disabled={isLearning || sources.length === 0}
               onClick={handleLearnAndCreateScript}
               className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
             >
@@ -1479,8 +1334,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               <span>
                 {isLearning
                   ? 'Đang xử lý...'
-                  : aiProvider === 'muse'
-                  ? 'Gửi sang Muse AI / Edison'
                   : aiProvider === 'muse2api'
                   ? 'Muse2API học & Lập kịch bản'
                   : 'AI học video & Lập kịch bản'}
@@ -1504,9 +1357,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               </option>
               <option value="muse2api">
                 Muse2API (muse-spark · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
-              </option>
-              <option value="muse">
-                Muse AI / Edison (Không cần API key)
               </option>
               <option value="openai">
                 OpenAI ChatGPT {capabilities?.aiProviders.openai.configured ? '(Sẵn sàng)' : '(Chưa đặt key)'}
@@ -1713,8 +1563,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 aria-label="Mô hình dựng clip từng cảnh"
                 className="h-8 px-2 text-[11px] bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-700 dark:text-teal-100 focus:outline-none"
               >
+                <option value="muse2api">Clip cảnh: Muse2API (muse-video · Ưu tiên)</option>
                 <option value="gemini">Clip cảnh: Gemini Omni Flash</option>
-                <option value="muse2api">Clip cảnh: Muse2API (muse-video)</option>
               </select>
               <button
                 type="button"
@@ -1889,11 +1739,22 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                         <span className="text-[11px] text-slate-500 dark:text-teal-200/75">Lời thuyết minh lồng tiếng</span>
                         <button
                           type="button"
-                          onClick={() => handleSpeakOfflineBrowserPreview(sc.narration)}
-                          className="inline-flex items-center gap-1 text-[11px] text-[#003B3E] dark:text-[#1BA8AD] hover:underline cursor-pointer"
+                          disabled={previewingSceneId === sc.id}
+                          onClick={() => void handleSpeakOfflineBrowserPreview(sc.narration, sc.id)}
+                          className="inline-flex items-center gap-1 text-[11px] text-[#003B3E] dark:text-[#1BA8AD] hover:underline cursor-pointer disabled:opacity-50"
                         >
-                          <Volume2 className="w-3 h-3" />
-                          <span>Nghe nháp trình duyệt</span>
+                          {previewingSceneId === sc.id ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Volume2 className="w-3 h-3" />
+                          )}
+                          <span>
+                            {previewingSceneId === sc.id
+                              ? 'Đang tạo giọng VieNeu...'
+                              : voiceMode === 'offline_system' && capabilities?.localTools.offlineTts.engineId === 'vieneu'
+                              ? 'Nghe thử VieNeu'
+                              : 'Nghe nháp trình duyệt'}
+                          </span>
                         </button>
                       </div>
                       <textarea
@@ -1969,11 +1830,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 }}
                 className="w-full h-9 px-2.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none"
               >
-                <option value="gemini_omni">Gemini Omni Flash (gemini-omni-1.2-flash · Trả phí)</option>
                 <option value="muse2api_video">
-                  Muse2API Video (muse-video · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
+                  Muse2API Video (muse-video · Ưu tiên · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
                 </option>
-                <option value="muse_edison">Muse AI (Edison Bridge · qua Tunnel)</option>
+                <option value="gemini_omni">Gemini Omni Flash (gemini-omni-1.2-flash · Trả phí)</option>
                 <option value="remix">Video nguồn / Tải lên + Kho Wikimedia (Miễn phí)</option>
                 <option value="storyboard_motion">Ảnh đại diện cảnh + Chuyển động Ken Burns</option>
               </select>
@@ -2027,7 +1887,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               >
                 <option value="ai_online">Giọng đọc Online AI (Gemini Flash Lite TTS)</option>
                 <option value="offline_system">
-                  Giọng đọc Offline {capabilities?.localTools.offlineTts.available ? `(${capabilities.localTools.offlineTts.engine})` : '(Cần Windows/macOS/eSpeak)'}
+                  Giọng đọc Offline {capabilities?.localTools.offlineTts.available ? `(${capabilities.localTools.offlineTts.engine})` : '(VieNeu-TTS Tiếng Việt)'}
                 </option>
                 <option value="none">Không lồng tiếng (Chỉ hình + chữ + nhạc)</option>
               </select>
@@ -2050,10 +1910,70 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               </label>
             )}
 
-            {voiceMode === 'offline_system' && !capabilities?.localTools.offlineTts.available && (
-              <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
-                Máy chủ hiện tại không có sẵn bộ đọc offline (`espeak-ng`). Nếu chạy trên Windows/macOS cá nhân sẽ tự nhận giọng hệ thống; trên đám mây bạn nên chọn <strong>Giọng đọc Online AI</strong>.
-              </p>
+            {voiceMode === 'offline_system' && (
+              <div className="space-y-2">
+                {capabilities?.localTools.offlineTts.engineId === 'vieneu' && offlineVoices.length > 0 && (
+                  <div className="space-y-1.5">
+                    <label className="block space-y-1">
+                      <span className="text-[11px] text-slate-500 dark:text-teal-200/75">
+                        Chọn giọng VieNeu-TTS Offline ({offlineVoices.length} giọng Việt)
+                      </span>
+                      <select
+                        value={offlineVoice}
+                        onChange={(e) => setOfflineVoice(e.target.value)}
+                        className="w-full h-9 px-2.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none"
+                      >
+                        {offlineVoices.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.description || v.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      disabled={previewingSceneId === 'sample'}
+                      onClick={() =>
+                        void handleSpeakOfflineBrowserPreview(
+                          'Xin chào các bạn, đây là giọng đọc tiếng Việt ngoại tuyến VieNeu TTS chạy hoàn toàn trên máy.',
+                          'sample'
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium bg-slate-100 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] hover:bg-slate-200/70 dark:hover:bg-[#002935] text-slate-800 dark:text-teal-100 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {previewingSceneId === 'sample' ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Volume2 className="w-3 h-3" />
+                      )}
+                      <span>{previewingSceneId === 'sample' ? 'Đang tạo audio...' : 'Nghe thử giọng VieNeu'}</span>
+                    </button>
+                  </div>
+                )}
+
+                {!capabilities?.localTools.offlineTts.available && (
+                  <div className="space-y-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-900/60">
+                    <p className="text-[11px] text-amber-800 dark:text-amber-200 leading-relaxed">
+                      Thư viện giọng đọc tiếng Việt Offline (<strong>VieNeu-TTS</strong>) chưa được tải về máy chủ này.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={isInstallingVieNeu}
+                      onClick={() => void handleInstallVieNeuOffline()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-white bg-[#003B3E] hover:bg-[#002729] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {isInstallingVieNeu ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                      <span>{isInstallingVieNeu ? 'Đang tải VieNeu-TTS...' : 'Tải & Cài VieNeu-TTS Offline'}</span>
+                    </button>
+                  </div>
+                )}
+
+                {offlineTtsNotice && (
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-300 leading-relaxed">
+                    {offlineTtsNotice}
+                  </p>
+                )}
+              </div>
             )}
           </div>
 
@@ -2208,128 +2128,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             {musicError && <p className="text-[11px] text-rose-600 dark:text-rose-400">{musicError}</p>}
           </div>
         </div>
-
-        {/* Muse AI (Edison Bridge) Workspace when visualMode === 'muse_edison' */}
-        {visualMode === 'muse_edison' && (
-          <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#000A10] border border-[#003B3E]/40 dark:border-[#1BA8AD]/40 space-y-3.5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 className="text-xs font-semibold text-slate-900 dark:text-white">
-                  Cầu nối Muse AI (Edison Bridge · Tunnel)
-                </h3>
-                <p className="text-[11px] text-slate-500 dark:text-teal-200/75 mt-0.5">
-                  Edison đọc video mẫu từ <code className="font-mono">{edisonStatus?.downloadDir || 'BiliBatch_Downloads'}</code> qua{' '}
-                  <code className="font-mono">/api/edison/*</code> rồi trả clip phái sinh để bạn nạp vào Studio.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <span
-                  className={`text-[11px] font-medium px-2 py-0.5 rounded border ${
-                    edisonStatus?.ok
-                      ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300'
-                      : 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900 text-amber-700 dark:text-amber-300'
-                  }`}
-                >
-                  {edisonStatus?.ok ? 'Bridge sẵn sàng' : 'Đang kiểm tra...'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void refreshEdisonBridge()}
-                  className="px-2.5 py-1 text-[11px] font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg hover:bg-slate-100 dark:hover:bg-[#002935] text-slate-700 dark:text-teal-100 cursor-pointer"
-                >
-                  Làm mới
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-              <div className="lg:col-span-6 space-y-2">
-                <label className="block space-y-1">
-                  <span className="text-[11px] text-slate-500 dark:text-teal-200/75">
-                    Ghi chú định hướng gửi cho Edison (tự kèm kịch bản & danh sách video nguồn)
-                  </span>
-                  <textarea
-                    rows={2}
-                    value={edisonNote}
-                    onChange={(e) => setEdisonNote(e.target.value)}
-                    placeholder="VD: Giữ nhịp nhanh, cắt 6 clip 10s phong cách review, tập trung vào cảnh chính..."
-                    className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white resize-y"
-                  />
-                </label>
-
-                <button
-                  type="button"
-                  disabled={isSyncingEdison}
-                  onClick={handleSendToEdisonBridge}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  {isSyncingEdison ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                  <span>Đẩy video nguồn & Gửi yêu cầu cho Edison</span>
-                </button>
-              </div>
-
-              <div className="lg:col-span-6 space-y-2">
-                <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-teal-200/75">
-                  <span>Tệp trong {edisonStatus?.downloadDir || 'BiliBatch_Downloads'} ({edisonFiles.length})</span>
-                  <span className="font-mono">GET /api/edison/downloads</span>
-                </div>
-                {edisonFiles.length === 0 ? (
-                  <div className="p-3 rounded-lg border border-dashed border-slate-300 dark:border-[#00464A] text-[11px] text-slate-500 dark:text-teal-200/70">
-                    Chưa có tệp nào trong BiliBatch_Downloads. Bấm "Đẩy video nguồn" hoặc lưu clip Edison trả về vào thư mục này rồi bấm Làm mới.
-                  </div>
-                ) : (
-                  <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
-                    {edisonFiles.map((f) => (
-                      <div
-                        key={f.name}
-                        className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] text-[11px]"
-                      >
-                        <div className="min-w-0">
-                          <div className="font-medium text-slate-900 dark:text-white truncate">{f.name}</div>
-                          <div className="font-mono text-[10px] text-slate-500 dark:text-teal-200/65">
-                            {formatBytes(f.size)}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <a
-                            href={`/api/edison/video?name=${encodeURIComponent(f.name)}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-2 py-1 rounded border border-slate-200 dark:border-[#00464A] text-slate-700 dark:text-teal-100 hover:bg-slate-100 dark:hover:bg-[#002935]"
-                          >
-                            Tải
-                          </a>
-                          <button
-                            type="button"
-                            disabled={isSyncingEdison}
-                            onClick={() => handleImportEdisonDownloadToStudio(f.name)}
-                            className="px-2 py-1 rounded bg-[#003B3E] hover:bg-[#002729] text-white font-medium cursor-pointer"
-                          >
-                            Nạp vào Studio
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {edisonRequests.length > 0 && (
-              <div className="text-[11px] text-slate-600 dark:text-teal-200/80">
-                Yêu cầu gần nhất: <span className="font-mono">{edisonRequests[0].id}</span> ·{' '}
-                <span>{String(edisonRequests[0].direction || edisonRequests[0].source || '')}</span> ({edisonRequests[0].status})
-              </div>
-            )}
-
-            {edisonNotice && (
-              <p className="text-[11px] text-emerald-700 dark:text-emerald-300 font-medium">{edisonNotice}</p>
-            )}
-            {edisonError && (
-              <p className="text-[11px] text-rose-600 dark:text-rose-400">{edisonError}</p>
-            )}
-          </div>
-        )}
 
         {/* Final Render CTA */}
         <div className="pt-4 border-t border-slate-200 dark:border-[#00464A]/80 flex flex-wrap items-center justify-between gap-4">

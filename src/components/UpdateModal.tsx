@@ -22,9 +22,11 @@ interface UpdateModalProps {
   isUpdating: boolean;
   isRestarting: boolean;
   updateError: string;
+  canForceReset?: boolean;
   updateSuccessMsg: string;
   onCheckNow: () => void;
   onApplyUpdate: () => void;
+  onForceUpdate?: () => void;
   onClose: () => void;
 }
 
@@ -35,9 +37,11 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   isUpdating,
   isRestarting,
   updateError,
+  canForceReset,
   updateSuccessMsg,
   onCheckNow,
   onApplyUpdate,
+  onForceUpdate,
   onClose,
 }) => {
   if (!isOpen) return null;
@@ -156,8 +160,19 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
           )}
 
           {updateError && (
-            <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 text-xs text-rose-600 dark:text-rose-400">
-              {updateError}
+            <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 text-xs text-rose-600 dark:text-rose-400 space-y-2.5">
+              <p className="break-words">{updateError}</p>
+              {canForceReset && onForceUpdate && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={onForceUpdate}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 rounded-md transition-colors cursor-pointer"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>Ghi đè xung đột &amp; Cập nhật theo GitHub</span>
+                </button>
+              )}
             </div>
           )}
         </div>

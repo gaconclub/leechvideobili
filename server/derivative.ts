@@ -12,14 +12,14 @@ import {
   getMuse2ApiStatus,
 } from './muse2api';
 
-export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse_edison' | 'muse2api_video';
+export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video';
 export type DerivativeStylePreset = 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
 export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
 export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploaded';
 export type DerivativeAspectRatio = '9:16' | '16:9';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
-export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse' | 'muse2api';
+export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api';
 export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
 
 export interface DerivativeSourceInput {
@@ -979,14 +979,6 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh tá
 }
 
 export async function testAiProviderConnection(provider: AiProviderId): Promise<{ ok: boolean; message: string; model: string }> {
-  if (provider === 'muse') {
-    return {
-      ok: true,
-      model: 'Edison Bridge',
-      message: 'Muse AI (Edison Bridge) hoạt động qua /api/edison/* và không cần API key.',
-    };
-  }
-
   if (provider === 'muse2api') {
     const st = await getMuse2ApiStatus();
     if (!st.reachable) {
@@ -1835,9 +1827,86 @@ export async function searchPublicFreeMusicFromWikimedia(query: string) {
   return tracks.slice(0, 10);
 }
 
-let cachedOfflineTts: { available: boolean; engine: string } | null = null;
+export type OfflineTtsEngineId = 'vieneu' | 'win_sapi' | 'macos_say' | 'espeak';
 
-export async function detectOfflineTtsEngine(): Promise<{ available: boolean; engine: string }> {
+export interface OfflineTtsEngineInfo {
+  available: boolean;
+  engine: string;
+  engineId?: OfflineTtsEngineId;
+}
+
+export interface VieNeuVoiceItem {
+  id: string;
+  description: string;
+}
+
+let cachedOfflineTts: OfflineTtsEngineInfo | null = null;
+let cachedVieNeuPythonCmd: string | null = null;
+let cachedVieNeuVoices: { mode: string; sampleRate: number; voices: VieNeuVoiceItem[] } | null = null;
+
+export function resetOfflineTtsCache(): void {
+  cachedOfflineTts = null;
+  cachedVieNeuPythonCmd = null;
+  cachedVieNeuVoices = null;
+}
+
+function getVieNeuScriptPath(): string {
+  return path.join(process.cwd(), 'scripts', 'vieneu_tts.py');
+}
+
+function parseLastJsonObject(raw: string): any | null {
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i].startsWith('{') && lines[i].endsWith('}')) {
+      try {
+        return JSON.parse(lines[i]);
+      } catch {
+        // try earlier line
+      }
+    }
+  }
+  return null;
+}
+
+async function resolveVieNeuPythonCommand(): Promise<string | null> {
+  if (cachedVieNeuPythonCmd && fs.existsSync(getVieNeuScriptPath())) {
+    return cachedVieNeuPythonCmd;
+  }
+  if (!fs.existsSync(getVieNeuScriptPath())) {
+    return null;
+  }
+
+  const isWin = process.platform === 'win32';
+  const relPy = isWin ? path.join('Scripts', 'python.exe') : path.join('bin', 'python');
+  const candidates = [
+    path.join(process.cwd(), '.venv-vieneu', relPy),
+    path.join(process.cwd(), '.venv', relPy),
+    isWin ? 'python' : 'python3',
+    'python',
+  ];
+
+  for (const cand of candidates) {
+    if ((cand.includes('/') || cand.includes('\\')) && !fs.existsSync(cand)) {
+      continue;
+    }
+    try {
+      const check = await spawnPromise(cand, ['-c', 'import vieneu; print("OK")'], process.cwd(), 10_000);
+      if (check.code === 0 && check.stdout.includes('OK')) {
+        cachedVieNeuPythonCmd = cand;
+        return cand;
+      }
+    } catch {
+      // try next python candidate
+    }
+  }
+
+  return null;
+}
+
+export async function detectOfflineTtsEngine(): Promise<OfflineTtsEngineInfo> {
   if (cachedOfflineTts) return cachedOfflineTts;
   const checkCmd = async (cmd: string, args: string[], label: string) => {
     try {
@@ -1848,16 +1917,30 @@ export async function detectOfflineTtsEngine(): Promise<{ available: boolean; en
     }
   };
 
+  const vieneuPy = await resolveVieNeuPythonCommand();
+  if (vieneuPy) {
+    cachedOfflineTts = {
+      available: true,
+      engine: 'VieNeu-TTS (Tiếng Việt Offline · ONNX)',
+      engineId: 'vieneu',
+    };
+    return cachedOfflineTts;
+  }
+
   if (process.platform === 'win32') {
-    const winOk = await checkCmd('powershell', ['-NoProfile', '-Command', 'Add-Type -AssemblyName System.Speech; "OK"'], 'Windows SAPI (Offline)');
+    const winOk = await checkCmd(
+      'powershell',
+      ['-NoProfile', '-Command', 'Add-Type -AssemblyName System.Speech; "OK"'],
+      'Windows SAPI (Offline)'
+    );
     if (winOk) {
-      cachedOfflineTts = { available: true, engine: winOk };
+      cachedOfflineTts = { available: true, engine: winOk, engineId: 'win_sapi' };
       return cachedOfflineTts;
     }
   } else if (process.platform === 'darwin') {
     const macOk = await checkCmd('which', ['say'], 'macOS say (Offline)');
     if (macOk) {
-      cachedOfflineTts = { available: true, engine: macOk };
+      cachedOfflineTts = { available: true, engine: macOk, engineId: 'macos_say' };
       return cachedOfflineTts;
     }
   }
@@ -1868,7 +1951,7 @@ export async function detectOfflineTtsEngine(): Promise<{ available: boolean; en
   ]) {
     const ok = await checkCmd(bin.cmd, bin.args, bin.label);
     if (ok) {
-      cachedOfflineTts = { available: true, engine: ok };
+      cachedOfflineTts = { available: true, engine: ok, engineId: 'espeak' };
       return cachedOfflineTts;
     }
   }
@@ -1877,14 +1960,175 @@ export async function detectOfflineTtsEngine(): Promise<{ available: boolean; en
   return cachedOfflineTts;
 }
 
-async function synthesizeOfflineVoiceWav(text: string, outWavPath: string): Promise<boolean> {
+export async function listVieNeuVoices(): Promise<{
+  available: boolean;
+  engine: string;
+  engineId?: OfflineTtsEngineId;
+  mode?: string;
+  sampleRate?: number;
+  voices: VieNeuVoiceItem[];
+}> {
+  const detected = await detectOfflineTtsEngine();
+  if (detected.engineId !== 'vieneu') {
+    return {
+      available: detected.available,
+      engine: detected.engine,
+      engineId: detected.engineId,
+      voices: [],
+    };
+  }
+
+  if (cachedVieNeuVoices) {
+    return {
+      available: true,
+      engine: detected.engine,
+      engineId: 'vieneu',
+      mode: cachedVieNeuVoices.mode,
+      sampleRate: cachedVieNeuVoices.sampleRate,
+      voices: cachedVieNeuVoices.voices,
+    };
+  }
+
+  const pyCmd = await resolveVieNeuPythonCommand();
+  if (!pyCmd) {
+    return { available: false, engine: '', voices: [] };
+  }
+
+  const res = await spawnPromise(
+    pyCmd,
+    [getVieNeuScriptPath(), '--mode', 'v3nano', '--list-voices'],
+    process.cwd(),
+    90_000
+  );
+  const parsed = parseLastJsonObject(res.stdout);
+  if (res.code === 0 && parsed?.ok && Array.isArray(parsed.voices)) {
+    const voices: VieNeuVoiceItem[] = parsed.voices
+      .map((v: any) => ({
+        id: String(v?.id || '').trim(),
+        description: String(v?.description || v?.id || '').trim(),
+      }))
+      .filter((v: VieNeuVoiceItem) => Boolean(v.id));
+
+    cachedVieNeuVoices = {
+      mode: String(parsed.mode || 'v3nano'),
+      sampleRate: Number(parsed.sampleRate || 24000),
+      voices,
+    };
+
+    return {
+      available: true,
+      engine: detected.engine,
+      engineId: 'vieneu',
+      mode: cachedVieNeuVoices.mode,
+      sampleRate: cachedVieNeuVoices.sampleRate,
+      voices,
+    };
+  }
+
+  return {
+    available: true,
+    engine: detected.engine,
+    engineId: 'vieneu',
+    voices: [],
+  };
+}
+
+async function synthesizeOfflineVoiceBatchVieNeu(
+  items: { index: number; text: string; out: string; voice?: string }[],
+  defaultVoice?: string
+): Promise<Map<number, boolean>> {
+  const statusMap = new Map<number, boolean>();
+  if (items.length === 0) return statusMap;
+
+  const pyCmd = await resolveVieNeuPythonCommand();
+  if (!pyCmd) return statusMap;
+
+  const batchPath = path.join(path.dirname(items[0].out), `vieneu_batch_${Date.now()}.json`);
+  try {
+    fs.writeFileSync(
+      batchPath,
+      JSON.stringify(
+        items.map((it) => ({
+          text: it.text.replace(/[\r\n]+/g, ' ').trim(),
+          out: it.out,
+          voice: it.voice || defaultVoice || '',
+        })),
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const args = [getVieNeuScriptPath(), '--mode', 'v3nano', '--batch-json', batchPath];
+    if (defaultVoice?.trim()) {
+      args.push('--voice', defaultVoice.trim());
+    }
+
+    const res = await spawnPromise(pyCmd, args, process.cwd(), Math.max(120_000, items.length * 35_000));
+    const parsed = parseLastJsonObject(res.stdout);
+    const results = Array.isArray(parsed?.results) ? parsed.results : [];
+
+    for (let i = 0; i < items.length; i += 1) {
+      const target = items[i];
+      const itemRes = results.find((r: any) => Number(r?.index) === i);
+      const exists = fs.existsSync(target.out) && fs.statSync(target.out).size > 1000;
+      statusMap.set(target.index, Boolean((itemRes?.ok ?? true) && exists));
+    }
+  } finally {
+    try {
+      if (fs.existsSync(batchPath)) fs.unlinkSync(batchPath);
+    } catch {
+      // ignore
+    }
+  }
+
+  return statusMap;
+}
+
+async function synthesizeOfflineVoiceWav(
+  text: string,
+  outWavPath: string,
+  preferredVoice?: string
+): Promise<boolean> {
   const cleanText = text.replace(/[\r\n]+/g, ' ').trim();
   if (!cleanText) return false;
   const detected = await detectOfflineTtsEngine();
   if (!detected.available) {
     throw new Error(
-      'Máy chủ Linux hiện chưa cài công cụ đọc offline (espeak-ng / espeak). Hãy chuyển sang "Giọng đọc Online AI" hoặc chạy bản trên Windows/macOS để dùng giọng đọc hệ thống offline.'
+      'Chưa phát hiện thư viện giọng đọc tiếng Việt Offline (VieNeu-TTS). Hãy bấm "Tải & Cài VieNeu-TTS Offline" trong Studio hoặc Cài đặt.'
     );
+  }
+
+  if (detected.engineId === 'vieneu') {
+    const pyCmd = await resolveVieNeuPythonCommand();
+    if (pyCmd) {
+      const txtPath = `${outWavPath}.txt`;
+      try {
+        fs.writeFileSync(txtPath, cleanText, 'utf8');
+        const args = [
+          getVieNeuScriptPath(),
+          '--mode',
+          'v3nano',
+          '--text-file',
+          txtPath,
+          '--out',
+          outWavPath,
+        ];
+        if (preferredVoice?.trim()) {
+          args.push('--voice', preferredVoice.trim());
+        }
+        const r = await spawnPromise(pyCmd, args, process.cwd(), 120_000);
+        if (r.code === 0 && fs.existsSync(outWavPath) && fs.statSync(outWavPath).size > 1000) {
+          return true;
+        }
+      } finally {
+        try {
+          if (fs.existsSync(txtPath)) fs.unlinkSync(txtPath);
+        } catch {
+          // ignore
+        }
+      }
+    }
   }
 
   if (process.platform === 'win32') {
@@ -1912,6 +2156,114 @@ async function synthesizeOfflineVoiceWav(text: string, outWavPath: string): Prom
     return fallback.code === 0 && fs.existsSync(outWavPath);
   }
   return fs.existsSync(outWavPath);
+}
+
+export async function synthesizeOfflineVoicePreview(text: string, voice?: string): Promise<Buffer> {
+  const cleanText = String(text || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 600);
+  if (!cleanText) {
+    throw new Error('Vui lòng nhập lời thoại cần đọc thử.');
+  }
+  const tmpWav = path.join(STUDIO_ASSETS_DIR, `offline_preview_${Date.now()}_${crypto.randomBytes(3).toString('hex')}.wav`);
+  try {
+    const ok = await synthesizeOfflineVoiceWav(cleanText, tmpWav, voice);
+    if (!ok || !fs.existsSync(tmpWav)) {
+      throw new Error('Không thể tổng hợp giọng đọc thử nghiệm.');
+    }
+    return fs.readFileSync(tmpWav);
+  } finally {
+    try {
+      if (fs.existsSync(tmpWav)) fs.unlinkSync(tmpWav);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export async function installAndWarmupVieNeu(): Promise<{
+  ok: boolean;
+  engine: string;
+  voicesCount: number;
+  message: string;
+}> {
+  const scriptPath = getVieNeuScriptPath();
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error('Thiếu tệp scripts/vieneu_tts.py trong dự án.');
+  }
+
+  let pyCmd = await resolveVieNeuPythonCommand();
+  const isWin = process.platform === 'win32';
+  const venvDir = path.join(process.cwd(), '.venv-vieneu');
+  const venvPy = path.join(venvDir, isWin ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'));
+
+  if (!pyCmd) {
+    const basePy = isWin ? 'python' : 'python3';
+    if (!fs.existsSync(venvPy)) {
+      let venvRes = await spawnPromise(basePy, ['-m', 'venv', venvDir], process.cwd(), 120_000);
+      if (venvRes.code !== 0) {
+        venvRes = await spawnPromise(basePy, ['-m', 'venv', '--without-pip', venvDir], process.cwd(), 120_000);
+        if (venvRes.code !== 0 || !fs.existsSync(venvPy)) {
+          throw new Error(`Không tạo được môi trường Python VieNeu: ${venvRes.stderr || venvRes.stdout}`);
+        }
+      }
+    }
+
+    const pipCheck = await spawnPromise(venvPy, ['-m', 'pip', '--version'], process.cwd(), 15_000);
+    if (pipCheck.code !== 0) {
+      const getPipPath = path.join(os.tmpdir(), 'get-pip-vieneu.py');
+      const dl = await fetch('https://bootstrap.pypa.io/get-pip.py', { signal: AbortSignal.timeout(45_000) });
+      if (!dl.ok) {
+        throw new Error(`Không thể tải get-pip.py để cài VieNeu-TTS (HTTP ${dl.status}).`);
+      }
+      fs.writeFileSync(getPipPath, Buffer.from(await dl.arrayBuffer()));
+      const gpRes = await spawnPromise(venvPy, [getPipPath], process.cwd(), 120_000);
+      try { fs.unlinkSync(getPipPath); } catch { /* ignore */ }
+      if (gpRes.code !== 0) {
+        throw new Error(`Không cài được pip cho .venv-vieneu: ${gpRes.stderr || gpRes.stdout}`);
+      }
+    }
+
+    const reqFile = path.join(process.cwd(), 'scripts', 'requirements-vieneu.txt');
+    const pipArgs = fs.existsSync(reqFile)
+      ? ['-m', 'pip', 'install', '--no-deps', 'vieneu>=3.8.0']
+      : ['-m', 'pip', 'install', '--no-deps', 'vieneu>=3.8.0'];
+    const baseDeps = [
+      'onnxruntime>=1.20.0',
+      'sea-g2p>=0.10.0',
+      'huggingface_hub>=0.25.0',
+      'soundfile>=0.12.1',
+      'soxr>=0.4.0',
+      'librosa>=0.10.2',
+      'kaldi-native-fbank>=1.20.0',
+      'numpy>=1.26.0',
+      'requests>=2.31.0',
+    ];
+    const installPkg = await spawnPromise(venvPy, pipArgs, process.cwd(), 300_000);
+    if (installPkg.code !== 0) {
+      throw new Error(`Lỗi cài đặt gói vieneu: ${installPkg.stderr || installPkg.stdout}`);
+    }
+    const installDeps = await spawnPromise(venvPy, ['-m', 'pip', 'install', ...baseDeps], process.cwd(), 420_000);
+    if (installDeps.code !== 0) {
+      throw new Error(`Lỗi cài đặt thư viện ONNX cho VieNeu: ${installDeps.stderr || installDeps.stdout}`);
+    }
+    pyCmd = venvPy;
+  }
+
+  const warmRes = await spawnPromise(pyCmd, [scriptPath, '--mode', 'v3nano', '--warmup'], process.cwd(), 360_000);
+  const parsed = parseLastJsonObject(warmRes.stdout);
+  if (warmRes.code !== 0 || !parsed?.ok) {
+    throw new Error(parsed?.error || warmRes.stderr || 'Không thể tải model VieNeu-TTS offline.');
+  }
+
+  resetOfflineTtsCache();
+  await detectOfflineTtsEngine();
+  const voiceData = await listVieNeuVoices();
+
+  return {
+    ok: true,
+    engine: voiceData.engine || 'VieNeu-TTS (Tiếng Việt Offline · ONNX)',
+    voicesCount: voiceData.voices.length || Number(parsed.voicesCount || 0),
+    message: `Đã cài đặt và nạp sẵn VieNeu-TTS (${voiceData.voices.length || parsed.voicesCount || 11} giọng tiếng Việt Offline).`,
+  };
 }
 
 // ==========================================
@@ -2091,6 +2443,7 @@ export interface StartDerivativeJobParams {
   voice: DerivativeVoiceId;
   voiceMode?: DerivativeVoiceMode;
   voiceStyle?: string;
+  offlineVoice?: string;
   keepSourceAudio: boolean;
   brollSource?: BrollSourceId;
   musicMode?: DerivativeMusicMode;
@@ -2339,22 +2692,68 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   if (effectiveVoiceMode === 'offline_system') {
     job.status = 'tts';
     job.progress = 10;
-    job.stepLabel = `Đang tổng hợp giọng đọc Offline (0/${scenes.length} cảnh)...`;
-    for (let i = 0; i < scenes.length; i += 1) {
-      const sc = scenes[i];
-      const wavPath = path.join(job.workDir, `voice_${i}.wav`);
-      if (sc.narration.trim()) {
-        const ok = await synthesizeOfflineVoiceWav(sc.narration, wavPath);
-        if (ok) {
+    const offlineEngine = await detectOfflineTtsEngine();
+    job.stepLabel =
+      offlineEngine.engineId === 'vieneu'
+        ? `Đang tổng hợp giọng tiếng Việt VieNeu-TTS (0/${scenes.length} cảnh)...`
+        : `Đang tổng hợp giọng đọc Offline (0/${scenes.length} cảnh)...`;
+
+    if (offlineEngine.engineId === 'vieneu') {
+      const batchItems = scenes
+        .map((sc, idx) => ({
+          index: idx,
+          text: sc.narration.trim(),
+          out: path.join(job.workDir, `voice_${idx}.wav`),
+          voice: params.offlineVoice,
+        }))
+        .filter((it) => it.text.length > 0);
+
+      job.stepLabel = `Đang nạp mô hình VieNeu-TTS và đọc ${batchItems.length} phân cảnh...`;
+      job.progress = 16;
+
+      let batchResults = new Map<number, boolean>();
+      try {
+        batchResults = await synthesizeOfflineVoiceBatchVieNeu(batchItems, params.offlineVoice);
+      } catch (batchErr: any) {
+        job.warnings.push(`VieNeu batch cảnh báo (${batchErr?.message || 'lỗi'}), thử đọc từng cảnh...`);
+      }
+
+      for (let i = 0; i < scenes.length; i += 1) {
+        const sc = scenes[i];
+        const wavPath = path.join(job.workDir, `voice_${i}.wav`);
+        let ok = Boolean(batchResults.get(i));
+        if (!ok && sc.narration.trim()) {
+          ok = await synthesizeOfflineVoiceWav(sc.narration, wavPath, params.offlineVoice);
+        }
+        if (ok && fs.existsSync(wavPath)) {
           sceneAudioPaths[i] = wavPath;
           const audioDur = await probeDurationSeconds(wavPath, job.workDir);
           if (audioDur > 0.5) {
             sceneTargetDurations[i] = Math.max(3.0, audioDur + 0.45);
           }
+        } else if (sc.narration.trim()) {
+          job.warnings.push(`Cảnh ${i + 1}: VieNeu-TTS không tạo được lời thoại, giữ nhạc/nền cho cảnh này.`);
         }
+        job.stepLabel = `Đã xử lý giọng đọc VieNeu-TTS (${i + 1}/${scenes.length})...`;
+        job.progress = 16 + Math.round(((i + 1) / scenes.length) * 18);
       }
-      job.stepLabel = `Đang tổng hợp giọng đọc Offline (${i + 1}/${scenes.length})...`;
-      job.progress = 10 + Math.round(((i + 1) / scenes.length) * 24);
+    } else {
+      for (let i = 0; i < scenes.length; i += 1) {
+        const sc = scenes[i];
+        const wavPath = path.join(job.workDir, `voice_${i}.wav`);
+        if (sc.narration.trim()) {
+          const ok = await synthesizeOfflineVoiceWav(sc.narration, wavPath, params.offlineVoice);
+          if (ok) {
+            sceneAudioPaths[i] = wavPath;
+            const audioDur = await probeDurationSeconds(wavPath, job.workDir);
+            if (audioDur > 0.5) {
+              sceneTargetDurations[i] = Math.max(3.0, audioDur + 0.45);
+            }
+          }
+        }
+        job.stepLabel = `Đang tổng hợp giọng đọc Offline (${i + 1}/${scenes.length})...`;
+        job.progress = 10 + Math.round(((i + 1) / scenes.length) * 24);
+      }
     }
   } else if (effectiveVoiceMode === 'ai_online' && voice !== 'none') {
     job.status = 'tts';
@@ -2375,7 +2774,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         if (!ok && sc.narration.trim()) {
           const offlineEngine = await detectOfflineTtsEngine();
           if (offlineEngine.available) {
-            ok = await synthesizeOfflineVoiceWav(sc.narration, wavPath);
+            ok = await synthesizeOfflineVoiceWav(sc.narration, wavPath, params.offlineVoice || voice);
             if (ok) {
               job.warnings.push(`Cảnh ${i + 1}: Gemini TTS tạm bận (503), đã tự chuyển sang giọng đọc Offline (${offlineEngine.engine}).`);
             }
@@ -2435,33 +2834,53 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   // Generate missing AI video clips if visualMode === 'gemini_omni' or 'muse2api_video'
   if (visualMode === 'gemini_omni' || visualMode === 'muse2api_video') {
     const useMuseVideo = visualMode === 'muse2api_video';
-    for (let i = 0; i < scenes.length; i += 1) {
-      if (sceneOmniVideos.has(i)) continue;
-      const sc = scenes[i];
-      job.stepLabel = `Đang tạo video cảnh ${i + 1}/${scenes.length} bằng ${
-        useMuseVideo ? 'Muse2API (muse-video)' : 'Gemini Omni Flash'
-      }...`;
-      job.progress = 36 + Math.round(((i + 1) / scenes.length) * 20);
-      try {
-        const clipRes = await generateSceneVideoWithOmniFlash({
-          engine: useMuseVideo ? 'muse2api' : 'gemini',
-          prompt: `${sc.visualNote || sc.onScreenText}. ${sc.narration.slice(0, 140)}`,
-          aspectRatio: blueprint.aspectRatio,
-          durationSec: Math.min(useMuseVideo ? 12 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
-          sceneImageDataUrl: sc.sceneImageDataUrl,
-          characterRefs: params.characterRefs,
-        });
-        const asset = getStudioAsset(clipRes.assetId);
-        if (asset) {
-          sceneOmniVideos.set(i, { path: asset.filePath, duration: asset.durationSec || 8 });
-        }
-      } catch (clipErr: any) {
-        if (i === 0 && scenes.length === 1) {
-          throw clipErr;
-        }
+    const hasMissingScenes = scenes.some((_, idx) => !sceneOmniVideos.has(idx));
+    let canGenerateWithMuse = true;
+
+    if (useMuseVideo && hasMissingScenes) {
+      const museStatus = await getMuse2ApiStatus().catch(() => null);
+      if (!museStatus?.ready) {
+        canGenerateWithMuse = false;
+        const reason =
+          museStatus?.error ||
+          (!museStatus?.reachable
+            ? 'Muse2API chưa bật hoặc không kết nối được tới dịch vụ'
+            : 'Muse2API chưa có tài khoản muse.ai hợp lệ');
         job.warnings.push(
-          `Cảnh ${i + 1}: Không tạo được clip AI (${clipErr?.message || 'Lỗi'}), tự động chuyển sang tư liệu dự phòng.`
+          `Chế độ ưu tiên Muse2API chưa sẵn sàng (${reason}). Hệ thống tự động dùng tư liệu video/ảnh dự phòng; hãy bật Muse2API trong Cài đặt để sinh clip muse-video.`
         );
+      }
+    }
+
+    if (!useMuseVideo || canGenerateWithMuse) {
+      for (let i = 0; i < scenes.length; i += 1) {
+        if (sceneOmniVideos.has(i)) continue;
+        const sc = scenes[i];
+        job.stepLabel = `Đang tạo video cảnh ${i + 1}/${scenes.length} bằng ${
+          useMuseVideo ? 'Muse2API (muse-video)' : 'Gemini Omni Flash'
+        }...`;
+        job.progress = 36 + Math.round(((i + 1) / scenes.length) * 20);
+        try {
+          const clipRes = await generateSceneVideoWithOmniFlash({
+            engine: useMuseVideo ? 'muse2api' : 'gemini',
+            prompt: `${sc.visualNote || sc.onScreenText}. ${sc.narration.slice(0, 140)}`,
+            aspectRatio: blueprint.aspectRatio,
+            durationSec: Math.min(useMuseVideo ? 12 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
+            sceneImageDataUrl: sc.sceneImageDataUrl,
+            characterRefs: params.characterRefs,
+          });
+          const asset = getStudioAsset(clipRes.assetId);
+          if (asset) {
+            sceneOmniVideos.set(i, { path: asset.filePath, duration: asset.durationSec || 8 });
+          }
+        } catch (clipErr: any) {
+          if (i === 0 && scenes.length === 1) {
+            throw clipErr;
+          }
+          job.warnings.push(
+            `Cảnh ${i + 1}: Không tạo được clip AI (${clipErr?.message || 'Lỗi'}), tự động chuyển sang tư liệu dự phòng.`
+          );
+        }
       }
     }
   }
@@ -2497,7 +2916,14 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
 
   const brollPreference: BrollSourceId = params.brollSource || 'wikimedia';
 
-  if (visualMode === 'remix' && downloadSourceVideo) {
+  const hasUncoveredScenes = scenes.some(
+    (_, idx) => !sceneOmniVideos.has(idx) && !sceneCustomImages.has(idx)
+  );
+  const shouldFetchSourceOrBroll =
+    visualMode === 'remix' ||
+    ((visualMode === 'muse2api_video' || visualMode === 'gemini_omni') && hasUncoveredScenes);
+
+  if (shouldFetchSourceOrBroll && downloadSourceVideo) {
     for (let k = 0; k < referencedIndices.length; k += 1) {
       const srcIdx = referencedIndices[k];
       if (downloadedSourceVideos.has(srcIdx)) continue; // already registered local uploaded video
