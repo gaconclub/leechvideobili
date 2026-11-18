@@ -1876,6 +1876,9 @@ function parseLastJsonObject(raw: string): any | null {
 
 let cachedVieNeuPythonArgsPrefix: string[] = [];
 
+const VIENEU_RUNTIME_CHECK_CODE =
+  'import vieneu, huggingface_hub, onnxruntime, soundfile, soxr, librosa, numpy, requests; print("OK")';
+
 async function resolveVieNeuPythonCommand(): Promise<{ cmd: string; prefixArgs: string[] } | null> {
   if (cachedVieNeuPythonCmd && fs.existsSync(getVieNeuScriptPath())) {
     return { cmd: cachedVieNeuPythonCmd, prefixArgs: cachedVieNeuPythonArgsPrefix };
@@ -1908,9 +1911,9 @@ async function resolveVieNeuPythonCommand(): Promise<{ cmd: string; prefixArgs: 
     try {
       const check = await spawnPromise(
         cand.cmd,
-        [...cand.prefixArgs, '-c', 'import vieneu; print("OK")'],
+        [...cand.prefixArgs, '-c', VIENEU_RUNTIME_CHECK_CODE],
         process.cwd(),
-        10_000
+        12_000
       );
       if (check.code === 0 && check.stdout.includes('OK')) {
         cachedVieNeuPythonCmd = cand.cmd;
@@ -2210,12 +2213,24 @@ export async function installAndWarmupVieNeu(): Promise<{
     throw new Error('Thiếu tệp scripts/vieneu_tts.py trong dự án.');
   }
 
+  resetOfflineTtsCache();
   let pySpec = await resolveVieNeuPythonCommand();
   const isWin = process.platform === 'win32';
   const venvDir = path.join(process.cwd(), '.venv-vieneu');
   const venvPy = path.join(venvDir, isWin ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'));
+  const baseDeps = [
+    'onnxruntime>=1.20.0',
+    'sea-g2p>=0.10.0',
+    'huggingface_hub>=0.25.0',
+    'soundfile>=0.12.1',
+    'soxr>=0.4.0',
+    'librosa>=0.10.2',
+    'kaldi-native-fbank>=1.20.0',
+    'numpy>=1.26.0',
+    'requests>=2.31.0',
+  ];
 
-  if (!pySpec) {
+  const ensureVenvWithAllPackages = async (): Promise<{ cmd: string; prefixArgs: string[] }> => {
     if (!fs.existsSync(venvPy)) {
       const pyCandidates: { cmd: string; prefixArgs: string[] }[] = isWin
         ? [
@@ -2278,17 +2293,6 @@ export async function installAndWarmupVieNeu(): Promise<{
       }
     }
 
-    const baseDeps = [
-      'onnxruntime>=1.20.0',
-      'sea-g2p>=0.10.0',
-      'huggingface_hub>=0.25.0',
-      'soundfile>=0.12.1',
-      'soxr>=0.4.0',
-      'librosa>=0.10.2',
-      'kaldi-native-fbank>=1.20.0',
-      'numpy>=1.26.0',
-      'requests>=2.31.0',
-    ];
     const installPkg = await spawnPromise(venvPy, ['-m', 'pip', 'install', '--no-deps', 'vieneu>=3.8.0'], process.cwd(), 300_000);
     if (installPkg.code !== 0) {
       throw new Error(`Lỗi cài đặt gói vieneu: ${installPkg.stderr || installPkg.stdout}`);
@@ -2297,16 +2301,43 @@ export async function installAndWarmupVieNeu(): Promise<{
     if (installDeps.code !== 0) {
       throw new Error(`Lỗi cài đặt thư viện ONNX cho VieNeu: ${installDeps.stderr || installDeps.stdout}`);
     }
-    pySpec = { cmd: venvPy, prefixArgs: [] };
+    return { cmd: venvPy, prefixArgs: [] };
+  };
+
+  if (!pySpec) {
+    pySpec = await ensureVenvWithAllPackages();
   }
 
-  const warmRes = await spawnPromise(
+  let warmRes = await spawnPromise(
     pySpec.cmd,
     [...pySpec.prefixArgs, scriptPath, '--mode', 'v3nano', '--warmup'],
     process.cwd(),
     360_000
   );
-  const parsed = parseLastJsonObject(warmRes.stdout);
+  let parsed = parseLastJsonObject(warmRes.stdout);
+
+  // If warmup still failed due to any missing Python module, auto-repair via .venv-vieneu or pip
+  if (warmRes.code !== 0 || !parsed?.ok) {
+    const errText = String(parsed?.error || warmRes.stderr || '');
+    const missingModMatch = errText.match(/No module named ['"]([A-Za-z0-9_.-]+)['"]/i);
+    if (missingModMatch) {
+      const missingPkg = missingModMatch[1];
+      if (pySpec.cmd === venvPy) {
+        await spawnPromise(venvPy, ['-m', 'pip', 'install', ...baseDeps, missingPkg], process.cwd(), 300_000);
+      } else {
+        pySpec = await ensureVenvWithAllPackages();
+        await spawnPromise(pySpec.cmd, ['-m', 'pip', 'install', missingPkg], process.cwd(), 180_000).catch(() => {});
+      }
+      warmRes = await spawnPromise(
+        pySpec.cmd,
+        [...pySpec.prefixArgs, scriptPath, '--mode', 'v3nano', '--warmup'],
+        process.cwd(),
+        360_000
+      );
+      parsed = parseLastJsonObject(warmRes.stdout);
+    }
+  }
+
   if (warmRes.code !== 0 || !parsed?.ok) {
     throw new Error(parsed?.error || warmRes.stderr || 'Không thể tải model VieNeu-TTS offline.');
   }
