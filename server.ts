@@ -1604,6 +1604,302 @@ async function extractFacebookFallbackFromHtml(
   return null;
 }
 
+async function extractFacebookListFromHtml(
+  urlStr: string,
+  rawCookies?: string
+): Promise<{
+  items: any[];
+  loginRequired: boolean;
+  isGlobalReelsFeed: boolean;
+}> {
+  const fbCookie = buildFacebookCookieHeader(rawCookies);
+  const normalized = normalizeFacebookUrl(urlStr);
+  const isGlobalReelsFeed = /facebook\.com\/reels?(?:\/)?(?:[?#]|$)/i.test(normalized);
+  const isReelTab = /(?:reels(?:_tab)?|owner_reels)/i.test(normalized);
+  const defaultFbQualities = [
+    { qn: 80, label: '1080P' },
+    { qn: 64, label: '720P' },
+    { qn: 32, label: '480P' },
+    { qn: 16, label: '360P' },
+  ];
+
+  const candidates = [normalized];
+  if (normalized.includes('sk=reels') && !normalized.includes('sk=reels_tab')) {
+    candidates.push(normalized.replace('sk=reels', 'sk=reels_tab'));
+  }
+
+  let sawLoginWall = false;
+
+  for (const target of candidates) {
+    try {
+      const res = await fetch(target, {
+        redirect: 'follow',
+        headers: {
+          'User-Agent': USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          ...(fbCookie ? { Cookie: fbCookie } : {}),
+        },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) continue;
+
+      const finalUrl = res.url || target;
+      if (finalUrl.includes('/login')) {
+        sawLoginWall = true;
+        continue;
+      }
+
+      const html = await res.text();
+      if (!html) continue;
+
+      const rawTitle =
+        html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+        html.match(/<title>([^<]+)<\/title>/i)?.[1] ||
+        '';
+      const pageAuthor =
+        decodeHtmlEntities(rawTitle)
+          .replace(/\s*(?:\||-|–)\s*Facebook$/i, '')
+          .replace(/(?:'s|’s)?\s*(?:Reels|Videos)$/i, '')
+          .trim() || 'Facebook';
+
+      const videoMap = new Map<
+        string,
+        {
+          id: string;
+          title: string;
+          author: string;
+          pic: string;
+          duration: number;
+          pubdate: number;
+          sourceUrl: string;
+          maxHeight: number;
+        }
+      >();
+
+      const upsertVideo = (entry: {
+        id: string;
+        title?: string;
+        author?: string;
+        pic?: string;
+        duration?: number;
+        pubdate?: number;
+        sourceUrl?: string;
+        maxHeight?: number;
+      }) => {
+        if (!entry.id || !/^\d{6,}$/.test(entry.id)) return;
+        const prev = videoMap.get(entry.id);
+        const cleanTitle = (entry.title || '')
+          .replace(/\r?\n+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        videoMap.set(entry.id, {
+          id: entry.id,
+          title: (prev?.title && prev.title.length >= cleanTitle.length ? prev.title : cleanTitle) || '',
+          author: entry.author || prev?.author || pageAuthor,
+          pic: entry.pic || prev?.pic || '',
+          duration: Math.max(prev?.duration || 0, Math.round(entry.duration || 0)),
+          pubdate: Math.max(prev?.pubdate || 0, Math.round(entry.pubdate || 0)),
+          sourceUrl:
+            (entry.sourceUrl && entry.sourceUrl.includes('/reel/') ? entry.sourceUrl : '') ||
+            prev?.sourceUrl ||
+            entry.sourceUrl ||
+            (isReelTab
+              ? `https://www.facebook.com/reel/${entry.id}`
+              : `https://www.facebook.com/watch/?v=${entry.id}`),
+          maxHeight: Math.max(prev?.maxHeight || 0, Math.round(entry.maxHeight || 0)),
+        });
+      };
+
+      const extractPublishTimeFromTracking = (tracking: unknown): number => {
+        if (typeof tracking !== 'string' || !tracking.includes('publish_time')) return 0;
+        const m = tracking.match(/"publish_time"\s*:\s*(\d{9,11})/);
+        return m ? Number(m[1]) : 0;
+      };
+
+      const scriptRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+      let scriptMatch: RegExpExecArray | null;
+      while ((scriptMatch = scriptRegex.exec(html)) !== null) {
+        const body = scriptMatch[1]?.trim();
+        if (!body || !body.startsWith('{')) continue;
+        if (
+          !body.includes('short_form_video_context') &&
+          !body.includes('aggregated_fb_shorts') &&
+          !body.includes('playable_duration_in_ms') &&
+          !body.includes('videoDeliveryLegacyFields') &&
+          !body.includes('videoDeliveryResponseFragment')
+        ) {
+          continue;
+        }
+        try {
+          const parsed = JSON.parse(body);
+          const stack: any[] = [parsed];
+          while (stack.length > 0) {
+            const cur = stack.pop();
+            if (!cur || typeof cur !== 'object') continue;
+
+            if (Array.isArray(cur)) {
+              for (let i = cur.length - 1; i >= 0; i -= 1) {
+                if (cur[i] && typeof cur[i] === 'object') stack.push(cur[i]);
+              }
+              continue;
+            }
+
+            // Pattern A: Facebook Reels node (short_form_video_context)
+            const sfvc = cur.short_form_video_context;
+            if (sfvc && typeof sfvc === 'object' && sfvc.video?.id) {
+              const vid = String(sfvc.video.id);
+              const pb = sfvc.playback_video || {};
+              const shareUrl =
+                sfvc.shareable_url ||
+                sfvc.if_should_change_url_for_reels?.shareable_url ||
+                pb.permalink_url ||
+                `https://www.facebook.com/reel/${vid}`;
+              const pic =
+                sfvc.video.first_frame_thumbnail ||
+                pb.thumbnailImage?.uri ||
+                pb.preferred_thumbnail?.image?.uri ||
+                '';
+              const dur =
+                Number(pb.length_in_second || 0) ||
+                Number(sfvc.video.playable_duration_in_ms || 0) / 1000;
+              const pubdate =
+                Number(cur.creation_time || 0) || extractPublishTimeFromTracking(cur.tracking);
+              const title =
+                cur.message?.text ||
+                cur.translated_message_for_viewer?.text ||
+                cur.savable_title?.text ||
+                sfvc.video?.title ||
+                '';
+              upsertVideo({
+                id: vid,
+                title,
+                author: sfvc.video?.owner?.name || cur.actors?.[0]?.name || pageAuthor,
+                pic,
+                duration: dur,
+                pubdate,
+                sourceUrl: shareUrl,
+                maxHeight: Number(pb.height || 0),
+              });
+            }
+
+            // Pattern B: General Facebook Video / Videos tab node
+            const rawVid = cur.id || cur.video_id;
+            if (
+              typeof rawVid === 'string' &&
+              /^\d{7,}$/.test(rawVid) &&
+              (cur.playable_duration_in_ms ||
+                cur.length_in_second ||
+                cur.videoDeliveryLegacyFields ||
+                cur.videoDeliveryResponseFragment ||
+                cur.first_frame_thumbnail ||
+                cur.permalink_url ||
+                cur.__typename === 'Video')
+            ) {
+              const dur =
+                Number(cur.length_in_second || 0) ||
+                Number(cur.playable_duration_in_ms || 0) / 1000;
+              const pic =
+                cur.first_frame_thumbnail ||
+                cur.thumbnailImage?.uri ||
+                cur.preferred_thumbnail?.image?.uri ||
+                cur.image?.uri ||
+                '';
+              const title =
+                cur.savable_title?.text ||
+                cur.message?.text ||
+                cur.title?.text ||
+                (typeof cur.name === 'string' ? cur.name : '');
+              const perm =
+                (typeof cur.permalink_url === 'string' && cur.permalink_url) ||
+                (typeof cur.url === 'string' && cur.url.includes('facebook.com') ? cur.url : '');
+              upsertVideo({
+                id: rawVid,
+                title,
+                author: cur.owner?.name || pageAuthor,
+                pic,
+                duration: dur,
+                pubdate: Number(cur.publish_time || cur.creation_time || 0),
+                sourceUrl: perm,
+                maxHeight: Number(cur.height || 0),
+              });
+            }
+
+            for (const val of Object.values(cur)) {
+              if (val && typeof val === 'object') stack.push(val);
+            }
+          }
+        } catch {
+          // ignore malformed script JSON block
+        }
+      }
+
+      // Regex fallback in case Facebook served non-JSON script wrapper
+      if (videoMap.size === 0) {
+        const unesc = html.replace(/\\\//g, '/');
+        const reelLinkRe = /facebook\.com\/reel\/(\d{7,})/gi;
+        let m: RegExpExecArray | null;
+        while ((m = reelLinkRe.exec(unesc)) !== null) {
+          upsertVideo({
+            id: m[1],
+            sourceUrl: `https://www.facebook.com/reel/${m[1]}`,
+          });
+          if (videoMap.size >= 100) break;
+        }
+      }
+
+      if (videoMap.size > 0) {
+        const items = Array.from(videoMap.values())
+          .slice(0, 100)
+          .map((v) => {
+            const labelPrefix = v.sourceUrl.includes('/reel/') ? 'Facebook Reel' : 'Facebook Video';
+            const qualities =
+              v.maxHeight > 0 && v.maxHeight < 720
+                ? [
+                    { qn: 32, label: '480P' },
+                    { qn: 16, label: '360P' },
+                  ]
+                : defaultFbQualities;
+            return {
+              id: `fb_${v.id}_${crypto.randomBytes(3).toString('hex')}`,
+              platform: 'facebook',
+              bvid: v.id,
+              aid: 0,
+              cid: 0,
+              page: 1,
+              totalPages: 1,
+              title: v.title || `${labelPrefix} ${v.id}`,
+              partTitle: '',
+              author: v.author || pageAuthor,
+              duration: v.duration,
+              views: 0,
+              pubdate: v.pubdate,
+              pic: v.pic,
+              sourceUrl: v.sourceUrl,
+              availableQualities: qualities,
+            };
+          });
+        return { items, loginRequired: false, isGlobalReelsFeed };
+      }
+
+      if (/id="login_form"|name="login"|Log in or sign up|Log into Facebook|Đăng nhập Facebook/i.test(html)) {
+        sawLoginWall = true;
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return {
+    items: [],
+    loginRequired: sawLoginWall,
+    isGlobalReelsFeed,
+  };
+}
+
 function buildQualitiesFromYtdlpFormats(formats: any[] | undefined): { qn: number; label: string }[] {
   const defaultQualities = [
     { qn: 120, label: '4K (2160P)' },
@@ -1647,17 +1943,26 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
 
   try {
     const resolvedUrl = await resolveFacebookShareUrl(rawUrl, rawCookies);
+    const isSingleVideoId =
+      /\/(?:reel|reels|videos)\/\d{5,}/i.test(resolvedUrl) ||
+      /[?&](?:v|story_fbid)=\d{5,}/i.test(resolvedUrl);
     const isPageOrList =
-      /facebook\.com\/(?:[^/?#]+\/(?:videos|reels)|profile\.php\?[^#]*sk=(?:videos|reels_tab)|watch\/latest)/i.test(
+      !isSingleVideoId &&
+      /facebook\.com\/(?:[^/?#]+\/(?:videos|reels(?:_tab)?|owner_reels)(?:\/)?(?:[?#]|$)|groups\/[^/?#]+\/(?:videos|reels(?:_tab)?)(?:\/)?(?:[?#]|$)|profile\.php\?[^#]*\bsk=(?:videos|reels(?:_tab)?)\b|reels?(?:\/)?(?:[?#]|$)|watch\/latest)/i.test(
         resolvedUrl
       );
 
     if (isPageOrList) {
+      const htmlList = await extractFacebookListFromHtml(resolvedUrl, rawCookies);
+      if (htmlList.items.length > 0) {
+        return htmlList.items;
+      }
+
       try {
         const listJson = await runYtDlpJson(
           ytDlpBin,
           ['--flat-playlist', '--playlist-end', '100', '-J', '--no-warnings', ...cookieArgs, resolvedUrl],
-          60_000
+          45_000
         );
         const entries: any[] = Array.isArray(listJson?.entries) ? listJson.entries : [];
         const fallbackAuthor = listJson?.uploader || listJson?.channel || listJson?.title || 'Facebook';
@@ -1693,8 +1998,22 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
         }
         if (results.length > 0) return results;
       } catch {
-        // fall through to single/multi-entry extraction
+        // fall through to clear list error below
       }
+
+      if (htmlList.isGlobalReelsFeed && !buildFacebookCookieHeader(rawCookies)) {
+        throw new Error(
+          'Vui lòng dán link tab Reels của một Trang/Cá nhân cụ thể (ví dụ: https://www.facebook.com/<ten_trang>/reels) hoặc dán Cookie Facebook trong Cài đặt → tab Facebook.'
+        );
+      }
+      if (htmlList.loginRequired) {
+        throw new Error(
+          'Trang Facebook Reels/Videos này yêu cầu đăng nhập để lấy danh sách video. Vui lòng vào Cài đặt → tab Facebook và dán cookie facebook.com rồi thử lại.'
+        );
+      }
+      throw new Error(
+        'Không lấy được danh sách video từ trang Reels/Videos này. Hãy kiểm tra liên kết (ví dụ: https://www.facebook.com/<ten_trang>/reels) hoặc dán Cookie Facebook trong Cài đặt → tab Facebook nếu trang yêu cầu đăng nhập.'
+      );
     }
 
     try {
@@ -4159,7 +4478,16 @@ async function startServer() {
           }
           return;
         }
-        const fbPage = urlStr.match(/facebook\.com\/(?!watch\b|reel\b|reels\b|share\b|video\.php\b|story\.php\b|profile\.php\b)([^/?#\s]+)/i)?.[1];
+        const fbGroup = urlStr.match(/facebook\.com\/groups\/([^/?#\s]+)/i)?.[1];
+        if (fbGroup) {
+          try {
+            suggestedFolder = sanitizeFilename(decodeURIComponent(fbGroup));
+          } catch {
+            suggestedFolder = sanitizeFilename(fbGroup);
+          }
+          return;
+        }
+        const fbPage = urlStr.match(/facebook\.com\/(?!watch\b|reel\b|reels\b|share\b|groups\b|video\.php\b|story\.php\b|profile\.php\b)([^/?#\s]+)/i)?.[1];
         if (fbPage) {
           try {
             suggestedFolder = sanitizeFilename(decodeURIComponent(fbPage));
