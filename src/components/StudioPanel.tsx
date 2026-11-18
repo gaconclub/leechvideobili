@@ -277,7 +277,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [blueprint, setBlueprint] = useState<DerivativeBlueprint | null>(null);
 
   // 3. Per-scene generation states
-  const [imageQuality, setImageQuality] = useState<'standard' | 'pro'>('standard');
+  const [imageEngineMode, setImageEngineMode] = useState<'gemini_standard' | 'gemini_pro' | 'muse2api'>(
+    studioDefaults.aiProvider === 'muse2api' ? 'muse2api' : 'gemini_standard'
+  );
+  const [sceneVideoEngine, setSceneVideoEngine] = useState<'gemini' | 'muse2api'>(
+    studioDefaults.visualMode === 'muse2api_video' ? 'muse2api' : 'gemini'
+  );
   const [busySceneImageIds, setBusySceneImageIds] = useState<Set<string>>(new Set());
   const [busySceneVideoIds, setBusySceneVideoIds] = useState<Set<string>>(new Set());
   const [isBatchGeneratingImages, setIsBatchGeneratingImages] = useState(false);
@@ -517,7 +522,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             mode: 'character',
             prompt: desc,
             aspectRatio: '1:1',
-            quality: imageQuality,
+            quality: imageEngineMode === 'gemini_pro' ? 'pro' : 'standard',
+            engine: imageEngineMode === 'muse2api' ? 'muse2api' : 'gemini',
           }),
         }
       );
@@ -723,7 +729,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             mode: 'scene',
             prompt: `${sc.visualNote || sc.onScreenText}. Context: ${sc.narration.slice(0, 140)}`,
             aspectRatio,
-            quality: imageQuality,
+            quality: imageEngineMode === 'gemini_pro' ? 'pro' : 'standard',
+            engine: imageEngineMode === 'muse2api' ? 'muse2api' : 'gemini',
             characterRefs: characters.map((c) => ({ dataUrl: c.dataUrl, name: c.name })),
           }),
         }
@@ -761,7 +768,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // Generate AI Video Clip with Gemini Omni Flash (gemini-omni-1.2-flash)
+  // Generate AI Video Clip with Gemini Omni Flash (gemini-omni-1.2-flash) or Muse2API (muse-video)
   const handleGenerateSceneOmniClip = async (sc: DerivativeScene) => {
     setBusySceneVideoIds((prev) => new Set(prev).add(sc.id));
     setSceneMediaError('');
@@ -774,9 +781,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          engine: sceneVideoEngine,
           prompt: `${sc.visualNote || sc.onScreenText}. ${sc.narration.slice(0, 160)}`,
           aspectRatio,
-          durationSec: Math.min(15, Math.max(4, Math.round(sc.durationSec || 8))),
+          durationSec: Math.min(sceneVideoEngine === 'muse2api' ? 12 : 15, Math.max(4, Math.round(sc.durationSec || 8))),
           sceneImageDataUrl: sc.sceneImageDataUrl,
           characterRefs: characters.map((c) => ({ dataUrl: c.dataUrl, name: c.name })),
         }),
@@ -787,7 +795,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         omniClipPreviewUrl: data.previewUrl,
       });
     } catch (err: any) {
-      setSceneMediaError(err?.message || `Không tạo được clip Omni Flash cho cảnh ${sc.sceneIndex}.`);
+      setSceneMediaError(
+        err?.message ||
+          `Không tạo được clip ${sceneVideoEngine === 'muse2api' ? 'Muse2API' : 'Omni Flash'} cho cảnh ${sc.sceneIndex}.`
+      );
     } finally {
       setBusySceneVideoIds((prev) => {
         const next = new Set(prev);
@@ -1376,13 +1387,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               </div>
               <div className="flex items-center justify-between gap-2">
                 <select
-                  value={imageQuality}
-                  onChange={(e) => setImageQuality(e.target.value as 'standard' | 'pro')}
+                  value={imageEngineMode}
+                  onChange={(e) => setImageEngineMode(e.target.value as 'gemini_standard' | 'gemini_pro' | 'muse2api')}
                   aria-label="Mô hình tạo ảnh"
                   className="h-8 px-2 text-[11px] bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-700 dark:text-teal-100 focus:outline-none"
                 >
-                  <option value="standard">Gemini Flash Image (gemini-3.1-flash-lite-image)</option>
-                  <option value="pro">Nano Banana 2.1 (Chất lượng cao 1K)</option>
+                  <option value="gemini_standard">Gemini Flash Image (gemini-3.1-flash-lite-image)</option>
+                  <option value="gemini_pro">Nano Banana 2.1 (Chất lượng cao 1K)</option>
+                  <option value="muse2api">
+                    Muse2API (muse-image {capabilities?.aiProviders.muse2api?.configured ? '· Sẵn sàng' : '· Tự host'})
+                  </option>
                 </select>
                 <button
                   type="button"
@@ -1467,6 +1481,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   ? 'Đang xử lý...'
                   : aiProvider === 'muse'
                   ? 'Gửi sang Muse AI / Edison'
+                  : aiProvider === 'muse2api'
+                  ? 'Muse2API học & Lập kịch bản'
                   : 'AI học video & Lập kịch bản'}
               </span>
             </button>
@@ -1485,6 +1501,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             >
               <option value="gemini">
                 Google Gemini {capabilities?.aiProviders.gemini.configured ? '(Sẵn sàng)' : '(Chưa đặt key)'}
+              </option>
+              <option value="muse2api">
+                Muse2API (muse-spark · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
               </option>
               <option value="muse">
                 Muse AI / Edison (Không cần API key)
@@ -1688,6 +1707,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={sceneVideoEngine}
+                onChange={(e) => setSceneVideoEngine(e.target.value as 'gemini' | 'muse2api')}
+                aria-label="Mô hình dựng clip từng cảnh"
+                className="h-8 px-2 text-[11px] bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-700 dark:text-teal-100 focus:outline-none"
+              >
+                <option value="gemini">Clip cảnh: Gemini Omni Flash</option>
+                <option value="muse2api">Clip cảnh: Muse2API (muse-video)</option>
+              </select>
               <button
                 type="button"
                 disabled={isBatchGeneratingImages}
@@ -1695,7 +1723,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-teal-100 bg-slate-100 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] hover:bg-slate-200/70 dark:hover:bg-[#002935] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
               >
                 {isBatchGeneratingImages ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5" />}
-                <span>{isBatchGeneratingImages ? 'Đang tạo ảnh các cảnh...' : 'Tạo ảnh AI cho tất cả cảnh'}</span>
+                <span>
+                  {isBatchGeneratingImages
+                    ? 'Đang tạo ảnh các cảnh...'
+                    : imageEngineMode === 'muse2api'
+                    ? 'Tạo ảnh Muse2API tất cả cảnh'
+                    : 'Tạo ảnh AI cho tất cả cảnh'}
+                </span>
               </button>
               <button
                 type="button"
@@ -1814,7 +1848,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                         className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold bg-[#003B3E] hover:bg-[#002729] text-white rounded transition-colors cursor-pointer disabled:opacity-50"
                       >
                         {busyVid ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
-                        <span>{busyVid ? 'Đang tạo Omni...' : 'Dựng clip Omni'}</span>
+                        <span>
+                          {busyVid
+                            ? sceneVideoEngine === 'muse2api'
+                              ? 'Đang tạo Muse2API...'
+                              : 'Đang tạo Omni...'
+                            : sceneVideoEngine === 'muse2api'
+                            ? 'Dựng clip Muse2API'
+                            : 'Dựng clip Omni'}
+                        </span>
                       </button>
                     </div>
                   </div>
@@ -1919,15 +1961,32 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               <span className="text-[11px] text-slate-500 dark:text-teal-200/75">Chế độ dựng video</span>
               <select
                 value={visualMode}
-                onChange={(e) => setVisualMode(e.target.value as DerivativeVisualMode)}
+                onChange={(e) => {
+                  const nextMode = e.target.value as DerivativeVisualMode;
+                  setVisualMode(nextMode);
+                  if (nextMode === 'muse2api_video') setSceneVideoEngine('muse2api');
+                  else if (nextMode === 'gemini_omni') setSceneVideoEngine('gemini');
+                }}
                 className="w-full h-9 px-2.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none"
               >
                 <option value="gemini_omni">Gemini Omni Flash (gemini-omni-1.2-flash · Trả phí)</option>
+                <option value="muse2api_video">
+                  Muse2API Video (muse-video · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
+                </option>
                 <option value="muse_edison">Muse AI (Edison Bridge · qua Tunnel)</option>
                 <option value="remix">Video nguồn / Tải lên + Kho Wikimedia (Miễn phí)</option>
                 <option value="storyboard_motion">Ảnh đại diện cảnh + Chuyển động Ken Burns</option>
               </select>
             </label>
+            {visualMode === 'muse2api_video' && !capabilities?.aiProviders.muse2api?.configured && (
+              <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
+                Muse2API hiện chưa sẵn sàng ({capabilities?.aiProviders.muse2api?.status || 'offline'}). Vào{' '}
+                <button type="button" onClick={onOpenSettings} className="underline font-semibold cursor-pointer">
+                  Cấu hình AI &gt; Muse2API
+                </button>{' '}
+                để kết nối và nạp Cookie muse.ai.
+              </p>
+            )}
             <label className="block space-y-1">
               <span className="text-[11px] text-slate-500 dark:text-teal-200/75">Kho video dự phòng B-roll</span>
               <select

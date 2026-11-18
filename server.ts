@@ -47,6 +47,21 @@ import {
   startDerivativeVideoJob,
   testAiProviderConnection,
 } from './server/derivative';
+import {
+  addMuse2ApiAccount,
+  deleteMuse2ApiAccount,
+  getMuse2ApiStatus,
+  keepaliveAllMuse2ApiAccounts,
+  keepaliveMuse2ApiAccount,
+  listMuse2ApiAccounts,
+  listMuse2ApiMedia,
+  listMuse2ApiTasks,
+  patchMuse2ApiAccount,
+  quotaMuse2ApiAccount,
+  startLocalMuse2ApiProcess,
+  stopLocalMuse2ApiProcess,
+  testMuse2ApiAccount,
+} from './server/muse2api';
 
 const require = createRequire(import.meta.url);
 const { ZipArchive } = require('archiver') as {
@@ -2942,6 +2957,7 @@ async function startServer() {
 
     const ffmpegCheck = await checkBinVersion('ffmpeg', ['-version']);
     const offlineTtsCheck = await detectOfflineTtsEngine();
+    const muse2apiStatus = await getMuse2ApiStatus().catch(() => null);
 
     res.json({
       aiProviders: {
@@ -2968,9 +2984,21 @@ async function startServer() {
           baseUrl: '/api/edison/*',
           source: 'bridge',
         },
+        muse2api: {
+          configured: Boolean(muse2apiStatus?.ready),
+          reachable: Boolean(muse2apiStatus?.reachable),
+          status: muse2apiStatus?.status || 'offline',
+          model: 'muse-spark / muse-image / muse-video',
+          baseUrl: muse2apiStatus?.baseUrl || 'http://127.0.0.1:18610',
+          accountsCount: muse2apiStatus?.accountsCount || 0,
+          healthyAccounts: muse2apiStatus?.healthyAccounts || 0,
+          source: muse2apiStatus?.keySource || 'none',
+        },
       },
       paidModels: {
         omniVideoModel: 'gemini-omni-1.2-flash',
+        muse2apiImageModel: 'muse-image',
+        muse2apiVideoModel: 'muse-video',
         imageModel: 'gemini-3.1-flash-lite-image',
         imageProModel: 'gemini-nano-banana-2.1',
         musicClipModel: 'lyria-3-clip-preview',
@@ -2995,7 +3023,7 @@ async function startServer() {
     try {
       const rawProvider = String(req.body?.provider || 'gemini');
       const provider: AiProviderId =
-        rawProvider === 'openai' || rawProvider === 'meta' || rawProvider === 'muse'
+        rawProvider === 'openai' || rawProvider === 'meta' || rawProvider === 'muse' || rawProvider === 'muse2api'
           ? rawProvider
           : 'gemini';
       const result = await testAiProviderConnection(provider);
@@ -3133,12 +3161,13 @@ async function startServer() {
 
   app.post('/api/studio/generate-image', async (req, res) => {
     try {
-      const { mode = 'scene', prompt = '', aspectRatio = '16:9', quality = 'standard', characterRefs = [] } =
+      const { mode = 'scene', prompt = '', aspectRatio = '16:9', quality = 'standard', engine = 'gemini', characterRefs = [] } =
         (req.body || {}) as {
           mode?: 'character' | 'scene';
           prompt?: string;
           aspectRatio?: '1:1' | '9:16' | '16:9';
           quality?: 'standard' | 'pro';
+          engine?: 'gemini' | 'muse2api';
           characterRefs?: { dataUrl: string; name?: string }[];
         };
       if (!String(prompt).trim()) {
@@ -3149,6 +3178,7 @@ async function startServer() {
         prompt: String(prompt),
         aspectRatio,
         quality: quality === 'pro' ? 'pro' : 'standard',
+        engine: engine === 'muse2api' ? 'muse2api' : 'gemini',
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
       });
       res.json(result);
@@ -3160,18 +3190,20 @@ async function startServer() {
 
   app.post('/api/studio/generate-scene-video', async (req, res) => {
     try {
-      const { prompt = '', aspectRatio = '16:9', durationSec = 8, sceneImageDataUrl, characterRefs = [] } =
+      const { prompt = '', aspectRatio = '16:9', durationSec = 8, engine = 'gemini', sceneImageDataUrl, characterRefs = [] } =
         (req.body || {}) as {
           prompt?: string;
           aspectRatio?: DerivativeAspectRatio;
           durationSec?: number;
+          engine?: 'gemini' | 'muse2api';
           sceneImageDataUrl?: string;
           characterRefs?: { dataUrl: string; name?: string }[];
         };
       if (!String(prompt).trim()) {
-        return res.status(400).json({ error: 'Thiếu mô tả phân cảnh để dựng clip Omni Flash.' });
+        return res.status(400).json({ error: 'Thiếu mô tả phân cảnh để dựng clip AI.' });
       }
       const result = await generateSceneVideoWithOmniFlash({
+        engine: engine === 'muse2api' ? 'muse2api' : 'gemini',
         prompt: String(prompt),
         aspectRatio: aspectRatio === '9:16' ? '9:16' : '16:9',
         durationSec: Number(durationSec) || 8,
@@ -3180,7 +3212,7 @@ async function startServer() {
       });
       res.json(result);
     } catch (err: any) {
-      const msg = String(err?.message || 'Không thể tạo clip bằng Gemini Omni Flash.');
+      const msg = String(err?.message || 'Không thể tạo clip video AI.');
       res.status(msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500).json({ error: msg });
     }
   });
@@ -3242,7 +3274,9 @@ async function startServer() {
       }
 
       const validProvider: AiProviderId =
-        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse' ? aiProvider : 'gemini';
+        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse' || aiProvider === 'muse2api'
+          ? aiProvider
+          : 'gemini';
 
       const blueprint = await learnVideosAndCreateBlueprint({
         query: String(query || ''),
@@ -3312,7 +3346,10 @@ async function startServer() {
       }
 
       const validVisualMode: DerivativeVisualMode =
-        visualMode === 'gemini_omni' || visualMode === 'storyboard_motion'
+        visualMode === 'gemini_omni' ||
+        visualMode === 'storyboard_motion' ||
+        visualMode === 'muse2api_video' ||
+        visualMode === 'muse_edison'
           ? visualMode
           : 'remix';
 
@@ -3345,6 +3382,128 @@ async function startServer() {
     } catch (err: any) {
       console.error('Derivative generate error:', err);
       res.status(500).json({ error: err?.message || 'Không thể khởi tạo tác vụ tạo video phái sinh.' });
+    }
+  });
+
+  // ==========================================
+  // MUSE2API PROXY & ACCOUNT POOL ENDPOINTS
+  // ==========================================
+  app.get('/api/muse2api/status', async (_req, res) => {
+    try {
+      const status = await getMuse2ApiStatus();
+      res.json(status);
+    } catch (err: any) {
+      res.status(500).json({ reachable: false, ready: false, status: 'offline', error: err?.message || 'Lỗi kiểm tra Muse2API.' });
+    }
+  });
+
+  app.post('/api/muse2api/process/start', async (_req, res) => {
+    try {
+      const result = await startLocalMuse2ApiProcess();
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, message: err?.message || 'Không thể khởi chạy Muse2API.' });
+    }
+  });
+
+  app.post('/api/muse2api/process/stop', (_req, res) => {
+    res.json(stopLocalMuse2ApiProcess());
+  });
+
+  app.get('/api/muse2api/accounts', async (_req, res) => {
+    try {
+      const data = await listMuse2ApiAccounts();
+      res.json(data);
+    } catch (err: any) {
+      res.status(502).json({ error: err?.message || 'Không lấy được danh sách tài khoản Muse2API.' });
+    }
+  });
+
+  app.post('/api/muse2api/accounts', async (req, res) => {
+    try {
+      const { label, cookieHeader, batch } = (req.body || {}) as {
+        label?: string;
+        cookieHeader?: string;
+        batch?: string;
+      };
+      const data = await addMuse2ApiAccount({ label, cookieHeader, batch });
+      res.json(data);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thêm được tài khoản Muse2API.' });
+    }
+  });
+
+  app.post('/api/muse2api/accounts/keepalive', async (_req, res) => {
+    try {
+      const data = await keepaliveAllMuse2ApiAccounts();
+      res.json(data);
+    } catch (err: any) {
+      res.status(502).json({ error: err?.message || 'Không thể gia hạn đồng loạt tài khoản Muse2API.' });
+    }
+  });
+
+  app.post('/api/muse2api/accounts/:id/test', async (req, res) => {
+    try {
+      const data = await testMuse2ApiAccount(req.params.id);
+      res.json(data);
+    } catch (err: any) {
+      res.status(502).json({ ok: false, error: err?.message || 'Kiểm tra tài khoản thất bại.' });
+    }
+  });
+
+  app.post('/api/muse2api/accounts/:id/keepalive', async (req, res) => {
+    try {
+      const data = await keepaliveMuse2ApiAccount(req.params.id);
+      res.json(data);
+    } catch (err: any) {
+      res.status(502).json({ ok: false, error: err?.message || 'Gia hạn phiên thất bại.' });
+    }
+  });
+
+  app.post('/api/muse2api/accounts/:id/quota', async (req, res) => {
+    try {
+      const data = await quotaMuse2ApiAccount(req.params.id);
+      res.json(data);
+    } catch (err: any) {
+      res.status(502).json({ ok: false, error: err?.message || 'Không tra cứu được hạn mức Muse.ai.' });
+    }
+  });
+
+  app.patch('/api/muse2api/accounts/:id', async (req, res) => {
+    try {
+      const { label, enabled } = (req.body || {}) as { label?: string; enabled?: boolean };
+      const data = await patchMuse2ApiAccount(req.params.id, { label, enabled });
+      res.json(data);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Cập nhật tài khoản thất bại.' });
+    }
+  });
+
+  app.delete('/api/muse2api/accounts/:id', async (req, res) => {
+    try {
+      const data = await deleteMuse2ApiAccount(req.params.id);
+      res.json(data);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Xóa tài khoản thất bại.' });
+    }
+  });
+
+  app.get('/api/muse2api/tasks', async (req, res) => {
+    try {
+      const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
+      const data = await listMuse2ApiTasks(limit);
+      res.json(data);
+    } catch (err: any) {
+      res.status(502).json({ error: err?.message || 'Không lấy được lịch sử tác vụ Muse2API.' });
+    }
+  });
+
+  app.get('/api/muse2api/media', async (_req, res) => {
+    try {
+      const data = await listMuse2ApiMedia();
+      res.json(data);
+    } catch (err: any) {
+      res.status(502).json({ error: err?.message || 'Không lấy được danh sách tệp media Muse2API.' });
     }
   });
 

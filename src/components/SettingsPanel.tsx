@@ -14,6 +14,12 @@ import {
   RotateCcw,
   Eye,
   EyeOff,
+  Server,
+  Play,
+  Square,
+  Activity,
+  UserPlus,
+  Power,
 } from 'lucide-react';
 import {
   AiProviderId,
@@ -54,10 +60,55 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [testingAi, setTestingAi] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
+  // Muse2API Bridge & Account Pool state
+  const [muse2Status, setMuse2Status] = useState<{
+    reachable: boolean;
+    ready: boolean;
+    status: 'ready' | 'no_account' | 'auth_error' | 'offline';
+    baseUrl: string;
+    hasKey: boolean;
+    maskedKey: string;
+    keySource: 'env' | 'local_dotenv' | 'none';
+    accountsCount: number;
+    healthyAccounts: number;
+    browserRunning: boolean;
+    mediaCount: number;
+    accounts?: any[];
+    localRuntime?: {
+      bundledDirExists: boolean;
+      pythonAvailable: boolean;
+      uvicornInstalled: boolean;
+      chromiumAvailable: boolean;
+      processRunning: boolean;
+    };
+    error?: string;
+  } | null>(null);
+  const [loadingMuse2, setLoadingMuse2] = useState(false);
+  const [muse2Notice, setMuse2Notice] = useState('');
+  const [muse2Error, setMuse2Error] = useState('');
+  const [museAccLabel, setMuseAccLabel] = useState('Tài khoản Muse #1');
+  const [museAccCookie, setMuseAccCookie] = useState('');
+  const [busyMuse2Action, setBusyMuse2Action] = useState<string>('');
+
   useEffect(() => {
     setCookieDraft(perSiteCookies[selectedSite] || '');
     setCookieSavedNotice('');
   }, [selectedSite, perSiteCookies]);
+
+  const fetchMuse2Status = async () => {
+    setLoadingMuse2(true);
+    try {
+      const res = await fetch('/api/muse2api/status');
+      if (res.ok) {
+        const data = await res.json();
+        setMuse2Status(data);
+      }
+    } catch {
+      // ignore network error
+    } finally {
+      setLoadingMuse2(false);
+    }
+  };
 
   const fetchCapabilities = async () => {
     setLoadingCaps(true);
@@ -76,6 +127,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   useEffect(() => {
     void fetchCapabilities();
+    void fetchMuse2Status();
   }, []);
 
   const currentSiteMeta = COOKIE_SITES.find((s) => s.id === selectedSite) || COOKIE_SITES[0];
@@ -172,7 +224,125 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       configured: true,
       modelName: capabilities?.aiProviders.muse?.model || 'Edison Bridge',
     },
+    {
+      id: 'muse2api',
+      title: 'Muse2API (Tự host / Tunnel)',
+      subtitle: 'Gọi trực tiếp muse-spark, muse-image & muse-video qua tài khoản muse.ai',
+      envVar: 'MUSE2API_BASE_URL + KEY',
+      configured: Boolean(capabilities?.aiProviders.muse2api?.configured),
+      modelName: capabilities?.aiProviders.muse2api?.model || 'muse-spark / image / video',
+    },
   ];
+
+  const handleMuse2Process = async (action: 'start' | 'stop') => {
+    setBusyMuse2Action(action);
+    setMuse2Error('');
+    setMuse2Notice('');
+    try {
+      const res = await fetch(`/api/muse2api/process/${action}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setMuse2Error(data.message || `Không thể ${action === 'start' ? 'khởi chạy' : 'dừng'} Muse2API.`);
+      } else {
+        setMuse2Notice(data.message || 'Thành công.');
+      }
+      await fetchMuse2Status();
+      await fetchCapabilities();
+    } catch (err: any) {
+      setMuse2Error(err?.message || 'Lỗi điều khiển tiến trình Muse2API.');
+    } finally {
+      setBusyMuse2Action('');
+    }
+  };
+
+  const handleAddMuse2Account = async (rawCookieInput: string, labelInput?: string) => {
+    const trimmed = rawCookieInput.trim();
+    if (!trimmed) {
+      setMuse2Error('Vui lòng dán Cookie muse.ai (hatch_sess, hatch_gw, hatch_vml) trước khi đẩy.');
+      return;
+    }
+    setBusyMuse2Action('add');
+    setMuse2Error('');
+    setMuse2Notice('');
+    try {
+      const res = await fetch('/api/muse2api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          label: (labelInput || museAccLabel || 'Muse Account').trim(),
+          cookieHeader: trimmed,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      setMuseAccCookie('');
+      setMuse2Notice(
+        data.warning
+          ? `Đã thêm tài khoản nhưng cần chú ý: ${data.warning}`
+          : `Đã nạp ${data.count || 1} tài khoản muse.ai vào Muse2API thành công.`
+      );
+      await fetchMuse2Status();
+      await fetchCapabilities();
+    } catch (err: any) {
+      setMuse2Error(err?.message || 'Không thể thêm cookie vào Muse2API.');
+    } finally {
+      setBusyMuse2Action('');
+    }
+  };
+
+  const handleMuse2AccountAction = async (
+    accountId: string,
+    action: 'test' | 'keepalive' | 'quota' | 'toggle' | 'delete',
+    currentEnabled?: boolean
+  ) => {
+    setBusyMuse2Action(`${action}:${accountId}`);
+    setMuse2Error('');
+    setMuse2Notice('');
+    try {
+      let res: Response;
+      if (action === 'delete') {
+        res = await fetch(`/api/muse2api/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' });
+      } else if (action === 'toggle') {
+        res = await fetch(`/api/muse2api/accounts/${encodeURIComponent(accountId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !currentEnabled }),
+        });
+      } else {
+        res = await fetch(`/api/muse2api/accounts/${encodeURIComponent(accountId)}/${action}`, { method: 'POST' });
+      }
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || data.message || `Thao tác ${action} thất bại.`);
+      }
+      setMuse2Notice(data.message || `Đã thực hiện ${action} thành công.`);
+      await fetchMuse2Status();
+      await fetchCapabilities();
+    } catch (err: any) {
+      setMuse2Error(err?.message || 'Thao tác tài khoản Muse2API thất bại.');
+    } finally {
+      setBusyMuse2Action('');
+    }
+  };
+
+  const handleMuse2KeepaliveAll = async () => {
+    setBusyMuse2Action('keepalive_all');
+    setMuse2Error('');
+    setMuse2Notice('');
+    try {
+      const res = await fetch('/api/muse2api/accounts/keepalive', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setMuse2Notice(`Đã gia hạn đồng loạt ${data.refreshed ?? data.total ?? ''} tài khoản Muse.ai.`);
+      await fetchMuse2Status();
+    } catch (err: any) {
+      setMuse2Error(err?.message || 'Gia hạn đồng loạt thất bại.');
+    } finally {
+      setBusyMuse2Action('');
+    }
+  };
 
   const brollCards: {
     id: BrollSourceId;
@@ -415,7 +585,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {aiCards.map((card) => {
             const isActive = studioDefaults.aiProvider === card.id;
             return (
@@ -441,7 +611,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                         : 'text-amber-600 dark:text-amber-400'
                     }`}
                   >
-                    {card.configured ? 'Đã sẵn sàng' : 'Chưa đặt biến'}
+                    {card.configured ? 'Đã sẵn sàng' : 'Chưa sẵn sàng'}
                   </span>
                 </div>
                 <p className="text-xs text-slate-600 dark:text-teal-100/75">{card.subtitle}</p>
@@ -472,8 +642,309 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         )}
 
         <p className="text-xs text-slate-500 dark:text-teal-200/70 leading-relaxed">
-          Bảo mật khóa API: Các khóa (<code className="font-mono">GEMINI_API_KEY</code>, <code className="font-mono">OPENAI_API_KEY</code>, <code className="font-mono">META_API_KEY</code>) được ẩn và đọc an toàn phía máy chủ từ <strong>Settings &gt; Secrets</strong> hoặc tệp <code className="font-mono">.env</code> trên máy tính, không lộ trên trình duyệt. Riêng <strong>Muse AI (Edison)</strong> kết nối trực tiếp qua cầu nối <code className="font-mono">/api/edison/*</code> và không yêu cầu API key.
+          Bảo mật khóa API: Các khóa (<code className="font-mono">GEMINI_API_KEY</code>, <code className="font-mono">OPENAI_API_KEY</code>, <code className="font-mono">META_API_KEY</code>, <code className="font-mono">MUSE2API_KEY</code>) được đọc an toàn phía máy chủ từ <strong>Settings &gt; Secrets</strong> hoặc tệp <code className="font-mono">.env</code> / <code className="font-mono">muse2api/.env</code>. Riêng <strong>Muse AI (Edison)</strong> kết nối trực tiếp qua cầu nối <code className="font-mono">/api/edison/*</code> và không yêu cầu API key.
         </p>
+      </section>
+
+      {/* SECTION 2B: Muse2API Service & Account Pool */}
+      <section className="bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <Server className="w-4 h-4 text-[#003B3E] dark:text-[#1BA8AD]" />
+            <div>
+              <h2 className="font-display text-sm font-semibold text-slate-900 dark:text-white">
+                Dịch vụ Muse2API & Quản lý Pool tài khoản muse.ai
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-teal-200/70">
+                Biến tài khoản web <code className="font-mono">muse.ai</code> thành API OpenAI tương thích (<code className="font-mono">muse-spark</code>, <code className="font-mono">muse-image</code>, <code className="font-mono">muse-video</code>).
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {muse2Status?.localRuntime?.chromiumAvailable && muse2Status?.localRuntime?.uvicornInstalled && (
+              muse2Status.localRuntime.processRunning ? (
+                <button
+                  type="button"
+                  disabled={busyMuse2Action === 'stop'}
+                  onClick={() => void handleMuse2Process('stop')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-900/60 rounded-lg cursor-pointer"
+                >
+                  <Square className="w-3.5 h-3.5" />
+                  <span>Dừng Muse2API nội bộ</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busyMuse2Action === 'start'}
+                  onClick={() => void handleMuse2Process('start')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] rounded-lg cursor-pointer"
+                >
+                  {busyMuse2Action === 'start' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                  <span>Khởi chạy Muse2API nội bộ</span>
+                </button>
+              )
+            )}
+            <button
+              type="button"
+              onClick={() => void fetchMuse2Status()}
+              disabled={loadingMuse2}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-teal-100 bg-slate-100 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg hover:bg-slate-200/70 dark:hover:bg-[#002935] transition-colors cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingMuse2 ? 'animate-spin' : ''}`} />
+              <span>Làm mới trạng thái</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Status Metrics Strip */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="p-3 rounded-xl bg-slate-50/70 dark:bg-[#000A10]/60 border border-slate-200 dark:border-[#00464A] space-y-1">
+            <div className="text-[11px] text-slate-500 dark:text-teal-200/70">Trạng thái kết nối</div>
+            <div className="flex items-center gap-1.5 text-xs font-semibold">
+              <Activity
+                className={`w-3.5 h-3.5 ${
+                  muse2Status?.ready
+                    ? 'text-emerald-500'
+                    : muse2Status?.reachable
+                    ? 'text-amber-500'
+                    : 'text-slate-400'
+                }`}
+              />
+              <span
+                className={
+                  muse2Status?.ready
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : muse2Status?.reachable
+                    ? 'text-amber-600 dark:text-amber-400'
+                    : 'text-slate-600 dark:text-slate-300'
+                }
+              >
+                {muse2Status?.status === 'ready'
+                  ? 'Sẵn sàng hoạt động'
+                  : muse2Status?.status === 'no_account'
+                  ? 'Chưa có Cookie tài khoản'
+                  : muse2Status?.status === 'auth_error'
+                  ? 'Sai / Thiếu MUSE2API_KEY'
+                  : 'Chưa kết nối tới dịch vụ'}
+              </span>
+            </div>
+          </div>
+
+          <div className="p-3 rounded-xl bg-slate-50/70 dark:bg-[#000A10]/60 border border-slate-200 dark:border-[#00464A] space-y-1">
+            <div className="text-[11px] text-slate-500 dark:text-teal-200/70">Địa chỉ máy chủ đích</div>
+            <div className="text-xs font-mono text-slate-900 dark:text-white truncate">
+              {muse2Status?.baseUrl || 'http://127.0.0.1:18610'}
+            </div>
+          </div>
+
+          <div className="p-3 rounded-xl bg-slate-50/70 dark:bg-[#000A10]/60 border border-slate-200 dark:border-[#00464A] space-y-1">
+            <div className="text-[11px] text-slate-500 dark:text-teal-200/70">Tài khoản muse.ai</div>
+            <div className="text-xs font-mono tabular-nums text-slate-900 dark:text-white">
+              {muse2Status?.healthyAccounts ?? 0}/{muse2Status?.accountsCount ?? 0} khỏe · {muse2Status?.mediaCount ?? 0} tệp media
+            </div>
+          </div>
+
+          <div className="p-3 rounded-xl bg-slate-50/70 dark:bg-[#000A10]/60 border border-slate-200 dark:border-[#00464A] space-y-1">
+            <div className="text-[11px] text-slate-500 dark:text-teal-200/70">MUSE2API_KEY (Secrets / .env)</div>
+            <div className="text-xs font-mono text-slate-900 dark:text-white truncate">
+              {muse2Status?.hasKey
+                ? `${muse2Status.maskedKey} (${muse2Status.keySource === 'env' ? 'Secrets/.env' : 'muse2api/.env'})`
+                : 'Chưa đặt biến MUSE2API_KEY'}
+            </div>
+          </div>
+        </div>
+
+        {/* Deployment Guide when Offline */}
+        {!muse2Status?.reachable && (
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] space-y-2 text-xs text-slate-700 dark:text-teal-100/85">
+            <div className="font-semibold text-slate-900 dark:text-white">
+              Hướng dẫn bật dịch vụ Muse2API (mã nguồn đã tích hợp sẵn trong thư mục <code className="font-mono">/muse2api</code>):
+            </div>
+            <ul className="list-disc pl-5 space-y-1 text-[11px] leading-relaxed">
+              <li>
+                <strong>Cách 1 · Docker (Khuyên dùng):</strong> Mở thư mục <code className="font-mono">muse2api/</code> trên máy chủ hoặc PC của bạn và chạy{' '}
+                <code className="font-mono bg-slate-200/70 dark:bg-[#002935] px-1.5 py-0.5 rounded">docker compose up -d --build</code> (cổng mặc định <code className="font-mono">18610</code>, tự tạo key <code className="font-mono">m2a_...</code> trong <code className="font-mono">muse2api/.env</code>).
+              </li>
+              <li>
+                <strong>Cách 2 · Python cục bộ (khi chạy GaConPro trên máy cá nhân có Chrome/Chromium):</strong>{' '}
+                <code className="font-mono bg-slate-200/70 dark:bg-[#002935] px-1.5 py-0.5 rounded">cd muse2api && pip install -r requirements.txt && python -m uvicorn app:app --host 127.0.0.1 --port 18610</code>.
+              </li>
+              <li>
+                <strong>Cách 3 · Kết nối từ xa qua Tunnel:</strong> Nếu chạy GaConPro trên đám mây, mở Cloudflare Tunnel / ngrok trỏ tới cổng <code className="font-mono">18610</code> rồi đặt <code className="font-mono">MUSE2API_BASE_URL</code> và <code className="font-mono">MUSE2API_KEY</code> trong <strong>Settings &gt; Secrets</strong>.
+              </li>
+            </ul>
+          </div>
+        )}
+
+        {/* Quick Cookie Push & Add Account Form when Reachable */}
+        {muse2Status?.reachable && muse2Status.status !== 'auth_error' && (
+          <div className="space-y-3 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
+                <UserPlus className="w-3.5 h-3.5 text-[#003B3E] dark:text-[#1BA8AD]" />
+                <span>Nạp Cookie phiên đăng nhập muse.ai (hỗ trợ Header, Cookie-Editor JSON, Netscape .txt)</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {Boolean(perSiteCookies.muse?.trim()) && (
+                  <button
+                    type="button"
+                    disabled={busyMuse2Action === 'add'}
+                    onClick={() => void handleAddMuse2Account(perSiteCookies.muse, 'Muse Cookie từ Settings')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] rounded-lg cursor-pointer disabled:opacity-50"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Đẩy Cookie muse.ai ở Mục 1 sang Muse2API</span>
+                  </button>
+                )}
+                {(muse2Status.accountsCount || 0) > 0 && (
+                  <button
+                    type="button"
+                    disabled={busyMuse2Action === 'keepalive_all'}
+                    onClick={() => void handleMuse2KeepaliveAll()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-teal-100 bg-slate-100 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg hover:bg-slate-200/70 dark:hover:bg-[#002935] cursor-pointer disabled:opacity-50"
+                  >
+                    {busyMuse2Action === 'keepalive_all' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                    <span>Gia hạn tất cả</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5">
+              <input
+                type="text"
+                value={museAccLabel}
+                onChange={(e) => setMuseAccLabel(e.target.value)}
+                placeholder="Nhãn tài khoản (VD: Acc chính)"
+                className="lg:col-span-3 h-9 px-3 text-xs bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+              />
+              <input
+                type="text"
+                value={museAccCookie}
+                onChange={(e) => setMuseAccCookie(e.target.value)}
+                placeholder="Dán Cookie muse.ai (hatch_sess=...; hatch_gw=...; hatch_vml=...) hoặc JSON Cookie-Editor..."
+                className="lg:col-span-7 h-9 px-3 text-xs font-mono bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+              />
+              <button
+                type="button"
+                disabled={busyMuse2Action === 'add' || !museAccCookie.trim()}
+                onClick={() => void handleAddMuse2Account(museAccCookie, museAccLabel)}
+                className="lg:col-span-2 h-9 px-3 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                {busyMuse2Action === 'add' ? 'Đang nạp...' : '+ Thêm tài khoản'}
+              </button>
+            </div>
+
+            {/* Account Pool List */}
+            {Array.isArray(muse2Status.accounts) && muse2Status.accounts.length > 0 && (
+              <div className="divide-y divide-slate-200 dark:divide-[#00464A]/80 border border-slate-200 dark:border-[#00464A] rounded-xl overflow-hidden">
+                {muse2Status.accounts.map((acc: any) => {
+                  const quota = acc.quota || null;
+                  return (
+                    <div
+                      key={acc.id}
+                      className="p-3 bg-slate-50/50 dark:bg-[#000A10]/40 flex flex-wrap items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="min-w-0 space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-slate-900 dark:text-white">
+                            {acc.label || acc.id}
+                          </span>
+                          <span
+                            className={`text-[11px] font-medium ${
+                              !acc.enabled
+                                ? 'text-slate-400'
+                                : acc.ok === true
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : acc.ok === false
+                                ? 'text-rose-600 dark:text-rose-400'
+                                : 'text-amber-600 dark:text-amber-400'
+                            }`}
+                          >
+                            {!acc.enabled ? 'Đang tắt' : acc.ok === true ? 'Hoạt động' : acc.ok === false ? 'Lỗi phiên' : 'Chưa kiểm tra'}
+                          </span>
+                          <span className="font-mono text-[11px] text-slate-500 dark:text-teal-200/65">
+                            {acc.cookie_count || 0} cookies
+                          </span>
+                        </div>
+                        {acc.last_error && (
+                          <div className="text-[11px] text-slate-500 dark:text-teal-200/75 truncate max-w-xl">
+                            {acc.last_error}
+                          </div>
+                        )}
+                        {quota && (
+                          <div className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300">
+                            Quota: {quota.summary || JSON.stringify(quota).slice(0, 120)}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          disabled={Boolean(busyMuse2Action)}
+                          onClick={() => void handleMuse2AccountAction(acc.id, 'test')}
+                          className="px-2.5 py-1 text-[11px] font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded hover:bg-slate-100 dark:hover:bg-[#002935] cursor-pointer"
+                        >
+                          {busyMuse2Action === `test:${acc.id}` ? 'Đang thử...' : 'Test phiên'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(busyMuse2Action)}
+                          onClick={() => void handleMuse2AccountAction(acc.id, 'keepalive')}
+                          className="px-2.5 py-1 text-[11px] font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded hover:bg-slate-100 dark:hover:bg-[#002935] cursor-pointer"
+                        >
+                          Gia hạn
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(busyMuse2Action)}
+                          onClick={() => void handleMuse2AccountAction(acc.id, 'quota')}
+                          className="px-2.5 py-1 text-[11px] font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded hover:bg-slate-100 dark:hover:bg-[#002935] cursor-pointer"
+                        >
+                          Hạn mức
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(busyMuse2Action)}
+                          onClick={() => void handleMuse2AccountAction(acc.id, 'toggle', acc.enabled !== false)}
+                          title={acc.enabled !== false ? 'Tạm tắt tài khoản' : 'Bật tài khoản'}
+                          className="p-1.5 bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded hover:bg-slate-100 dark:hover:bg-[#002935] cursor-pointer"
+                        >
+                          <Power className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(busyMuse2Action)}
+                          onClick={() => void handleMuse2AccountAction(acc.id, 'delete')}
+                          title="Xóa tài khoản"
+                          className="p-1.5 text-rose-600 dark:text-rose-400 bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded hover:bg-rose-50 dark:hover:bg-rose-950/35 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {muse2Notice && (
+          <div className="flex items-start gap-2 px-3.5 py-2.5 rounded-lg border bg-emerald-50 dark:bg-emerald-950/35 border-emerald-200 dark:border-emerald-900/60 text-xs text-emerald-700 dark:text-emerald-300">
+            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{muse2Notice}</span>
+          </div>
+        )}
+
+        {(muse2Error || (muse2Status?.error && muse2Status.reachable)) && (
+          <div className="flex items-start gap-2 px-3.5 py-2.5 rounded-lg border bg-amber-50 dark:bg-amber-950/35 border-amber-200 dark:border-amber-900/60 text-xs text-amber-800 dark:text-amber-200">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{muse2Error || muse2Status?.error}</span>
+          </div>
+        )}
       </section>
 
       {/* SECTION 3: Kho Video nền miễn phí (B-roll) */}
@@ -648,6 +1119,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <option value="remix">Remix cắt ghép video nguồn + AI voice</option>
               <option value="storyboard_motion">Ảnh chuyển động Ken Burns (Nhanh)</option>
               <option value="gemini_omni">Gemini Omni Flash (gemini-omni-1.2-flash · Cần key trả phí)</option>
+              <option value="muse2api_video">Muse2API Video (muse-video · Tự host)</option>
               <option value="muse_edison">Muse AI (Edison Bridge · qua Tunnel)</option>
             </select>
           </label>

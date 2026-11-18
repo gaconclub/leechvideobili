@@ -245,7 +245,7 @@ export const OUTPUT_FORMATS: { value: OutputFormat; label: string; desc: string 
   { value: 'm4a', label: 'M4A', desc: 'Chỉ âm thanh · AAC gốc' },
 ];
 
-export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse_edison';
+export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse_edison' | 'muse2api_video';
 export type DerivativeStylePreset = 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
 export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
@@ -253,7 +253,7 @@ export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploade
 export type DerivativeAspectRatio = '9:16' | '16:9';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
 
-export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse';
+export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse' | 'muse2api';
 export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
 
 export type CookieSiteId =
@@ -265,6 +265,7 @@ export type CookieSiteId =
   | 'xiaohongshu'
   | 'weibo'
   | 'xigua'
+  | 'muse'
   | 'other';
 
 export type PerSiteCookies = Record<CookieSiteId, string>;
@@ -316,9 +317,21 @@ export interface ServerCapabilitiesStatus {
     openai: { configured: boolean; model: string; source: 'env' | 'none' };
     meta: { configured: boolean; model: string; baseUrl: string; source: 'env' | 'none' };
     muse: { configured: boolean; model: string; baseUrl: string; source: 'env' | 'none' | 'bridge' };
+    muse2api: {
+      configured: boolean;
+      reachable: boolean;
+      status: 'ready' | 'no_account' | 'auth_error' | 'offline';
+      model: string;
+      baseUrl: string;
+      accountsCount: number;
+      healthyAccounts: number;
+      source: 'env' | 'local_dotenv' | 'none';
+    };
   };
   paidModels: {
     omniVideoModel: string;
+    muse2apiImageModel: string;
+    muse2apiVideoModel: string;
     imageModel: string;
     imageProModel: string;
     musicClipModel: string;

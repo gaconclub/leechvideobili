@@ -77,6 +77,14 @@ export const COOKIE_SITES: CookieSiteDescriptor[] = [
     placeholder: '# Netscape cookies.txt, JSON hoặc Cookie header của ixigua.com...',
   },
   {
+    id: 'muse',
+    label: 'Muse AI (muse.ai)',
+    domain: '.muse.ai',
+    domainsMatch: ['muse.ai'],
+    description: 'Cookie phiên muse.ai (hatch_sess, hatch_gw, hatch_vml) để đẩy sang dịch vụ Muse2API sinh ảnh, video và kịch bản.',
+    placeholder: '# Dán Cookie header (hatch_sess=...; hatch_gw=...; hatch_vml=...), JSON từ Cookie-Editor hoặc Netscape cookies.txt của muse.ai...',
+  },
+  {
     id: 'other',
     label: 'Trang khác (FB / IG / X...)',
     domain: '',
@@ -95,6 +103,7 @@ export const EMPTY_PER_SITE_COOKIES: PerSiteCookies = {
   xiaohongshu: '',
   weibo: '',
   xigua: '',
+  muse: '',
   other: '',
 };
 
@@ -178,7 +187,7 @@ function rawCookieBlockToNetscapeLines(raw: string, fallbackDomain: string): str
 export function buildCombinedCookiesString(perSite: PerSiteCookies): string {
   const lines: string[] = [];
   for (const site of COOKIE_SITES) {
-    if (site.id === 'bilibili') continue;
+    if (site.id === 'bilibili' || site.id === 'muse') continue;
     const raw = perSite[site.id];
     if (!raw?.trim()) continue;
     const siteLines = rawCookieBlockToNetscapeLines(raw, site.domain);
@@ -202,6 +211,7 @@ export function migrateLegacyCookies(legacyYtCookies: string, legacySessdata: st
     xiaohongshu: [],
     weibo: [],
     xigua: [],
+    muse: [],
     other: [],
   };
 

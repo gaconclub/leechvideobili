@@ -5,15 +5,21 @@ import os from 'os';
 import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { VideoPlatform } from './trending';
+import {
+  chatWithMuse2ApiSpark,
+  generateImageViaMuse2Api,
+  generateVideoBufferViaMuse2Api,
+  getMuse2ApiStatus,
+} from './muse2api';
 
-export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni';
+export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse_edison' | 'muse2api_video';
 export type DerivativeStylePreset = 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
 export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
 export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploaded';
 export type DerivativeAspectRatio = '9:16' | '16:9';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
-export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse';
+export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse' | 'muse2api';
 export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
 
 export interface DerivativeSourceInput {
@@ -724,6 +730,149 @@ const STYLE_LABELS: Record<DerivativeStylePreset, string> = {
   tips_tutorial: 'Chắt lọc mẹo hay & hướng dẫn thực hành dễ áp dụng',
 };
 
+function sanitizeJsonControlChars(input: string): string {
+  const chunks: string[] = [];
+  let spanStart = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const code = input.charCodeAt(i);
+    if (!inString) {
+      if (code === 34) inString = true; // '"'
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (code === 92) {
+      // '\\'
+      escaped = true;
+      continue;
+    }
+    if (code === 34) {
+      inString = false;
+      continue;
+    }
+    if (code < 32) {
+      if (i > spanStart) chunks.push(input.slice(spanStart, i));
+      if (code === 10) chunks.push('\\n');
+      else if (code === 13) chunks.push('\\r');
+      else if (code === 9) chunks.push('\\t');
+      else chunks.push(' ');
+      spanStart = i + 1;
+    }
+  }
+
+  if (chunks.length === 0) return input;
+  if (spanStart < input.length) chunks.push(input.slice(spanStart));
+  return chunks.join('');
+}
+
+function closeContainerStack(stack: ('{' | '[')[]): string {
+  let suffix = '';
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    suffix += stack[i] === '{' ? '}' : ']';
+  }
+  return suffix;
+}
+
+function trimTrailingBackslashes(str: string): string {
+  let count = 0;
+  for (let i = str.length - 1; i >= 0 && str[i] === '\\'; i -= 1) {
+    count += 1;
+  }
+  return count % 2 === 1 ? str.slice(0, -1) : str;
+}
+
+export function parseAiBlueprintJsonSafe(rawText: string): any {
+  const stripped = String(rawText || '')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+
+  const firstBrace = stripped.indexOf('{');
+  const candidateBase = firstBrace >= 0 ? stripped.slice(firstBrace) : stripped;
+  const sanitized = sanitizeJsonControlChars(candidateBase);
+
+  try {
+    return JSON.parse(sanitized);
+  } catch (initialErr) {
+    // Walk structure to track open containers, unclosed trailing string, and clean comma boundaries
+    const stack: ('{' | '[')[] = [];
+    const safeCommaCuts: { cutPos: number; stack: ('{' | '[')[] }[] = [];
+    let inString = false;
+    let escaped = false;
+    let stringStart = -1;
+
+    for (let i = 0; i < sanitized.length; i += 1) {
+      const ch = sanitized[i];
+      if (!inString) {
+        if (ch === '"') {
+          inString = true;
+          stringStart = i;
+        } else if (ch === '{' || ch === '[') {
+          stack.push(ch);
+        } else if (ch === '}' || ch === ']') {
+          if (stack.length > 0) stack.pop();
+        } else if (ch === ',') {
+          safeCommaCuts.push({ cutPos: i, stack: [...stack] });
+        }
+        continue;
+      }
+
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        stringStart = -1;
+      }
+    }
+
+    // Strategy 1: If truncated mid-string (e.g. runaway repetition loop on one field), cap tail and close containers
+    if (inString && stringStart >= 0 && stack.length > 0) {
+      let head = sanitized;
+      const tailLen = sanitized.length - stringStart - 1;
+      if (tailLen > 750) {
+        let cutAt = stringStart + 650;
+        const spaceIdx = sanitized.lastIndexOf(' ', cutAt);
+        if (spaceIdx > stringStart + 350) {
+          cutAt = spaceIdx;
+        }
+        head = sanitized.slice(0, cutAt);
+      }
+      head = trimTrailingBackslashes(head);
+      const closedCandidate = `${head}"${closeContainerStack(stack)}`;
+      try {
+        return JSON.parse(closedCandidate);
+      } catch {
+        // Fall through to Strategy 2
+      }
+    }
+
+    // Strategy 2: Roll back to the most recent clean comma separator and close open containers
+    for (let idx = safeCommaCuts.length - 1; idx >= 0 && idx >= safeCommaCuts.length - 25; idx -= 1) {
+      const cut = safeCommaCuts[idx];
+      const repaired = `${sanitized.slice(0, cut.cutPos)}${closeContainerStack(cut.stack)}`;
+      try {
+        return JSON.parse(repaired);
+      } catch {
+        // Keep backing up to an earlier valid cut boundary
+      }
+    }
+
+    throw initialErr;
+  }
+}
+
 function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta') {
   if (provider === 'openai') {
     return {
@@ -826,8 +975,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh tá
   }
   const data = (await res.json()) as any;
   const rawContent = String(data?.choices?.[0]?.message?.content || '{}').trim();
-  const cleanJson = rawContent.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
-  return JSON.parse(cleanJson);
+  return parseAiBlueprintJsonSafe(rawContent);
 }
 
 export async function testAiProviderConnection(provider: AiProviderId): Promise<{ ok: boolean; message: string; model: string }> {
@@ -837,6 +985,45 @@ export async function testAiProviderConnection(provider: AiProviderId): Promise<
       model: 'Edison Bridge',
       message: 'Muse AI (Edison Bridge) hoạt động qua /api/edison/* và không cần API key.',
     };
+  }
+
+  if (provider === 'muse2api') {
+    const st = await getMuse2ApiStatus();
+    if (!st.reachable) {
+      return {
+        ok: false,
+        model: 'muse-spark',
+        message: st.error || `Không kết nối được tới dịch vụ Muse2API (${st.baseUrl}).`,
+      };
+    }
+    if (st.status === 'auth_error') {
+      return {
+        ok: false,
+        model: 'muse-spark',
+        message: st.error || 'Sai MUSE2API_KEY hoặc chưa cấu hình trong Settings > Secrets / .env.',
+      };
+    }
+    if (!st.ready) {
+      return {
+        ok: false,
+        model: 'muse-spark',
+        message: 'Muse2API đã kết nối nhưng chưa có tài khoản muse.ai hoạt động. Hãy thêm Cookie muse.ai ở mục Muse2API.',
+      };
+    }
+    try {
+      const reply = await chatWithMuse2ApiSpark([{ role: 'user', content: 'Trả lời đúng 1 cụm từ: Sẵn sàng' }], 45);
+      return {
+        ok: true,
+        model: 'muse-spark',
+        message: `Kết nối Muse2API (muse-spark · ${st.healthyAccounts || st.accountsCount} tài khoản) thành công: "${reply.slice(0, 40)}"`,
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        model: 'muse-spark',
+        message: err?.message || 'Muse2API đã bật nhưng gọi muse-spark thất bại.',
+      };
+    }
   }
 
   if (provider === 'gemini') {
@@ -924,7 +1111,7 @@ export async function learnVideosAndCreateBlueprint(params: {
   }
 
   const provider: AiProviderId =
-    params.aiProvider === 'openai' || params.aiProvider === 'meta'
+    params.aiProvider === 'openai' || params.aiProvider === 'meta' || params.aiProvider === 'muse2api'
       ? params.aiProvider
       : 'gemini';
 
@@ -1036,7 +1223,53 @@ ${dossierLines.join('\n\n')}`;
     let parsed: any = {};
     let usedModel = geminiModel;
 
-    if (provider === 'openai' || provider === 'meta') {
+    if (provider === 'muse2api') {
+      const st = await getMuse2ApiStatus();
+      if (!st.reachable || !st.ready) {
+        throw new Error(
+          st.error ||
+            'Muse2API chưa sẵn sàng hoặc chưa có tài khoản muse.ai hợp lệ. Hãy kiểm tra phần Quản lý Muse2API trong Thiết lập.'
+        );
+      }
+      usedModel = 'muse-spark (Muse2API)';
+      const museSchemaInstruction = `
+TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU (tuyệt đối không markdown ngoài JSON, không văn bản giải thích thừa):
+{
+  "learnedSummary": "Tóm tắt 2-3 câu nội dung cốt lõi học được",
+  "keyTakeaways": ["ý 1", "ý 2", "ý 3", "ý 4"],
+  "hookFormula": "Công thức mở đầu & giữ chân",
+  "sourceKeyPoints": ["1 câu bài học video #1"],
+  "derivativeTitle": "Tiêu đề video phái sinh mới",
+  "derivativeHook": "Câu hook tối đa 12 chữ hiện 3.5s đầu",
+  "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4"],
+  "scenes": [
+    {
+      "sceneIndex": 1,
+      "durationSec": ${avgSceneDur},
+      "sourceVideoIndex": 0,
+      "sourceStartPercent": 15,
+      "onScreenText": "Chữ phụ đề ngắn tối đa 12 chữ",
+      "narration": "Lời đọc thuyết minh tự nhiên từ ${wordsMin} đến ${wordsMax} chữ khớp với ${avgSceneDur} giây",
+      "visualNote": "Mô tả bối cảnh hình ảnh chi tiết",
+      "brollKeywordEn": "2-4 English keywords for stock video lookup"
+    }
+  ]
+}
+BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh tách biệt.`;
+
+      const rawMuseReply = await chatWithMuse2ApiSpark([
+        {
+          role: 'system',
+          content:
+            'Bạn là Đạo diễn sáng tạo nội dung video chuyên nghiệp. Luôn phản hồi DUY NHẤT 1 đối tượng JSON thuần túy hợp lệ đúng schema, không lặp chữ vô hạn, không viết giải thích bên ngoài JSON.',
+        },
+        {
+          role: 'user',
+          content: `${promptText}\n\n${museSchemaInstruction}`,
+        },
+      ]);
+      parsed = parseAiBlueprintJsonSafe(rawMuseReply);
+    } else if (provider === 'openai' || provider === 'meta') {
       usedModel = resolveOpenAiCompatibleConfig(provider).model;
       parsed = await generateBlueprintViaOpenAiCompatible({
         provider,
@@ -1054,20 +1287,21 @@ ${dossierLines.join('\n\n')}`;
         : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
 
       const compactParts = parts.filter((p, idx) => p.text || idx < 2);
-      let response: any = null;
+      let parsedFromGemini: any = null;
       let lastGeminiErr: any = null;
 
       for (const candidateModel of candidateModels) {
         const activeParts = candidateModel === 'gemini-3.1-flash-lite' ? compactParts : parts;
         try {
-          response = await retryWithGeminiBackoff(
+          const response = await retryWithGeminiBackoff(
             () =>
               ai.models.generateContent({
                 model: candidateModel,
                 contents: { parts: activeParts },
                 config: {
+                  maxOutputTokens: 16384,
                   systemInstruction:
-                    'Luôn phản hồi bằng JSON thuần túy đúng schema, nội dung sắc bén, giàu giá trị thông tin, đúng ngôn ngữ yêu cầu, đủ độ dài và có mô tả hình ảnh + từ khóa tiếng Anh chuẩn.',
+                    'Luôn phản hồi bằng JSON thuần túy đúng schema, súc tích, giàu giá trị thông tin, đúng ngôn ngữ yêu cầu, đủ độ dài hợp lý và có mô tả hình ảnh + từ khóa tiếng Anh chuẩn. Tuyệt đối KHÔNG lặp lại từ/cụm từ hoặc kéo dài bất kỳ chuỗi JSON nào quá 150 chữ.',
                   responseMimeType: 'application/json',
                   responseSchema: {
                     type: Type.OBJECT,
@@ -1126,21 +1360,28 @@ ${dossierLines.join('\n\n')}`;
               }),
             [1400, 3000]
           );
+          const rawText = (response?.text ?? '{}').trim();
+          const candidateParsed = parseAiBlueprintJsonSafe(rawText);
+          const candidateScenes = Array.isArray(candidateParsed?.scenes) ? candidateParsed.scenes : [];
+          if (candidateScenes.length === 0 && candidateModel !== candidateModels[candidateModels.length - 1]) {
+            lastGeminiErr = new Error('AI trả về kịch bản chưa hoàn chỉnh (thiếu danh sách phân cảnh).');
+            continue;
+          }
+          parsedFromGemini = candidateParsed;
           usedModel = candidateModel;
           break;
         } catch (err: any) {
           lastGeminiErr = err;
-          if (!shouldFallbackGeminiModel(err)) {
+          if (!shouldFallbackGeminiModel(err) && !(err instanceof SyntaxError)) {
             throw err;
           }
         }
       }
 
-      if (response) {
-        const rawText = (response?.text ?? '{}').trim();
-        parsed = JSON.parse(rawText);
+      if (parsedFromGemini) {
+        parsed = parsedFromGemini;
       } else {
-        // Automatic failover to configured OpenAI or Meta if all Gemini models are 503 unavailable
+        // Automatic failover to configured OpenAI or Meta if all Gemini models failed or returned broken JSON
         const altProvider: 'openai' | 'meta' | null = process.env.OPENAI_API_KEY?.trim()
           ? 'openai'
           : process.env.META_API_KEY?.trim()
@@ -1157,6 +1398,10 @@ ${dossierLines.join('\n\n')}`;
             wordsMin,
             wordsMax,
           });
+        } else if (lastGeminiErr instanceof SyntaxError) {
+          throw new Error(
+            'AI gặp sự cố ngắt quãng dữ liệu JSON khi tạo kịch bản dài. Vui lòng bấm "Thử lại ngay" hoặc giảm nhẹ thời lượng mục tiêu.'
+          );
         } else {
           throw lastGeminiErr;
         }
@@ -1238,11 +1483,28 @@ export async function generateStudioImage(params: {
   prompt: string;
   aspectRatio?: '1:1' | '9:16' | '16:9';
   quality?: 'standard' | 'pro';
+  engine?: 'gemini' | 'muse2api';
   characterRefs?: { dataUrl: string; name?: string }[];
 }): Promise<{ dataUrl: string; model: string }> {
+  const aspectRatio = params.aspectRatio || (params.mode === 'character' ? '1:1' : '16:9');
+
+  if (params.engine === 'muse2api') {
+    const finalMusePrompt =
+      params.mode === 'character'
+        ? `Create a clean, consistent studio character portrait sheet suitable for reusing across video scenes: ${params.prompt}. High clarity, balanced lighting, no overlaid watermarks or UI text.`
+        : params.characterRefs && params.characterRefs.length > 0
+        ? `Create a cinematic storyboard scene keeping the exact character appearance from the attached reference image (${params.characterRefs[0]?.name || 'character'}). Scene description: ${params.prompt}. No overlaid subtitles or watermarks.`
+        : `Create a crisp, cinematic storyboard visual scene: ${params.prompt}. High aesthetic composition, no overlaid subtitles or watermarks.`;
+    const res = await generateImageViaMuse2Api({
+      prompt: finalMusePrompt,
+      aspectRatio,
+      referenceImageDataUrl: params.characterRefs?.[0]?.dataUrl,
+    });
+    return { dataUrl: res.dataUrl, model: 'muse-image (Muse2API)' };
+  }
+
   const ai = getGeminiClient();
   const model = params.quality === 'pro' ? 'gemini-nano-banana-2.1' : 'gemini-3.1-flash-lite-image';
-  const aspectRatio = params.aspectRatio || (params.mode === 'character' ? '1:1' : '16:9');
 
   const parts: any[] = [];
   if (Array.isArray(params.characterRefs)) {
@@ -1312,11 +1574,47 @@ export async function generateSceneVideoWithOmniFlash(params: {
   prompt: string;
   aspectRatio: DerivativeAspectRatio;
   durationSec?: number;
+  engine?: 'gemini' | 'muse2api';
   sceneImageDataUrl?: string;
   characterRefs?: { dataUrl: string; name?: string }[];
 }): Promise<{ assetId: string; previewUrl: string; durationSec: number; model: string }> {
-  const ai = getGeminiClient();
   const clampedDur = Math.max(3, Math.min(15, Math.round(params.durationSec || 8)));
+  const promptText = params.sceneImageDataUrl
+    ? `Animate this scene smoothly with natural camera motion matching the visual narrative: ${params.prompt}`
+    : `Cinematic high-definition video scene: ${params.prompt}. Smooth camera movement, cohesive lighting, no overlaid text or watermarks.`;
+
+  if (params.engine === 'muse2api') {
+    const refDataUrl = params.sceneImageDataUrl || params.characterRefs?.[0]?.dataUrl;
+    const { buffer, mimeType, ext } = await generateVideoBufferViaMuse2Api({
+      prompt: promptText,
+      aspectRatio: params.aspectRatio,
+      durationSec: Math.min(12, clampedDur),
+      referenceImageDataUrl: refDataUrl,
+    });
+
+    const assetId = `musevid_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const outPath = path.join(STUDIO_ASSETS_DIR, `${assetId}${ext}`);
+    fs.writeFileSync(outPath, buffer);
+    const probedDur = (await probeDurationSeconds(outPath, STUDIO_ASSETS_DIR)) || Math.min(12, clampedDur);
+
+    studioAssets.set(assetId, {
+      assetId,
+      filePath: outPath,
+      fileName: `${assetId}${ext}`,
+      mimeType,
+      durationSec: probedDur,
+      createdAt: Date.now(),
+    });
+
+    return {
+      assetId,
+      previewUrl: `/api/studio/assets/${assetId}`,
+      durationSec: Math.round(probedDur * 10) / 10,
+      model: 'muse-video (Muse2API)',
+    };
+  }
+
+  const ai = getGeminiClient();
   const inputParts: any[] = [];
 
   if (params.sceneImageDataUrl) {
@@ -1340,10 +1638,6 @@ export async function generateSceneVideoWithOmniFlash(params: {
       }
     }
   }
-
-  const promptText = params.sceneImageDataUrl
-    ? `Animate this scene smoothly with natural camera motion matching the visual narrative: ${params.prompt}`
-    : `Cinematic high-definition video scene: ${params.prompt}. Smooth camera movement, cohesive lighting, no overlaid text or watermarks.`;
 
   inputParts.push({ type: 'text', text: promptText });
 
@@ -2138,23 +2432,36 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     }
   }
 
-  // Generate missing Omni Flash clips if visualMode === 'gemini_omni'
-  if (visualMode === 'gemini_omni') {
+  // Generate missing AI video clips if visualMode === 'gemini_omni' or 'muse2api_video'
+  if (visualMode === 'gemini_omni' || visualMode === 'muse2api_video') {
+    const useMuseVideo = visualMode === 'muse2api_video';
     for (let i = 0; i < scenes.length; i += 1) {
       if (sceneOmniVideos.has(i)) continue;
       const sc = scenes[i];
-      job.stepLabel = `Đang tạo video cảnh ${i + 1}/${scenes.length} bằng Gemini Omni Flash...`;
+      job.stepLabel = `Đang tạo video cảnh ${i + 1}/${scenes.length} bằng ${
+        useMuseVideo ? 'Muse2API (muse-video)' : 'Gemini Omni Flash'
+      }...`;
       job.progress = 36 + Math.round(((i + 1) / scenes.length) * 20);
-      const clipRes = await generateSceneVideoWithOmniFlash({
-        prompt: `${sc.visualNote || sc.onScreenText}. ${sc.narration.slice(0, 140)}`,
-        aspectRatio: blueprint.aspectRatio,
-        durationSec: Math.min(15, Math.max(4, Math.round(sceneTargetDurations[i]))),
-        sceneImageDataUrl: sc.sceneImageDataUrl,
-        characterRefs: params.characterRefs,
-      });
-      const asset = getStudioAsset(clipRes.assetId);
-      if (asset) {
-        sceneOmniVideos.set(i, { path: asset.filePath, duration: asset.durationSec || 8 });
+      try {
+        const clipRes = await generateSceneVideoWithOmniFlash({
+          engine: useMuseVideo ? 'muse2api' : 'gemini',
+          prompt: `${sc.visualNote || sc.onScreenText}. ${sc.narration.slice(0, 140)}`,
+          aspectRatio: blueprint.aspectRatio,
+          durationSec: Math.min(useMuseVideo ? 12 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
+          sceneImageDataUrl: sc.sceneImageDataUrl,
+          characterRefs: params.characterRefs,
+        });
+        const asset = getStudioAsset(clipRes.assetId);
+        if (asset) {
+          sceneOmniVideos.set(i, { path: asset.filePath, duration: asset.durationSec || 8 });
+        }
+      } catch (clipErr: any) {
+        if (i === 0 && scenes.length === 1) {
+          throw clipErr;
+        }
+        job.warnings.push(
+          `Cảnh ${i + 1}: Không tạo được clip AI (${clipErr?.message || 'Lỗi'}), tự động chuyển sang tư liệu dự phòng.`
+        );
       }
     }
   }
