@@ -1604,6 +1604,663 @@ async function extractFacebookFallbackFromHtml(
   return null;
 }
 
+interface FbExtractedVideoEntry {
+  id: string;
+  title: string;
+  author: string;
+  pic: string;
+  duration: number;
+  pubdate: number;
+  sourceUrl: string;
+  maxHeight: number;
+}
+
+function parseFacebookCookiesList(
+  rawCookies?: string
+): { name: string; value: string; domain: string; path: string }[] {
+  const trimmed = (rawCookies || '').trim();
+  if (!trimmed) return [];
+  const out: { name: string; value: string; domain: string; path: string }[] = [];
+
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.cookies) ? parsed.cookies : [];
+      for (const item of list) {
+        const domain = String(item?.domain || '.facebook.com').toLowerCase();
+        if (domain && !domain.includes('facebook.com') && !domain.includes('fb.com')) continue;
+        const name = String(item?.name || '').trim();
+        const value = String(item?.value ?? '').trim();
+        if (name) {
+          out.push({
+            name,
+            value,
+            domain: domain.startsWith('.') ? domain : `.${domain}`,
+            path: String(item?.path || '/'),
+          });
+        }
+      }
+      if (out.length > 0) return out;
+    } catch {
+      // fall through
+    }
+  }
+
+  if (trimmed.startsWith('# Netscape') || trimmed.startsWith('# HTTP Cookie') || trimmed.includes('\t')) {
+    for (const line of trimmed.split(/\r?\n/)) {
+      const l = line.trim();
+      if (!l || l.startsWith('#')) continue;
+      const cols = l.split('\t');
+      if (cols.length >= 7) {
+        const domain = (cols[0] || '').toLowerCase();
+        if (domain.includes('facebook.com') || domain.includes('fb.com')) {
+          const name = cols[5].trim();
+          const value = cols.slice(6).join('\t').trim();
+          if (name) {
+            out.push({
+              name,
+              value,
+              domain: domain.startsWith('.') ? domain : `.${domain}`,
+              path: cols[2]?.trim() || '/',
+            });
+          }
+        }
+      }
+    }
+    if (out.length > 0) return out;
+  }
+
+  const header = trimmed.replace(/^cookie:\s*/i, '');
+  for (const part of header.split(';')) {
+    const eqIdx = part.indexOf('=');
+    if (eqIdx <= 0) continue;
+    const name = part.slice(0, eqIdx).trim();
+    const value = part.slice(eqIdx + 1).trim();
+    if (name) {
+      out.push({ name, value, domain: '.facebook.com', path: '/' });
+    }
+  }
+  return out;
+}
+
+function collectFacebookVideosFromJsonObject(
+  parsed: any,
+  upsertVideo: (entry: {
+    id: string;
+    title?: string;
+    author?: string;
+    pic?: string;
+    duration?: number;
+    pubdate?: number;
+    sourceUrl?: string;
+    maxHeight?: number;
+  }) => void,
+  pageAuthor: string
+): void {
+  const extractPublishTimeFromTracking = (tracking: unknown): number => {
+    if (typeof tracking !== 'string' || !tracking.includes('publish_time')) return 0;
+    const m = tracking.match(/"publish_time"\s*:\s*(\d{9,11})/);
+    return m ? Number(m[1]) : 0;
+  };
+
+  const stack: any[] = [parsed];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== 'object') continue;
+
+    if (Array.isArray(cur)) {
+      for (let i = cur.length - 1; i >= 0; i -= 1) {
+        if (cur[i] && typeof cur[i] === 'object') stack.push(cur[i]);
+      }
+      continue;
+    }
+
+    // Pattern A: Facebook Reels node (short_form_video_context)
+    const sfvc = cur.short_form_video_context;
+    if (sfvc && typeof sfvc === 'object' && sfvc.video?.id) {
+      const vid = String(sfvc.video.id);
+      const pb = sfvc.playback_video || {};
+      const shareUrl =
+        sfvc.shareable_url ||
+        sfvc.if_should_change_url_for_reels?.shareable_url ||
+        pb.permalink_url ||
+        `https://www.facebook.com/reel/${vid}`;
+      const pic =
+        sfvc.video.first_frame_thumbnail ||
+        pb.thumbnailImage?.uri ||
+        pb.preferred_thumbnail?.image?.uri ||
+        '';
+      const dur =
+        Number(pb.length_in_second || 0) ||
+        Number(sfvc.video.playable_duration_in_ms || 0) / 1000;
+      const pubdate =
+        Number(cur.creation_time || 0) || extractPublishTimeFromTracking(cur.tracking);
+      const title =
+        cur.message?.text ||
+        cur.translated_message_for_viewer?.text ||
+        cur.savable_title?.text ||
+        sfvc.video?.title ||
+        '';
+      upsertVideo({
+        id: vid,
+        title,
+        author: sfvc.video?.owner?.name || cur.actors?.[0]?.name || pageAuthor,
+        pic,
+        duration: dur,
+        pubdate,
+        sourceUrl: shareUrl,
+        maxHeight: Number(pb.height || 0),
+      });
+    }
+
+    // Pattern B: General Facebook Video / Videos tab node
+    const rawVid = cur.id || cur.video_id;
+    if (
+      typeof rawVid === 'string' &&
+      /^\d{7,}$/.test(rawVid) &&
+      (cur.playable_duration_in_ms ||
+        cur.length_in_second ||
+        cur.videoDeliveryLegacyFields ||
+        cur.videoDeliveryResponseFragment ||
+        cur.first_frame_thumbnail ||
+        cur.permalink_url ||
+        cur.__typename === 'Video')
+    ) {
+      const dur =
+        Number(cur.length_in_second || 0) ||
+        Number(cur.playable_duration_in_ms || 0) / 1000;
+      const pic =
+        cur.first_frame_thumbnail ||
+        cur.thumbnailImage?.uri ||
+        cur.preferred_thumbnail?.image?.uri ||
+        cur.image?.uri ||
+        '';
+      const title =
+        cur.savable_title?.text ||
+        cur.message?.text ||
+        cur.title?.text ||
+        (typeof cur.name === 'string' ? cur.name : '');
+      const perm =
+        (typeof cur.permalink_url === 'string' && cur.permalink_url) ||
+        (typeof cur.url === 'string' && cur.url.includes('facebook.com') ? cur.url : '');
+      upsertVideo({
+        id: rawVid,
+        title,
+        author: cur.owner?.name || pageAuthor,
+        pic,
+        duration: dur,
+        pubdate: Number(cur.publish_time || cur.creation_time || 0),
+        sourceUrl: perm,
+        maxHeight: Number(cur.height || 0),
+      });
+    }
+
+    for (const val of Object.values(cur)) {
+      if (val && typeof val === 'object') stack.push(val);
+    }
+  }
+}
+
+function buildFbListItemsFromMap(
+  videoMap: Map<string, FbExtractedVideoEntry>,
+  pageAuthor: string,
+  maxItems = 100
+): any[] {
+  const defaultFbQualities = [
+    { qn: 80, label: '1080P' },
+    { qn: 64, label: '720P' },
+    { qn: 32, label: '480P' },
+    { qn: 16, label: '360P' },
+  ];
+
+  return Array.from(videoMap.values())
+    .slice(0, maxItems)
+    .map((v) => {
+      const labelPrefix = v.sourceUrl.includes('/reel/') ? 'Facebook Reel' : 'Facebook Video';
+      const qualities =
+        v.maxHeight > 0 && v.maxHeight < 720
+          ? [
+              { qn: 32, label: '480P' },
+              { qn: 16, label: '360P' },
+            ]
+          : defaultFbQualities;
+      return {
+        id: `fb_${v.id}_${crypto.randomBytes(3).toString('hex')}`,
+        platform: 'facebook',
+        bvid: v.id,
+        aid: 0,
+        cid: 0,
+        page: 1,
+        totalPages: 1,
+        title: v.title || `${labelPrefix} ${v.id}`,
+        partTitle: '',
+        author: v.author || pageAuthor,
+        duration: v.duration,
+        views: 0,
+        pubdate: v.pubdate,
+        pic: v.pic,
+        sourceUrl: v.sourceUrl,
+        availableQualities: qualities,
+      };
+    });
+}
+
+function findChromiumBrowserBinary(): string | null {
+  const envCandidates = [process.env.CHROME_PATH, process.env.EDGE_PATH].filter(
+    (v): v is string => Boolean(v && v.trim())
+  );
+  for (const p of envCandidates) {
+    if (fs.existsSync(p)) return p;
+  }
+
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+    const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const winPaths = [
+      localAppData ? path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
+      path.join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      path.join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      path.join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      path.join(programFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      localAppData ? path.join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe') : '',
+      path.join(programFiles, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+    ].filter(Boolean);
+    for (const p of winPaths) {
+      if (fs.existsSync(p)) return p;
+    }
+    return null;
+  }
+
+  if (process.platform === 'darwin') {
+    const macPaths = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    ];
+    for (const p of macPaths) {
+      if (fs.existsSync(p)) return p;
+    }
+    return null;
+  }
+
+  const linuxPaths = [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/microsoft-edge',
+    '/snap/bin/chromium',
+  ];
+  for (const p of linuxPaths) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+async function resolveReelsPaginationDocId(html: string): Promise<string> {
+  const fallbackDocId = '41127736506813457';
+  const preloadUrls = Array.from(
+    html.matchAll(/<link[^>]+href="(https:\/\/static\.xx\.fbcdn\.net\/rsrc\.php\/[^"]+\.js[^"]*)"/g)
+  )
+    .map((m) => m[1].replace(/&amp;/g, '&'))
+    .slice(0, 18);
+
+  for (const jsUrl of preloadUrls) {
+    try {
+      const r = await fetch(jsUrl, { signal: AbortSignal.timeout(6000) });
+      if (!r.ok) continue;
+      const js = await r.text();
+      const match = js.match(
+        /ProfileCometAppCollectionReelsRendererPaginationQuery_facebookRelayOperation"[^a-zA-Z0-9]+(\d{12,22})/
+      );
+      if (match?.[1]) return match[1];
+    } catch {
+      // ignore single preload fetch failure
+    }
+  }
+  return fallbackDocId;
+}
+
+async function extractFacebookListViaBrowserCdp(
+  urlStr: string,
+  rawCookies?: string,
+  maxItems = 100
+): Promise<{
+  items: any[];
+  pageAuthor: string;
+}> {
+  const browserBin = findChromiumBrowserBinary();
+  if (!browserBin || typeof (globalThis as any).WebSocket !== 'function') {
+    return { items: [], pageAuthor: 'Facebook' };
+  }
+
+  const normalized = normalizeFacebookUrl(urlStr);
+  const isReelTab = /(?:reels(?:_tab)?|owner_reels)/i.test(normalized);
+  const tempProfileDir = path.join(
+    os.tmpdir(),
+    `bilibatch_fb_cdp_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`
+  );
+  fs.mkdirSync(tempProfileDir, { recursive: true });
+
+  let browserProc: ReturnType<typeof spawn> | null = null;
+  let ws: any = null;
+
+  try {
+    const args = [
+      '--headless=new',
+      '--disable-gpu',
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--remote-debugging-port=0',
+      `--user-data-dir=${tempProfileDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--mute-audio',
+      '--disable-background-networking',
+      '--disable-blink-features=AutomationControlled',
+      '--window-size=1366,900',
+      'about:blank',
+    ];
+
+    browserProc = spawn(browserBin, args, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+    });
+
+    const debugPort = await new Promise<number | null>((resolve) => {
+      let resolved = false;
+      let errBuf = '';
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
+      }, 10_000);
+
+      browserProc?.stderr?.on('data', (chunk: Buffer) => {
+        errBuf += chunk.toString();
+        const m = errBuf.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//i);
+        if (m?.[1] && !resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(Number(m[1]));
+        }
+      });
+      browserProc?.on('exit', () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(null);
+        }
+      });
+    });
+
+    if (!debugPort) {
+      return { items: [], pageAuthor: 'Facebook' };
+    }
+
+    const targetsRes = await fetch(`http://127.0.0.1:${debugPort}/json/list`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    const targets: any[] = await targetsRes.json();
+    const pageTarget = targets.find((t) => t.type === 'page' && t.webSocketDebuggerUrl) || targets[0];
+    if (!pageTarget?.webSocketDebuggerUrl) {
+      return { items: [], pageAuthor: 'Facebook' };
+    }
+
+    const WsCtor = (globalThis as any).WebSocket;
+    ws = new WsCtor(pageTarget.webSocketDebuggerUrl);
+
+    let msgId = 0;
+    const pending = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>();
+    const gqlRequestIds = new Set<string>();
+    const videoMap = new Map<string, FbExtractedVideoEntry>();
+    let pageAuthor = 'Facebook';
+
+    const upsertVideo = (entry: {
+      id: string;
+      title?: string;
+      author?: string;
+      pic?: string;
+      duration?: number;
+      pubdate?: number;
+      sourceUrl?: string;
+      maxHeight?: number;
+    }) => {
+      if (!entry.id || !/^\d{6,}$/.test(entry.id)) return;
+      const prev = videoMap.get(entry.id);
+      const cleanTitle = (entry.title || '')
+        .replace(/\r?\n+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      videoMap.set(entry.id, {
+        id: entry.id,
+        title: (prev?.title && prev.title.length >= cleanTitle.length ? prev.title : cleanTitle) || '',
+        author: entry.author || prev?.author || pageAuthor,
+        pic: entry.pic || prev?.pic || '',
+        duration: Math.max(prev?.duration || 0, Math.round(entry.duration || 0)),
+        pubdate: Math.max(prev?.pubdate || 0, Math.round(entry.pubdate || 0)),
+        sourceUrl:
+          (entry.sourceUrl && entry.sourceUrl.includes('/reel/') ? entry.sourceUrl : '') ||
+          prev?.sourceUrl ||
+          entry.sourceUrl ||
+          (isReelTab
+            ? `https://www.facebook.com/reel/${entry.id}`
+            : `https://www.facebook.com/watch/?v=${entry.id}`),
+        maxHeight: Math.max(prev?.maxHeight || 0, Math.round(entry.maxHeight || 0)),
+      });
+    };
+
+    const sendCdp = (method: string, params: Record<string, any> = {}, timeoutMs = 8000) =>
+      new Promise<any>((resolve, reject) => {
+        if (!ws || ws.readyState !== 1) {
+          reject(new Error('CDP socket closed'));
+          return;
+        }
+        const id = ++msgId;
+        const t = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`CDP timeout: ${method}`));
+        }, timeoutMs);
+        pending.set(id, {
+          resolve: (v) => {
+            clearTimeout(t);
+            resolve(v);
+          },
+          reject: (e) => {
+            clearTimeout(t);
+            reject(e);
+          },
+        });
+        ws.send(JSON.stringify({ id, method, params }));
+      });
+
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('WS connect timeout')), 5000);
+      ws.addEventListener('open', () => {
+        clearTimeout(t);
+        resolve();
+      });
+      ws.addEventListener('error', (err: any) => {
+        clearTimeout(t);
+        reject(err);
+      });
+    });
+
+    ws.addEventListener('message', (evt: any) => {
+      try {
+        const msg = JSON.parse(String(evt.data || ''));
+        if (typeof msg.id === 'number' && pending.has(msg.id)) {
+          const p = pending.get(msg.id)!;
+          pending.delete(msg.id);
+          if (msg.error) p.reject(new Error(msg.error.message || 'CDP error'));
+          else p.resolve(msg.result);
+          return;
+        }
+        if (msg.method === 'Network.responseReceived') {
+          const rUrl = String(msg.params?.response?.url || '');
+          if (rUrl.includes('/api/graphql')) {
+            gqlRequestIds.add(String(msg.params.requestId));
+          }
+        } else if (msg.method === 'Network.loadingFinished') {
+          const reqId = String(msg.params?.requestId || '');
+          if (gqlRequestIds.has(reqId)) {
+            gqlRequestIds.delete(reqId);
+            sendCdp('Network.getResponseBody', { requestId: reqId }, 5000)
+              .then((bodyRes) => {
+                const rawBody = String(bodyRes?.body || '').replace(/^for\s*\(;;\);/, '');
+                for (const line of rawBody.split(/\r?\n/)) {
+                  const trimmedLine = line.trim();
+                  if (!trimmedLine.startsWith('{')) continue;
+                  try {
+                    const parsed = JSON.parse(trimmedLine);
+                    collectFacebookVideosFromJsonObject(parsed, upsertVideo, pageAuthor);
+                  } catch {
+                    // ignore partial line
+                  }
+                }
+              })
+              .catch(() => {});
+          }
+        }
+      } catch {
+        // ignore malformed message
+      }
+    });
+
+    await sendCdp('Network.enable');
+    await sendCdp('Page.enable');
+    await sendCdp('Runtime.enable');
+
+    const cookieList = parseFacebookCookiesList(rawCookies);
+    if (cookieList.length > 0) {
+      await sendCdp('Network.setCookies', {
+        cookies: cookieList.map((c) => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path,
+          secure: true,
+          httpOnly: false,
+        })),
+      }).catch(() => {});
+    }
+
+    await sendCdp('Page.navigate', { url: normalized }, 15_000);
+    await new Promise((r) => setTimeout(r, 2800));
+
+    let stagnantRounds = 0;
+    const maxScrollRounds = 12;
+
+    for (let round = 0; round < maxScrollRounds; round += 1) {
+      const beforeCount = videoMap.size;
+
+      const domEval = await sendCdp(
+        'Runtime.evaluate',
+        {
+          returnByValue: true,
+          expression: `(() => {
+            try {
+              const title = (document.title || '')
+                .replace(/\\s*(?:\\||-|–)\\s*Facebook$/i, '')
+                .replace(/(?:'s|’s)?\\s*(?:Reels|Videos)$/i, '')
+                .trim();
+              document.querySelectorAll('[aria-label="Close"], [aria-label="Đóng"], div[role="dialog"] [aria-label="Close"]').forEach(el => {
+                try { el.click(); } catch {}
+              });
+              document.querySelectorAll('div[role="dialog"]').forEach(el => {
+                if (/login|đăng nhập|log in|see more/i.test(el.innerText || '')) {
+                  el.remove();
+                }
+              });
+              document.documentElement.style.overflow = 'auto';
+              if (document.body) document.body.style.overflow = 'auto';
+              const items = [];
+              const anchors = document.querySelectorAll('a[href*="/reel/"], a[href*="/videos/"], a[href*="/watch/?v="]');
+              anchors.forEach(a => {
+                const href = a.href || '';
+                const m = href.match(/\\/(?:reel|videos)\\/(\\d{6,})/) || href.match(/[?&]v=(\\d{6,})/);
+                if (!m) return;
+                const img = a.querySelector('img');
+                const aria = (a.getAttribute('aria-label') || a.innerText || (img && img.alt) || '').trim();
+                items.push({
+                  id: m[1],
+                  href: href.split('?')[0],
+                  pic: img ? (img.currentSrc || img.src || '') : '',
+                  title: aria
+                });
+              });
+              window.scrollTo(0, document.body.scrollHeight);
+              window.scrollBy(0, 2000);
+              return { title, items };
+            } catch (e) {
+              return { title: '', items: [] };
+            }
+          })()`,
+        },
+        6000
+      ).catch(() => null);
+
+      const domVal = domEval?.result?.value;
+      if (domVal?.title && pageAuthor === 'Facebook') {
+        pageAuthor = domVal.title;
+      }
+      if (Array.isArray(domVal?.items)) {
+        for (const it of domVal.items) {
+          upsertVideo({
+            id: String(it.id),
+            title: String(it.title || ''),
+            pic: String(it.pic || ''),
+            sourceUrl: String(it.href || ''),
+            author: pageAuthor,
+          });
+        }
+      }
+
+      if (videoMap.size >= maxItems) break;
+
+      await new Promise((r) => setTimeout(r, 1500));
+
+      if (videoMap.size === beforeCount) {
+        stagnantRounds += 1;
+        if (stagnantRounds >= 3) break;
+      } else {
+        stagnantRounds = 0;
+      }
+    }
+
+    await new Promise((r) => setTimeout(r, 500));
+
+    return {
+      items: buildFbListItemsFromMap(videoMap, pageAuthor, maxItems),
+      pageAuthor,
+    };
+  } catch {
+    return { items: [], pageAuthor: 'Facebook' };
+  } finally {
+    try {
+      if (ws) ws.close();
+    } catch {
+      // ignore
+    }
+    try {
+      if (browserProc && !browserProc.killed) browserProc.kill();
+    } catch {
+      // ignore
+    }
+    setTimeout(() => {
+      try {
+        if (fs.existsSync(tempProfileDir)) {
+          fs.rmSync(tempProfileDir, { recursive: true, force: true });
+        }
+      } catch {
+        // ignore Windows temp lock
+      }
+    }, 1000);
+  }
+}
+
 async function extractFacebookListFromHtml(
   urlStr: string,
   rawCookies?: string
@@ -1616,12 +2273,6 @@ async function extractFacebookListFromHtml(
   const normalized = normalizeFacebookUrl(urlStr);
   const isGlobalReelsFeed = /facebook\.com\/reels?(?:\/)?(?:[?#]|$)/i.test(normalized);
   const isReelTab = /(?:reels(?:_tab)?|owner_reels)/i.test(normalized);
-  const defaultFbQualities = [
-    { qn: 80, label: '1080P' },
-    { qn: 64, label: '720P' },
-    { qn: 32, label: '480P' },
-    { qn: 16, label: '360P' },
-  ];
 
   const candidates = [normalized];
   if (normalized.includes('sk=reels') && !normalized.includes('sk=reels_tab')) {
@@ -1647,6 +2298,12 @@ async function extractFacebookListFromHtml(
       });
       if (!res.ok) continue;
 
+      const setCookieHeader =
+        typeof (res.headers as any).getSetCookie === 'function'
+          ? (res.headers as any).getSetCookie().map((c: string) => c.split(';')[0]).join('; ')
+          : '';
+      const combinedCookieHeader = [fbCookie, setCookieHeader].filter(Boolean).join('; ');
+
       const finalUrl = res.url || target;
       if (finalUrl.includes('/login')) {
         sawLoginWall = true;
@@ -1666,19 +2323,7 @@ async function extractFacebookListFromHtml(
           .replace(/(?:'s|’s)?\s*(?:Reels|Videos)$/i, '')
           .trim() || 'Facebook';
 
-      const videoMap = new Map<
-        string,
-        {
-          id: string;
-          title: string;
-          author: string;
-          pic: string;
-          duration: number;
-          pubdate: number;
-          sourceUrl: string;
-          maxHeight: number;
-        }
-      >();
+      const videoMap = new Map<string, FbExtractedVideoEntry>();
 
       const upsertVideo = (entry: {
         id: string;
@@ -1714,11 +2359,9 @@ async function extractFacebookListFromHtml(
         });
       };
 
-      const extractPublishTimeFromTracking = (tracking: unknown): number => {
-        if (typeof tracking !== 'string' || !tracking.includes('publish_time')) return 0;
-        const m = tracking.match(/"publish_time"\s*:\s*(\d{9,11})/);
-        return m ? Number(m[1]) : 0;
-      };
+      let reelsCollectionId = '';
+      let reelsEndCursor = '';
+      let reelsHasNextPage = false;
 
       const scriptRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi;
       let scriptMatch: RegExpExecArray | null;
@@ -1736,104 +2379,110 @@ async function extractFacebookListFromHtml(
         }
         try {
           const parsed = JSON.parse(body);
-          const stack: any[] = [parsed];
-          while (stack.length > 0) {
-            const cur = stack.pop();
-            if (!cur || typeof cur !== 'object') continue;
+          collectFacebookVideosFromJsonObject(parsed, upsertVideo, pageAuthor);
 
-            if (Array.isArray(cur)) {
-              for (let i = cur.length - 1; i >= 0; i -= 1) {
-                if (cur[i] && typeof cur[i] === 'object') stack.push(cur[i]);
+          if (!reelsCollectionId && body.includes('aggregated_fb_shorts')) {
+            const stack: any[] = [parsed];
+            while (stack.length > 0) {
+              const cur = stack.pop();
+              if (!cur || typeof cur !== 'object') continue;
+              if (cur.id && cur.aggregated_fb_shorts?.page_info) {
+                reelsCollectionId = String(cur.id);
+                reelsEndCursor = String(cur.aggregated_fb_shorts.page_info.end_cursor || '');
+                reelsHasNextPage = Boolean(cur.aggregated_fb_shorts.page_info.has_next_page);
+                break;
               }
-              continue;
-            }
-
-            // Pattern A: Facebook Reels node (short_form_video_context)
-            const sfvc = cur.short_form_video_context;
-            if (sfvc && typeof sfvc === 'object' && sfvc.video?.id) {
-              const vid = String(sfvc.video.id);
-              const pb = sfvc.playback_video || {};
-              const shareUrl =
-                sfvc.shareable_url ||
-                sfvc.if_should_change_url_for_reels?.shareable_url ||
-                pb.permalink_url ||
-                `https://www.facebook.com/reel/${vid}`;
-              const pic =
-                sfvc.video.first_frame_thumbnail ||
-                pb.thumbnailImage?.uri ||
-                pb.preferred_thumbnail?.image?.uri ||
-                '';
-              const dur =
-                Number(pb.length_in_second || 0) ||
-                Number(sfvc.video.playable_duration_in_ms || 0) / 1000;
-              const pubdate =
-                Number(cur.creation_time || 0) || extractPublishTimeFromTracking(cur.tracking);
-              const title =
-                cur.message?.text ||
-                cur.translated_message_for_viewer?.text ||
-                cur.savable_title?.text ||
-                sfvc.video?.title ||
-                '';
-              upsertVideo({
-                id: vid,
-                title,
-                author: sfvc.video?.owner?.name || cur.actors?.[0]?.name || pageAuthor,
-                pic,
-                duration: dur,
-                pubdate,
-                sourceUrl: shareUrl,
-                maxHeight: Number(pb.height || 0),
-              });
-            }
-
-            // Pattern B: General Facebook Video / Videos tab node
-            const rawVid = cur.id || cur.video_id;
-            if (
-              typeof rawVid === 'string' &&
-              /^\d{7,}$/.test(rawVid) &&
-              (cur.playable_duration_in_ms ||
-                cur.length_in_second ||
-                cur.videoDeliveryLegacyFields ||
-                cur.videoDeliveryResponseFragment ||
-                cur.first_frame_thumbnail ||
-                cur.permalink_url ||
-                cur.__typename === 'Video')
-            ) {
-              const dur =
-                Number(cur.length_in_second || 0) ||
-                Number(cur.playable_duration_in_ms || 0) / 1000;
-              const pic =
-                cur.first_frame_thumbnail ||
-                cur.thumbnailImage?.uri ||
-                cur.preferred_thumbnail?.image?.uri ||
-                cur.image?.uri ||
-                '';
-              const title =
-                cur.savable_title?.text ||
-                cur.message?.text ||
-                cur.title?.text ||
-                (typeof cur.name === 'string' ? cur.name : '');
-              const perm =
-                (typeof cur.permalink_url === 'string' && cur.permalink_url) ||
-                (typeof cur.url === 'string' && cur.url.includes('facebook.com') ? cur.url : '');
-              upsertVideo({
-                id: rawVid,
-                title,
-                author: cur.owner?.name || pageAuthor,
-                pic,
-                duration: dur,
-                pubdate: Number(cur.publish_time || cur.creation_time || 0),
-                sourceUrl: perm,
-                maxHeight: Number(cur.height || 0),
-              });
-            }
-
-            for (const val of Object.values(cur)) {
-              if (val && typeof val === 'object') stack.push(val);
+              for (const v of Array.isArray(cur) ? cur : Object.values(cur)) {
+                if (v && typeof v === 'object') stack.push(v);
+              }
             }
           }
         } catch {
           // ignore malformed script JSON block
+        }
+      }
+
+      // If user supplied authenticated Facebook cookies (fb_dtsg present), try GraphQL pagination for up to 100 Reels
+      const fbDtsg =
+        html.match(/"DTSGInitialData",\[\],\{"token":"([^"]+)"/)?.[1] ||
+        html.match(/"DTSGInitData",\[\],\{"token":"([^"]+)"/)?.[1] ||
+        '';
+      const lsd = html.match(/"LSD",\[\],\{"token":"([^"]+)"/)?.[1] || '';
+      const cUser = combinedCookieHeader.match(/(?:^|;\s*)c_user=(\d+)/)?.[1] || '0';
+
+      if (fbDtsg && reelsCollectionId && reelsHasNextPage && reelsEndCursor && videoMap.size < 100) {
+        try {
+          const docId = await resolveReelsPaginationDocId(html);
+          const jazoest = '2' + Array.from(lsd).reduce((s, ch) => s + ch.charCodeAt(0), 0);
+          const pvVars: Record<string, boolean> = {};
+          for (const m of html.matchAll(/"(__relay_internal__pv__[^"]+)"\s*:\s*(true|false)/g)) {
+            pvVars[m[1]] = m[2] === 'true';
+          }
+          const rev = html.match(/"client_revision":(\d+)/)?.[1] || '';
+          const hs = html.match(/"haste_session":"([^"]+)"/)?.[1] || '';
+
+          let cursor = reelsEndCursor;
+          let hasNext: boolean = reelsHasNextPage;
+
+          for (let page = 0; page < 9 && hasNext && cursor && videoMap.size < 100; page += 1) {
+            const form = new URLSearchParams();
+            form.set('av', cUser);
+            form.set('__user', cUser);
+            form.set('__a', '1');
+            form.set('__comet_req', '15');
+            if (hs) form.set('__hs', hs);
+            if (rev) form.set('__rev', rev);
+            form.set('dpr', '1');
+            form.set('fb_dtsg', fbDtsg);
+            if (lsd) form.set('lsd', lsd);
+            form.set('jazoest', jazoest);
+            form.set('fb_api_caller_class', 'RelayModern');
+            form.set('fb_api_req_friendly_name', 'ProfileCometAppCollectionReelsRendererPaginationQuery');
+            form.set('server_timestamps', 'true');
+            form.set(
+              'variables',
+              JSON.stringify({
+                count: 15,
+                cursor,
+                id: reelsCollectionId,
+                renderLocation: null,
+                scale: 1,
+                useDefaultActor: false,
+                ...pvVars,
+              })
+            );
+            form.set('doc_id', docId);
+
+            const gRes = await fetch('https://www.facebook.com/api/graphql/', {
+              method: 'POST',
+              headers: {
+                'User-Agent': USER_AGENT,
+                'Content-Type': 'application/x-www-form-urlencoded',
+                ...(lsd ? { 'X-FB-LSD': lsd } : {}),
+                'X-FB-Friendly-Name': 'ProfileCometAppCollectionReelsRendererPaginationQuery',
+                Origin: 'https://www.facebook.com',
+                Referer: finalUrl,
+                ...(combinedCookieHeader ? { Cookie: combinedCookieHeader } : {}),
+              },
+              body: form.toString(),
+              signal: AbortSignal.timeout(12_000),
+            });
+            if (!gRes.ok) break;
+            const gText = (await gRes.text()).replace(/^for\s*\(;;\);/, '');
+            const firstLine = gText.split(/\r?\n/).find((l) => l.trim().startsWith('{'));
+            if (!firstLine) break;
+            const gJson = JSON.parse(firstLine);
+            if (gJson?.error || gJson?.errors) break;
+
+            const agg = gJson?.data?.node?.aggregated_fb_shorts;
+            if (!agg || !Array.isArray(agg.edges) || agg.edges.length === 0) break;
+
+            collectFacebookVideosFromJsonObject(agg, upsertVideo, pageAuthor);
+            cursor = String(agg.page_info?.end_cursor || '');
+            hasNext = Boolean(agg.page_info?.has_next_page);
+          }
+        } catch {
+          // ignore pagination error and keep SSR items
         }
       }
 
@@ -1852,37 +2501,11 @@ async function extractFacebookListFromHtml(
       }
 
       if (videoMap.size > 0) {
-        const items = Array.from(videoMap.values())
-          .slice(0, 100)
-          .map((v) => {
-            const labelPrefix = v.sourceUrl.includes('/reel/') ? 'Facebook Reel' : 'Facebook Video';
-            const qualities =
-              v.maxHeight > 0 && v.maxHeight < 720
-                ? [
-                    { qn: 32, label: '480P' },
-                    { qn: 16, label: '360P' },
-                  ]
-                : defaultFbQualities;
-            return {
-              id: `fb_${v.id}_${crypto.randomBytes(3).toString('hex')}`,
-              platform: 'facebook',
-              bvid: v.id,
-              aid: 0,
-              cid: 0,
-              page: 1,
-              totalPages: 1,
-              title: v.title || `${labelPrefix} ${v.id}`,
-              partTitle: '',
-              author: v.author || pageAuthor,
-              duration: v.duration,
-              views: 0,
-              pubdate: v.pubdate,
-              pic: v.pic,
-              sourceUrl: v.sourceUrl,
-              availableQualities: qualities,
-            };
-          });
-        return { items, loginRequired: false, isGlobalReelsFeed };
+        return {
+          items: buildFbListItemsFromMap(videoMap, pageAuthor, 100),
+          loginRequired: false,
+          isGlobalReelsFeed,
+        };
       }
 
       if (/id="login_form"|name="login"|Log in or sign up|Log into Facebook|Đăng nhập Facebook/i.test(html)) {
@@ -1954,8 +2577,36 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
 
     if (isPageOrList) {
       const htmlList = await extractFacebookListFromHtml(resolvedUrl, rawCookies);
-      if (htmlList.items.length > 0) {
+      if (htmlList.items.length >= 25) {
         return htmlList.items;
+      }
+
+      // Use local Edge/Chrome headless CDP scroll to paginate beyond Facebook's initial ~10 SSR items
+      const cdpList = await extractFacebookListViaBrowserCdp(resolvedUrl, rawCookies, 100);
+      if (cdpList.items.length > 0 || htmlList.items.length > 0) {
+        const merged = new Map<string, any>();
+        for (const it of htmlList.items) {
+          merged.set(String(it.bvid || it.id), it);
+        }
+        for (const it of cdpList.items) {
+          const key = String(it.bvid || it.id);
+          const prev = merged.get(key);
+          if (!prev) {
+            merged.set(key, it);
+          } else {
+            merged.set(key, {
+              ...prev,
+              title: prev.title && !/^Facebook (?:Reel|Video) \d+$/.test(prev.title) ? prev.title : it.title,
+              pic: prev.pic || it.pic,
+              duration: prev.duration || it.duration,
+              pubdate: prev.pubdate || it.pubdate,
+              author: prev.author && prev.author !== 'Facebook' ? prev.author : it.author,
+            });
+          }
+        }
+        if (merged.size > 0) {
+          return Array.from(merged.values()).slice(0, 100);
+        }
       }
 
       try {
