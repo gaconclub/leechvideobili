@@ -52,6 +52,7 @@ import {
 } from './server/derivative';
 import {
   addMuse2ApiAccount,
+  autoStartLocalMuse2ApiOnServerBoot,
   deleteMuse2ApiAccount,
   getMuse2ApiStatus,
   keepaliveAllMuse2ApiAccounts,
@@ -4572,7 +4573,8 @@ async function startServer() {
 
       if (supervisorActive) {
         setTimeout(() => {
-          console.log('Self-update completed. Exiting with code 42 for supervisor restart...');
+          console.log('Self-update completed. Stopping child services & restarting...');
+          stopLocalMuse2ApiProcess();
           process.exit(42);
         }, 600);
       }
@@ -4616,7 +4618,15 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`BiliBatch server running at http://localhost:${PORT}`);
+    void autoStartLocalMuse2ApiOnServerBoot();
   });
+
+  const handleShutdown = () => {
+    stopLocalMuse2ApiProcess();
+    process.exit(0);
+  };
+  process.once('SIGINT', handleShutdown);
+  process.once('SIGTERM', handleShutdown);
 }
 
 startServer();

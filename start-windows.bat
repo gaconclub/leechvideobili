@@ -31,11 +31,41 @@ if not exist "node_modules" (
   )
 )
 
+rem --- Tu dong chuan bi moi truong Muse2API (127.0.0.1:18610) ---
+if not exist "muse2api\app.py" goto after_muse2api_setup
+if exist "muse2api\.venv\Scripts\python.exe" goto after_muse2api_setup
+
+set "PY_CMD="
+python --version >nul 2>&1
+if not errorlevel 1 set "PY_CMD=python"
+if defined PY_CMD goto setup_muse2api_venv
+py -3 --version >nul 2>&1
+if not errorlevel 1 set "PY_CMD=py -3"
+if defined PY_CMD goto setup_muse2api_venv
+
+docker info >nul 2>&1
+if not errorlevel 1 (
+  echo [Muse2API] Dang khoi chay Muse2API qua Docker Compose...
+  docker compose -f "muse2api\docker-compose.yml" up -d
+)
+goto after_muse2api_setup
+
+:setup_muse2api_venv
+echo [Muse2API] Dang tao moi truong ao muse2api\.venv lan dau...
+%PY_CMD% -m venv "muse2api\.venv"
+if exist "muse2api\.venv\Scripts\python.exe" (
+  echo [Muse2API] Dang cai dat thu vien Muse2API...
+  "muse2api\.venv\Scripts\python.exe" -m pip install --upgrade pip >nul 2>&1
+  "muse2api\.venv\Scripts\python.exe" -m pip install -r "muse2api\requirements.txt"
+)
+
+:after_muse2api_setup
+
 set "BILIBATCH_SUPERVISOR=1"
 set "OPENED_BROWSER="
 
 :run_server
-echo Dang khoi dong may chu tai http://localhost:3000 ...
+echo Dang khoi dong may chu tai http://localhost:3000 ^(va tu dong bat Muse2API 127.0.0.1:18610^)...
 if "%OPENED_BROWSER%"=="" (
   set "OPENED_BROWSER=1"
   start "" http://localhost:3000

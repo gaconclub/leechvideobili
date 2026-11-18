@@ -107,9 +107,13 @@ export function resolveMuse2ApiConfig(): Muse2ApiConfig {
 function checkCmdSync(cmd: string, args: string[], timeoutMs = 2500): Promise<boolean> {
   return new Promise((resolve) => {
     try {
-      const p = spawn(cmd, args, { stdio: 'ignore' });
+      const p = spawn(cmd, args, { stdio: 'ignore', windowsHide: true });
       const timer = setTimeout(() => {
-        p.kill('SIGKILL');
+        try {
+          p.kill('SIGKILL');
+        } catch {
+          // ignore
+        }
         resolve(false);
       }, timeoutMs);
       p.on('close', (code) => {
@@ -126,21 +130,76 @@ function checkCmdSync(cmd: string, args: string[], timeoutMs = 2500): Promise<bo
   });
 }
 
-function findLocalPythonBin(): string {
-  const candidates = [
+async function resolveLocalPythonCommand(): Promise<{ cmd: string; baseArgs: string[] } | null> {
+  const venvCandidates = [
     path.join(MUSE2API_DIR, '.venv', 'Scripts', 'python.exe'),
     path.join(MUSE2API_DIR, '.venv', 'bin', 'python'),
-    'python3',
-    'python',
+    path.join(MUSE2API_DIR, '.venv', 'bin', 'python3'),
   ];
-  for (const c of candidates) {
-    if (c.includes(path.sep)) {
-      if (fs.existsSync(c)) return c;
-    } else {
-      return c;
+  for (const c of venvCandidates) {
+    if (fs.existsSync(c)) {
+      if (await checkCmdSync(c, ['--version'])) {
+        return { cmd: c, baseArgs: [] };
+      }
     }
   }
-  return 'python3';
+
+  const sysCandidates: { cmd: string; baseArgs: string[] }[] =
+    process.platform === 'win32'
+      ? [
+          { cmd: 'python', baseArgs: [] },
+          { cmd: 'py', baseArgs: ['-3'] },
+          { cmd: 'python3', baseArgs: [] },
+        ]
+      : [
+          { cmd: 'python3', baseArgs: [] },
+          { cmd: 'python', baseArgs: [] },
+        ];
+
+  for (const cand of sysCandidates) {
+    if (await checkCmdSync(cand.cmd, [...cand.baseArgs, '--version'])) {
+      return cand;
+    }
+  }
+  return null;
+}
+
+function isFilePathCandidate(bin: string): boolean {
+  return bin.startsWith('/') || /^[A-Za-z]:[\\/]/.test(bin) || bin.includes('\\');
+}
+
+async function detectChromiumBinaryAvailable(): Promise<boolean> {
+  const candidates = [
+    process.env.MUSE2API_CHROMIUM?.trim() || '',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/snap/bin/chromium',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe')
+      : '',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    'chromium',
+    'chromium-browser',
+    'google-chrome',
+    'chrome',
+    'msedge',
+  ];
+
+  for (const bin of candidates) {
+    if (!bin) continue;
+    if (isFilePathCandidate(bin)) {
+      if (fs.existsSync(bin)) return true;
+    } else if (await checkCmdSync(bin, ['--version'])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function probeLocalMuse2ApiRuntime(force = false) {
@@ -152,31 +211,12 @@ export async function probeLocalMuse2ApiRuntime(force = false) {
   }
 
   const bundledDirExists = fs.existsSync(path.join(MUSE2API_DIR, 'app.py'));
-  const pyBin = findLocalPythonBin();
-  const pythonAvailable = await checkCmdSync(pyBin, ['--version']);
-  const uvicornInstalled = pythonAvailable
-    ? await checkCmdSync(pyBin, ['-c', 'import fastapi, uvicorn, pydantic, requests, websocket'])
+  const pyCmd = await resolveLocalPythonCommand();
+  const pythonAvailable = Boolean(pyCmd);
+  const uvicornInstalled = pyCmd
+    ? await checkCmdSync(pyCmd.cmd, [...pyCmd.baseArgs, '-c', 'import fastapi, uvicorn, pydantic, requests, websocket'])
     : false;
-
-  let chromiumAvailable = false;
-  for (const bin of [
-    process.env.MUSE2API_CHROMIUM?.trim() || '',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    'chromium',
-    'google-chrome',
-  ]) {
-    if (!bin) continue;
-    if (bin.startsWith('/') && fs.existsSync(bin)) {
-      chromiumAvailable = true;
-      break;
-    }
-    if (!bin.startsWith('/') && (await checkCmdSync(bin, ['--version']))) {
-      chromiumAvailable = true;
-      break;
-    }
-  }
+  const chromiumAvailable = await detectChromiumBinaryAvailable();
 
   cachedRuntimeProbe = {
     checkedAt: Date.now(),
@@ -198,7 +238,7 @@ export async function startLocalMuse2ApiProcess(): Promise<{ ok: boolean; messag
     return { ok: false, message: 'Không tìm thấy thư mục /muse2api trên máy chủ.' };
   }
   if (!runtime.pythonAvailable) {
-    return { ok: false, message: 'Máy chủ chưa có Python 3.10+. Hãy chạy Muse2API bằng Docker hoặc trên máy cá nhân rồi trỏ MUSE2API_BASE_URL tới đó.' };
+    return { ok: false, message: 'Máy chủ chưa có Python 3.10+. Hãy cài Python 3 hoặc chạy Muse2API bằng Docker rồi trỏ MUSE2API_BASE_URL tới đó.' };
   }
   if (!runtime.uvicornInstalled) {
     return {
@@ -209,14 +249,18 @@ export async function startLocalMuse2ApiProcess(): Promise<{ ok: boolean; messag
   if (!runtime.chromiumAvailable) {
     return {
       ok: false,
-      message: 'Môi trường này chưa cài Chromium/Chrome nên không thể mở phiên muse.ai trực tiếp tại đây. Hãy chạy Docker hoặc chạy Muse2API trên máy tính của bạn (có Chrome/Chromium), mở Tunnel và điền MUSE2API_BASE_URL + MUSE2API_KEY.',
+      message: 'Môi trường này chưa cài Chromium/Chrome nên không thể mở phiên muse.ai trực tiếp tại đây. Hãy cài Chrome/Chromium hoặc chạy Muse2API qua Docker.',
     };
   }
   if (localMuseProc && localMuseProc.exitCode === null) {
     return { ok: true, message: 'Tiến trình Muse2API cục bộ đang chạy.' };
   }
 
-  const pyBin = findLocalPythonBin();
+  const pyCmd = await resolveLocalPythonCommand();
+  if (!pyCmd) {
+    return { ok: false, message: 'Không tìm thấy lệnh Python hợp lệ để khởi chạy Muse2API.' };
+  }
+
   const cfg = resolveMuse2ApiConfig();
   let port = '18610';
   try {
@@ -226,22 +270,41 @@ export async function startLocalMuse2ApiProcess(): Promise<{ ok: boolean; messag
     // ignore
   }
 
-  const env = { ...process.env };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PYTHONUNBUFFERED: '1',
+    MUSE2API_PORT: port,
+  };
   if (cfg.apiKey && !env.MUSE2API_KEY) {
     env.MUSE2API_KEY = cfg.apiKey;
   }
 
-  localMuseProc = spawn(pyBin, ['-m', 'uvicorn', 'app:app', '--host', '127.0.0.1', '--port', port], {
-    cwd: MUSE2API_DIR,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+  localMuseProc = spawn(
+    pyCmd.cmd,
+    [...pyCmd.baseArgs, '-m', 'uvicorn', 'app:app', '--host', '127.0.0.1', '--port', port],
+    {
+      cwd: MUSE2API_DIR,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    }
+  );
+  localMuseProc.stdout?.on('data', (chunk) => {
+    const line = String(chunk || '').trim();
+    if (line) console.log(`[Muse2API] ${line.split(/\r?\n/)[0]}`);
+  });
+  localMuseProc.stderr?.on('data', (chunk) => {
+    const line = String(chunk || '').trim();
+    if (line && !line.includes('INFO:')) {
+      console.log(`[Muse2API] ${line.split(/\r?\n/)[0]}`);
+    }
   });
   localMuseProc.on('exit', () => {
     localMuseProc = null;
   });
 
-  // Wait up to 6s for /readyz to respond
-  for (let i = 0; i < 12; i += 1) {
+  // Wait up to 8s for /readyz to respond
+  for (let i = 0; i < 16; i += 1) {
     await new Promise((r) => setTimeout(r, 500));
     try {
       const r = await fetch(`http://127.0.0.1:${port}/readyz`, { signal: AbortSignal.timeout(1500) });
@@ -256,9 +319,63 @@ export async function startLocalMuse2ApiProcess(): Promise<{ ok: boolean; messag
   return { ok: true, message: 'Đã gửi lệnh khởi chạy Muse2API cục bộ. Đang khởi tạo uvicorn...' };
 }
 
+export async function autoStartLocalMuse2ApiOnServerBoot(): Promise<void> {
+  if (process.env.MUSE2API_AUTOSTART === '0' || process.env.MUSE2API_AUTOSTART === 'false') {
+    return;
+  }
+  const cfg = resolveMuse2ApiConfig();
+  let isLocalTarget = true;
+  try {
+    const parsed = new URL(cfg.baseUrl);
+    const host = parsed.hostname.toLowerCase();
+    isLocalTarget = host === '127.0.0.1' || host === 'localhost' || host === '0.0.0.0';
+  } catch {
+    isLocalTarget = true;
+  }
+  if (!isLocalTarget) {
+    return;
+  }
+
+  try {
+    const r = await fetch(`${cfg.baseUrl}/readyz`, { signal: AbortSignal.timeout(1500) });
+    if (r.ok) {
+      console.log(`[Muse2API] Đã phát hiện dịch vụ đang chạy sẵn tại ${cfg.baseUrl}`);
+      return;
+    }
+  } catch {
+    // not running yet -> attempt local autostart
+  }
+
+  const runtime = await probeLocalMuse2ApiRuntime(true);
+  if (!runtime.bundledDirExists) return;
+  if (!runtime.pythonAvailable || !runtime.uvicornInstalled || !runtime.chromiumAvailable) {
+    console.log(
+      `[Muse2API] Bỏ qua tự khởi chạy (${cfg.baseUrl}): python=${runtime.pythonAvailable}, deps=${runtime.uvicornInstalled}, chrome=${runtime.chromiumAvailable}`
+    );
+    return;
+  }
+
+  console.log(`[Muse2API] Đang tự động khởi chạy máy chủ ${cfg.baseUrl} cùng phiên làm việc...`);
+  const res = await startLocalMuse2ApiProcess();
+  console.log(`[Muse2API] ${res.message}`);
+}
+
 export function stopLocalMuse2ApiProcess(): { ok: boolean; message: string } {
   if (localMuseProc && localMuseProc.exitCode === null) {
-    localMuseProc.kill('SIGTERM');
+    const pid = localMuseProc.pid;
+    try {
+      if (process.platform === 'win32' && pid) {
+        const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+        killer.unref();
+      } else {
+        localMuseProc.kill('SIGTERM');
+      }
+    } catch {
+      // ignore kill error
+    }
     localMuseProc = null;
     return { ok: true, message: 'Đã dừng tiến trình Muse2API cục bộ.' };
   }
