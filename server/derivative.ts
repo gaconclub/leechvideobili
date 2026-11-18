@@ -1871,9 +1871,11 @@ function parseLastJsonObject(raw: string): any | null {
   return null;
 }
 
-async function resolveVieNeuPythonCommand(): Promise<string | null> {
+let cachedVieNeuPythonArgsPrefix: string[] = [];
+
+async function resolveVieNeuPythonCommand(): Promise<{ cmd: string; prefixArgs: string[] } | null> {
   if (cachedVieNeuPythonCmd && fs.existsSync(getVieNeuScriptPath())) {
-    return cachedVieNeuPythonCmd;
+    return { cmd: cachedVieNeuPythonCmd, prefixArgs: cachedVieNeuPythonArgsPrefix };
   }
   if (!fs.existsSync(getVieNeuScriptPath())) {
     return null;
@@ -1881,21 +1883,35 @@ async function resolveVieNeuPythonCommand(): Promise<string | null> {
 
   const isWin = process.platform === 'win32';
   const relPy = isWin ? path.join('Scripts', 'python.exe') : path.join('bin', 'python');
-  const candidates = [
-    path.join(process.cwd(), '.venv-vieneu', relPy),
-    path.join(process.cwd(), '.venv', relPy),
-    isWin ? 'python' : 'python3',
-    'python',
+  const candidates: { cmd: string; prefixArgs: string[] }[] = [
+    { cmd: path.join(process.cwd(), '.venv-vieneu', relPy), prefixArgs: [] },
+    { cmd: path.join(process.cwd(), '.venv', relPy), prefixArgs: [] },
+    ...(isWin
+      ? [
+          { cmd: 'python', prefixArgs: [] },
+          { cmd: 'py', prefixArgs: ['-3'] },
+          { cmd: 'python3', prefixArgs: [] },
+        ]
+      : [
+          { cmd: 'python3', prefixArgs: [] },
+          { cmd: 'python', prefixArgs: [] },
+        ]),
   ];
 
   for (const cand of candidates) {
-    if ((cand.includes('/') || cand.includes('\\')) && !fs.existsSync(cand)) {
+    if ((cand.cmd.includes('/') || cand.cmd.includes('\\')) && !fs.existsSync(cand.cmd)) {
       continue;
     }
     try {
-      const check = await spawnPromise(cand, ['-c', 'import vieneu; print("OK")'], process.cwd(), 10_000);
+      const check = await spawnPromise(
+        cand.cmd,
+        [...cand.prefixArgs, '-c', 'import vieneu; print("OK")'],
+        process.cwd(),
+        10_000
+      );
       if (check.code === 0 && check.stdout.includes('OK')) {
-        cachedVieNeuPythonCmd = cand;
+        cachedVieNeuPythonCmd = cand.cmd;
+        cachedVieNeuPythonArgsPrefix = cand.prefixArgs;
         return cand;
       }
     } catch {
@@ -1989,14 +2005,14 @@ export async function listVieNeuVoices(): Promise<{
     };
   }
 
-  const pyCmd = await resolveVieNeuPythonCommand();
-  if (!pyCmd) {
+  const pySpec = await resolveVieNeuPythonCommand();
+  if (!pySpec) {
     return { available: false, engine: '', voices: [] };
   }
 
   const res = await spawnPromise(
-    pyCmd,
-    [getVieNeuScriptPath(), '--mode', 'v3nano', '--list-voices'],
+    pySpec.cmd,
+    [...pySpec.prefixArgs, getVieNeuScriptPath(), '--mode', 'v3nano', '--list-voices'],
     process.cwd(),
     90_000
   );
@@ -2040,8 +2056,8 @@ async function synthesizeOfflineVoiceBatchVieNeu(
   const statusMap = new Map<number, boolean>();
   if (items.length === 0) return statusMap;
 
-  const pyCmd = await resolveVieNeuPythonCommand();
-  if (!pyCmd) return statusMap;
+  const pySpec = await resolveVieNeuPythonCommand();
+  if (!pySpec) return statusMap;
 
   const batchPath = path.join(path.dirname(items[0].out), `vieneu_batch_${Date.now()}.json`);
   try {
@@ -2059,12 +2075,12 @@ async function synthesizeOfflineVoiceBatchVieNeu(
       'utf8'
     );
 
-    const args = [getVieNeuScriptPath(), '--mode', 'v3nano', '--batch-json', batchPath];
+    const args = [...pySpec.prefixArgs, getVieNeuScriptPath(), '--mode', 'v3nano', '--batch-json', batchPath];
     if (defaultVoice?.trim()) {
       args.push('--voice', defaultVoice.trim());
     }
 
-    const res = await spawnPromise(pyCmd, args, process.cwd(), Math.max(120_000, items.length * 35_000));
+    const res = await spawnPromise(pySpec.cmd, args, process.cwd(), Math.max(120_000, items.length * 35_000));
     const parsed = parseLastJsonObject(res.stdout);
     const results = Array.isArray(parsed?.results) ? parsed.results : [];
 
@@ -2100,12 +2116,13 @@ async function synthesizeOfflineVoiceWav(
   }
 
   if (detected.engineId === 'vieneu') {
-    const pyCmd = await resolveVieNeuPythonCommand();
-    if (pyCmd) {
+    const pySpec = await resolveVieNeuPythonCommand();
+    if (pySpec) {
       const txtPath = `${outWavPath}.txt`;
       try {
         fs.writeFileSync(txtPath, cleanText, 'utf8');
         const args = [
+          ...pySpec.prefixArgs,
           getVieNeuScriptPath(),
           '--mode',
           'v3nano',
@@ -2117,7 +2134,7 @@ async function synthesizeOfflineVoiceWav(
         if (preferredVoice?.trim()) {
           args.push('--voice', preferredVoice.trim());
         }
-        const r = await spawnPromise(pyCmd, args, process.cwd(), 120_000);
+        const r = await spawnPromise(pySpec.cmd, args, process.cwd(), 120_000);
         if (r.code === 0 && fs.existsSync(outWavPath) && fs.statSync(outWavPath).size > 1000) {
           return true;
         }
@@ -2190,17 +2207,53 @@ export async function installAndWarmupVieNeu(): Promise<{
     throw new Error('Thiếu tệp scripts/vieneu_tts.py trong dự án.');
   }
 
-  let pyCmd = await resolveVieNeuPythonCommand();
+  let pySpec = await resolveVieNeuPythonCommand();
   const isWin = process.platform === 'win32';
   const venvDir = path.join(process.cwd(), '.venv-vieneu');
   const venvPy = path.join(venvDir, isWin ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'));
 
-  if (!pyCmd) {
-    const basePy = isWin ? 'python' : 'python3';
+  if (!pySpec) {
     if (!fs.existsSync(venvPy)) {
-      let venvRes = await spawnPromise(basePy, ['-m', 'venv', venvDir], process.cwd(), 120_000);
+      const pyCandidates: { cmd: string; prefixArgs: string[] }[] = isWin
+        ? [
+            { cmd: 'python', prefixArgs: [] },
+            { cmd: 'py', prefixArgs: ['-3'] },
+            { cmd: 'python3', prefixArgs: [] },
+          ]
+        : [
+            { cmd: 'python3', prefixArgs: [] },
+            { cmd: 'python', prefixArgs: [] },
+          ];
+
+      let basePy: { cmd: string; prefixArgs: string[] } | null = null;
+      for (const cand of pyCandidates) {
+        try {
+          const chk = await spawnPromise(cand.cmd, [...cand.prefixArgs, '--version'], process.cwd(), 8000);
+          if (chk.code === 0 && (chk.stdout + chk.stderr).toLowerCase().includes('python 3')) {
+            basePy = cand;
+            break;
+          }
+        } catch {
+          // try next python candidate
+        }
+      }
+
+      if (!basePy) {
+        throw new Error(
+          isWin
+            ? 'Không tìm thấy Python 3 trên máy Windows. Hãy cài Python 3.11+ (https://www.python.org/downloads/ hoặc chạy lệnh: winget install Python.Python.3.11 --source winget), sau đó mở lại app và bấm "Tải & Cài VieNeu Offline".'
+            : 'Không tìm thấy Python 3 trên máy chủ để cài VieNeu-TTS Offline.'
+        );
+      }
+
+      let venvRes = await spawnPromise(basePy.cmd, [...basePy.prefixArgs, '-m', 'venv', venvDir], process.cwd(), 120_000);
       if (venvRes.code !== 0) {
-        venvRes = await spawnPromise(basePy, ['-m', 'venv', '--without-pip', venvDir], process.cwd(), 120_000);
+        venvRes = await spawnPromise(
+          basePy.cmd,
+          [...basePy.prefixArgs, '-m', 'venv', '--without-pip', venvDir],
+          process.cwd(),
+          120_000
+        );
         if (venvRes.code !== 0 || !fs.existsSync(venvPy)) {
           throw new Error(`Không tạo được môi trường Python VieNeu: ${venvRes.stderr || venvRes.stdout}`);
         }
@@ -2222,10 +2275,6 @@ export async function installAndWarmupVieNeu(): Promise<{
       }
     }
 
-    const reqFile = path.join(process.cwd(), 'scripts', 'requirements-vieneu.txt');
-    const pipArgs = fs.existsSync(reqFile)
-      ? ['-m', 'pip', 'install', '--no-deps', 'vieneu>=3.8.0']
-      : ['-m', 'pip', 'install', '--no-deps', 'vieneu>=3.8.0'];
     const baseDeps = [
       'onnxruntime>=1.20.0',
       'sea-g2p>=0.10.0',
@@ -2237,7 +2286,7 @@ export async function installAndWarmupVieNeu(): Promise<{
       'numpy>=1.26.0',
       'requests>=2.31.0',
     ];
-    const installPkg = await spawnPromise(venvPy, pipArgs, process.cwd(), 300_000);
+    const installPkg = await spawnPromise(venvPy, ['-m', 'pip', 'install', '--no-deps', 'vieneu>=3.8.0'], process.cwd(), 300_000);
     if (installPkg.code !== 0) {
       throw new Error(`Lỗi cài đặt gói vieneu: ${installPkg.stderr || installPkg.stdout}`);
     }
@@ -2245,10 +2294,15 @@ export async function installAndWarmupVieNeu(): Promise<{
     if (installDeps.code !== 0) {
       throw new Error(`Lỗi cài đặt thư viện ONNX cho VieNeu: ${installDeps.stderr || installDeps.stdout}`);
     }
-    pyCmd = venvPy;
+    pySpec = { cmd: venvPy, prefixArgs: [] };
   }
 
-  const warmRes = await spawnPromise(pyCmd, [scriptPath, '--mode', 'v3nano', '--warmup'], process.cwd(), 360_000);
+  const warmRes = await spawnPromise(
+    pySpec.cmd,
+    [...pySpec.prefixArgs, scriptPath, '--mode', 'v3nano', '--warmup'],
+    process.cwd(),
+    360_000
+  );
   const parsed = parseLastJsonObject(warmRes.stdout);
   if (warmRes.code !== 0 || !parsed?.ok) {
     throw new Error(parsed?.error || warmRes.stderr || 'Không thể tải model VieNeu-TTS offline.');

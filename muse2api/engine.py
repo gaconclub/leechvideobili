@@ -368,13 +368,13 @@ class MuseEngine:
             time.sleep(0.08)
         return False
 
-    def reset_thread(self, for_chat: bool = False):
+    def reset_thread(self, for_chat: bool = False, force: bool = False):
         """关闭残留弹窗并确保处于干净会话且 WebSocket 已就绪。
         对于纯文本对话（for_chat=True），若当前热页面无附件、无卡死且气泡数较少，直接复用现有热连接以实现 2s 级秒回。"""
         if not self.page:
             return
         try:
-            needs_nav = self.page.js("""(function(forChat){
+            needs_nav = True if force else self.page.js("""(function(forChat){
                 var d = document.querySelector('[role="dialog"]');
                 if (d) {
                     var b = d.querySelector('button[aria-label*="close" i], button');
@@ -396,9 +396,9 @@ class MuseEngine:
             })(%s)""" % ("true" if for_chat else "false"))
             if needs_nav:
                 self.page.send("Page.navigate", {"url": "https://muse.ai/thread/new"})
-                t_end = time.time() + 10.0
+                t_end = time.time() + 18.0
                 while time.time() < t_end:
-                    time.sleep(0.08)
+                    time.sleep(0.12)
                     ready = self.page.js("""(function(){
                         return document.readyState === 'complete'
                             && !!document.querySelector('textarea')
@@ -406,11 +406,30 @@ class MuseEngine:
                     })()""")
                     if ready:
                         break
-                self._wait_ws_ready(self.page, timeout=12.0)
+                self._wait_ws_ready(self.page, timeout=18.0)
         except Exception:
             pass
 
-    def ensure_page(self, cookies: dict, expires: dict | None = None, account_id: str | None = None):
+    def _wait_composer_ready(self, page: CDP, timeout: float = 8.0) -> bool:
+        """确保聊天输入框与文件上传组件均已完成水合挂载。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                ok = page.js("""(function(){
+                    var ta = document.querySelector('textarea');
+                    if (!ta) return false;
+                    var hasInp = document.querySelectorAll('input[type="file"]').length > 0;
+                    return !!hasInp;
+                })()""")
+                if ok:
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.15)
+        return False
+
+    def ensure_page(self, cookies: dict, expires: dict | None = None,
+                    account_id: str | None = None, wait_timeout: float | None = None):
         if self.page is not None and (account_id is None or getattr(self, "current_acc_id", None) == account_id):
             try:
                 if self.page.js("!!document.querySelector('textarea')"):
@@ -441,21 +460,40 @@ class MuseEngine:
         page = self._open_page()
         self._apply_cookies(page, cookies, expires)
         page.send("Page.navigate", {"url": "https://muse.ai/thread/new"})
-        for _ in range(self.cfg.login_wait * 2):
-            time.sleep(0.15)
+
+        # 按真实墙钟秒数等待（修复旧逻辑 *2*0.15s 导致 60s 实际仅等 18s 的问题）
+        total_wait = max(35.0, float(self.cfg.login_wait))
+        if wait_timeout is not None:
+            total_wait = max(25.0, min(total_wait, float(wait_timeout)))
+        deadline = time.time() + total_wait
+        retried_nav = False
+        t_nav = time.time()
+
+        while time.time() < deadline:
+            time.sleep(0.25)
             try:
                 if page.js("!!document.querySelector('textarea')"):
                     self.page = page
                     self.current_acc_id = account_id
-                    self._wait_ws_ready(page, timeout=15.0)
+                    self._wait_ws_ready(page, timeout=20.0)
                     return page
+                # 若超过 22s 页面已 complete 但仍未渲染出 textarea 且非登录页，尝试重导航一次
+                if not retried_nav and (time.time() - t_nav) > 22.0 and (deadline - time.time()) > 15.0:
+                    rs = page.js("document.readyState") or ""
+                    body_head = (page.js("(document.body&&document.body.innerText||'').slice(0,800)") or "").lower()
+                    if re.search(r"log in|sign in|create an account|登录|use another account", body_head):
+                        break
+                    if rs == "complete":
+                        retried_nav = True
+                        log.info("muse.ai 页面水合较慢，重新导航一次 /thread/new ...")
+                        page.send("Page.navigate", {"url": "https://muse.ai/thread/new"})
             except Exception:
                 pass
         try:
             if page.js("!!document.querySelector('textarea')"):
                 self.page = page
                 self.current_acc_id = account_id
-                self._wait_ws_ready(page, timeout=15.0)
+                self._wait_ws_ready(page, timeout=20.0)
                 return page
         except Exception:  # noqa: BLE001
             pass
@@ -1095,34 +1133,124 @@ class MuseEngine:
         return img, "image/png"
 
     def _clear_attachments(self):
-        """清除聊天输入框里遗留的附件缩略图（兼容中/英文 UI）。"""
+        """清除聊天输入框里遗留的附件缩略图（严格限定在输入区内，避免误点侧边栏删除按钮）。"""
         try:
             self.page.js(
                 "(function(){"
-                "var btns=Array.from(document.querySelectorAll('button[aria-label]')).filter(function(b){"
+                "var ta=document.querySelector('textarea');"
+                "var scope=(ta&&ta.closest('form'))||document;"
+                "var btns=Array.from(scope.querySelectorAll('button[aria-label]')).filter(function(b){"
                 "var al=b.getAttribute('aria-label')||'';"
-                "return /remove\\s*attachment|移除附件|删除附件|移除|删除/i.test(al);"
+                "return /remove\\s*attachment|移除附件|删除附件|remove\\s*file|delete\\s*attachment/i.test(al);"
                 "});"
                 "btns.forEach(function(b){b.click();});"
                 "Array.from(document.querySelectorAll('input[type=\"file\"]')).forEach(function(inp){inp.value='';});"
                 "return btns.length;"
                 "})()")
-            time.sleep(0.3)
+            time.sleep(0.25)
         except Exception:
             pass
 
-    def _attach_image(self, image_data: str):
-        """将参考图通过 DataTransfer 附加到输入框，杜绝使用旧历史图片。"""
-        if not image_data:
-            return
-        b64, mime = self._normalize_image(image_data)
-        if not b64:
-            raise MuseGenerationError("参考图读取失败，已停止生成")
+    _CHECK_ATTACHED_JS = """(function(){
+        var btns = Array.from(document.querySelectorAll('button[aria-label], [role="button"][aria-label]'));
+        var hasRemove = btns.some(function(b){
+            var al = b.getAttribute('aria-label') || '';
+            return /remove\\s*attachment|移除附件|删除附件|remove\\s*file|delete\\s*attachment|取消附件|移除图片/i.test(al);
+        });
+        if (hasRemove) return 'remove-global';
 
-        self._clear_attachments()
+        var ta = document.querySelector('textarea');
+        var ov = document.querySelector('[data-testid="hatch-composer-placeholder-overlay"]');
+        var composer = (ta && ta.closest('form')) || (ov && (ov.closest('form') || (ov.parentElement && ov.parentElement.parentElement && ov.parentElement.parentElement.parentElement))) || null;
+        if (!composer && ta) {
+            var p = ta.parentElement;
+            for (var depth = 0; depth < 6 && p; depth++) {
+                if (p.querySelector && !p.querySelector('div[class*="hatch-chat-groupable-bubble"]')) {
+                    composer = p;
+                }
+                p = p.parentElement;
+            }
+        }
+        if (composer) {
+            var cBtns = Array.from(composer.querySelectorAll('button[aria-label], button[title]'));
+            var hasCompRemove = cBtns.some(function(b){
+                var lbl = ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).trim();
+                if (/send|stop|attach|upload|settings|mic|voice|发送|停止|附加|设置/i.test(lbl)) return false;
+                return /remove|delete|close|clear|移除|删除|取消|关闭/i.test(lbl);
+            });
+            if (hasCompRemove) return 'remove-composer';
 
+            var attChips = composer.querySelectorAll('[data-testid*="attachment" i], [data-testid*="preview" i], [data-testid*="thumbnail" i]');
+            if (attChips.length > 0) return 'chip';
+
+            var media = Array.from(composer.querySelectorAll('img, video')).filter(function(m){
+                if (m.closest('[class*="chat-user-bubble"], [class*="hatch-agent-bubble"], [class*="group/msg"]')) return false;
+                var s = m.currentSrc || m.src || '';
+                if (!s) return false;
+                if (s.indexOf('avatar') !== -1 || s.indexOf('emoji') !== -1) return false;
+                var r = m.getBoundingClientRect ? m.getBoundingClientRect() : {width: 0, height: 0};
+                var w = m.videoWidth || m.naturalWidth || r.width || 0;
+                var h = m.videoHeight || m.naturalHeight || r.height || 0;
+                return s.indexOf('blob:') === 0 || s.indexOf('data:image/') === 0 || (w >= 20 && h >= 20);
+            });
+            if (media.length > 0) return 'thumb';
+        }
+        return '';
+    })()"""
+
+    def _wait_attached_confirmed(self, timeout: float = 14.0) -> str:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                state = self.page.js(self._CHECK_ATTACHED_JS)
+                if state:
+                    # 若页面同时出现上传进度条，多等最多 5 秒让上传完成
+                    upload_wait_end = time.time() + 5.0
+                    while time.time() < upload_wait_end:
+                        uploading = self.page.js("""(function(){
+                            var ta = document.querySelector('textarea');
+                            var c = (ta && ta.closest('form')) || null;
+                            if (!c) return false;
+                            return !!(c.querySelector('[role="progressbar"]') || c.querySelector('[data-testid*="uploading" i]'));
+                        })()""")
+                        if not uploading:
+                            break
+                        time.sleep(0.25)
+                    return str(state)
+            except Exception:
+                pass
+            time.sleep(0.3)
+        return ""
+
+    def _mark_composer_file_input(self) -> bool:
+        return bool(self.page.js("""(function(){
+            document.querySelectorAll('input[data-muse2api-upload]').forEach(function(x){
+                x.removeAttribute('data-muse2api-upload');
+            });
+            var inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+            if (!inputs.length) return false;
+            var ta = document.querySelector('textarea');
+            var ov = document.querySelector('[data-testid="hatch-composer-placeholder-overlay"]');
+            var composer = (ta && ta.closest('form')) || (ov && ov.closest('form')) || null;
+            var input = null;
+            if (composer) {
+                input = inputs.find(function(x){
+                    return composer.contains(x) && /image|\\*/i.test(x.getAttribute('accept') || 'image/*');
+                }) || inputs.find(function(x){ return composer.contains(x); }) || null;
+            }
+            if (!input) {
+                input = inputs.find(function(x){
+                    return !x.closest('[class*=chat-user-bubble], [class*="group/msg"]');
+                }) || inputs[0];
+            }
+            if (!input.getAttribute('accept')) input.setAttribute('accept', 'image/*');
+            input.setAttribute('data-muse2api-upload', '1');
+            return true;
+        })()"""))
+
+    def _inject_image_js(self, b64: str, mime: str, also_paste: bool = False) -> dict:
         _INJECT_JS = """
-        (function(b64, mime) {
+        (function(b64, mime, alsoPaste) {
             try {
                 var byteChars = atob(b64);
                 var byteNumbers = new Array(byteChars.length);
@@ -1134,76 +1262,153 @@ class MuseEngine:
                 var ext = mime.split('/')[1] || 'png';
                 if (ext === 'jpeg') ext = 'jpg';
                 var file = new File([blob], 'reference_image.' + ext, {type: mime});
-                // 现网 composer 里可能有多个 file input；优先取位于 composer 内的那个
-                var inputs = Array.from(document.querySelectorAll('input[type="file"]'));
-                if (!inputs.length) return JSON.stringify({ok: false, err: 'no-file-input'});
-                var ov = document.querySelector('[data-testid="hatch-composer-placeholder-overlay"]');
-                var composer = ov ? ov.closest('form') : null;
-                var input = null;
-                if (composer) {
-                    input = inputs.find(function(x){ return composer.contains(x); }) || null;
-                }
+
+                var input = document.querySelector('input[type="file"][data-muse2api-upload="1"]');
                 if (!input) {
-                    // 退而求其次：取不在对话气泡里的那个 input
-                    input = inputs.find(function(x){
-                        return !x.closest('[class*=chat-user-bubble], [class*="group/msg"]');
-                    }) || inputs[0];
+                    var inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+                    if (!inputs.length) return JSON.stringify({ok: false, err: 'no-file-input'});
+                    var ta = document.querySelector('textarea');
+                    var ov = document.querySelector('[data-testid="hatch-composer-placeholder-overlay"]');
+                    var composer = (ta && ta.closest('form')) || (ov && ov.closest('form')) || null;
+                    if (composer) {
+                        input = inputs.find(function(x){ return composer.contains(x); }) || null;
+                    }
+                    if (!input) {
+                        input = inputs.find(function(x){
+                            return !x.closest('[class*=chat-user-bubble], [class*="group/msg"]');
+                        }) || inputs[0];
+                    }
                 }
-                // 有些版本 accept 为空，补上 image/* 让页面接受本次 File
                 if (!input.getAttribute('accept')) input.setAttribute('accept', 'image/*');
                 var dt = new DataTransfer();
                 dt.items.add(file);
                 input.files = dt.files;
-                input.dispatchEvent(new Event('change', {bubbles: true}));
                 input.dispatchEvent(new Event('input', {bubbles: true}));
+                input.dispatchEvent(new Event('change', {bubbles: true}));
+
+                if (alsoPaste) {
+                    var taEl = document.querySelector('textarea');
+                    if (taEl && typeof ClipboardEvent === 'function') {
+                        try {
+                            taEl.focus();
+                            var pasteDt = new DataTransfer();
+                            pasteDt.items.add(file);
+                            var pe = new ClipboardEvent('paste', {
+                                clipboardData: pasteDt,
+                                bubbles: true,
+                                cancelable: true
+                            });
+                            taEl.dispatchEvent(pe);
+                        } catch (peErr) {}
+                    }
+                }
                 return JSON.stringify({ok: true});
             } catch(e) {
                 return JSON.stringify({ok: false, err: String(e)});
             }
-        })(%s, %s)
+        })(%s, %s, %s)
         """
-        try:
-            raw_res = self.page.js(_INJECT_JS % (json.dumps(b64), json.dumps(mime)))
-            res_obj = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
-            if not res_obj.get("ok"):
-                raise MuseGenerationError("附加参考图失败，已停止生成")
-        except Exception as e:
-            raise MuseGenerationError("附加参考图失败，已停止生成") from e
+        raw_res = self.page.js(_INJECT_JS % (json.dumps(b64), json.dumps(mime), "true" if also_paste else "false"))
+        return json.loads(raw_res) if isinstance(raw_res, str) else (raw_res or {})
 
-        # 等待输入框附件确认；历史图片不能证明本次上传成功。
-        # 现网 UI 已切中文：确认按钮 aria-label = "附加文件"/"移除附件"；
-        # 同时兼容英文（Remove attachment / Attach file），并以 composer 内缩略图兜底。
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
-            has_attached = self.page.js(
-                """(function(){
-                var btns = Array.from(document.querySelectorAll('button[aria-label]'));
-                var hasRemove = btns.some(function(b){
-                    return /remove\\s*attachment|移除附件|删除附件/i.test(b.getAttribute('aria-label') || '');
-                });
-                if (hasRemove) return 'remove';
-                // 兜底：composer 内出现附件缩略图（img/video）
-                var ov = document.querySelector('[data-testid="hatch-composer-placeholder-overlay"]');
-                var composer = ov ? (ov.closest('form') || ov.parentElement.parentElement.parentElement) : null;
-                if (composer) {
-                    var media = composer.querySelectorAll('img, video');
-                    if (media.length > 0) return 'thumb';
-                }
-                return '';
-                })()"""
+    def _attach_via_cdp(self, tmp_path: str) -> bool:
+        try:
+            self.page.send("DOM.enable")
+            if not self._mark_composer_file_input():
+                return False
+            doc = self.page.send("DOM.getDocument", {"depth": -1})
+            root_id = doc.get("result", {}).get("root", {}).get("nodeId")
+            if not root_id:
+                return False
+            q = self.page.send(
+                "DOM.querySelector",
+                {"nodeId": root_id, "selector": 'input[type="file"][data-muse2api-upload="1"]'}
             )
-            if has_attached:
-                break
-            time.sleep(0.3)
-        else:
+            node_id = q.get("result", {}).get("nodeId")
+            if not node_id:
+                return False
+            self.page.send("DOM.setFileInputFiles", {"nodeId": node_id, "files": [tmp_path]})
+            return True
+        except Exception as exc:
+            log.warning("CDP DOM.setFileInputFiles 附加参考图失败（将回退 JS DataTransfer）: %s", exc)
+            return False
+        finally:
+            try:
+                self.page.js(
+                    "document.querySelectorAll('input[data-muse2api-upload]').forEach(function(x){"
+                    "x.removeAttribute('data-muse2api-upload');});"
+                )
+            except Exception:
+                pass
+
+    def _attach_image(self, image_data: str):
+        """将参考图附加到输入框：优先原生 CDP DOM.setFileInputFiles（isTrusted=true），失败时回退 DataTransfer + Paste + 重载重试。"""
+        if not image_data:
+            return
+        b64, mime = self._normalize_image(image_data)
+        if not b64:
+            raise MuseGenerationError("参考图读取失败，已停止生成")
+
+        ext = mime.split("/")[-1].split(";")[0].strip().lower() or "png"
+        if ext == "jpeg":
+            ext = "jpg"
+        if ext not in ("png", "jpg", "webp", "gif"):
+            ext = "png"
+
+        os.makedirs(self.cfg.data_dir, exist_ok=True)
+        tmp_path = os.path.join(self.cfg.data_dir, f"ref_{uuid.uuid4().hex}.{ext}")
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(base64.b64decode(b64))
+        except Exception as exc:
+            raise MuseGenerationError("参考图解码失败，已停止生成") from exc
+
+        try:
+            self._wait_composer_ready(self.page, timeout=10.0)
+            self._clear_attachments()
+
+            # 1) 首选 CDP 原生文件注入（isTrusted=true，React 18 稳定触发）
+            if self._attach_via_cdp(tmp_path):
+                if self._wait_attached_confirmed(timeout=14.0):
+                    time.sleep(0.5)
+                    return
+
+            # 2) 回退：JS DataTransfer + ClipboardEvent paste
+            log.warning("CDP 原生附加参考图未在 14s 内确认，回退 JS DataTransfer/Paste 重试...")
+            self._clear_attachments()
+            try:
+                self._mark_composer_file_input()
+                res_obj = self._inject_image_js(b64, mime, also_paste=True)
+                if res_obj.get("ok") and self._wait_attached_confirmed(timeout=12.0):
+                    time.sleep(0.5)
+                    return
+            except Exception as exc:
+                log.warning("JS DataTransfer 附加异常: %s", exc)
+
+            # 3) 最终兜底：强制刷新 /thread/new 并等待水合后用原生 CDP 再试一次
+            log.warning("参考图二次确认失败，正在强制刷新 /thread/new 重试一次...")
+            self.reset_thread(for_chat=False, force=True)
+            self._wait_composer_ready(self.page, timeout=12.0)
+            self._clear_attachments()
+            if self._attach_via_cdp(tmp_path) and self._wait_attached_confirmed(timeout=16.0):
+                time.sleep(0.5)
+                return
+
+            self._debug_dump("attach-fail")
             raise MuseGenerationError("参考图上传未确认，已停止生成")
-        time.sleep(0.5)
+        finally:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+
     # ---------------- 主流程 ----------------
     def generate(self, cookies: dict, prompt: str, expect: str = "image",
                  timeout: int = 240, expires: dict | None = None, account_id: str | None = None,
                  on_progress=None, reference_image: str | None = None,
                  stop_event=None) -> dict:
-        self.ensure_page(cookies, expires, account_id=account_id)
+        self.ensure_page(cookies, expires, account_id=account_id, wait_timeout=timeout)
         self.reset_thread(for_chat=False)
         self._scroll_bottom()
         if reference_image:

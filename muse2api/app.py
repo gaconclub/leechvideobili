@@ -882,22 +882,28 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
             if deadline is not None and time.monotonic() >= deadline:
                 raise MuseGenerationError("任务总等待时限已到，停止重试")
             if attempt > 0:
-                if last_exc and "未产出媒体附件，仅返回了文本回复" in str(last_exc):
+                err_txt = str(last_exc or "")
+                if err_txt and (
+                    "未产出媒体附件，仅返回了文本回复" in err_txt
+                    or "模型未生成媒体，仅返回文本" in err_txt
+                    or "账号额度不足" in err_txt
+                ):
                     break
                 old_id = cur_acc["id"] if cur_acc else None
                 if old_id:
                     ACCOUNT_POOL.release(old_id)
                 cur_acc = None
                 rem = int(deadline - time.monotonic()) if deadline is not None else timeout
-                if rem <= 0:
+                if rem <= 15:
                     break
                 alt = ACCOUNT_POOL.acquire(rotate=True, force_rotate=True, timeout=rem)
-                if not alt or (old_id and alt["id"] == old_id):
-                    if alt:
-                        cur_acc = alt
+                if not alt:
                     break
                 cur_acc = alt
-                log.info("【生图/视频自动切号】切换到备用账号 %s (%s) 重试...", cur_acc.get("label"), cur_acc["id"])
+                if old_id and alt["id"] == old_id:
+                    log.info("【单账号重开页面重试】关闭旧上下文并用账号 %s (%s) 重试...", cur_acc.get("label"), cur_acc["id"])
+                else:
+                    log.info("【生图/视频自动切号】切换到备用账号 %s (%s) 重试...", cur_acc.get("label"), cur_acc["id"])
             try:
                 refreshed = _renew_and_persist(cur_acc["id"], wake_vm=True, force=(attempt > 0))
                 if refreshed:
@@ -920,10 +926,7 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
             except MuseGenerationError as exc:
                 last_exc = exc
                 store.mark(cur_acc["id"], True, f"任务异常: {str(exc)[:60]}")
-                try:
-                    engine.reset_thread()
-                except Exception:
-                    pass
+                engine.close_current_page()
             except Exception as exc:  # noqa: BLE001
                 engine.close_current_page()
                 last_exc = MuseGenerationError(f"生成失败: {exc}")

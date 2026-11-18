@@ -287,9 +287,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     studioDefaults.visualMode === 'gemini_omni' ? 'gemini' : 'muse2api'
   );
   const [busySceneImageIds, setBusySceneImageIds] = useState<Set<string>>(new Set());
+  const [queuedSceneImageIds, setQueuedSceneImageIds] = useState<Set<string>>(new Set());
   const [busySceneVideoIds, setBusySceneVideoIds] = useState<Set<string>>(new Set());
   const [isBatchGeneratingImages, setIsBatchGeneratingImages] = useState(false);
+  const [batchImageProgress, setBatchImageProgress] = useState<{ current: number; total: number } | null>(null);
+  const [sceneImageErrors, setSceneImageErrors] = useState<Record<string, string>>({});
   const [sceneMediaError, setSceneMediaError] = useState('');
+  const batchImageAbortRef = useRef(false);
 
   // 4. Production: Visual engine + Music + Voice + Final Render
   const [visualMode, setVisualMode] = useState<DerivativeVisualMode>(
@@ -584,6 +588,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setLearnError('');
     setLearnSuccess('');
     setSceneMediaError('');
+    setSceneImageErrors({});
     setJob(null);
     stopPolling();
 
@@ -664,9 +669,25 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   };
 
   // Generate AI Scene Image keeping Character Ref
-  const generateSingleSceneImage = async (sc: DerivativeScene) => {
+  const generateSingleSceneImage = async (
+    sc: DerivativeScene,
+    opts?: { preserveGlobalError?: boolean }
+  ): Promise<boolean> => {
     setBusySceneImageIds((prev) => new Set(prev).add(sc.id));
-    setSceneMediaError('');
+    setQueuedSceneImageIds((prev) => {
+      const next = new Set(prev);
+      next.delete(sc.id);
+      return next;
+    });
+    setSceneImageErrors((prev) => {
+      if (!(sc.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[sc.id];
+      return next;
+    });
+    if (!opts?.preserveGlobalError) {
+      setSceneMediaError('');
+    }
     try {
       const { res, data } = await fetchStudioJsonWithAutoRetry<{ dataUrl?: string; error?: string }>(
         '/api/studio/generate-image',
@@ -685,8 +706,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       );
       if (!res.ok || !data.dataUrl) throw new Error(data.error || `HTTP ${res.status}`);
       updateScene(sc.id, { sceneImageDataUrl: data.dataUrl });
+      return true;
     } catch (err: any) {
-      setSceneMediaError(err?.message || `Không thể tạo ảnh cho cảnh ${sc.sceneIndex}.`);
+      const errMsg = err?.message || `Không thể tạo ảnh cho cảnh ${sc.sceneIndex}.`;
+      setSceneImageErrors((prev) => ({ ...prev, [sc.id]: errMsg }));
+      setSceneMediaError(`Cảnh ${sc.sceneIndex}: ${errMsg}`);
+      return false;
     } finally {
       setBusySceneImageIds((prev) => {
         const next = new Set(prev);
@@ -697,14 +722,41 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   };
 
   const handleBatchGenerateSceneImages = async () => {
-    if (!blueprint) return;
+    if (!blueprint || isBatchGeneratingImages) return;
+    const pendingScenes = blueprint.scenes.filter((sc) => !sc.sceneImageDataUrl);
+    if (pendingScenes.length === 0) {
+      setSceneMediaError('Tất cả phân cảnh hiện đã có ảnh. Bấm "Tạo lại ảnh AI" trên từng cảnh nếu muốn vẽ lại.');
+      return;
+    }
+
+    batchImageAbortRef.current = false;
     setIsBatchGeneratingImages(true);
     setSceneMediaError('');
-    for (const sc of blueprint.scenes) {
-      if (sc.sceneImageDataUrl) continue;
-      await generateSingleSceneImage(sc);
+    setQueuedSceneImageIds(new Set(pendingScenes.map((s) => s.id)));
+    setBatchImageProgress({ current: 0, total: pendingScenes.length });
+
+    let failedCount = 0;
+    for (let i = 0; i < pendingScenes.length; i++) {
+      if (batchImageAbortRef.current) break;
+      const sc = pendingScenes[i];
+      setBatchImageProgress({ current: i + 1, total: pendingScenes.length });
+      const ok = await generateSingleSceneImage(sc, { preserveGlobalError: true });
+      if (!ok) failedCount += 1;
     }
+
+    setQueuedSceneImageIds(new Set());
+    setBatchImageProgress(null);
     setIsBatchGeneratingImages(false);
+    if (failedCount > 0 && !batchImageAbortRef.current) {
+      setSceneMediaError(
+        `Đã hoàn tất lượt tạo hàng loạt (${pendingScenes.length - failedCount}/${pendingScenes.length} cảnh thành công, ${failedCount} cảnh lỗi — xem chi tiết ngay dưới từng cảnh).`
+      );
+    }
+  };
+
+  const handleStopBatchGenerateSceneImages = () => {
+    batchImageAbortRef.current = true;
+    setQueuedSceneImageIds(new Set());
   };
 
   const handleUploadSceneImage = async (sceneId: string, file: File) => {
@@ -1570,17 +1622,26 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 type="button"
                 disabled={isBatchGeneratingImages}
                 onClick={handleBatchGenerateSceneImages}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-teal-100 bg-slate-100 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] hover:bg-slate-200/70 dark:hover:bg-[#002935] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-teal-100 bg-slate-100 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] hover:bg-slate-200/70 dark:hover:bg-[#002935] rounded-lg transition-colors whitespace-nowrap cursor-pointer disabled:opacity-70"
               >
                 {isBatchGeneratingImages ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5" />}
                 <span>
                   {isBatchGeneratingImages
-                    ? 'Đang tạo ảnh các cảnh...'
+                    ? `Đang tạo ảnh ${batchImageProgress ? `${batchImageProgress.current}/${batchImageProgress.total}` : 'các cảnh'}...`
                     : imageEngineMode === 'muse2api'
                     ? 'Tạo ảnh Muse2API tất cả cảnh'
                     : 'Tạo ảnh AI cho tất cả cảnh'}
                 </span>
               </button>
+              {isBatchGeneratingImages && (
+                <button
+                  type="button"
+                  onClick={handleStopBatchGenerateSceneImages}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-300 border border-rose-300 dark:border-rose-800/70 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  <span>Dừng</span>
+                </button>
+              )}
               <button
                 type="button"
                 disabled={blueprint.scenes.length >= 24}
@@ -1604,7 +1665,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           <div className="divide-y divide-slate-200 dark:divide-[#00464A]/80 border border-slate-200 dark:border-[#00464A] rounded-xl overflow-hidden">
             {blueprint.scenes.map((sc, idx) => {
               const busyImg = busySceneImageIds.has(sc.id);
+              const queuedImg = queuedSceneImageIds.has(sc.id);
               const busyVid = busySceneVideoIds.has(sc.id);
+              const sceneErr = sceneImageErrors[sc.id];
               return (
                 <div key={sc.id} className="p-4 bg-slate-50/40 dark:bg-[#000A10]/40 grid grid-cols-1 lg:grid-cols-12 gap-4">
                   {/* Visual Preview + Media Actions (4 cols) */}
@@ -1668,12 +1731,24 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     <div className="flex flex-wrap gap-1.5">
                       <button
                         type="button"
-                        disabled={busyImg}
+                        disabled={busyImg || queuedImg}
                         onClick={() => generateSingleSceneImage(sc)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-[#002935] text-slate-800 dark:text-teal-100 rounded transition-colors cursor-pointer"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-[#002935] text-slate-800 dark:text-teal-100 rounded transition-colors cursor-pointer disabled:opacity-60"
                       >
-                        {busyImg ? <Loader2 className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
-                        <span>Tạo ảnh AI</span>
+                        {busyImg || queuedImg ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <ImageIcon className="w-3 h-3" />
+                        )}
+                        <span>
+                          {busyImg
+                            ? 'Đang tạo ảnh...'
+                            : queuedImg
+                            ? 'Đang chờ lượt...'
+                            : sc.sceneImageDataUrl
+                            ? 'Tạo lại ảnh AI'
+                            : 'Tạo ảnh AI'}
+                        </span>
                       </button>
 
                       <label className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-[#002935] text-slate-800 dark:text-teal-100 rounded transition-colors cursor-pointer">
@@ -1709,6 +1784,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                         </span>
                       </button>
                     </div>
+                    {sceneErr && (
+                      <div className="p-2 rounded bg-rose-50 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-900/60 text-[11px] text-rose-700 dark:text-rose-300 leading-snug">
+                        {sceneErr}
+                      </div>
+                    )}
                   </div>
 
                   {/* Editable Scene Text Fields (8 cols) */}
@@ -1887,7 +1967,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               >
                 <option value="ai_online">Giọng đọc Online AI (Gemini Flash Lite TTS)</option>
                 <option value="offline_system">
-                  Giọng đọc Offline {capabilities?.localTools.offlineTts.available ? `(${capabilities.localTools.offlineTts.engine})` : '(VieNeu-TTS Tiếng Việt)'}
+                  {capabilities?.localTools.offlineTts.engineId === 'vieneu'
+                    ? 'Giọng đọc Offline · VieNeu-TTS Tiếng Việt (Sẵn sàng)'
+                    : 'Giọng đọc Offline · VieNeu-TTS Tiếng Việt (Cần tải model)'}
                 </option>
                 <option value="none">Không lồng tiếng (Chỉ hình + chữ + nhạc)</option>
               </select>
@@ -1951,10 +2033,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </div>
                 )}
 
-                {!capabilities?.localTools.offlineTts.available && (
+                {capabilities?.localTools.offlineTts.engineId !== 'vieneu' && (
                   <div className="space-y-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-900/60">
                     <p className="text-[11px] text-amber-800 dark:text-amber-200 leading-relaxed">
-                      Thư viện giọng đọc tiếng Việt Offline (<strong>VieNeu-TTS</strong>) chưa được tải về máy chủ này.
+                      Thư viện <strong>VieNeu-TTS</strong> (11 giọng Việt tự nhiên) chưa được cài trên máy này
+                      {capabilities?.localTools.offlineTts.available && capabilities.localTools.offlineTts.engine
+                        ? ` (hiện chỉ có ${capabilities.localTools.offlineTts.engine} dự phòng)`
+                        : ''}
+                      . Bấm nút bên dưới để tải và cài tự động:
                     </p>
                     <button
                       type="button"
@@ -1963,7 +2049,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-white bg-[#003B3E] hover:bg-[#002729] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
                     >
                       {isInstallingVieNeu ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                      <span>{isInstallingVieNeu ? 'Đang tải VieNeu-TTS...' : 'Tải & Cài VieNeu-TTS Offline'}</span>
+                      <span>{isInstallingVieNeu ? 'Đang tải VieNeu-TTS (~300MB)...' : 'Tải & Cài VieNeu-TTS Offline'}</span>
                     </button>
                   </div>
                 )}

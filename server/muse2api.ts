@@ -600,6 +600,47 @@ export async function chatWithMuse2ApiSpark(
   return text;
 }
 
+function formatMuseTaskError(rawErr: string, fallback: string): string {
+  const msg = String(rawErr || '').trim();
+  if (!msg) return fallback;
+  if (msg.includes('参考图上传未确认')) {
+    return `${msg} (Ảnh tham chiếu chưa xác nhận tải lên khung nhập Muse.ai — hãy cập nhật & khởi động lại Muse2API bản mới hoặc thử lại)`;
+  }
+  if (msg.includes('页面加载超时')) {
+    return `${msg} (Trang muse.ai tải quá thời gian chờ khung nhập — kiểm tra mạng/proxy rồi thử lại)`;
+  }
+  return msg;
+}
+
+async function createMuseTaskWithQueueWait<T>(
+  endpoint: string,
+  payload: Record<string, any>
+): Promise<T> {
+  let lastErr: any;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const res = await museFetch(
+        endpoint,
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        },
+        25_000
+      );
+      return await parseMuseResponseJson<T>(res);
+    } catch (err: any) {
+      lastErr = err;
+      const msg = String(err?.message || '').toLowerCase();
+      if (msg.includes('queue is full') || msg.includes('429')) {
+        await new Promise((r) => setTimeout(r, 4500));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 export async function generateImageViaMuse2Api(params: {
   prompt: string;
   aspectRatio?: '1:1' | '9:16' | '16:9';
@@ -607,39 +648,41 @@ export async function generateImageViaMuse2Api(params: {
   timeoutSec?: number;
 }): Promise<{ dataUrl: string; model: string }> {
   const cfg = resolveMuse2ApiConfig();
-  const effectiveTimeout = Math.max(60, params.timeoutSec || cfg.imageTimeoutSec);
+  const effectiveTimeout = Math.max(90, params.timeoutSec || cfg.imageTimeoutSec);
 
-  const createRes = await museFetch(
+  const created = await createMuseTaskWithQueueWait<{ id: string; status: string }>(
     '/v1/images/tasks',
     {
-      method: 'POST',
-      body: JSON.stringify({
-        model: 'muse-image',
-        prompt: params.prompt,
-        aspect_ratio: params.aspectRatio || '16:9',
-        response_format: 'url',
-        timeout: effectiveTimeout,
-        ...(params.referenceImageDataUrl ? { reference_image: params.referenceImageDataUrl } : {}),
-      }),
-    },
-    20_000
+      model: 'muse-image',
+      prompt: params.prompt,
+      aspect_ratio: params.aspectRatio || '16:9',
+      response_format: 'url',
+      timeout: effectiveTimeout,
+      ...(params.referenceImageDataUrl ? { reference_image: params.referenceImageDataUrl } : {}),
+    }
   );
-  const created = await parseMuseResponseJson<{ id: string; status: string }>(createRes);
   if (!created?.id) {
     throw new Error('Muse2API không trả về mã tác vụ tạo ảnh.');
   }
 
   const deadline = Date.now() + (effectiveTimeout + 30) * 1000;
   let taskResult: any = created;
+  let pollErrorCount = 0;
 
   while (Date.now() < deadline) {
     if (taskResult.status === 'completed') break;
     if (taskResult.status === 'failed') {
-      throw new Error(taskResult.error || 'Muse2API tạo ảnh thất bại.');
+      throw new Error(formatMuseTaskError(taskResult.error, 'Muse2API tạo ảnh thất bại.'));
     }
     await new Promise((r) => setTimeout(r, 2500));
-    const pollRes = await museFetch(`/v1/images/tasks/${encodeURIComponent(created.id)}`, {}, 15_000);
-    taskResult = await parseMuseResponseJson(pollRes);
+    try {
+      const pollRes = await museFetch(`/v1/images/tasks/${encodeURIComponent(created.id)}`, {}, 15_000);
+      taskResult = await parseMuseResponseJson(pollRes);
+      pollErrorCount = 0;
+    } catch (pollErr: any) {
+      pollErrorCount += 1;
+      if (pollErrorCount > 3) throw pollErr;
+    }
   }
 
   if (taskResult.status !== 'completed') {
@@ -679,38 +722,40 @@ export async function generateVideoBufferViaMuse2Api(params: {
   const effectiveTimeout = Math.max(90, params.timeoutSec || cfg.videoTimeoutSec);
   const clampedDur = Math.max(3, Math.min(12, Math.round(params.durationSec || 6)));
 
-  const createRes = await museFetch(
+  const created = await createMuseTaskWithQueueWait<{ id: string; status: string }>(
     '/v1/videos',
     {
-      method: 'POST',
-      body: JSON.stringify({
-        model: 'muse-video',
-        prompt: params.prompt,
-        duration: clampedDur,
-        aspect_ratio: params.aspectRatio,
-        size: params.aspectRatio,
-        timeout: effectiveTimeout,
-        ...(params.referenceImageDataUrl ? { reference_image: params.referenceImageDataUrl } : {}),
-      }),
-    },
-    20_000
+      model: 'muse-video',
+      prompt: params.prompt,
+      duration: clampedDur,
+      aspect_ratio: params.aspectRatio,
+      size: params.aspectRatio,
+      timeout: effectiveTimeout,
+      ...(params.referenceImageDataUrl ? { reference_image: params.referenceImageDataUrl } : {}),
+    }
   );
-  const created = await parseMuseResponseJson<{ id: string; status: string }>(createRes);
   if (!created?.id) {
     throw new Error('Muse2API không trả về mã tác vụ tạo video.');
   }
 
   const deadline = Date.now() + (effectiveTimeout + 45) * 1000;
   let taskState: any = created;
+  let pollErrorCount = 0;
 
   while (Date.now() < deadline) {
     if (taskState.status === 'completed' || taskState.status === 'succeeded') break;
     if (taskState.status === 'failed') {
-      throw new Error(taskState.error || 'Muse2API tạo video thất bại.');
+      throw new Error(formatMuseTaskError(taskState.error, 'Muse2API tạo video thất bại.'));
     }
     await new Promise((r) => setTimeout(r, 3500));
-    const pollRes = await museFetch(`/v1/videos/${encodeURIComponent(created.id)}`, {}, 15_000);
-    taskState = await parseMuseResponseJson(pollRes);
+    try {
+      const pollRes = await museFetch(`/v1/videos/${encodeURIComponent(created.id)}`, {}, 15_000);
+      taskState = await parseMuseResponseJson(pollRes);
+      pollErrorCount = 0;
+    } catch (pollErr: any) {
+      pollErrorCount += 1;
+      if (pollErrorCount > 3) throw pollErr;
+    }
   }
 
   if (taskState.status !== 'completed' && taskState.status !== 'succeeded') {

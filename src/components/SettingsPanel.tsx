@@ -1269,12 +1269,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </span>
               <span
                 className={
-                  capabilities?.localTools.offlineTts.available
+                  capabilities?.localTools.offlineTts.engineId === 'vieneu'
                     ? 'text-emerald-600 dark:text-emerald-400 font-medium'
                     : 'text-amber-600 dark:text-amber-400 font-medium'
                 }
               >
-                {capabilities?.localTools.offlineTts.available ? 'Sẵn sàng' : 'Chưa cài'}
+                {capabilities?.localTools.offlineTts.engineId === 'vieneu' ? 'Sẵn sàng' : 'Chưa cài VieNeu'}
               </span>
             </div>
             <p className="text-xs text-slate-600 dark:text-teal-100/75">
@@ -1282,7 +1282,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             </p>
             {capabilities?.localTools.offlineTts.engine && (
               <p className="text-[11px] font-mono text-slate-500 dark:text-teal-200/65 truncate">
-                {capabilities.localTools.offlineTts.engine}
+                {capabilities.localTools.offlineTts.engineId === 'vieneu'
+                  ? capabilities.localTools.offlineTts.engine
+                  : `Dự phòng tạm: ${capabilities.localTools.offlineTts.engine}`}
               </p>
             )}
             <button
