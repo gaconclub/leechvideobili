@@ -1877,7 +1877,93 @@ function parseLastJsonObject(raw: string): any | null {
 let cachedVieNeuPythonArgsPrefix: string[] = [];
 
 const VIENEU_RUNTIME_CHECK_CODE =
-  'import vieneu, huggingface_hub, onnxruntime, soundfile, soxr, librosa, numpy, requests; print("OK")';
+  'import vieneu, huggingface_hub, onnxruntime, soundfile, soxr, librosa, numpy, requests, tokenizers, yaml; print("OK")';
+
+interface PythonEnvMeta {
+  major: number;
+  minor: number;
+  micro: number;
+  bits: number;
+  machine: string;
+  gilDisabled: boolean;
+  raw: string;
+}
+
+async function inspectPythonEnvMeta(cmd: string, prefixArgs: string[]): Promise<PythonEnvMeta | null> {
+  try {
+    const res = await spawnPromise(
+      cmd,
+      [
+        ...prefixArgs,
+        '-c',
+        "import sys, struct, platform, sysconfig; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}|{struct.calcsize(\"P\")*8}|{platform.machine()}|{sysconfig.get_config_var(\"Py_GIL_DISABLED\") or 0}')",
+      ],
+      process.cwd(),
+      8000
+    );
+    if (res.code !== 0) return null;
+    const line = res.stdout.trim().split(/\r?\n/).pop()?.trim() || '';
+    const [verStr, bitsStr, machine = '', gilStr = '0'] = line.split('|');
+    const [majS, minS, micS] = (verStr || '').split('.');
+    const major = Number(majS);
+    const minor = Number(minS);
+    const micro = Number(micS || 0);
+    const bits = Number(bitsStr);
+    if (!Number.isFinite(major) || !Number.isFinite(minor) || !Number.isFinite(bits)) return null;
+    return {
+      major,
+      minor,
+      micro,
+      bits,
+      machine: machine.trim(),
+      gilDisabled: gilStr.trim() === '1',
+      raw: `Python ${verStr} (${bits}-bit, ${machine || 'unknown'}${gilStr.trim() === '1' ? ', free-threaded' : ''})`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isCompatibleVieNeuPython(meta: PythonEnvMeta | null): boolean {
+  if (!meta) return false;
+  if (meta.major !== 3 || meta.minor < 10 || meta.minor > 14) return false;
+  if (meta.gilDisabled) return false;
+  if (process.platform === 'win32' && meta.bits !== 64) return false;
+  return true;
+}
+
+function getWindowsPythonCandidates(): { cmd: string; prefixArgs: string[] }[] {
+  const localAppData = process.env.LOCALAPPDATA || '';
+  const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+  const versions = ['312', '311', '313', '310', '314'];
+  const explicitPaths: string[] = [];
+
+  for (const v of versions) {
+    if (localAppData) {
+      explicitPaths.push(path.join(localAppData, 'Programs', 'Python', `Python${v}`, 'python.exe'));
+      explicitPaths.push(path.join(localAppData, 'Programs', 'Python', `Python${v}-arm64`, 'python.exe'));
+    }
+    explicitPaths.push(path.join(programFiles, `Python${v}`, 'python.exe'));
+    explicitPaths.push(`C:\\Python${v}\\python.exe`);
+  }
+
+  return [
+    { cmd: 'py', prefixArgs: ['-3.12-64'] },
+    { cmd: 'py', prefixArgs: ['-3.11-64'] },
+    { cmd: 'py', prefixArgs: ['-3.13-64'] },
+    { cmd: 'py', prefixArgs: ['-3.10-64'] },
+    { cmd: 'py', prefixArgs: ['-3.14-64'] },
+    { cmd: 'py', prefixArgs: ['-3.12'] },
+    { cmd: 'py', prefixArgs: ['-3.11'] },
+    { cmd: 'py', prefixArgs: ['-3.13'] },
+    { cmd: 'py', prefixArgs: ['-3.10'] },
+    { cmd: 'py', prefixArgs: ['-3.14'] },
+    { cmd: 'py', prefixArgs: ['-3'] },
+    ...explicitPaths.filter((p) => fs.existsSync(p)).map((cmd) => ({ cmd, prefixArgs: [] })),
+    { cmd: 'python', prefixArgs: [] },
+    { cmd: 'python3', prefixArgs: [] },
+  ];
+}
 
 async function resolveVieNeuPythonCommand(): Promise<{ cmd: string; prefixArgs: string[] } | null> {
   if (cachedVieNeuPythonCmd && fs.existsSync(getVieNeuScriptPath())) {
@@ -1893,11 +1979,7 @@ async function resolveVieNeuPythonCommand(): Promise<{ cmd: string; prefixArgs: 
     { cmd: path.join(process.cwd(), '.venv-vieneu', relPy), prefixArgs: [] },
     { cmd: path.join(process.cwd(), '.venv', relPy), prefixArgs: [] },
     ...(isWin
-      ? [
-          { cmd: 'python', prefixArgs: [] },
-          { cmd: 'py', prefixArgs: ['-3'] },
-          { cmd: 'python3', prefixArgs: [] },
-        ]
+      ? getWindowsPythonCandidates()
       : [
           { cmd: 'python3', prefixArgs: [] },
           { cmd: 'python', prefixArgs: [] },
@@ -2222,6 +2304,8 @@ export async function installAndWarmupVieNeu(): Promise<{
     'onnxruntime>=1.20.0',
     'sea-g2p>=0.10.0',
     'huggingface_hub>=0.25.0',
+    'tokenizers>=0.20.0',
+    'PyYAML>=6.0',
     'soundfile>=0.12.1',
     'soxr>=0.4.0',
     'librosa>=0.10.2',
@@ -2230,37 +2314,85 @@ export async function installAndWarmupVieNeu(): Promise<{
     'requests>=2.31.0',
   ];
 
-  const ensureVenvWithAllPackages = async (): Promise<{ cmd: string; prefixArgs: string[] }> => {
-    if (!fs.existsSync(venvPy)) {
-      const pyCandidates: { cmd: string; prefixArgs: string[] }[] = isWin
-        ? [
-            { cmd: 'python', prefixArgs: [] },
-            { cmd: 'py', prefixArgs: ['-3'] },
-            { cmd: 'python3', prefixArgs: [] },
-          ]
-        : [
-            { cmd: 'python3', prefixArgs: [] },
-            { cmd: 'python', prefixArgs: [] },
-          ];
+  const findCompatibleBasePython = async (): Promise<{
+    selected: { cmd: string; prefixArgs: string[]; meta: PythonEnvMeta } | null;
+    foundIncompatible: string[];
+  }> => {
+    const pyCandidates: { cmd: string; prefixArgs: string[] }[] = isWin
+      ? getWindowsPythonCandidates()
+      : [
+          { cmd: 'python3', prefixArgs: [] },
+          { cmd: 'python', prefixArgs: [] },
+        ];
 
-      let basePy: { cmd: string; prefixArgs: string[] } | null = null;
-      for (const cand of pyCandidates) {
+    const foundIncompatible: string[] = [];
+    for (const cand of pyCandidates) {
+      const meta = await inspectPythonEnvMeta(cand.cmd, cand.prefixArgs);
+      if (!meta) continue;
+      if (isCompatibleVieNeuPython(meta)) {
+        return { selected: { ...cand, meta }, foundIncompatible };
+      }
+      if (!foundIncompatible.includes(meta.raw)) {
+        foundIncompatible.push(meta.raw);
+      }
+    }
+    return { selected: null, foundIncompatible };
+  };
+
+  const ensureVenvWithAllPackages = async (): Promise<{ cmd: string; prefixArgs: string[] }> => {
+    if (fs.existsSync(venvPy)) {
+      const existingMeta = await inspectPythonEnvMeta(venvPy, []);
+      if (!isCompatibleVieNeuPython(existingMeta)) {
         try {
-          const chk = await spawnPromise(cand.cmd, [...cand.prefixArgs, '--version'], process.cwd(), 8000);
-          if (chk.code === 0 && (chk.stdout + chk.stderr).toLowerCase().includes('python 3')) {
-            basePy = cand;
-            break;
+          fs.rmSync(venvDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if (!fs.existsSync(venvPy)) {
+      let { selected: basePy, foundIncompatible } = await findCompatibleBasePython();
+
+      if (!basePy && isWin) {
+        try {
+          await spawnPromise(
+            'winget',
+            [
+              'install',
+              '--id',
+              'Python.Python.3.12',
+              '--architecture',
+              'x64',
+              '--scope',
+              'user',
+              '--exact',
+              '--silent',
+              '--accept-package-agreements',
+              '--accept-source-agreements',
+            ],
+            process.cwd(),
+            240_000
+          );
+          const retryProbe = await findCompatibleBasePython();
+          basePy = retryProbe.selected;
+          if (retryProbe.foundIncompatible.length > 0) {
+            foundIncompatible = retryProbe.foundIncompatible;
           }
         } catch {
-          // try next python candidate
+          // winget unavailable or blocked
         }
       }
 
       if (!basePy) {
+        const detectedNote =
+          foundIncompatible.length > 0
+            ? ` (Hiện máy đang dùng: ${foundIncompatible.join(', ')} — không có gói wheel onnxruntime/soxr tương thích).`
+            : '';
         throw new Error(
           isWin
-            ? 'Không tìm thấy Python 3 trên máy Windows. Hãy cài Python 3.11+ (https://www.python.org/downloads/ hoặc chạy lệnh: winget install Python.Python.3.11 --source winget), sau đó mở lại app và bấm "Tải & Cài VieNeu Offline".'
-            : 'Không tìm thấy Python 3 trên máy chủ để cài VieNeu-TTS Offline.'
+            ? `VieNeu-TTS ONNX yêu cầu Python 64-bit bản 3.10–3.14${detectedNote} Hãy chạy lệnh: winget install Python.Python.3.12 --architecture x64 --source winget (hoặc tải bản Windows installer 64-bit tại https://www.python.org/downloads/), mở lại app và bấm "Nạp lại model VieNeu".`
+            : 'Không tìm thấy Python 3.10–3.14 trên máy chủ để cài VieNeu-TTS Offline.'
         );
       }
 
@@ -2293,13 +2425,25 @@ export async function installAndWarmupVieNeu(): Promise<{
       }
     }
 
+    await spawnPromise(venvPy, ['-m', 'pip', 'install', '--upgrade', 'pip'], process.cwd(), 90_000).catch(() => {});
+
     const installPkg = await spawnPromise(venvPy, ['-m', 'pip', 'install', '--no-deps', 'vieneu>=3.8.0'], process.cwd(), 300_000);
     if (installPkg.code !== 0) {
       throw new Error(`Lỗi cài đặt gói vieneu: ${installPkg.stderr || installPkg.stdout}`);
     }
-    const installDeps = await spawnPromise(venvPy, ['-m', 'pip', 'install', ...baseDeps], process.cwd(), 420_000);
+    let installDeps = await spawnPromise(venvPy, ['-m', 'pip', 'install', ...baseDeps], process.cwd(), 420_000);
     if (installDeps.code !== 0) {
-      throw new Error(`Lỗi cài đặt thư viện ONNX cho VieNeu: ${installDeps.stderr || installDeps.stdout}`);
+      installDeps = await spawnPromise(
+        venvPy,
+        ['-m', 'pip', 'install', '--index-url', 'https://pypi.org/simple', ...baseDeps],
+        process.cwd(),
+        420_000
+      );
+    }
+    if (installDeps.code !== 0) {
+      const venvMeta = await inspectPythonEnvMeta(venvPy, []);
+      const metaLabel = venvMeta ? ` [${venvMeta.raw}]` : '';
+      throw new Error(`Lỗi cài đặt thư viện ONNX cho VieNeu${metaLabel}: ${installDeps.stderr || installDeps.stdout}`);
     }
     return { cmd: venvPy, prefixArgs: [] };
   };
