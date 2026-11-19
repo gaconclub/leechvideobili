@@ -2758,6 +2758,44 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </div>
                 </div>
 
+                {/* Dedicated Skill Option: Phong cách quay phim điện ảnh */}
+                <div
+                  className={`rounded-xl border p-3 transition ${
+                    videoStyle === 'cinematic_filmmaking'
+                      ? 'bg-gradient-to-r from-amber-500/12 via-violet-500/10 to-cyan-500/10 border-amber-400/50 dark:border-amber-400/45'
+                      : 'bg-slate-50/90 dark:bg-[#0c1021]/80 border-slate-200 dark:border-slate-400/20'
+                  }`}
+                >
+                  <label className="flex items-start justify-between gap-3 cursor-pointer select-none">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Clapperboard className="w-4 h-4 text-amber-500 dark:text-amber-300 shrink-0" />
+                        <span className="text-xs font-bold text-slate-900 dark:text-white">
+                          Sử dụng phong cách dựng phim điện ảnh
+                        </span>
+                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-400/30">
+                          Skill: Phong cách quay phim điện ảnh
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                        Áp dụng ngữ pháp dựng phim nhịp động từ video mẫu: khung hình xuyên tiền cảnh 3 lớp, góc thấp uy quyền, cắt nhịp Macro mắt/bàn tay, Two-shot xóa phông, ánh sáng viền &amp; quỹ đạo Orbit mượt mà.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={videoStyle === 'cinematic_filmmaking'}
+                      onChange={(e) => {
+                        const nextStyle: StudioVideoStyle = e.target.checked ? 'cinematic_filmmaking' : 'cinematic';
+                        setVideoStyle(nextStyle);
+                        if (blueprint) {
+                          setBlueprint({ ...blueprint, videoStyle: nextStyle });
+                        }
+                      }}
+                      className="mt-0.5 w-4 h-4 rounded accent-amber-500 cursor-pointer shrink-0"
+                    />
+                  </label>
+                </div>
+
                 <div className="space-y-2">
                   <input
                     type="text"
@@ -3478,7 +3516,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       />
                     </label>
                     <label className="md:col-span-2 space-y-1">
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">Phong cách</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">Phong cách quay / dựng</span>
                       <select
                         value={blueprint.videoStyle || videoStyle}
                         onChange={(e) => {

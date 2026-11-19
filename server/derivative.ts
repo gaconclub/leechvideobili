@@ -11,12 +11,19 @@ import {
   generateVideoBufferViaMuse2Api,
   getMuse2ApiStatus,
 } from './muse2api';
+import {
+  buildCinematicFilmmakingScriptDirective,
+  CINEMATIC_FILMMAKING_SKILL,
+  enhancePromptWithCinematicSkill,
+  getCinematicShotRoleForScene,
+} from './skills/cinematicFilmmakingSkill';
 
 export type StudioCreationMode = 'creative' | 'derivative';
 export type StudioScriptMode = 'series' | 'independent_batch';
 export type StudioVideoStyle =
   | 'professional'
   | 'cinematic'
+  | 'cinematic_filmmaking'
   | 'anime'
   | 'stickman'
   | '3d_animation'
@@ -1202,6 +1209,11 @@ const STUDIO_VIDEO_STYLE_META: Record<
       'Cinematic film production still, shot on 35mm anamorphic lens, shallow depth of field, rich filmic color grading, dramatic volumetric lighting and atmospheric rim light, high production value',
     visualToneVi: 'Phong cách điện ảnh 35mm, chiều sâu trường ảnh, ánh sáng kịch tính giàu cảm xúc',
   },
+  cinematic_filmmaking: {
+    labelVi: CINEMATIC_FILMMAKING_SKILL.nameVi,
+    promptDirective: CINEMATIC_FILMMAKING_SKILL.promptDirectiveEn,
+    visualToneVi: CINEMATIC_FILMMAKING_SKILL.visualToneVi,
+  },
   anime: {
     labelVi: 'Anime (Hoạt hình Nhật Bản 2D)',
     promptDirective:
@@ -1328,7 +1340,16 @@ export function compileConsistentScenePrompt(params: {
       parts.push(`Ending State: ${sc.sceneEndState.trim()}.`);
     }
   }
-  return parts.join(' ');
+  const compiled = parts.join(' ');
+  if (styleKey === 'cinematic_filmmaking') {
+    return enhancePromptWithCinematicSkill({
+      basePrompt: compiled,
+      mediaType,
+      sceneIndex: sc.sceneIndex,
+      totalScenes: params.totalScenes,
+    });
+  }
+  return compiled;
 }
 
 export interface StudioCharacterRefInput {
@@ -1579,6 +1600,7 @@ QUY TẮC THỜI LƯỢNG & BỐI CẢNH:
 - Tổng "durationSec" của tất cả các cảnh cộng lại phải xấp xỉ ${desiredTotalSec} giây.
 ${params.characterSummary?.trim() ? `DANH SÁCH NHÂN VẬT THAM CHIẾU ĐÃ KHÓA (BẮT BUỘC dùng ĐÚNG tên nhân vật dưới đây trong "charactersInScene", "dialogue", "imagePrompt" và "videoPrompt" để hệ thống ánh xạ đúng ảnh & giọng nói):\n${params.characterSummary.trim()}` : ''}
 ${lockedProjectAnchors ? `\nHỒ SƠ DỰ ÁN ĐÃ KHÓA (BẮT BUỘC GIỮ NGUYÊN ĐỒNG BỘ):\n${lockedProjectAnchors}` : ''}
+${videoStyle === 'cinematic_filmmaking' ? buildCinematicFilmmakingScriptDirective(desiredScenes, avgSceneDur) : ''}
 ${params.customInstruction?.trim() ? `Yêu cầu bổ sung từ đạo diễn: ${params.customInstruction.trim()}` : ''}
 
 TIÊU CHUẨN CHẤT LƯỢNG BẮT BUỘC (KHÔNG ĐƯỢC VIẾT SƠ SÀI):
@@ -1959,12 +1981,16 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
       const charactersInScene = String(sc?.charactersInScene || '').trim();
       const actionDetail = String(sc?.actionDetail || '').trim();
       const settingDetail = String(sc?.settingDetail || '').trim();
-      const cameraAngle = String(sc?.cameraAngle || '').trim();
-      const cameraMovement = String(sc?.cameraMovement || '').trim();
-      const cameraEquipment = String(sc?.cameraEquipment || '').trim();
-      const lighting = String(sc?.lighting || '').trim();
+      const skillRole =
+        videoStyle === 'cinematic_filmmaking'
+          ? getCinematicShotRoleForScene(i + 1, Math.max(1, rawScenes.length))
+          : null;
+      const cameraAngle = String(sc?.cameraAngle || skillRole?.angleVi || '').trim();
+      const cameraMovement = String(sc?.cameraMovement || skillRole?.movementVi || '').trim();
+      const cameraEquipment = String(sc?.cameraEquipment || skillRole?.equipmentVi || '').trim();
+      const lighting = String(sc?.lighting || skillRole?.lightingVi || '').trim();
       const costume = String(sc?.costume || '').trim();
-      const shotStyle = String(sc?.shotStyle || videoStyleMeta.labelVi).trim();
+      const shotStyle = String(sc?.shotStyle || skillRole?.shotStyleVi || videoStyleMeta.labelVi).trim();
       const dialogue = String(sc?.dialogue || '').trim();
       const continuityNote = String(sc?.continuityNote || '').trim();
       const sceneEndState = String(sc?.sceneEndState || '').trim();
@@ -2900,14 +2926,24 @@ export async function generateStudioImage(params: {
         });
 
   const buildScenePrompt = (refs: StudioCharacterRefInput[], mapping: string) => {
+    let basePrompt = '';
     if (params.mode === 'character') {
-      return `${consistencyBlock} Create a clean, consistent studio character turnaround / portrait reference sheet suitable for reusing identically across all video scenes. Character description: ${params.prompt}. Crisp framing, balanced lighting, no overlaid watermarks, subtitles, or UI text.`;
-    }
-    if (refs.length > 0) {
+      basePrompt = `${consistencyBlock} Create a clean, consistent studio character turnaround / portrait reference sheet suitable for reusing identically across all video scenes. Character description: ${params.prompt}. Crisp framing, balanced lighting, no overlaid watermarks, subtitles, or UI text.`;
+    } else if (refs.length > 0) {
       const refNames = refs.map((r, i) => `#${i + 1}: ${r.name || `Nhân vật ${i + 1}`}`).join(', ');
-      return `${consistencyBlock} ${mapping} Create a cohesive storyboard scene strictly preserving the exact character identities, faces, hairstyles, proportions, and outfits of ALL attached character reference photos (${refNames}). Scene prompt: ${params.prompt}. No overlaid subtitles, speech bubbles, or watermarks.`;
+      basePrompt = `${consistencyBlock} ${mapping} Create a cohesive storyboard scene strictly preserving the exact character identities, faces, hairstyles, proportions, and outfits of ALL attached character reference photos (${refNames}). Scene prompt: ${params.prompt}. No overlaid subtitles, speech bubbles, or watermarks.`;
+    } else {
+      basePrompt = `${consistencyBlock} Create a crisp, cohesive storyboard scene: ${params.prompt}. No overlaid subtitles, text, or watermarks.`;
     }
-    return `${consistencyBlock} Create a crisp, cohesive storyboard scene: ${params.prompt}. No overlaid subtitles, text, or watermarks.`;
+    if (params.mode === 'scene' && params.videoStyle === 'cinematic_filmmaking') {
+      return enhancePromptWithCinematicSkill({
+        basePrompt,
+        mediaType: 'image',
+        sceneIndex: params.sceneIndex,
+        totalScenes: params.totalScenes,
+      });
+    }
+    return basePrompt;
   };
 
   if (params.engine === 'muse2api') {
@@ -3035,9 +3071,18 @@ export async function generateSceneVideoWithOmniFlash(params: {
     .filter(Boolean)
     .join(' ');
 
-  const promptText = params.sceneImageDataUrl
+  const baseVideoPrompt = params.sceneImageDataUrl
     ? `${anchorLines} Animate this exact keyframe scene smoothly with natural continuous real-time motion, keeping every character identity, face, hair, costume & setting identical: ${params.prompt}. No overlaid text or watermarks.`
     : `${anchorLines} High-definition cohesive video scene with continuous real-time action and smooth camera motion: ${params.prompt}. Cohesive lighting, no overlaid text or watermarks.`;
+  const promptText =
+    params.videoStyle === 'cinematic_filmmaking'
+      ? enhancePromptWithCinematicSkill({
+          basePrompt: baseVideoPrompt,
+          mediaType: 'video',
+          sceneIndex: params.sceneIndex,
+          totalScenes: params.totalScenes,
+        })
+      : baseVideoPrompt;
 
   if (params.engine === 'muse2api') {
     const museRefList = Array.from(

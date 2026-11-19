@@ -6189,7 +6189,7 @@ async function startServer() {
     } catch {
       // ignore package.json read error
     }
-    return '1.0.2';
+    return '1.0.3';
   };
 
   app.get('/api/system/update-status', async (_req, res) => {

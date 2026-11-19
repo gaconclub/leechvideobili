@@ -251,6 +251,7 @@ export type StudioScriptMode = 'series' | 'independent_batch';
 export type StudioVideoStyle =
   | 'professional'
   | 'cinematic'
+  | 'cinematic_filmmaking'
   | 'anime'
   | 'stickman'
   | '3d_animation'

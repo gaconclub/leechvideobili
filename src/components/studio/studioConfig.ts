@@ -32,6 +32,12 @@ export const VIDEO_STYLE_OPTIONS: {
     shotDefault: 'Quay điện ảnh 35mm anamorphic, chiều sâu trường ảnh sâu',
   },
   {
+    value: 'cinematic_filmmaking',
+    label: 'Phong cách quay phim điện ảnh (Skill riêng)',
+    desc: 'Khung hình xuyên tiền cảnh 3 lớp, góc thấp uy quyền, cắt nhịp Macro mắt/bàn tay, Two-shot xóa phông & Orbit mượt',
+    shotDefault: 'Quay & dựng phim điện ảnh nhịp động: xuyên tiền cảnh 3 lớp, góc thấp power-shot, macro mắt/chi tiết & Steadicam orbit',
+  },
+  {
     value: 'anime',
     label: 'Anime',
     desc: 'Hoạt hình Nhật Bản 2D sắc nét, màu rực rỡ, giữ chuẩn tạo hình',
@@ -213,6 +219,11 @@ export function compileScenePromptClient(params: {
   }
   if (mediaType === 'video' && sc.sceneEndState?.trim()) {
     segments.push(`Trạng thái cuối cảnh: ${sc.sceneEndState.trim()}`);
+  }
+  if (params.videoStyle === 'cinematic_filmmaking') {
+    segments.push(
+      'Cinematic Filmmaking Skill: Bố cục 3 lớp xuyên tiền cảnh, tương phản sáng tối điện ảnh kèm ánh sáng viền (rim light), chuyển động máy mượt mà theo nhịp dựng và vi biểu cảm chân thực'
+    );
   }
   return segments.join('. ');
 }
