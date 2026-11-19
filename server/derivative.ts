@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -12,12 +12,24 @@ import {
   getMuse2ApiStatus,
 } from './muse2api';
 
+export type StudioCreationMode = 'creative' | 'derivative';
+export type StudioScriptMode = 'series' | 'independent_batch';
+export type StudioVideoStyle =
+  | 'professional'
+  | 'cinematic'
+  | 'anime'
+  | 'stickman'
+  | '3d_animation'
+  | 'documentary'
+  | 'comic'
+  | 'vlog';
+
 export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video';
-export type DerivativeStylePreset = 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
+export type DerivativeStylePreset = 'none' | 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
 export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
 export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploaded';
-export type DerivativeAspectRatio = '9:16' | '16:9';
+export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
 export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api';
 export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
@@ -40,14 +52,41 @@ export interface DerivativeSourceInput {
   hasAudio?: boolean;
 }
 
+export interface ReferenceVideoAnalysis {
+  mainTheme: string;
+  plotProgression: string;
+  characterTraits: string;
+  settingAndSpace: string;
+  visualStyle: string;
+  cameraAndMovement: string;
+  lightingAndColor: string;
+  editingPacing: string;
+  dialogueAndAudio: string;
+}
+
 export interface DerivativeScene {
   id: string;
   sceneIndex: number;
+  sceneTitle?: string;
+  sceneSummary?: string;
   durationSec: number;
   sourceVideoIndex: number;
   sourceStartPercent: number;
   onScreenText: string;
+  charactersInScene?: string;
+  settingDetail?: string;
+  actionDetail?: string;
+  cameraAngle?: string;
+  lighting?: string;
+  costume?: string;
+  cameraMovement?: string;
+  shotStyle?: string;
+  dialogue?: string;
   narration: string;
+  imagePrompt?: string;
+  videoPrompt?: string;
+  continuityNote?: string;
+  sceneEndState?: string;
   visualNote?: string;
   brollKeywordEn?: string;
   sceneImageDataUrl?: string;
@@ -67,6 +106,21 @@ export interface DerivativeSourceInsight {
 }
 
 export interface DerivativeBlueprint {
+  mode?: StudioCreationMode;
+  scriptMode?: StudioScriptMode;
+  batchIndex?: number;
+  batchTotal?: number;
+  sharedSpiritNote?: string;
+  targetDurationSec?: number;
+  ideaPrompt?: string;
+  videoStyle?: StudioVideoStyle;
+  characterBible?: string;
+  settingBible?: string;
+  visualStyleBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
+  enableVoiceover?: boolean;
+  referenceAnalysis?: ReferenceVideoAnalysis;
   learnedSummary: string;
   keyTakeaways: string[];
   hookFormula: string;
@@ -178,6 +232,8 @@ function isTransientGemini503Error(err: any): boolean {
     raw.includes('504') ||
     raw.includes('econnreset') ||
     raw.includes('etimedout') ||
+    raw.includes('timeout') ||
+    raw.includes('aborted') ||
     raw.includes('fetch failed')
   );
 }
@@ -727,6 +783,7 @@ async function gatherSourceContexts(sources: DerivativeSourceInput[]): Promise<E
 }
 
 const STYLE_LABELS: Record<DerivativeStylePreset, string> = {
+  none: 'Tắt kiểu dẫn chuyện cố định (Sáng tạo tự do theo mạch câu chuyện/ý tưởng gốc)',
   summary_fast: 'Tóm tắt & Điểm tin nhanh gọn, nhịp cắt dứt khoát',
   storytelling_review: 'Kể chuyện / Review cuốn hút có mở bài - cao trào - kết luận',
   top_list: 'Tổng hợp Top điểm nổi bật / So sánh góc nhìn đa chiều',
@@ -903,6 +960,8 @@ async function generateBlueprintViaOpenAiCompatible(params: {
   avgSceneDur: number;
   wordsMin: number;
   wordsMax: number;
+  enableVoiceover: boolean;
+  isDerivative: boolean;
 }): Promise<any> {
   const cfg = resolveOpenAiCompatibleConfig(params.provider);
   if (!cfg.apiKey) {
@@ -911,30 +970,68 @@ async function generateBlueprintViaOpenAiCompatible(params: {
     );
   }
 
+  const refBlock = params.isDerivative
+    ? `
+  "referenceAnalysis": {
+    "mainTheme": "Nội dung & chủ đề chính của video tham chiếu",
+    "plotProgression": "Cốt truyện & diễn biến nhịp chính",
+    "characterTraits": "Nhân vật & đặc điểm nhận dạng trong video gốc",
+    "settingAndSpace": "Bối cảnh & không gian video gốc",
+    "visualStyle": "Phong cách hình ảnh video gốc",
+    "cameraAndMovement": "Góc máy & chuyển động camera gốc",
+    "lightingAndColor": "Ánh sáng & bảng màu gốc",
+    "editingPacing": "Nhịp độ dựng phim",
+    "dialogueAndAudio": "Lời thoại, âm thanh & giọng đọc gốc (nếu có)"
+  },`
+    : '';
+
   const schemaInstruction = `
 TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU (không markdown, không văn bản thừa):
 {
-  "learnedSummary": "Tóm tắt 2-3 câu nội dung cốt lõi học được",
+  "learnedSummary": "Tóm tắt 2-3 câu ý tưởng cốt lõi / nội dung sáng tạo mới",
+  "characterBible": "Character Reference: Mô tả cực chi tiết ngoại hình cố định từng nhân vật (tuổi, khuôn mặt, tóc, dáng, đặc điểm nhận diện)",
+  "settingBible": "Environment Reference: Hồ sơ bối cảnh, địa điểm, kiến trúc, thời gian & môi trường xuyên suốt",
+  "visualStyleBible": "Visual Style Reference: Phong cách hình ảnh, chất liệu, ống kính & bảng màu xuyên suốt",
+  "costumeBible": "Costume Reference: Trang phục & phụ kiện chuẩn giữ nguyên giữa các cảnh",
+  "continuityBible": "Story Continuity: Quy tắc mạch liên tục câu chuyện & trạng thái chuyển cảnh",${refBlock}
   "keyTakeaways": ["ý 1", "ý 2", "ý 3", "ý 4"],
   "hookFormula": "Công thức mở đầu & giữ chân",
-  "sourceKeyPoints": ["1 câu bài học video #1", ...],
-  "derivativeTitle": "Tiêu đề video phái sinh mới",
+  "sourceKeyPoints": ["1 câu điểm nhấn / bài học video #1"],
+  "derivativeTitle": "Tiêu đề video mới hấp dẫn",
   "derivativeHook": "Câu hook tối đa 12 chữ hiện 3.5s đầu",
   "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4"],
   "scenes": [
     {
       "sceneIndex": 1,
+      "sceneTitle": "Tên phân cảnh ngắn gọn",
+      "sceneSummary": "Mô tả diễn biến chính của phân cảnh",
       "durationSec": ${params.avgSceneDur},
       "sourceVideoIndex": 0,
       "sourceStartPercent": 15,
+      "charactersInScene": "Tên nhân vật xuất hiện trong cảnh",
+      "settingDetail": "Không gian, địa điểm, thời gian cụ thể khớp Environment Reference",
+      "actionDetail": "Hành vi và diễn biến cụ thể của nhân vật",
+      "cameraAngle": "Cận cảnh / Trung cảnh / Toàn cảnh / Góc thấp / Góc cao...",
+      "cameraMovement": "Tracking shot / Slow dolly-in / Handheld / Crane / Static...",
+      "lighting": "Ánh sáng tự nhiên / Điện ảnh / Ngược sáng / Neon...",
+      "costume": "Trang phục cụ thể khớp Costume Reference",
+      "shotStyle": "Điện ảnh / Tài liệu / Anime / Quảng cáo...",
+      "dialogue": "Lời thoại nhân vật nói trong cảnh (hoặc để trống nếu cảnh không thoại)",
+      "narration": "${
+        params.enableVoiceover
+          ? `Nội dung lồng tiếng / thuyết minh tự nhiên (${params.wordsMin}-${params.wordsMax} chữ)`
+          : ''
+      }",
       "onScreenText": "Chữ phụ đề ngắn tối đa 12 chữ",
-      "narration": "Lời đọc thuyết minh tiếng Việt tự nhiên từ ${params.wordsMin} đến ${params.wordsMax} chữ khớp với ${params.avgSceneDur} giây",
-      "visualNote": "Ghi chú bối cảnh hình ảnh tiếng Việt",
+      "continuityNote": "Tiếp nối trực tiếp từ trạng thái cuối phân cảnh trước",
+      "sceneEndState": "Trạng thái cuối cùng của nhân vật/vị trí/hành động khi kết thúc cảnh này",
+      "imagePrompt": "Prompt hình ảnh CỰC KỲ CHI TIẾT mô tả đầy đủ nhân vật (ngoại hình + trang phục cố định), bối cảnh, hành động đóng khung, góc máy, ánh sáng, phong cách hình ảnh đồng nhất",
+      "videoPrompt": "Prompt video CỰC KỲ CHI TIẾT mô tả hành động liên tục, chuyển động nhân vật, chuyển động camera (${'kiểu quay'}), ánh sáng, bối cảnh & trang phục đồng nhất với imagePrompt",
       "brollKeywordEn": "2-4 English keywords for Wikimedia Commons stock video lookup"
     }
   ]
 }
-BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh tách biệt.`;
+BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh đánh số sceneIndex lần lượt từ 1 đến ${params.desiredScenes} và nối tiếp liền mạch nhau.`;
 
   const userContent: any[] = [{ type: 'text', text: `${params.promptText}\n\n${schemaInstruction}` }];
   for (const ctx of params.contexts.slice(0, 4)) {
@@ -1088,21 +1185,223 @@ const OUTPUT_LANG_LABELS: Record<DerivativeOutputLanguage, string> = {
   vi_en: 'Song ngữ Việt - Anh (mở câu Tiếng Việt chính xác, nhấn thuật ngữ Tiếng Anh tự nhiên)',
 };
 
+const STUDIO_VIDEO_STYLE_META: Record<
+  StudioVideoStyle,
+  { labelVi: string; promptDirective: string; visualToneVi: string }
+> = {
+  professional: {
+    labelVi: 'Chuyên nghiệp (Studio / Doanh nghiệp)',
+    promptDirective:
+      'Ultra-clean professional commercial studio photography & 4K broadcast production style, crisp sharp focus, balanced studio key lighting, refined corporate/editorial color grading, consistent real-world proportions',
+    visualToneVi: 'Phong cách chuyên nghiệp, sắc nét chuẩn studio truyền hình, ánh sáng cân bằng hiện đại',
+  },
+  cinematic: {
+    labelVi: 'Điện ảnh (Cinematic 35mm)',
+    promptDirective:
+      'Cinematic film production still, shot on 35mm anamorphic lens, shallow depth of field, rich filmic color grading, dramatic volumetric lighting and atmospheric rim light, high production value',
+    visualToneVi: 'Phong cách điện ảnh 35mm, chiều sâu trường ảnh, ánh sáng kịch tính giàu cảm xúc',
+  },
+  anime: {
+    labelVi: 'Anime (Hoạt hình Nhật Bản 2D)',
+    promptDirective:
+      'High-detail Japanese 2D anime animation art style, crisp clean linework, vibrant cel-shaded lighting, expressive anime eyes and proportions, Makoto Shinkai / Ufotable inspired atmospheric backgrounds, identical character sheet across every frame',
+    visualToneVi: 'Phong cách Anime 2D Nhật Bản sắc nét, màu sắc sống động, đồng bộ tạo hình nhân vật',
+  },
+  stickman: {
+    labelVi: 'Người que (Stickman / Minimalist Animation)',
+    promptDirective:
+      'Clean 2D stickman (stick-figure) explainer animation style: expressive minimalist black-ink stick-figure characters with clear round heads, distinct simple accessories/hair/outfit markers for character identity, clean crisp vector background with subtle soft color accents, high contrast, easy-to-read visual storytelling',
+    visualToneVi: 'Hoạt hình người que (Stickman) nét vẽ tối giản rõ ràng, biểu cảm sinh động trên nền sạch',
+  },
+  '3d_animation': {
+    labelVi: 'Hoạt hình 3D (Stylized CGI)',
+    promptDirective:
+      'High-end 3D stylized CGI animation (modern Pixar / Unreal Engine 5 look), soft global illumination, subsurface scattering skin textures, expressive 3D character rig with locked proportions and outfit',
+    visualToneVi: 'Hoạt hình 3D CGI mượt mà, ánh sáng khối mềm mại chuẩn phim hoạt hình hiện đại',
+  },
+  documentary: {
+    labelVi: 'Tài liệu / Phóng sự (Documentary)',
+    promptDirective:
+      'Authentic documentary cinematography, natural handheld realism, observational natural lighting, realistic environments and candid details, crisp journalistic clarity',
+    visualToneVi: 'Phong cách phim tài liệu phóng sự chân thực, ánh sáng tự nhiên sắc nét',
+  },
+  comic: {
+    labelVi: 'Truyện tranh / Minh họa (Comic Art)',
+    promptDirective:
+      'Graphic novel & modern digital comic illustration style, bold ink contours, dynamic framing, halftone & cel-shaded coloring, cohesive comic universe palette',
+    visualToneVi: 'Phong cách truyện tranh minh họa nét mực đậm, bố cục khung hình năng động',
+  },
+  vlog: {
+    labelVi: 'Vlog / Đời thực tự nhiên',
+    promptDirective:
+      'Natural lifestyle creator vlog aesthetic, warm daylight, candid eye-level camera framing, authentic cozy environment, realistic skin and textures',
+    visualToneVi: 'Phong cách Vlog đời thực gần gũi, ánh sáng tự nhiên chân thật',
+  },
+};
+
+export function compileConsistentScenePrompt(params: {
+  scene: Partial<DerivativeScene>;
+  videoStyle?: StudioVideoStyle;
+  characterBible?: string;
+  settingBible?: string;
+  visualStyleBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
+  totalScenes?: number;
+  mediaType?: 'image' | 'video';
+}): string {
+  const styleKey: StudioVideoStyle =
+    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META ? params.videoStyle : 'cinematic';
+  const styleMeta = STUDIO_VIDEO_STYLE_META[styleKey];
+  const sc = params.scene;
+  const mediaType = params.mediaType || 'image';
+  const parts: string[] = [];
+
+  parts.push(`Visual Style Reference: ${styleMeta.promptDirective}.`);
+  if (params.visualStyleBible?.trim()) {
+    parts.push(`Color & Aesthetic Lock: ${params.visualStyleBible.trim()}.`);
+  }
+  if (params.characterBible?.trim()) {
+    parts.push(`Character Reference (MUST keep face, hair, age, body 100% identical): ${params.characterBible.trim()}.`);
+  }
+  if (params.costumeBible?.trim()) {
+    parts.push(`Costume Reference: ${params.costumeBible.trim()}.`);
+  }
+  if (params.settingBible?.trim()) {
+    parts.push(`Environment Reference: ${params.settingBible.trim()}.`);
+  }
+  if (params.continuityBible?.trim()) {
+    parts.push(`Story Continuity Anchor: ${params.continuityBible.trim()}.`);
+  }
+  const sceneNumLabel = sc.sceneIndex
+    ? `Scene ${String(sc.sceneIndex).padStart(2, '0')}${params.totalScenes ? `/${String(params.totalScenes).padStart(2, '0')}` : ''}`
+    : 'Scene';
+  if (sc.sceneTitle?.trim()) {
+    parts.push(`${sceneNumLabel} Title: ${sc.sceneTitle.trim()}.`);
+  }
+  if (sc.charactersInScene?.trim()) {
+    parts.push(`Characters Present: ${sc.charactersInScene.trim()}.`);
+  }
+  if (sc.continuityNote?.trim()) {
+    parts.push(`Continuity From Previous Scene: ${sc.continuityNote.trim()}.`);
+  }
+  if (sc.costume?.trim()) {
+    parts.push(`Costume in Scene: ${sc.costume.trim()}.`);
+  }
+  if (sc.settingDetail?.trim()) {
+    parts.push(`Environment/Setting: ${sc.settingDetail.trim()}.`);
+  }
+  if (sc.actionDetail?.trim()) {
+    parts.push(`Action: ${sc.actionDetail.trim()}.`);
+  }
+  if (sc.cameraAngle?.trim()) {
+    parts.push(`Camera Angle: ${sc.cameraAngle.trim()}.`);
+  }
+  if (sc.cameraMovement?.trim()) {
+    parts.push(`Camera Movement: ${sc.cameraMovement.trim()}.`);
+  }
+  if (sc.lighting?.trim()) {
+    parts.push(`Lighting: ${sc.lighting.trim()}.`);
+  }
+  if (sc.shotStyle?.trim()) {
+    parts.push(`Shot Style: ${sc.shotStyle.trim()}.`);
+  }
+
+  const primaryPrompt =
+    mediaType === 'video'
+      ? sc.videoPrompt?.trim() || sc.imagePrompt?.trim() || sc.visualNote?.trim()
+      : sc.imagePrompt?.trim() || sc.visualNote?.trim() || sc.videoPrompt?.trim();
+
+  if (primaryPrompt) {
+    parts.push(`${mediaType === 'video' ? 'Detailed Video Prompt' : 'Detailed Image Prompt'}: ${primaryPrompt}.`);
+  } else if (sc.sceneSummary?.trim() || sc.onScreenText?.trim()) {
+    parts.push(`Core Subject: ${(sc.sceneSummary || sc.onScreenText || '').trim()}.`);
+  }
+  if (mediaType === 'video' && sc.sceneEndState?.trim()) {
+    parts.push(`Ending State: ${sc.sceneEndState.trim()}.`);
+  }
+  return parts.join(' ');
+}
+
+export interface IndependentConceptOverride {
+  title: string;
+  premise: string;
+  characterBible: string;
+  settingBible: string;
+  visualStyleBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
+  hookFormula?: string;
+  derivativeHook?: string;
+  sharedSpiritNote?: string;
+  avoidTitles?: string[];
+  batchIndex: number;
+  batchTotal: number;
+}
+
+function resolveDesiredSceneCount(
+  desiredTotalSec: number,
+  explicitSceneCount?: number,
+  scriptMode: StudioScriptMode = 'series'
+): number {
+  if (typeof explicitSceneCount === 'number' && Number.isFinite(explicitSceneCount) && explicitSceneCount >= 2) {
+    return Math.max(2, Math.min(24, Math.round(explicitSceneCount)));
+  }
+  if (scriptMode === 'series') {
+    return 10;
+  }
+  if (desiredTotalSec <= 15) return 3;
+  if (desiredTotalSec <= 25) return 4;
+  if (desiredTotalSec <= 35) return 5;
+  if (desiredTotalSec <= 50) return 6;
+  if (desiredTotalSec <= 90) return 8;
+  if (desiredTotalSec <= 150) return 10;
+  if (desiredTotalSec <= 240) return 12;
+  if (desiredTotalSec <= 360) return 16;
+  return 20;
+}
+
 export async function learnVideosAndCreateBlueprint(params: {
+  mode?: StudioCreationMode;
+  scriptMode?: StudioScriptMode;
+  ideaPrompt?: string;
   query?: string;
-  videos: DerivativeSourceInput[];
-  stylePreset: DerivativeStylePreset;
+  videos?: DerivativeSourceInput[];
+  stylePreset?: DerivativeStylePreset;
+  videoStyle?: StudioVideoStyle;
   aspectRatio: DerivativeAspectRatio;
   targetDurationSec?: number;
   targetDuration?: 'short' | 'medium';
+  desiredSceneCount?: number;
   outputLanguage?: DerivativeOutputLanguage;
   useProModel?: boolean;
   characterSummary?: string;
+  characterBible?: string;
+  settingBible?: string;
+  visualStyleBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
   customInstruction?: string;
+  enableVoiceover?: boolean;
   aiProvider?: AiProviderId;
+  preGatheredContexts?: EnrichedVideoContext[];
+  conceptOverride?: IndependentConceptOverride;
 }): Promise<DerivativeBlueprint> {
-  if (!params.videos || params.videos.length === 0) {
-    throw new Error('Vui lòng chọn hoặc tải lên ít nhất 1 video nguồn để AI học nội dung.');
+  const studioMode: StudioCreationMode = params.mode === 'creative' ? 'creative' : 'derivative';
+  const scriptMode: StudioScriptMode = params.scriptMode === 'independent_batch' ? 'independent_batch' : 'series';
+  const videosList = Array.isArray(params.videos) ? params.videos : [];
+  const ideaText = (params.ideaPrompt || params.query || '').trim();
+  const activeStylePreset: DerivativeStylePreset =
+    params.stylePreset && params.stylePreset in STYLE_LABELS ? params.stylePreset : 'none';
+
+  if (!params.preGatheredContexts) {
+    if (studioMode === 'creative') {
+      if (!ideaText && !params.customInstruction?.trim()) {
+        throw new Error('Vui lòng nhập ý tưởng hoặc mô tả chủ đề để Studio Sáng Tạo lên kịch bản.');
+      }
+    } else if (videosList.length === 0) {
+      throw new Error('Vui lòng chọn hoặc tải lên ít nhất 1 video tham chiếu để AI học nội dung.');
+    }
   }
 
   const provider: AiProviderId =
@@ -1110,7 +1409,15 @@ export async function learnVideosAndCreateBlueprint(params: {
       ? params.aiProvider
       : 'gemini';
 
-  const contexts = await gatherSourceContexts(params.videos);
+  const videoStyle: StudioVideoStyle =
+    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META ? params.videoStyle : 'cinematic';
+  const videoStyleMeta = STUDIO_VIDEO_STYLE_META[videoStyle];
+
+  const contexts = params.preGatheredContexts
+    ? params.preGatheredContexts
+    : videosList.length > 0
+    ? await gatherSourceContexts(videosList)
+    : [];
 
   const rawSec =
     typeof params.targetDurationSec === 'number' && Number.isFinite(params.targetDurationSec)
@@ -1118,27 +1425,26 @@ export async function learnVideosAndCreateBlueprint(params: {
       : params.targetDuration === 'medium'
       ? 45
       : 30;
-  const desiredTotalSec = Math.max(20, Math.min(900, Math.round(rawSec)));
+  const desiredTotalSec = Math.max(10, Math.min(900, Math.round(rawSec)));
 
-  let desiredScenes = 4;
-  if (desiredTotalSec <= 45) desiredScenes = 4;
-  else if (desiredTotalSec <= 90) desiredScenes = 6;
-  else if (desiredTotalSec <= 180) desiredScenes = 10;
-  else if (desiredTotalSec <= 300) desiredScenes = 14;
-  else if (desiredTotalSec <= 480) desiredScenes = 16;
-  else desiredScenes = 20;
+  const desiredScenes = resolveDesiredSceneCount(
+    desiredTotalSec,
+    params.desiredSceneCount,
+    params.conceptOverride ? 'independent_batch' : scriptMode
+  );
 
-  const avgSceneDur = Math.max(5, Math.min(42, Math.round(desiredTotalSec / desiredScenes)));
-  const wordsMin = Math.max(15, Math.min(90, Math.round(avgSceneDur * 2.0)));
-  const wordsMax = Math.max(wordsMin + 8, Math.min(115, Math.round(avgSceneDur * 2.55)));
+  const avgSceneDur = Math.max(2, Math.min(45, Math.round(desiredTotalSec / desiredScenes)));
+  const wordsMin = Math.max(6, Math.min(90, Math.round(avgSceneDur * 1.9)));
+  const wordsMax = Math.max(wordsMin + 5, Math.min(115, Math.round(avgSceneDur * 2.55)));
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
+  const enableVoiceover = params.enableVoiceover !== false;
 
   const parts: any[] = [];
 
   for (const ctx of contexts) {
     if (ctx.source.keyframes && ctx.source.keyframes.length > 0) {
       parts.push({
-        text: `[Các khung hình trích xuất từ Video tải lên #${ctx.index + 1}: ${ctx.source.title}]`,
+        text: `[Các khung hình trích xuất từ Video tham chiếu #${ctx.index + 1}: ${ctx.source.title}]`,
       });
       for (const kf of ctx.source.keyframes.slice(0, 3)) {
         const parsed = parseDataUrlToBuffer(kf);
@@ -1167,7 +1473,7 @@ export async function learnVideosAndCreateBlueprint(params: {
   const dossierLines = contexts.map((ctx) => {
     const s = ctx.source;
     return [
-      `=== VIDEO NGUỒN #${ctx.index + 1} (index=${ctx.index}) ===`,
+      `=== VIDEO THAM CHIẾU #${ctx.index + 1} (index=${ctx.index}) ===`,
       `- Nền tảng / Nguồn: ${s.localAssetId ? 'Video người dùng tải lên' : s.platformLabel}`,
       `- Tiêu đề: ${s.translatedTitle ? `${s.translatedTitle} (Gốc: ${s.title})` : s.title}`,
       `- Kênh/Tác giả: ${s.author}`,
@@ -1185,30 +1491,102 @@ export async function learnVideosAndCreateBlueprint(params: {
       ? `${desiredTotalSec} giây (~${(desiredTotalSec / 60).toFixed(1)} phút)`
       : `${desiredTotalSec} giây`;
 
-  const promptText = `Bạn là Đạo diễn & Biên tập viên sáng tạo nội dung video chuyên sâu.
-Từ khóa/Chủ đề người dùng đang tìm kiếm: "${params.query?.trim() || 'Chủ đề tổng hợp từ các video đã chọn'}".
-Phong cách video phái sinh mong muốn: ${STYLE_LABELS[params.stylePreset]}.
-Ngôn ngữ lời thoại & phụ đề BẮT BUỘC cho kịch bản mới: ${OUTPUT_LANG_LABELS[outputLang]}.
-Tỉ lệ khung hình mục tiêu: ${params.aspectRatio}.
-Tổng thời lượng mục tiêu BẮT BUỘC: khoảng ${targetMinutesLabel} chia thành đúng ${desiredScenes} phân cảnh (scenes), trung bình mỗi cảnh dài ${avgSceneDur} giây để tổng cộng đạt khoảng ${desiredTotalSec} giây.
-${params.characterSummary?.trim() ? `Nhân vật tham chiếu xuyên suốt video: ${params.characterSummary.trim()}` : ''}
-${params.customInstruction?.trim() ? `Yêu cầu bổ sung từ người dùng: ${params.customInstruction.trim()}` : ''}
+  const modeHeader =
+    studioMode === 'creative'
+      ? `NGUỒN ĐẦU VÀO: STUDIO SÁNG TẠO TỪ Ý TƯỞNG VĂN BẢN.
+Ý tưởng / Chủ đề người dùng nhập: "${ideaText}".`
+      : `NGUỒN ĐẦU VÀO: TẠO VIDEO PHÁI SINH TỪ ${contexts.length} VIDEO THAM CHIẾU.
+Định hướng mở rộng từ người dùng: "${ideaText || 'Phân tích chuyên sâu video tham chiếu để phát triển kịch bản sáng tạo mới'}".
+NGUYÊN TẮC BẮT BUỘC VỚI VIDEO PHÁI SINH:
+- Trước tiên phải phân tích chi tiết 9 chiều video tham chiếu vào object "referenceAnalysis" (nội dung & chủ đề chính, cốt truyện & diễn biến, nhân vật & đặc điểm nhận dạng, bối cảnh & không gian, phong cách hình ảnh, góc máy & chuyển động camera, ánh sáng & màu sắc, nhịp độ dựng phim, lời thoại/âm thanh).
+- Video phái sinh PHẢI là nội dung SÁNG TẠO MỚI có giá trị riêng, tuyệt đối KHÔNG sao chép nguyên xi từng cảnh trong video gốc; chỉ kế thừa tinh thần, chủ đề hoặc phong cách đã chọn.`;
 
-NHIỆM VỤ CỦA BẠN:
-1. HỌC SÂU nội dung từ ${contexts.length} video nguồn dưới đây (dựa vào tiêu đề, mô tả, lời thoại/phụ đề thực tế và các khung hình đi kèm):
-   - Phân tích ngôn ngữ gốc, luận điểm giá trị nhất, cách đặt hook thu hút, công thức giữ chân người xem.
-   - Không dịch máy móc hay sao chép nguyên xi 1 video, mà TỔNG HỢP, PHÂN TÍCH MỞ RỘNG & TÁI SÁNG TẠO thành kịch bản video phái sinh có chiều sâu, mạch lạc, tự nhiên, hấp dẫn theo đúng ngôn ngữ lời thoại đầu ra đã chọn.
-2. Với mỗi phân cảnh (sceneIndex 1..${desiredScenes}):
-   - Chọn \`sourceVideoIndex\` (0 đến ${contexts.length - 1}) phù hợp nhất.
-   - Chọn \`sourceStartPercent\` (số nguyên 5..75) gợi ý điểm cắt tiêu biểu trong video gốc đó.
-   - \`durationSec\`: thời lượng của cảnh (khoảng ${Math.max(4, avgSceneDur - 3)} đến ${Math.min(45, avgSceneDur + 4)} giây, sao cho tổng các cảnh xấp xỉ ${desiredTotalSec} giây).
-   - \`onScreenText\`: dòng chữ tiêu đề/ý chính hiển thị trên khung hình (ngắn gọn, tối đa 12 chữ).
-   - \`narration\`: lời thuyết minh tự nhiên cho lồng tiếng đúng ngôn ngữ đầu ra — PHẢI ĐỦ DÀI từ ${wordsMin} đến ${wordsMax} chữ mỗi cảnh để giọng đọc kéo dài tương ứng ${avgSceneDur} giây, viết thành văn nói cuốn hút, không dùng ký tự đặc biệt thừa hay hashtag.
-   - \`visualNote\`: mô tả chi tiết bối cảnh hình ảnh/hành động (kết hợp nhân vật tham chiếu nếu có) dùng để vẽ ảnh phân cảnh AI hoặc tạo video bằng Gemini Omni Flash.
-   - \`brollKeywordEn\`: 2 đến 4 từ khóa TIẾNG ANH ngắn gọn, phổ biến mô tả hình ảnh cảnh này để tìm video mẫu miễn phí trên Wikimedia Commons (VD: "city night timelapse", "robot technology lab", "chef cooking kitchen", "ocean waves nature").
+  const scriptModeDirective = params.conceptOverride
+    ? `CHẾ ĐỘ KỊCH BẢN: VIDEO ĐỘC LẬP #${params.conceptOverride.batchIndex}/${params.conceptOverride.batchTotal} TRONG CÙNG CHỦ ĐỀ.
+NGUYÊN TẮC BẮT BUỘC:
+- Đây là MỘT VIDEO ĐỘC LẬP hoàn chỉnh (Mở đầu - Diễn biến - Kết thúc riêng biệt), KHÔNG phải phần cắt nhỏ hay tập nối tiếp của các video khác.
+- Cốt truyện riêng phải triển khai cho Video #${params.conceptOverride.batchIndex}:
+  + Tiêu đề định hướng: "${params.conceptOverride.title}"
+  + Ý tưởng cốt truyện riêng: "${params.conceptOverride.premise}"
+  + Nhân vật riêng của video này: "${params.conceptOverride.characterBible}"
+  + Bối cảnh riêng của video này: "${params.conceptOverride.settingBible}"
+- Tuyệt đối KHÔNG lặp lại tình tiết của các video khác trong lô: ${params.conceptOverride.avoidTitles?.join(' | ') || 'Không trùng lặp'}.
+- Vẫn giữ tinh thần, cảm xúc và phong cách hình ảnh "${videoStyleMeta.labelVi}" đồng nhất với chủ đề gốc (${params.conceptOverride.sharedSpiritNote || ideaText}).`
+    : `CHẾ ĐỘ KỊCH BẢN: SERIES PHIM / CÂU CHUYỆN XUYÊN SUỐT (${desiredScenes} PHÂN CẢNH LIÊN TIẾP).
+NGUYÊN TẮC CỐT LÕI CHẾ ĐỘ SERIES:
+- Người dùng đang muốn KỂ MỘT CÂU CHUYỆN XUYÊN SUỐT bằng chuỗi ${desiredScenes} phân cảnh liên tiếp gắn kết chặt chẽ với nhau.
+- Diễn biến từng phân cảnh (Scene 01 → Scene ${String(desiredScenes).padStart(2, '0')}) phải tuân thủ tiến trình cốt truyện logic, hành động và trạng thái cuối cảnh trước phải nối tiếp trực tiếp sang cảnh sau.
+- Nhân vật chính, ngoại hình, trang phục và đặc điểm nhận dạng PHẢI duy trì đồng nhất 100% xuyên suốt.`;
 
-DỮ LIỆU CÁC VIDEO NGUỒN:
-${dossierLines.join('\n\n')}`;
+  const narrativeStyleDirective =
+    activeStylePreset === 'none'
+      ? 'Kiểu dẫn chuyện: TẮT (Không ép công thức dẫn chuyện mẫu — triển khai mạch truyện/ngôn ngữ tự nhiên bám sát ý tưởng và thể loại).'
+      : `Kiểu dẫn chuyện: ${STYLE_LABELS[activeStylePreset]}.`;
+
+  const lockedProjectAnchors = [
+    params.conceptOverride?.characterBible || params.characterBible?.trim()
+      ? `- Character Reference (Nhân vật chuẩn): ${params.conceptOverride?.characterBible || params.characterBible?.trim()}`
+      : '',
+    params.conceptOverride?.settingBible || params.settingBible?.trim()
+      ? `- Environment Reference (Bối cảnh chuẩn): ${params.conceptOverride?.settingBible || params.settingBible?.trim()}`
+      : '',
+    params.conceptOverride?.visualStyleBible || params.visualStyleBible?.trim()
+      ? `- Visual Style Reference (Phong cách & bảng màu chuẩn): ${params.conceptOverride?.visualStyleBible || params.visualStyleBible?.trim()}`
+      : '',
+    params.conceptOverride?.costumeBible || params.costumeBible?.trim()
+      ? `- Costume Reference (Trang phục & phụ kiện chuẩn): ${params.conceptOverride?.costumeBible || params.costumeBible?.trim()}`
+      : '',
+    params.conceptOverride?.continuityBible || params.continuityBible?.trim()
+      ? `- Story Continuity (Quy tắc liên tục): ${params.conceptOverride?.continuityBible || params.continuityBible?.trim()}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const promptText = `Bạn là Hệ thống Đạo diễn AI Thống Nhất — chuyên biên kịch & thiết kế hồ sơ sản xuất video hoàn chỉnh.
+${modeHeader}
+${scriptModeDirective}
+${narrativeStyleDirective}
+Phong cách hình ảnh & quay dựng BẮT BUỘC: ${videoStyleMeta.labelVi} (${videoStyleMeta.visualToneVi} | Prompt style: ${videoStyleMeta.promptDirective}).
+Ngôn ngữ lời thoại & phụ đề BẮT BUỘC: ${OUTPUT_LANG_LABELS[outputLang]}.
+Tỷ lệ khung hình mục tiêu: ${params.aspectRatio}.
+Tùy chọn Lồng tiếng (Voiceover): ${
+    enableVoiceover
+      ? `BẬT LỒNG TIẾNG — Tạo nội dung "narration" tự nhiên (${wordsMin}-${wordsMax} chữ/cảnh) đồng bộ với "dialogue", nhân vật và ngôn ngữ.`
+      : 'TẮT LỒNG TIẾNG — BẮT BUỘC đặt "narration": "" (chuỗi rỗng) cho TẤT CẢ mọi phân cảnh, KHÔNG tạo dữ liệu giọng thuyết minh thừa; tập trung diễn đạt qua hình ảnh, hành động, lời thoại nhân vật (nếu có) và phụ đề ngắn.'
+  }
+Tổng thời lượng mục tiêu BẮT BUỘC: khoảng ${targetMinutesLabel} chia thành ĐÚNG ${desiredScenes} phân cảnh đánh số lần lượt 1..${desiredScenes} (trung bình ~${avgSceneDur}s/cảnh).
+${params.characterSummary?.trim() ? `Ảnh/Ghi chú nhân vật người dùng đính kèm: ${params.characterSummary.trim()}` : ''}
+${lockedProjectAnchors ? `\nHỒ SƠ DỰ ÁN ĐÃ KHÓA (BẮT BUỘC GIỮ NGUYÊN ĐỒNG BỘ):\n${lockedProjectAnchors}` : ''}
+${params.customInstruction?.trim() ? `Yêu cầu bổ sung từ đạo diễn: ${params.customInstruction.trim()}` : ''}
+
+TIÊU CHUẨN CHẤT LƯỢNG BẮT BUỘC (KHÔNG ĐƯỢC VIẾT SƠ SÀI):
+1. Xây dựng BỘ DỮ LIỆU ĐỒNG BỘ 5 THÀNH PHẦN (Mục 2.6):
+   - \`characterBible\` (Character Reference): Mô tả cực chi tiết nhân dạng cố định từng nhân vật (độ tuổi, gương mặt, màu/kiểu tóc, vóc dáng, đặc điểm nhận diện).
+   - \`settingBible\` (Environment Reference): Mô tả chi tiết không gian, kiến trúc, thời gian, bối cảnh chủ đạo.
+   - \`visualStyleBible\` (Visual Style Reference): Phong cách hình ảnh, chất liệu kết xuất, bảng màu & ngôn ngữ ánh sáng xuyên suốt.
+   - \`costumeBible\` (Costume Reference): Trang phục, màu sắc vải & phụ kiện cố định từng nhân vật.
+   - \`continuityBible\` (Story Continuity): Mạch cốt truyện liên tục & quy tắc nối tiếp hành động giữa các cảnh.
+2. Đánh số thứ tự ĐÚNG ${desiredScenes} phân cảnh (\`sceneIndex\`: 1..${desiredScenes}) với ĐẦY ĐỦ 15 TRƯỜNG DỮ LIỆU CHUYÊN SÂU:
+   - \`sceneTitle\`: Tên phân cảnh ngắn gọn (3-8 chữ).
+   - \`sceneSummary\`: Mô tả nội dung diễn biến chính của phân cảnh.
+   - \`charactersInScene\`: Tên các nhân vật xuất hiện trong cảnh.
+   - \`settingDetail\`: Không gian, địa điểm, thời gian cụ thể đồng bộ \`settingBible\`.
+   - \`actionDetail\`: Hành vi và diễn biến cụ thể của nhân vật.
+   - \`costume\`: Trang phục cụ thể đồng bộ \`costumeBible\`.
+   - \`cameraAngle\`: Góc máy cụ thể (Cận cảnh, Trung cảnh, Toàn cảnh, Góc thấp, Góc cao, Qua vai...).
+   - \`cameraMovement\`: Kiểu quay / chuyển động máy cụ thể (Tracking shot, Slow dolly-in, Handheld, Crane, Pan, Static...).
+   - \`lighting\`: Ánh sáng cụ thể (Ánh sáng tự nhiên, Điện ảnh ngược sáng rim light, Studio key light, Neon...).
+   - \`shotStyle\`: Phong cách quay (Điện ảnh 35mm, Tài liệu, Anime, Hoạt hình 3D, Quảng cáo, Người que...).
+   - \`dialogue\`: Nội dung nhân vật trực tiếp nói (nếu có nhân vật đối thoại/độc thoại; để "" nếu cảnh câm).
+   - \`narration\`: ${enableVoiceover ? `Nội dung thuyết minh / lồng tiếng giọng dẫn (${wordsMin}-${wordsMax} chữ)` : 'BẮT BUỘC để chuỗi rỗng "" vì đã tắt lồng tiếng'}.
+   - \`onScreenText\`: Chữ phụ đề hiển thị ngắn gọn (<= 12 chữ).
+   - \`continuityNote\`: Nối tiếp trực tiếp từ trạng thái cuối của phân cảnh trước (\`sceneEndState\` của Scene trước).
+   - \`sceneEndState\`: Trạng thái cuối cùng khi kết thúc cảnh này (vị trí nhân vật, biểu cảm, đạo cụ, thời điểm) để Scene tiếp theo nối vào hợp lý.
+   - \`imagePrompt\`: Prompt hình ảnh CỰC KỲ CHI TIẾT (tối thiểu 2-3 câu giàu dữ liệu thị giác: nêu rõ ngoại hình + trang phục cố định từ Character/Costume Reference, tư thế/hành động đóng khung, bối cảnh, vật thể xung quanh, góc máy, ánh sáng, chất liệu & phong cách hình ảnh) để AI tạo ảnh ra đúng một bộ phim thống nhất.
+   - \`videoPrompt\`: Prompt video CỰC KỲ CHI TIẾT (tối thiểu 2-3 câu mô tả hành động chuyển động mượt mà của nhân vật, biểu cảm thay đổi, chuyển động vật lý xung quanh, kiểu quay/camera movement, góc máy, ánh sáng và trang phục ĐỒNG NHẤT 100% với \`imagePrompt\`).
+   - \`brollKeywordEn\`: 2-4 từ khóa tiếng Anh tìm tư liệu minh họa.
+${contexts.length > 0 ? `\nDỮ LIỆU CÁC VIDEO THAM CHIẾU:\n${dossierLines.join('\n\n')}` : ''}`;
 
   parts.push({ text: promptText });
 
@@ -1227,30 +1605,64 @@ ${dossierLines.join('\n\n')}`;
         );
       }
       usedModel = 'muse-spark (Muse2API)';
+      const museRefBlock =
+        studioMode === 'derivative'
+          ? `
+  "referenceAnalysis": {
+    "mainTheme": "Chủ đề chính video gốc",
+    "plotProgression": "Diễn biến cốt truyện gốc",
+    "characterTraits": "Đặc điểm nhân vật gốc",
+    "settingAndSpace": "Bối cảnh không gian gốc",
+    "visualStyle": "Phong cách hình ảnh gốc",
+    "cameraAndMovement": "Góc máy & chuyển động gốc",
+    "lightingAndColor": "Ánh sáng & màu sắc gốc",
+    "editingPacing": "Nhịp độ dựng gốc",
+    "dialogueAndAudio": "Lời thoại & âm thanh gốc"
+  },`
+          : '';
       const museSchemaInstruction = `
-TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU (tuyệt đối không markdown ngoài JSON, không văn bản giải thích thừa):
+TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU (tuyệt đối không markdown ngoài JSON, không giải thích thừa):
 {
-  "learnedSummary": "Tóm tắt 2-3 câu nội dung cốt lõi học được",
+  "learnedSummary": "Tóm tắt 2-3 câu ý tưởng cốt lõi",
+  "characterBible": "Character Reference cố định xuyên suốt toàn bộ các phân cảnh",
+  "settingBible": "Environment Reference cố định xuyên suốt",
+  "visualStyleBible": "Visual Style Reference xuyên suốt",
+  "costumeBible": "Costume Reference xuyên suốt",
+  "continuityBible": "Story Continuity xuyên suốt",${museRefBlock}
   "keyTakeaways": ["ý 1", "ý 2", "ý 3", "ý 4"],
   "hookFormula": "Công thức mở đầu & giữ chân",
-  "sourceKeyPoints": ["1 câu bài học video #1"],
-  "derivativeTitle": "Tiêu đề video phái sinh mới",
+  "sourceKeyPoints": ["1 câu điểm nhấn #1"],
+  "derivativeTitle": "Tiêu đề video mới",
   "derivativeHook": "Câu hook tối đa 12 chữ hiện 3.5s đầu",
   "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4"],
   "scenes": [
     {
       "sceneIndex": 1,
+      "sceneTitle": "Tên phân cảnh",
+      "sceneSummary": "Diễn biến chính phân cảnh",
       "durationSec": ${avgSceneDur},
       "sourceVideoIndex": 0,
       "sourceStartPercent": 15,
-      "onScreenText": "Chữ phụ đề ngắn tối đa 12 chữ",
-      "narration": "Lời đọc thuyết minh tự nhiên từ ${wordsMin} đến ${wordsMax} chữ khớp với ${avgSceneDur} giây",
-      "visualNote": "Mô tả bối cảnh hình ảnh chi tiết",
-      "brollKeywordEn": "2-4 English keywords for stock video lookup"
+      "charactersInScene": "Nhân vật xuất hiện",
+      "settingDetail": "Bối cảnh, địa điểm, thời gian",
+      "actionDetail": "Hành vi và diễn biến cụ thể",
+      "cameraAngle": "Góc máy cụ thể",
+      "cameraMovement": "Kiểu quay cụ thể",
+      "lighting": "Ánh sáng cụ thể",
+      "costume": "Trang phục cụ thể đồng bộ",
+      "shotStyle": "Phong cách quay",
+      "dialogue": "Lời thoại nhân vật",
+      "narration": "${enableVoiceover ? `Lồng tiếng ${wordsMin}-${wordsMax} chữ` : ''}",
+      "onScreenText": "Chữ phụ đề ngắn <= 12 chữ",
+      "continuityNote": "Liên kết từ trạng thái cuối cảnh trước",
+      "sceneEndState": "Trạng thái cuối cảnh này",
+      "imagePrompt": "Prompt hình ảnh cực chi tiết đồng bộ 100% nhân vật, trang phục, bối cảnh, ánh sáng, góc máy, phong cách",
+      "videoPrompt": "Prompt video cực chi tiết hành động, chuyển động camera & đồng bộ với imagePrompt",
+      "brollKeywordEn": "2-4 English keywords"
     }
   ]
 }
-BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh tách biệt.`;
+BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh số sceneIndex từ 1 đến ${desiredScenes}.`;
 
       const rawMuseReply = await chatWithMuse2ApiSpark([
         {
@@ -1274,6 +1686,8 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh tách bi�
         avgSceneDur,
         wordsMin,
         wordsMax,
+        enableVoiceover,
+        isDerivative: studioMode === 'derivative',
       });
     } else {
       const ai = getGeminiClient();
@@ -1285,87 +1699,179 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh tách bi�
       let parsedFromGemini: any = null;
       let lastGeminiErr: any = null;
 
-      for (const candidateModel of candidateModels) {
-        const activeParts = candidateModel === 'gemini-3.1-flash-lite' ? compactParts : parts;
-        try {
-          const response = await retryWithGeminiBackoff(
-            () =>
-              ai.models.generateContent({
-                model: candidateModel,
-                contents: { parts: activeParts },
-                config: {
-                  maxOutputTokens: 16384,
-                  systemInstruction:
-                    'Luôn phản hồi bằng JSON thuần túy đúng schema, súc tích, giàu giá trị thông tin, đúng ngôn ngữ yêu cầu, đủ độ dài hợp lý và có mô tả hình ảnh + từ khóa tiếng Anh chuẩn. Tuyệt đối KHÔNG lặp lại từ/cụm từ hoặc kéo dài bất kỳ chuỗi JSON nào quá 150 chữ.',
-                  responseMimeType: 'application/json',
+      const geminiSchemaProperties: Record<string, any> = {
+        learnedSummary: { type: Type.STRING },
+        characterBible: { type: Type.STRING },
+        settingBible: { type: Type.STRING },
+        visualStyleBible: { type: Type.STRING },
+        costumeBible: { type: Type.STRING },
+        continuityBible: { type: Type.STRING },
+        ...(studioMode === 'derivative'
+          ? {
+              referenceAnalysis: {
+                type: Type.OBJECT,
+                required: [
+                  'mainTheme',
+                  'plotProgression',
+                  'characterTraits',
+                  'settingAndSpace',
+                  'visualStyle',
+                  'cameraAndMovement',
+                  'lightingAndColor',
+                  'editingPacing',
+                  'dialogueAndAudio',
+                ],
+                properties: {
+                  mainTheme: { type: Type.STRING },
+                  plotProgression: { type: Type.STRING },
+                  characterTraits: { type: Type.STRING },
+                  settingAndSpace: { type: Type.STRING },
+                  visualStyle: { type: Type.STRING },
+                  cameraAndMovement: { type: Type.STRING },
+                  lightingAndColor: { type: Type.STRING },
+                  editingPacing: { type: Type.STRING },
+                  dialogueAndAudio: { type: Type.STRING },
+                },
+              },
+            }
+          : {}),
+        keyTakeaways: { type: Type.ARRAY, items: { type: Type.STRING } },
+        hookFormula: { type: Type.STRING },
+        sourceKeyPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+        derivativeTitle: { type: Type.STRING },
+        derivativeHook: { type: Type.STRING },
+        hashtags: { type: Type.ARRAY, items: { type: Type.STRING } },
+        scenes: {
+          type: Type.ARRAY,
+          ...(desiredScenes <= 5
+            ? {
+                minItems: String(desiredScenes),
+                maxItems: String(desiredScenes),
+              }
+            : {}),
+          description: `BẮT BUỘC trả về ĐÚNG ${desiredScenes} phân cảnh tách biệt đánh số sceneIndex lần lượt từ 1 đến ${desiredScenes}.`,
+          items: {
+            type: Type.OBJECT,
+            required: [
+              'sceneIndex',
+              'sceneTitle',
+              'sceneSummary',
+              'durationSec',
+              'charactersInScene',
+              'settingDetail',
+              'actionDetail',
+              'cameraAngle',
+              'cameraMovement',
+              'lighting',
+              'costume',
+              'shotStyle',
+              'narration',
+              'imagePrompt',
+              'videoPrompt',
+            ],
+            properties: {
+              sceneIndex: { type: Type.INTEGER },
+              sceneTitle: { type: Type.STRING },
+              sceneSummary: { type: Type.STRING },
+              durationSec: { type: Type.NUMBER },
+              sourceVideoIndex: { type: Type.INTEGER },
+              sourceStartPercent: { type: Type.INTEGER },
+              charactersInScene: { type: Type.STRING },
+              settingDetail: { type: Type.STRING },
+              actionDetail: { type: Type.STRING },
+              cameraAngle: { type: Type.STRING },
+              cameraMovement: { type: Type.STRING },
+              lighting: { type: Type.STRING },
+              costume: { type: Type.STRING },
+              shotStyle: { type: Type.STRING },
+              dialogue: { type: Type.STRING },
+              narration: { type: Type.STRING },
+              onScreenText: { type: Type.STRING },
+              continuityNote: { type: Type.STRING },
+              sceneEndState: { type: Type.STRING },
+              imagePrompt: { type: Type.STRING },
+              videoPrompt: { type: Type.STRING },
+              brollKeywordEn: { type: Type.STRING },
+            },
+          },
+        },
+      };
+
+      const callGeminiBlueprint = async (candidateModel: string, activeParts: any[], withSchema: boolean) => {
+        return ai.models.generateContent({
+          model: candidateModel,
+          contents: { parts: activeParts },
+          config: {
+            httpOptions: { timeout: 55_000 },
+            maxOutputTokens: 24576,
+            ...(candidateModel.startsWith('gemini-4-')
+              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+              : {}),
+            systemInstruction:
+              `Luôn phản hồi bằng JSON thuần túy đúng cấu trúc, giữ đầy đủ tất cả trường của từng phân cảnh (kể cả dialogue, onScreenText, continuityNote, sceneEndState, imagePrompt, videoPrompt), prompt hình ảnh và prompt video CỰC KỲ CHI TIẾT và đồng nhất, đúng ngôn ngữ yêu cầu. BẮT BUỘC xuất đủ ${desiredScenes} phân cảnh trong mảng scenes (sceneIndex từ 1 đến ${desiredScenes}), tuyệt đối KHÔNG xuất chỉ 1 phân cảnh mẫu.`,
+            responseMimeType: 'application/json',
+            ...(withSchema
+              ? {
                   responseSchema: {
                     type: Type.OBJECT,
-                    properties: {
-                      learnedSummary: {
-                        type: Type.STRING,
-                        description: 'Tóm tắt ngắn 2-3 câu về những nội dung cốt lõi AI học được từ các video nguồn.',
-                      },
-                      keyTakeaways: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING },
-                        description: '3 đến 6 gạch đầu dòng các kiến thức/ý tưởng đắt giá rút ra được.',
-                      },
-                      hookFormula: {
-                        type: Type.STRING,
-                        description: 'Công thức mở đầu & giữ chân người xem rút ra từ các video nguồn.',
-                      },
-                      sourceKeyPoints: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING },
-                        description: 'Đúng bằng số lượng video nguồn: tóm tắt 1 câu bài học/điểm hay của từng video tương ứng theo thứ tự.',
-                      },
-                      derivativeTitle: {
-                        type: Type.STRING,
-                        description: 'Tiêu đề hấp dẫn cho video phái sinh mới.',
-                      },
-                      derivativeHook: {
-                        type: Type.STRING,
-                        description: 'Câu hook chữ nổi bật hiện 3.5 giây đầu video (tối đa 12 chữ).',
-                      },
-                      hashtags: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING },
-                        description: '4 đến 6 hashtag phù hợp.',
-                      },
-                      scenes: {
-                        type: Type.ARRAY,
-                        description: `BẮT BUỘC phải trả về ĐÚNG ${desiredScenes} phân cảnh tách biệt (sceneIndex từ 1 đến ${desiredScenes}), mỗi cảnh dài khoảng ${avgSceneDur} giây để tổng thời lượng đạt ${desiredTotalSec} giây.`,
-                        items: {
-                          type: Type.OBJECT,
-                          properties: {
-                            sceneIndex: { type: Type.INTEGER },
-                            durationSec: { type: Type.NUMBER },
-                            sourceVideoIndex: { type: Type.INTEGER },
-                            sourceStartPercent: { type: Type.INTEGER },
-                            onScreenText: { type: Type.STRING },
-                            narration: { type: Type.STRING },
-                            visualNote: { type: Type.STRING },
-                            brollKeywordEn: { type: Type.STRING },
-                          },
-                        },
-                      },
-                    },
+                    required: [
+                      'learnedSummary',
+                      'characterBible',
+                      'settingBible',
+                      'visualStyleBible',
+                      'costumeBible',
+                      'continuityBible',
+                      'derivativeTitle',
+                      'derivativeHook',
+                      'scenes',
+                    ],
+                    properties: geminiSchemaProperties,
                   },
-                },
-              }),
-            [1400, 3000]
-          );
+                }
+              : {}),
+          },
+        });
+      };
+
+      for (const candidateModel of candidateModels) {
+        const activeParts = candidateModel === 'gemini-3.1-flash-lite' ? compactParts : parts;
+        const mStart = Date.now();
+        console.log(`[Studio AI] Calling ${candidateModel} (scenes=${desiredScenes}, mode=${studioMode})...`);
+        try {
+          let response;
+          try {
+            response = await retryWithGeminiBackoff(
+              () => callGeminiBlueprint(candidateModel, activeParts, true),
+              [1200]
+            );
+          } catch (schemaErr: any) {
+            const msg = String(schemaErr?.message || schemaErr || '').toLowerCase();
+            if (msg.includes('too many states') || msg.includes('invalid_argument')) {
+              console.warn(`[Studio AI] Schema constraint too large on ${candidateModel}, retrying JSON-only without responseSchema...`);
+              response = await retryWithGeminiBackoff(
+                () => callGeminiBlueprint(candidateModel, activeParts, false),
+                [1200]
+              );
+            } else {
+              throw schemaErr;
+            }
+          }
+          console.log(`[Studio AI] ${candidateModel} succeeded in ${Date.now() - mStart}ms`);
           const rawText = (response?.text ?? '{}').trim();
           const candidateParsed = parseAiBlueprintJsonSafe(rawText);
           const candidateScenes = Array.isArray(candidateParsed?.scenes) ? candidateParsed.scenes : [];
-          if (candidateScenes.length === 0 && candidateModel !== candidateModels[candidateModels.length - 1]) {
-            lastGeminiErr = new Error('AI trả về kịch bản chưa hoàn chỉnh (thiếu danh sách phân cảnh).');
+          if (
+            (candidateScenes.length === 0 || (desiredScenes >= 3 && candidateScenes.length <= 1)) &&
+            candidateModel !== candidateModels[candidateModels.length - 1]
+          ) {
+            lastGeminiErr = new Error('AI trả về kịch bản chưa đủ số phân cảnh.');
             continue;
           }
           parsedFromGemini = candidateParsed;
           usedModel = candidateModel;
           break;
         } catch (err: any) {
+          console.warn(`[Studio AI] ${candidateModel} failed after ${Date.now() - mStart}ms:`, err?.message || err);
           lastGeminiErr = err;
           if (!shouldFallbackGeminiModel(err) && !(err instanceof SyntaxError)) {
             throw err;
@@ -1376,7 +1882,6 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh tách bi�
       if (parsedFromGemini) {
         parsed = parsedFromGemini;
       } else {
-        // Automatic failover to configured OpenAI or Meta if all Gemini models failed or returned broken JSON
         const altProvider: 'openai' | 'meta' | null = process.env.OPENAI_API_KEY?.trim()
           ? 'openai'
           : process.env.META_API_KEY?.trim()
@@ -1392,6 +1897,8 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh tách bi�
             avgSceneDur,
             wordsMin,
             wordsMax,
+            enableVoiceover,
+            isDerivative: studioMode === 'derivative',
           });
         } else if (lastGeminiErr instanceof SyntaxError) {
           throw new Error(
@@ -1403,20 +1910,77 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh tách bi�
       }
     }
 
+    const characterBible = String(
+      parsed?.characterBible || params.characterBible || params.characterSummary || ''
+    ).trim();
+    const settingBible = String(parsed?.settingBible || params.settingBible || '').trim();
+    const visualStyleBible = String(
+      parsed?.visualStyleBible || params.visualStyleBible || videoStyleMeta.visualToneVi
+    ).trim();
+    const costumeBible = String(parsed?.costumeBible || params.costumeBible || '').trim();
+    const continuityBible = String(parsed?.continuityBible || params.continuityBible || '').trim();
+
     const rawScenes: any[] = Array.isArray(parsed?.scenes) ? parsed.scenes : [];
     const scenes: DerivativeScene[] = rawScenes.slice(0, 24).map((sc, i) => {
-      const idx = Math.max(0, Math.min(contexts.length - 1, Math.round(Number(sc?.sourceVideoIndex ?? i % contexts.length))));
-      const dur = Math.max(4, Math.min(45, Number(sc?.durationSec || avgSceneDur)));
+      const idx =
+        contexts.length > 0
+          ? Math.max(0, Math.min(contexts.length - 1, Math.round(Number(sc?.sourceVideoIndex ?? i % contexts.length))))
+          : 0;
+      const dur = Math.max(2, Math.min(45, Number(sc?.durationSec || avgSceneDur)));
       const startPct = Math.max(0, Math.min(80, Math.round(Number(sc?.sourceStartPercent ?? (i * 18) % 70))));
+      const sceneTitle = String(sc?.sceneTitle || sc?.onScreenText || `Phân cảnh ${i + 1}`).trim();
+      const sceneSummary = String(sc?.sceneSummary || sc?.actionDetail || '').trim();
+      const charactersInScene = String(sc?.charactersInScene || '').trim();
+      const actionDetail = String(sc?.actionDetail || '').trim();
+      const settingDetail = String(sc?.settingDetail || '').trim();
+      const cameraAngle = String(sc?.cameraAngle || '').trim();
+      const cameraMovement = String(sc?.cameraMovement || '').trim();
+      const lighting = String(sc?.lighting || '').trim();
+      const costume = String(sc?.costume || '').trim();
+      const shotStyle = String(sc?.shotStyle || videoStyleMeta.labelVi).trim();
+      const dialogue = String(sc?.dialogue || '').trim();
+      const continuityNote = String(sc?.continuityNote || '').trim();
+      const sceneEndState = String(sc?.sceneEndState || '').trim();
+      const fallbackCombined = [
+        charactersInScene ? `Nhân vật: ${charactersInScene}` : '',
+        costume ? `Trang phục: ${costume}` : '',
+        actionDetail,
+        settingDetail,
+        cameraAngle,
+        lighting,
+        shotStyle,
+      ]
+        .filter(Boolean)
+        .join('. ');
+      const imagePrompt = String(sc?.imagePrompt || sc?.visualNote || fallbackCombined).trim();
+      const videoPrompt = String(
+        sc?.videoPrompt || [imagePrompt, cameraMovement ? `Kiểu quay: ${cameraMovement}` : '', actionDetail].filter(Boolean).join('. ')
+      ).trim();
+
       return {
         id: `scene_${i + 1}_${crypto.randomBytes(2).toString('hex')}`,
         sceneIndex: i + 1,
+        sceneTitle,
+        sceneSummary,
         durationSec: dur,
         sourceVideoIndex: idx,
         sourceStartPercent: startPct,
-        onScreenText: String(sc?.onScreenText || `Phần ${i + 1}`).trim(),
-        narration: String(sc?.narration || '').trim(),
-        visualNote: String(sc?.visualNote || '').trim(),
+        onScreenText: String(sc?.onScreenText || sceneTitle || `Scene ${String(i + 1).padStart(2, '0')}`).trim(),
+        charactersInScene,
+        settingDetail,
+        actionDetail,
+        cameraAngle,
+        cameraMovement,
+        lighting,
+        costume,
+        shotStyle,
+        dialogue,
+        narration: enableVoiceover ? String(sc?.narration || '').trim() : '',
+        imagePrompt,
+        videoPrompt,
+        continuityNote,
+        sceneEndState,
+        visualNote: imagePrompt,
         brollKeywordEn: String(sc?.brollKeywordEn || '').trim(),
       };
     });
@@ -1433,12 +1997,60 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh tách bi�
       keyPoint: String(sourceKeyPoints[i] || ctx.description.slice(0, 120) || ctx.source.title),
     }));
 
+    const refRaw = parsed?.referenceAnalysis;
+    const referenceAnalysis: ReferenceVideoAnalysis | undefined =
+      studioMode === 'derivative' && refRaw && typeof refRaw === 'object'
+        ? {
+            mainTheme: String(refRaw.mainTheme || '').trim(),
+            plotProgression: String(refRaw.plotProgression || '').trim(),
+            characterTraits: String(refRaw.characterTraits || '').trim(),
+            settingAndSpace: String(refRaw.settingAndSpace || '').trim(),
+            visualStyle: String(refRaw.visualStyle || '').trim(),
+            cameraAndMovement: String(refRaw.cameraAndMovement || '').trim(),
+            lightingAndColor: String(refRaw.lightingAndColor || '').trim(),
+            editingPacing: String(refRaw.editingPacing || '').trim(),
+            dialogueAndAudio: String(refRaw.dialogueAndAudio || '').trim(),
+          }
+        : undefined;
+
     return {
-      learnedSummary: String(parsed?.learnedSummary || 'Đã tổng hợp nội dung nổi bật từ các video đã chọn.'),
+      mode: studioMode,
+      scriptMode: params.conceptOverride ? 'independent_batch' : scriptMode,
+      batchIndex: params.conceptOverride?.batchIndex,
+      batchTotal: params.conceptOverride?.batchTotal,
+      sharedSpiritNote: params.conceptOverride?.sharedSpiritNote,
+      targetDurationSec: desiredTotalSec,
+      ideaPrompt: ideaText,
+      videoStyle,
+      characterBible,
+      settingBible,
+      visualStyleBible,
+      costumeBible,
+      continuityBible,
+      enableVoiceover,
+      referenceAnalysis,
+      learnedSummary: String(
+        parsed?.learnedSummary ||
+          (params.conceptOverride
+            ? `${params.conceptOverride.title}: ${params.conceptOverride.premise}`
+            : studioMode === 'creative'
+            ? `Kịch bản Series theo chủ đề "${ideaText}" phong cách ${videoStyleMeta.labelVi}.`
+            : 'Đã phân tích video tham chiếu và phát triển kịch bản sáng tạo mới.')
+      ),
       keyTakeaways: Array.isArray(parsed?.keyTakeaways) ? parsed.keyTakeaways.map(String).slice(0, 6) : [],
-      hookFormula: String(parsed?.hookFormula || 'Mở đầu trực diện vấn đề + phân tích chiều sâu + kết luận thực tế.'),
-      derivativeTitle: String(parsed?.derivativeTitle || 'Video tổng hợp kiến thức mới'),
-      derivativeHook: String(parsed?.derivativeHook || 'Đừng bỏ qua điểm mấu chốt này!'),
+      hookFormula: String(
+        parsed?.hookFormula ||
+          params.conceptOverride?.hookFormula ||
+          'Mở đầu trực diện vấn đề + phát triển mạch lạc + kết đọng giá trị.'
+      ),
+      derivativeTitle: String(
+        parsed?.derivativeTitle ||
+          params.conceptOverride?.title ||
+          (ideaText ? ideaText.slice(0, 60) : 'Video sáng tạo mới')
+      ),
+      derivativeHook: String(
+        parsed?.derivativeHook || params.conceptOverride?.derivativeHook || 'Đừng bỏ qua điểm mấu chốt này!'
+      ),
       hashtags: Array.isArray(parsed?.hashtags) ? parsed.hashtags.map(String).slice(0, 8) : [],
       aspectRatio: params.aspectRatio,
       sourcesAnalyzed,
@@ -1451,12 +2063,29 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh tách bi�
               {
                 id: 'scene_1',
                 sceneIndex: 1,
-                durationSec: 7,
+                sceneTitle: 'Mở đầu câu chuyện',
+                sceneSummary: 'Giới thiệu nhân vật và bối cảnh mở đầu.',
+                durationSec: Math.max(3, avgSceneDur),
                 sourceVideoIndex: 0,
                 sourceStartPercent: 10,
-                onScreenText: 'Tổng hợp nội dung nổi bật',
-                narration: 'Dưới đây là những điểm quan trọng nhất được rút ra từ các video nổi bật về chủ đề này.',
-                visualNote: 'Giới thiệu mở đầu',
+                onScreenText: 'Scene 01',
+                charactersInScene: 'Nhân vật chính',
+                narration: enableVoiceover
+                  ? 'Khởi đầu câu chuyện với góc nhìn sắc nét và cuốn hút ngay từ những giây đầu tiên.'
+                  : '',
+                dialogue: '',
+                actionDetail: 'Nhân vật chính xuất hiện trực diện khung hình, cử chỉ tự tin mở đầu bối cảnh',
+                settingDetail: settingBible || 'Không gian hiện đại đồng bộ ánh sáng chủ đạo',
+                cameraAngle: 'Trung cảnh (Medium close-up)',
+                cameraMovement: 'Slow dolly-in',
+                lighting: 'Soft studio key light with subtle rim light',
+                costume: costumeBible || 'Trang phục gọn gàng đồng bộ nhân vật',
+                shotStyle: videoStyleMeta.labelVi,
+                continuityNote: 'Khởi đầu mạch truyện',
+                sceneEndState: 'Nhân vật nhìn thẳng khung hình chuẩn bị chuyển hành động',
+                imagePrompt: 'Nhân vật chính giới thiệu mở đầu trong khung hình rõ nét, ánh sáng cân bằng',
+                videoPrompt: 'Máy quay tiến chậm (Slow dolly-in) vào nhân vật chính đang xoay người mở đầu hành động',
+                visualNote: 'Nhân vật chính giới thiệu mở đầu trong khung hình rõ nét',
                 brollKeywordEn: 'digital studio presentation',
               },
             ],
@@ -1469,6 +2098,510 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh tách bi�
   }
 }
 
+interface PlannedIndependentConcept {
+  title: string;
+  premise: string;
+  characterBible: string;
+  settingBible: string;
+  hookFormula?: string;
+  derivativeHook?: string;
+}
+
+async function planIndependentVideoConcepts(params: {
+  studioMode: StudioCreationMode;
+  ideaText: string;
+  contexts: EnrichedVideoContext[];
+  videoCount: number;
+  videoStyleMeta: { labelVi: string; promptDirective: string; visualToneVi: string };
+  stylePreset: DerivativeStylePreset;
+  outputLang: DerivativeOutputLanguage;
+  provider: AiProviderId;
+  useProModel?: boolean;
+  customInstruction?: string;
+  characterSummary?: string;
+}): Promise<{ sharedSpiritNote: string; concepts: PlannedIndependentConcept[] }> {
+  const dossierText = params.contexts
+    .map(
+      (ctx) =>
+        `Video tham chiếu #${ctx.index + 1}: "${ctx.source.translatedTitle || ctx.source.title}" (${ctx.source.platformLabel})\n` +
+        (ctx.description ? `Mô tả: ${ctx.description.slice(0, 350)}\n` : '') +
+        (ctx.captionsText ? `Lời thoại trích xuất: ${ctx.captionsText.slice(0, 450)}` : '')
+    )
+    .join('\n\n');
+
+  const planPrompt = `Bạn là Giám đốc Sáng tạo Nội dung AI.
+NHIỆM VỤ: Từ nguồn cảm hứng dưới đây, hãy lên ý tưởng cho ĐÚNG ${params.videoCount} VIDEO ĐỘC LẬP HOÀN TOÀN KHÁC NHAU.
+
+NGUYÊN TẮC TỐI QUAN TRỌNG (KHÔNG ĐƯỢC VI PHẠM):
+- Người dùng KHÔNG muốn chia nhỏ một câu chuyện thành nhiều tập (KHÔNG phải Tập 1, Tập 2, Tập 3 hay Phần 1, Phần 2).
+- Người dùng muốn tạo ${params.videoCount} CÂU CHUYỆN RIÊNG BIỆT ĐỘC LẬP:
+  1. Mỗi video có 1 cốt truyện riêng biệt, không lặp lại ý tưởng hay tình huống của các video khác.
+  2. Mỗi video có thể sử dụng NHÂN VẬT HOÀN TOÀN KHÁC NHAU (tên, ngoại hình, trang phục, tính cách riêng).
+  3. Bối cảnh, không gian và diễn biến của từng video được sáng tạo độc lập.
+  4. TẤT CẢ ${params.videoCount} video đều phải giữ chung **tinh thần, chủ đề, phong cách hình ảnh (${params.videoStyleMeta.labelVi}) và cảm xúc chủ đạo** của ý tưởng / video tham chiếu ban đầu.
+
+ĐẦU VÀO:
+- Nguồn: ${params.studioMode === 'creative' ? 'Ý tưởng sáng tạo gốc' : `${params.contexts.length} video tham chiếu`}
+- Nội dung chủ đề / ý tưởng: "${params.ideaText || 'Khai thác tinh thần từ video tham chiếu'}"
+- Phong cách nội dung: ${STYLE_LABELS[params.stylePreset]}
+- Phong cách hình ảnh thống nhất: ${params.videoStyleMeta.labelVi} (${params.videoStyleMeta.visualToneVi})
+- Ngôn ngữ đầu ra: ${OUTPUT_LANG_LABELS[params.outputLang]}
+${params.characterSummary?.trim() ? `- Gợi ý nhân vật tham khảo: ${params.characterSummary.trim()}` : ''}
+${params.customInstruction?.trim() ? `- Yêu cầu thêm: ${params.customInstruction.trim()}` : ''}
+${dossierText ? `\nTƯ LIỆU THAM CHIẾU:\n${dossierText}` : ''}
+
+TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG MẢNG "concepts":
+{
+  "sharedSpiritNote": "Mô tả ngắn gọn tinh thần, chủ đề và phong cách nghệ thuật chung gắn kết cả ${params.videoCount} video",
+  "concepts": [
+    {
+      "title": "Tiêu đề riêng hấp dẫn cho Video #1 (không đánh số Tập 1)",
+      "premise": "Tóm tắt cốt truyện độc lập có mở đầu - cao trào - kết thúc trọn vẹn (2-3 câu, khác biệt hoàn toàn các video còn lại)",
+      "characterBible": "Ngoại hình & trang phục cụ thể của nhân vật riêng trong video này",
+      "settingBible": "Bối cảnh không gian & tông màu ánh sáng riêng của video này",
+      "hookFormula": "Cách mở đầu giữ chân khán giả cho video này",
+      "derivativeHook": "Câu hook ngắn <= 12 chữ hiện 3.5s đầu"
+    }
+  ]
+}`;
+
+  let parsed: any = {};
+
+  if (params.provider === 'muse2api') {
+    const st = await getMuse2ApiStatus();
+    if (!st.reachable || !st.ready) {
+      throw new Error(
+        st.error ||
+          'Muse2API chưa sẵn sàng hoặc chưa có tài khoản muse.ai hợp lệ. Hãy kiểm tra phần Quản lý Muse2API trong Thiết lập.'
+      );
+    }
+    const raw = await chatWithMuse2ApiSpark([
+      {
+        role: 'system',
+        content: 'Chỉ trả về 1 đối tượng JSON thuần túy đúng schema, không giải thích bên ngoài JSON.',
+      },
+      { role: 'user', content: planPrompt },
+    ]);
+    parsed = parseAiBlueprintJsonSafe(raw);
+  } else if (params.provider === 'openai' || params.provider === 'meta') {
+    const cfg = resolveOpenAiCompatibleConfig(params.provider);
+    if (!cfg.apiKey) {
+      throw new Error(`Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env.`);
+    }
+    const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages: [
+          { role: 'system', content: 'Chỉ trả về JSON thuần túy hợp lệ đúng schema.' },
+          { role: 'user', content: planPrompt },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.85,
+      }),
+      signal: AbortSignal.timeout(75_000),
+    });
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      throw new Error(`${cfg.label} lỗi HTTP ${res.status}: ${errBody.slice(0, 180) || res.statusText}`);
+    }
+    const data = (await res.json()) as any;
+    parsed = parseAiBlueprintJsonSafe(String(data?.choices?.[0]?.message?.content || '{}'));
+  } else {
+    const ai = getGeminiClient();
+    const parts: any[] = [];
+    for (const ctx of params.contexts.slice(0, 2)) {
+      if (ctx.thumbnail) {
+        parts.push({
+          inlineData: { mimeType: ctx.thumbnail.mimeType, data: ctx.thumbnail.buffer.toString('base64') },
+        });
+      }
+    }
+    parts.push({ text: planPrompt });
+
+    const candidateModels = params.useProModel
+      ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
+      : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+
+    let lastErr: any;
+    for (const candidateModel of candidateModels) {
+      try {
+        const response = await retryWithGeminiBackoff(
+          () =>
+            ai.models.generateContent({
+              model: candidateModel,
+              contents: { parts },
+              config: {
+                maxOutputTokens: 12288,
+                ...(candidateModel.startsWith('gemini-4-')
+                  ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                  : {}),
+                systemInstruction:
+                  `Luôn trả về ĐÚNG ${params.videoCount} video độc lập được yêu cầu trong mảng concepts của JSON. Mỗi video phải là một câu chuyện tách biệt hoàn toàn với nhân vật và bối cảnh riêng, tuyệt đối không viết thành các tập nối tiếp.`,
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  required: ['sharedSpiritNote', 'concepts'],
+                  properties: {
+                    sharedSpiritNote: { type: Type.STRING },
+                    concepts: {
+                      type: Type.ARRAY,
+                      minItems: String(params.videoCount),
+                      maxItems: String(params.videoCount),
+                      items: {
+                        type: Type.OBJECT,
+                        required: ['title', 'premise', 'characterBible', 'settingBible'],
+                        properties: {
+                          title: { type: Type.STRING },
+                          premise: { type: Type.STRING },
+                          characterBible: { type: Type.STRING },
+                          settingBible: { type: Type.STRING },
+                          hookFormula: { type: Type.STRING },
+                          derivativeHook: { type: Type.STRING },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            }),
+          [1400, 3000]
+        );
+        const candidateConceptParsed = parseAiBlueprintJsonSafe((response?.text ?? '{}').trim());
+        if (
+          (!Array.isArray(candidateConceptParsed?.concepts) || candidateConceptParsed.concepts.length === 0) &&
+          candidateModel !== candidateModels[candidateModels.length - 1]
+        ) {
+          lastErr = new Error('AI trả về danh sách ý tưởng rỗng.');
+          continue;
+        }
+        parsed = candidateConceptParsed;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        if (!shouldFallbackGeminiModel(err) && !(err instanceof SyntaxError)) {
+          throw err;
+        }
+      }
+    }
+    if (!Array.isArray(parsed?.concepts) && lastErr) {
+      throw lastErr;
+    }
+  }
+
+  const rawConcepts: any[] = Array.isArray(parsed?.concepts) ? parsed.concepts : [];
+  const concepts: PlannedIndependentConcept[] = rawConcepts
+    .filter((c) => c && (c.title || c.premise))
+    .slice(0, params.videoCount)
+    .map((c, idx) => ({
+      title: String(c.title || `Ý tưởng độc lập #${idx + 1}`).trim(),
+      premise: String(c.premise || c.title || '').trim(),
+      characterBible: String(c.characterBible || '').trim(),
+      settingBible: String(c.settingBible || '').trim(),
+      hookFormula: String(c.hookFormula || '').trim(),
+      derivativeHook: String(c.derivativeHook || '').trim(),
+    }));
+
+  if (concepts.length === 0) {
+    throw new Error('AI chưa tạo được danh sách ý tưởng độc lập hợp lệ. Vui lòng thử lại.');
+  }
+
+  return {
+    sharedSpiritNote: String(
+      parsed?.sharedSpiritNote ||
+        `Giữ tinh thần chủ đề "${params.ideaText || 'nguồn tham chiếu'}" · Phong cách ${params.videoStyleMeta.labelVi}`
+    ).trim(),
+    concepts,
+  };
+}
+
+export async function learnAndCreateIndependentBatch(params: {
+  mode?: StudioCreationMode;
+  ideaPrompt?: string;
+  query?: string;
+  videos?: DerivativeSourceInput[];
+  videoCount: number;
+  perVideoDurations?: number[];
+  targetDurationSec?: number;
+  desiredSceneCount?: number;
+  stylePreset?: DerivativeStylePreset;
+  videoStyle?: StudioVideoStyle;
+  aspectRatio: DerivativeAspectRatio;
+  outputLanguage?: DerivativeOutputLanguage;
+  useProModel?: boolean;
+  characterSummary?: string;
+  characterBible?: string;
+  settingBible?: string;
+  visualStyleBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
+  customInstruction?: string;
+  enableVoiceover?: boolean;
+  aiProvider?: AiProviderId;
+}): Promise<{ sharedSpiritNote: string; blueprints: DerivativeBlueprint[] }> {
+  const studioMode: StudioCreationMode = params.mode === 'creative' ? 'creative' : 'derivative';
+  const videosList = Array.isArray(params.videos) ? params.videos : [];
+  const ideaText = (params.ideaPrompt || params.query || '').trim();
+  const activeStylePreset: DerivativeStylePreset =
+    params.stylePreset && params.stylePreset in STYLE_LABELS ? params.stylePreset : 'none';
+
+  if (studioMode === 'creative') {
+    if (!ideaText && !params.customInstruction?.trim()) {
+      throw new Error('Vui lòng nhập ý tưởng hoặc mô tả chủ đề để Studio Sáng Tạo lên danh sách video.');
+    }
+  } else if (videosList.length === 0) {
+    throw new Error('Vui lòng chọn hoặc tải lên ít nhất 1 video tham chiếu để AI phân tích tinh thần & chủ đề.');
+  }
+
+  const provider: AiProviderId =
+    params.aiProvider === 'openai' || params.aiProvider === 'meta' || params.aiProvider === 'muse2api'
+      ? params.aiProvider
+      : 'gemini';
+
+  const videoStyle: StudioVideoStyle =
+    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META ? params.videoStyle : 'cinematic';
+  const videoStyleMeta = STUDIO_VIDEO_STYLE_META[videoStyle];
+  const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
+  const count = Math.max(2, Math.min(15, Math.round(Number(params.videoCount || 3))));
+  const defaultDur = Math.max(10, Math.min(900, Math.round(Number(params.targetDurationSec || 30))));
+
+  const contexts = videosList.length > 0 ? await gatherSourceContexts(videosList) : [];
+
+  const plan = await planIndependentVideoConcepts({
+    studioMode,
+    ideaText,
+    contexts,
+    videoCount: count,
+    videoStyleMeta,
+    stylePreset: activeStylePreset,
+    outputLang,
+    provider,
+    useProModel: params.useProModel,
+    customInstruction: params.customInstruction,
+    characterSummary: params.characterSummary,
+  });
+
+  // Top up cleanly if the model returned slightly fewer concepts than requested
+  while (plan.concepts.length < count) {
+    const base = plan.concepts[plan.concepts.length % Math.max(1, plan.concepts.length)];
+    const n = plan.concepts.length + 1;
+    plan.concepts.push({
+      title: `${base.title} (Biến thể góc nhìn #${n})`,
+      premise: `Một câu chuyện hoàn toàn độc lập lấy cảm hứng từ tinh thần chung: ${plan.sharedSpiritNote}. Khai thác nhân vật và xung đột mới mẻ khác biệt với các video trước.`,
+      characterBible: '',
+      settingBible: '',
+      hookFormula: base.hookFormula,
+      derivativeHook: '',
+    });
+  }
+
+  const selectedConcepts = plan.concepts.slice(0, count);
+  const allTitles = selectedConcepts.map((c) => c.title);
+  const blueprints: DerivativeBlueprint[] = new Array(selectedConcepts.length);
+  const concurrency = provider === 'muse2api' ? 1 : 2;
+
+  for (let start = 0; start < selectedConcepts.length; start += concurrency) {
+    const chunkIndices = Array.from(
+      { length: Math.min(concurrency, selectedConcepts.length - start) },
+      (_, offset) => start + offset
+    );
+    await Promise.all(
+      chunkIndices.map(async (idx) => {
+        const concept = selectedConcepts[idx];
+        const rawDur = Array.isArray(params.perVideoDurations) ? params.perVideoDurations[idx] : undefined;
+        const vidDur =
+          typeof rawDur === 'number' && Number.isFinite(rawDur)
+            ? Math.max(10, Math.min(900, Math.round(rawDur)))
+            : defaultDur;
+
+        blueprints[idx] = await learnVideosAndCreateBlueprint({
+          mode: studioMode,
+          scriptMode: 'independent_batch',
+          ideaPrompt: ideaText,
+          query: params.query,
+          videos: videosList,
+          stylePreset: activeStylePreset,
+          videoStyle,
+          aspectRatio: params.aspectRatio,
+          targetDurationSec: vidDur,
+          desiredSceneCount: params.desiredSceneCount,
+          outputLanguage: outputLang,
+          useProModel: params.useProModel,
+          characterSummary: params.characterSummary,
+          characterBible: concept.characterBible || params.characterBible,
+          settingBible: concept.settingBible || params.settingBible,
+          visualStyleBible: params.visualStyleBible,
+          costumeBible: params.costumeBible,
+          continuityBible: params.continuityBible,
+          customInstruction: params.customInstruction,
+          enableVoiceover: params.enableVoiceover,
+          aiProvider: provider,
+          preGatheredContexts: contexts,
+          conceptOverride: {
+            title: concept.title,
+            premise: concept.premise,
+            characterBible: concept.characterBible,
+            settingBible: concept.settingBible,
+            visualStyleBible: params.visualStyleBible,
+            costumeBible: params.costumeBible,
+            continuityBible: params.continuityBible,
+            hookFormula: concept.hookFormula,
+            derivativeHook: concept.derivativeHook,
+            sharedSpiritNote: plan.sharedSpiritNote,
+            avoidTitles: allTitles.filter((_, j) => j !== idx),
+            batchIndex: idx + 1,
+            batchTotal: selectedConcepts.length,
+          },
+        });
+      })
+    );
+  }
+
+  return { sharedSpiritNote: plan.sharedSpiritNote, blueprints };
+}
+
+// ==========================================
+// STUDIO SHARED PROJECT PROFILES & VIDEO LIBRARY
+// ==========================================
+
+export interface StudioProjectProfileRecord {
+  id: string;
+  name: string;
+  description?: string;
+  videoStyle: StudioVideoStyle;
+  characterBible: string;
+  settingBible: string;
+  visualStyleBible: string;
+  costumeBible: string;
+  continuityBible: string;
+  characterRefs: { id: string; name: string; dataUrl: string; description?: string; source: 'uploaded' | 'ai_generated' }[];
+  updatedAt: number;
+}
+
+const STUDIO_PROJECTS_FILE = path.join(process.cwd(), 'data', 'studio_projects.json');
+
+function ensureStudioProjectsFile(): void {
+  const dir = path.dirname(STUDIO_PROJECTS_FILE);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  if (!fs.existsSync(STUDIO_PROJECTS_FILE)) {
+    fs.writeFileSync(STUDIO_PROJECTS_FILE, '[]', 'utf8');
+  }
+}
+
+export function listStudioProjectProfiles(): StudioProjectProfileRecord[] {
+  try {
+    ensureStudioProjectsFile();
+    const raw = fs.readFileSync(STUDIO_PROJECTS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveStudioProjectProfile(input: Partial<StudioProjectProfileRecord>): StudioProjectProfileRecord {
+  const list = listStudioProjectProfiles();
+  const name = String(input.name || '').trim();
+  if (!name) {
+    throw new Error('Vui lòng nhập tên Hồ sơ Dự án.');
+  }
+  const id = String(input.id || '').trim() || `proj_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
+  const validStyle: StudioVideoStyle =
+    input.videoStyle && input.videoStyle in STUDIO_VIDEO_STYLE_META ? input.videoStyle : 'cinematic';
+
+  const record: StudioProjectProfileRecord = {
+    id,
+    name: name.slice(0, 80),
+    description: String(input.description || '').trim().slice(0, 240),
+    videoStyle: validStyle,
+    characterBible: String(input.characterBible || '').trim(),
+    settingBible: String(input.settingBible || '').trim(),
+    visualStyleBible: String(input.visualStyleBible || '').trim(),
+    costumeBible: String(input.costumeBible || '').trim(),
+    continuityBible: String(input.continuityBible || '').trim(),
+    characterRefs: Array.isArray(input.characterRefs) ? input.characterRefs.slice(0, 3) : [],
+    updatedAt: Date.now(),
+  };
+
+  const existingIdx = list.findIndex((p) => p.id === id);
+  if (existingIdx >= 0) {
+    list[existingIdx] = record;
+  } else {
+    list.unshift(record);
+  }
+  ensureStudioProjectsFile();
+  fs.writeFileSync(STUDIO_PROJECTS_FILE, JSON.stringify(list.slice(0, 40), null, 2), 'utf8');
+  return record;
+}
+
+export function deleteStudioProjectProfile(id: string): boolean {
+  const list = listStudioProjectProfiles();
+  const next = list.filter((p) => p.id !== id);
+  if (next.length === list.length) return false;
+  ensureStudioProjectsFile();
+  fs.writeFileSync(STUDIO_PROJECTS_FILE, JSON.stringify(next, null, 2), 'utf8');
+  return true;
+}
+
+export function listStudioLibraryVideos() {
+  const items: {
+    id: string;
+    kind: 'uploaded' | 'rendered';
+    title: string;
+    durationSec: number;
+    resolution: string;
+    previewUrl: string;
+    localAssetId?: string;
+    jobId?: string;
+    hasAudio?: boolean;
+    createdAt: number;
+  }[] = [];
+
+  for (const asset of studioAssets.values()) {
+    if (!fs.existsSync(asset.filePath)) continue;
+    if (!(asset.mimeType || '').startsWith('video/')) continue;
+    items.push({
+      id: `asset_${asset.assetId}`,
+      kind: 'uploaded',
+      title: asset.fileName.replace(/\.[^.]+$/, ''),
+      durationSec: Math.round(asset.durationSec || 0),
+      resolution: asset.resolution || 'HD',
+      previewUrl: `/api/studio/assets/${asset.assetId}`,
+      localAssetId: asset.assetId,
+      hasAudio: asset.hasAudio,
+      createdAt: asset.createdAt,
+    });
+  }
+
+  for (const job of derivativeJobs.values()) {
+    if (job.status !== 'completed' || !job.outputPath || !fs.existsSync(job.outputPath)) continue;
+    items.push({
+      id: `job_${job.jobId}`,
+      kind: 'rendered',
+      title: (job.fileName || 'Studio Render').replace(/\.[^.]+$/, ''),
+      durationSec: Math.round(job.durationSec || 0),
+      resolution: job.resolution || '1080p',
+      previewUrl: `/api/derivative/jobs/${job.jobId}/file`,
+      jobId: job.jobId,
+      hasAudio: true,
+      createdAt: job.createdAt,
+    });
+  }
+
+  return items.sort((a, b) => b.createdAt - a.createdAt).slice(0, 30);
+}
+
+export async function importRenderedJobAsLibraryAsset(jobId: string) {
+  const job = derivativeJobs.get(jobId);
+  if (!job || job.status !== 'completed' || !job.outputPath || !fs.existsSync(job.outputPath)) {
+    throw new Error('Video đã dựng trong thư viện không tồn tại hoặc đã hết hạn.');
+  }
+  return saveUploadedStudioVideoFromDisk(job.outputPath, job.fileName || `studio_${jobId}.mp4`);
+}
+
 // ==========================================
 // STUDIO AI MEDIA (CHARACTER/SCENE IMAGE, OMNI FLASH VIDEO, LYRIA MUSIC, OFFLINE TTS)
 // ==========================================
@@ -1479,17 +2612,56 @@ export async function generateStudioImage(params: {
   aspectRatio?: '1:1' | '9:16' | '16:9';
   quality?: 'standard' | 'pro';
   engine?: 'gemini' | 'muse2api';
+  videoStyle?: StudioVideoStyle;
+  characterBible?: string;
+  settingBible?: string;
+  visualStyleBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
+  sceneIndex?: number;
+  totalScenes?: number;
   characterRefs?: { dataUrl: string; name?: string }[];
 }): Promise<{ dataUrl: string; model: string }> {
   const aspectRatio = params.aspectRatio || (params.mode === 'character' ? '1:1' : '16:9');
+  const styleMeta =
+    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META
+      ? STUDIO_VIDEO_STYLE_META[params.videoStyle]
+      : STUDIO_VIDEO_STYLE_META.cinematic;
+
+  const consistencyBlock = [
+    `Art & Video Style Directive (STRICTLY ENFORCE): ${styleMeta.promptDirective}.`,
+    params.visualStyleBible?.trim() ? `Visual Style & Color Palette: ${params.visualStyleBible.trim()}.` : '',
+    params.characterBible?.trim()
+      ? `Locked Character Reference (MUST keep exact facial features, hair, proportions consistent): ${params.characterBible.trim()}.`
+      : '',
+    params.costumeBible?.trim() ? `Locked Costume Reference: ${params.costumeBible.trim()}.` : '',
+    params.settingBible?.trim()
+      ? `Locked Environment Reference: ${params.settingBible.trim()}.`
+      : '',
+    params.continuityBible?.trim() ? `Story Continuity Rule: ${params.continuityBible.trim()}.` : '',
+    params.sceneIndex
+      ? `Sequential Storyboard Frame: Scene ${String(params.sceneIndex).padStart(2, '0')}${params.totalScenes ? `/${String(params.totalScenes).padStart(2, '0')}` : ''}.`
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const buildScenePrompt = (hasRefs: boolean) => {
+    if (params.mode === 'character') {
+      return `${consistencyBlock} Create a clean, consistent studio character turnaround / portrait reference sheet suitable for reusing identically across all video scenes. Character description: ${params.prompt}. Crisp framing, balanced lighting, no overlaid watermarks, subtitles, or UI text.`;
+    }
+    if (hasRefs) {
+      const refNames = (params.characterRefs || [])
+        .map((r) => r.name)
+        .filter(Boolean)
+        .join(', ');
+      return `${consistencyBlock} Create a cohesive storyboard scene strictly preserving the exact character identity, face, hair, and outfit from the attached reference image(s)${refNames ? ` (${refNames})` : ''}. Scene prompt: ${params.prompt}. No overlaid subtitles, speech bubbles, or watermarks.`;
+    }
+    return `${consistencyBlock} Create a crisp, cohesive storyboard scene: ${params.prompt}. No overlaid subtitles, text, or watermarks.`;
+  };
 
   if (params.engine === 'muse2api') {
-    const finalMusePrompt =
-      params.mode === 'character'
-        ? `Create a clean, consistent studio character portrait sheet suitable for reusing across video scenes: ${params.prompt}. High clarity, balanced lighting, no overlaid watermarks or UI text.`
-        : params.characterRefs && params.characterRefs.length > 0
-        ? `Create a cinematic storyboard scene keeping the exact character appearance from the attached reference image (${params.characterRefs[0]?.name || 'character'}). Scene description: ${params.prompt}. No overlaid subtitles or watermarks.`
-        : `Create a crisp, cinematic storyboard visual scene: ${params.prompt}. High aesthetic composition, no overlaid subtitles or watermarks.`;
+    const finalMusePrompt = buildScenePrompt(Boolean(params.characterRefs && params.characterRefs.length > 0));
     const res = await generateImageViaMuse2Api({
       prompt: finalMusePrompt,
       aspectRatio,
@@ -1499,8 +2671,6 @@ export async function generateStudioImage(params: {
   }
 
   const ai = getGeminiClient();
-  const model = params.quality === 'pro' ? 'gemini-nano-banana-2.1' : 'gemini-3.1-flash-lite-image';
-
   const parts: any[] = [];
   if (Array.isArray(params.characterRefs)) {
     for (const ref of params.characterRefs.slice(0, 3)) {
@@ -1516,13 +2686,7 @@ export async function generateStudioImage(params: {
     }
   }
 
-  const finalPrompt =
-    params.mode === 'character'
-      ? `Create a clean, consistent studio character portrait sheet suitable for reusing across video scenes: ${params.prompt}. High clarity, balanced lighting, no overlaid watermarks or UI text.`
-      : params.characterRefs && params.characterRefs.length > 0
-      ? `Create a cinematic storyboard scene keeping the exact character appearance from the attached reference image(s). Scene description: ${params.prompt}. No overlaid subtitles or watermarks.`
-      : `Create a crisp, cinematic storyboard visual scene: ${params.prompt}. High aesthetic composition, no overlaid subtitles or watermarks.`;
-
+  const finalPrompt = buildScenePrompt(Boolean(params.characterRefs && params.characterRefs.length > 0));
   parts.push({ text: finalPrompt });
 
   const candidateModels =
@@ -1570,19 +2734,46 @@ export async function generateSceneVideoWithOmniFlash(params: {
   aspectRatio: DerivativeAspectRatio;
   durationSec?: number;
   engine?: 'gemini' | 'muse2api';
+  videoStyle?: StudioVideoStyle;
+  characterBible?: string;
+  settingBible?: string;
+  visualStyleBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
+  sceneIndex?: number;
+  totalScenes?: number;
   sceneImageDataUrl?: string;
   characterRefs?: { dataUrl: string; name?: string }[];
 }): Promise<{ assetId: string; previewUrl: string; durationSec: number; model: string }> {
   const clampedDur = Math.max(3, Math.min(15, Math.round(params.durationSec || 8)));
+  const styleMeta =
+    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META
+      ? STUDIO_VIDEO_STYLE_META[params.videoStyle]
+      : STUDIO_VIDEO_STYLE_META.cinematic;
+
+  const anchorLines = [
+    `Visual Style: ${styleMeta.promptDirective}.`,
+    params.visualStyleBible?.trim() ? `Visual Style Reference: ${params.visualStyleBible.trim()}.` : '',
+    params.characterBible?.trim() ? `Character Reference: ${params.characterBible.trim()}.` : '',
+    params.costumeBible?.trim() ? `Costume Reference: ${params.costumeBible.trim()}.` : '',
+    params.settingBible?.trim() ? `Environment Reference: ${params.settingBible.trim()}.` : '',
+    params.continuityBible?.trim() ? `Story Continuity: ${params.continuityBible.trim()}.` : '',
+    params.sceneIndex
+      ? `Scene ${String(params.sceneIndex).padStart(2, '0')}${params.totalScenes ? `/${String(params.totalScenes).padStart(2, '0')}` : ''}.`
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   const promptText = params.sceneImageDataUrl
-    ? `Animate this scene smoothly with natural camera motion matching the visual narrative: ${params.prompt}`
-    : `Cinematic high-definition video scene: ${params.prompt}. Smooth camera movement, cohesive lighting, no overlaid text or watermarks.`;
+    ? `${anchorLines} Animate this exact keyframe scene smoothly with natural camera motion, keeping character & setting identical: ${params.prompt}. No overlaid text or watermarks.`
+    : `${anchorLines} High-definition cohesive video scene: ${params.prompt}. Smooth camera movement, cohesive lighting, no overlaid text or watermarks.`;
 
   if (params.engine === 'muse2api') {
     const refDataUrl = params.sceneImageDataUrl || params.characterRefs?.[0]?.dataUrl;
     const { buffer, mimeType, ext } = await generateVideoBufferViaMuse2Api({
       prompt: promptText,
-      aspectRatio: params.aspectRatio,
+      aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
       durationSec: Math.min(12, clampedDur),
       referenceImageDataUrl: refDataUrl,
     });
@@ -1636,6 +2827,8 @@ export async function generateSceneVideoWithOmniFlash(params: {
 
   inputParts.push({ type: 'text', text: promptText });
 
+  const omniAspect = params.aspectRatio === '9:16' ? '9:16' : '16:9';
+
   try {
     const interaction = await retryWithGeminiBackoff(
       () =>
@@ -1648,7 +2841,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
             stream: false,
             response_format: {
               type: 'video',
-              aspect_ratio: params.aspectRatio,
+              aspect_ratio: omniAspect,
               duration: `${clampedDur}s` as any,
               resolution: '720p',
             },
@@ -2644,13 +3837,13 @@ function buildAssSubtitlesFile(
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
   ];
 
-  const cleanHook = escapeAssText(hookText.trim());
+  const cleanHook = escapeAssText(String(hookText || '').trim());
   if (cleanHook) {
     lines.push(`Dialogue: 1,0:00:00.00,${formatAssTime(Math.min(3.8, timeline[timeline.length - 1]?.end || 3.8))},Hook,,0,0,0,,${cleanHook}`);
   }
 
   for (const seg of timeline) {
-    const cleanCap = escapeAssText(seg.caption.trim());
+    const cleanCap = escapeAssText(String(seg?.caption || '').trim());
     if (!cleanCap) continue;
     lines.push(`Dialogue: 0,${formatAssTime(seg.start)},${formatAssTime(seg.end)},Caption,,0,0,0,,${cleanCap}`);
   }
@@ -2902,23 +4095,27 @@ export function startDerivativeVideoJob(params: StartDerivativeJobParams): Deriv
 }
 
 async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDerivativeJobParams): Promise<void> {
-  const { blueprint, sources, visualMode, voice, keepSourceAudio, downloadSourceVideo } = params;
+  const { blueprint, visualMode, voice, keepSourceAudio, downloadSourceVideo } = params;
+  const sources = Array.isArray(params.sources) ? params.sources : [];
   const scenes = blueprint.scenes.slice(0, 24);
   if (scenes.length === 0) {
     throw new Error('Kịch bản không có phân cảnh nào để dựng video.');
   }
 
   const isVertical = blueprint.aspectRatio === '9:16';
-  const targetW = isVertical ? 1080 : 1920;
-  const targetH = isVertical ? 1920 : 1080;
+  const isSquare = blueprint.aspectRatio === '1:1';
+  const targetW = isSquare ? 1080 : isVertical ? 1080 : 1920;
+  const targetH = isSquare ? 1080 : isVertical ? 1920 : 1080;
   job.resolution = `${targetW}x${targetH}`;
 
   const effectiveVoiceMode: DerivativeVoiceMode =
-    params.voiceMode || (voice === 'none' ? 'none' : 'ai_online');
+    blueprint.enableVoiceover === false
+      ? 'none'
+      : params.voiceMode || (voice === 'none' ? 'none' : 'ai_online');
 
   // 1. Voiceover generation (Online AI TTS or Offline System TTS)
   const sceneAudioPaths: (string | null)[] = new Array(scenes.length).fill(null);
-  const sceneTargetDurations: number[] = scenes.map((s) => Math.max(3.5, Number(s.durationSec || 6)));
+  const sceneTargetDurations: number[] = scenes.map((s) => Math.max(2.0, Number(s.durationSec || 6)));
   const totalPlannedSec = sceneTargetDurations.reduce((a, b) => a + b, 0);
 
   if (effectiveVoiceMode === 'offline_system') {
@@ -3093,11 +4290,30 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         }...`;
         job.progress = 36 + Math.round(((i + 1) / scenes.length) * 20);
         try {
+          const consistentPrompt = compileConsistentScenePrompt({
+            scene: sc,
+            videoStyle: blueprint.videoStyle,
+            characterBible: blueprint.characterBible,
+            settingBible: blueprint.settingBible,
+            visualStyleBible: blueprint.visualStyleBible,
+            costumeBible: blueprint.costumeBible,
+            continuityBible: blueprint.continuityBible,
+            totalScenes: scenes.length,
+            mediaType: 'video',
+          });
           const clipRes = await generateSceneVideoWithOmniFlash({
             engine: useMuseVideo ? 'muse2api' : 'gemini',
-            prompt: `${sc.visualNote || sc.onScreenText}. ${sc.narration.slice(0, 140)}`,
+            prompt: `${consistentPrompt} ${effectiveVoiceMode !== 'none' && sc.narration ? `Narration mood: ${sc.narration.slice(0, 120)}` : ''}`.trim(),
             aspectRatio: blueprint.aspectRatio,
             durationSec: Math.min(useMuseVideo ? 12 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
+            videoStyle: blueprint.videoStyle,
+            characterBible: blueprint.characterBible,
+            settingBible: blueprint.settingBible,
+            visualStyleBible: blueprint.visualStyleBible,
+            costumeBible: blueprint.costumeBible,
+            continuityBible: blueprint.continuityBible,
+            sceneIndex: sc.sceneIndex || i + 1,
+            totalScenes: scenes.length,
             sceneImageDataUrl: sc.sceneImageDataUrl,
             characterRefs: params.characterRefs,
           });
@@ -3117,9 +4333,12 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     }
   }
 
-  const referencedIndices = Array.from(
-    new Set(scenes.map((s) => Math.max(0, Math.min(sources.length - 1, s.sourceVideoIndex))))
-  );
+  const referencedIndices =
+    sources.length > 0
+      ? Array.from(
+          new Set(scenes.map((s) => Math.max(0, Math.min(sources.length - 1, s.sourceVideoIndex))))
+        )
+      : [];
 
   // Register uploaded local videos and fetch thumbnails for remote sources
   await Promise.all(
@@ -3155,34 +4374,37 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     visualMode === 'remix' ||
     ((visualMode === 'muse2api_video' || visualMode === 'gemini_omni') && hasUncoveredScenes);
 
-  if (shouldFetchSourceOrBroll && downloadSourceVideo) {
-    for (let k = 0; k < referencedIndices.length; k += 1) {
-      const srcIdx = referencedIndices[k];
-      if (downloadedSourceVideos.has(srcIdx)) continue; // already registered local uploaded video
-      const src = sources[srcIdx];
-      if (!src) continue;
-      job.stepLabel = `Đang tải video nguồn #${srcIdx + 1} (${src.platformLabel}) để trích đoạn...`;
-      job.progress = 38 + Math.round(((k + 1) / Math.max(1, referencedIndices.length)) * 14);
-      const vidOutPath = path.join(job.workDir, `src_video_${srcIdx}.mp4`);
-      let fallbackReason = '';
-      try {
-        const dlRes = await downloadSourceVideo(src, vidOutPath);
-        const ok = typeof dlRes === 'boolean' ? dlRes : Boolean(dlRes?.ok);
-        fallbackReason = typeof dlRes === 'object' && dlRes?.reason ? dlRes.reason : '';
-        if (ok && fs.existsSync(vidOutPath) && fs.statSync(vidOutPath).size > 20_000) {
-          const dur = await probeDurationSeconds(vidOutPath, job.workDir);
-          downloadedSourceVideos.set(srcIdx, { path: vidOutPath, duration: dur > 0 ? dur : 30 });
-          continue;
+  if (shouldFetchSourceOrBroll) {
+    if (downloadSourceVideo && referencedIndices.length > 0) {
+      for (let k = 0; k < referencedIndices.length; k += 1) {
+        const srcIdx = referencedIndices[k];
+        if (downloadedSourceVideos.has(srcIdx)) continue; // already registered local uploaded video
+        const src = sources[srcIdx];
+        if (!src) continue;
+        job.stepLabel = `Đang tải video nguồn #${srcIdx + 1} (${src.platformLabel}) để trích đoạn...`;
+        job.progress = 38 + Math.round(((k + 1) / Math.max(1, referencedIndices.length)) * 14);
+        const vidOutPath = path.join(job.workDir, `src_video_${srcIdx}.mp4`);
+        let fallbackReason = '';
+        try {
+          const dlRes = await downloadSourceVideo(src, vidOutPath);
+          const ok = typeof dlRes === 'boolean' ? dlRes : Boolean(dlRes?.ok);
+          fallbackReason = typeof dlRes === 'object' && dlRes?.reason ? dlRes.reason : '';
+          if (ok && fs.existsSync(vidOutPath) && fs.statSync(vidOutPath).size > 20_000) {
+            const dur = await probeDurationSeconds(vidOutPath, job.workDir);
+            downloadedSourceVideos.set(srcIdx, { path: vidOutPath, duration: dur > 0 ? dur : 30 });
+            continue;
+          }
+        } catch (dlErr: any) {
+          fallbackReason = String(dlErr?.message || '').trim();
         }
-      } catch (dlErr: any) {
-        fallbackReason = String(dlErr?.message || '').trim();
+        failedSourceReasons.set(srcIdx, fallbackReason);
       }
-      failedSourceReasons.set(srcIdx, fallbackReason);
     }
 
-    // Fetch distinct per-scene Wikimedia Commons / B-roll clips whenever a referenced source video is unavailable
+    // Fetch distinct per-scene Wikimedia Commons / B-roll clips whenever a scene has no AI clip, custom image, or source video
     const scenesNeedingBroll = scenes.filter((sc, idx) => {
       if (sceneOmniVideos.has(idx) || sceneCustomImages.has(idx)) return false;
+      if (sources.length === 0) return true;
       const srcIdx = Math.max(0, Math.min(sources.length - 1, sc.sourceVideoIndex));
       return !downloadedSourceVideos.has(srcIdx);
     });
@@ -3192,16 +4414,17 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       for (let bIdx = 0; bIdx < scenes.length; bIdx += 1) {
         if (sceneOmniVideos.has(bIdx) || sceneCustomImages.has(bIdx)) continue;
         const sc = scenes[bIdx];
-        const srcIdx = Math.max(0, Math.min(sources.length - 1, sc.sourceVideoIndex));
-        if (downloadedSourceVideos.has(srcIdx)) continue;
+        const srcIdx = sources.length > 0 ? Math.max(0, Math.min(sources.length - 1, sc.sourceVideoIndex)) : -1;
+        if (srcIdx >= 0 && downloadedSourceVideos.has(srcIdx)) continue;
 
         job.stepLabel = `Đang tìm video mẫu từ ${brollPreference === 'wikimedia' ? 'Wikimedia Commons' : 'kho B-roll'} cho cảnh ${bIdx + 1}/${scenes.length}...`;
         job.progress = 52 + Math.round(((bIdx + 1) / scenes.length) * 10);
 
-        const src = sources[srcIdx];
+        const src = srcIdx >= 0 ? sources[srcIdx] : undefined;
         const brollPath = path.join(job.workDir, `scene_broll_${bIdx}.mp4`);
         const queries = [
           sc.brollKeywordEn || '',
+          sc.settingDetail || '',
           sc.visualNote || '',
           src?.translatedTitle || src?.title || '',
           blueprint.derivativeTitle || '',
@@ -3220,6 +4443,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         const reason = failedSourceReasons.get(srcIdx) || '';
         const hasAnySceneClip = scenes.some(
           (sc, idx) =>
+            sources.length > 0 &&
             Math.max(0, Math.min(sources.length - 1, sc.sourceVideoIndex)) === srcIdx &&
             sceneBrollVideos.has(idx)
         );
@@ -3297,7 +4521,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
 
   for (let i = 0; i < scenes.length; i += 1) {
     const sc = scenes[i];
-    const srcIdx = Math.max(0, Math.min(sources.length - 1, sc.sourceVideoIndex));
+    const srcIdx = sources.length > 0 ? Math.max(0, Math.min(sources.length - 1, sc.sourceVideoIndex)) : -1;
     const sceneDur = Number(sceneTargetDurations[i].toFixed(2));
     job.stepLabel = `Đang dựng phân cảnh ${i + 1}/${scenes.length} bằng FFmpeg...`;
     job.progress = 62 + Math.round(((i + 1) / scenes.length) * 26);
@@ -3313,10 +4537,10 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       ? undefined
       : brollClip
       ? { path: brollClip.path, duration: brollClip.duration, isBroll: true }
-      : visualMode === 'storyboard_motion'
+      : visualMode === 'storyboard_motion' || srcIdx < 0
       ? undefined
       : downloadedSourceVideos.get(srcIdx);
-    const thumbFile = customImg || thumbnailPaths.get(srcIdx);
+    const thumbFile = customImg || (srcIdx >= 0 ? thumbnailPaths.get(srcIdx) : undefined);
 
     const canvasFilter =
       `[0:v]split[bg][fg];` +
@@ -3613,7 +4837,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     subtitleTimeline.push({
       start: cursorSec,
       end: cursorSec + actualDur,
-      caption: sc.onScreenText,
+      caption: sc.onScreenText || '',
     });
     cursorSec += actualDur;
     sceneVideoFiles.push(path.basename(outScenePath));

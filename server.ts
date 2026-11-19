@@ -24,6 +24,7 @@ import {
   appendStudioUploadChunk,
   BrollSourceId,
   completeStudioChunkedUpload,
+  deleteStudioProjectProfile,
   DerivativeAspectRatio,
   DerivativeBlueprint,
   derivativeJobs,
@@ -39,15 +40,23 @@ import {
   generateStudioImage,
   generateStudioMusicWithLyria,
   getStudioAsset,
+  importRenderedJobAsLibraryAsset,
   initStudioChunkedUpload,
   installAndWarmupVieNeu,
+  learnAndCreateIndependentBatch,
   learnVideosAndCreateBlueprint,
+  listStudioLibraryVideos,
+  listStudioProjectProfiles,
   listVieNeuVoices,
+  saveStudioProjectProfile,
   saveUploadedStudioAudio,
   saveUploadedStudioVideo,
   saveUploadedStudioVideoFromDisk,
   searchPublicFreeMusicFromWikimedia,
   startDerivativeVideoJob,
+  StudioCreationMode,
+  StudioScriptMode,
+  StudioVideoStyle,
   synthesizeOfflineVoicePreview,
   testAiProviderConnection,
 } from './server/derivative';
@@ -4650,17 +4659,86 @@ async function startServer() {
     fs.createReadStream(asset.filePath).pipe(res);
   });
 
+  app.get('/api/studio/projects', (_req, res) => {
+    try {
+      res.json({ projects: listStudioProjectProfiles() });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không đọc được danh sách dự án.' });
+    }
+  });
+
+  app.post('/api/studio/projects', (req, res) => {
+    try {
+      const project = saveStudioProjectProfile(req.body || {});
+      res.json({ project, projects: listStudioProjectProfiles() });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không lưu được hồ sơ dự án.' });
+    }
+  });
+
+  app.delete('/api/studio/projects/:id', (req, res) => {
+    try {
+      const removed = deleteStudioProjectProfile(req.params.id);
+      res.json({ ok: removed, projects: listStudioProjectProfiles() });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không xóa được hồ sơ dự án.' });
+    }
+  });
+
+  app.get('/api/studio/library-videos', (_req, res) => {
+    try {
+      res.json({ videos: listStudioLibraryVideos() });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không lấy được thư viện video dự án.' });
+    }
+  });
+
+  app.post('/api/studio/library-videos/import-job', async (req, res) => {
+    try {
+      const { jobId = '' } = (req.body || {}) as { jobId?: string };
+      if (!String(jobId).trim()) {
+        return res.status(400).json({ error: 'Thiếu jobId để nạp vào tham chiếu.' });
+      }
+      const asset = await importRenderedJobAsLibraryAsset(String(jobId).trim());
+      res.json({ asset });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không nạp được video từ thư viện.' });
+    }
+  });
+
   app.post('/api/studio/generate-image', async (req, res) => {
     try {
-      const { mode = 'scene', prompt = '', aspectRatio = '16:9', quality = 'standard', engine = 'gemini', characterRefs = [] } =
-        (req.body || {}) as {
-          mode?: 'character' | 'scene';
-          prompt?: string;
-          aspectRatio?: '1:1' | '9:16' | '16:9';
-          quality?: 'standard' | 'pro';
-          engine?: 'gemini' | 'muse2api';
-          characterRefs?: { dataUrl: string; name?: string }[];
-        };
+      const {
+        mode = 'scene',
+        prompt = '',
+        aspectRatio = '16:9',
+        quality = 'standard',
+        engine = 'gemini',
+        videoStyle,
+        characterBible = '',
+        settingBible = '',
+        visualStyleBible = '',
+        costumeBible = '',
+        continuityBible = '',
+        sceneIndex,
+        totalScenes,
+        characterRefs = [],
+      } = (req.body || {}) as {
+        mode?: 'character' | 'scene';
+        prompt?: string;
+        aspectRatio?: '1:1' | '9:16' | '16:9';
+        quality?: 'standard' | 'pro';
+        engine?: 'gemini' | 'muse2api';
+        videoStyle?: StudioVideoStyle;
+        characterBible?: string;
+        settingBible?: string;
+        visualStyleBible?: string;
+        costumeBible?: string;
+        continuityBible?: string;
+        sceneIndex?: number;
+        totalScenes?: number;
+        characterRefs?: { dataUrl: string; name?: string }[];
+      };
       if (!String(prompt).trim()) {
         return res.status(400).json({ error: 'Vui lòng nhập mô tả để AI tạo hình ảnh.' });
       }
@@ -4670,6 +4748,14 @@ async function startServer() {
         aspectRatio,
         quality: quality === 'pro' ? 'pro' : 'standard',
         engine: engine === 'muse2api' ? 'muse2api' : 'gemini',
+        videoStyle,
+        characterBible: String(characterBible || ''),
+        settingBible: String(settingBible || ''),
+        visualStyleBible: String(visualStyleBible || ''),
+        costumeBible: String(costumeBible || ''),
+        continuityBible: String(continuityBible || ''),
+        sceneIndex: typeof sceneIndex === 'number' ? sceneIndex : undefined,
+        totalScenes: typeof totalScenes === 'number' ? totalScenes : undefined,
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
       });
       res.json(result);
@@ -4681,23 +4767,53 @@ async function startServer() {
 
   app.post('/api/studio/generate-scene-video', async (req, res) => {
     try {
-      const { prompt = '', aspectRatio = '16:9', durationSec = 8, engine = 'gemini', sceneImageDataUrl, characterRefs = [] } =
-        (req.body || {}) as {
-          prompt?: string;
-          aspectRatio?: DerivativeAspectRatio;
-          durationSec?: number;
-          engine?: 'gemini' | 'muse2api';
-          sceneImageDataUrl?: string;
-          characterRefs?: { dataUrl: string; name?: string }[];
-        };
+      const {
+        prompt = '',
+        aspectRatio = '16:9',
+        durationSec = 8,
+        engine = 'gemini',
+        videoStyle,
+        characterBible = '',
+        settingBible = '',
+        visualStyleBible = '',
+        costumeBible = '',
+        continuityBible = '',
+        sceneIndex,
+        totalScenes,
+        sceneImageDataUrl,
+        characterRefs = [],
+      } = (req.body || {}) as {
+        prompt?: string;
+        aspectRatio?: DerivativeAspectRatio;
+        durationSec?: number;
+        engine?: 'gemini' | 'muse2api';
+        videoStyle?: StudioVideoStyle;
+        characterBible?: string;
+        settingBible?: string;
+        visualStyleBible?: string;
+        costumeBible?: string;
+        continuityBible?: string;
+        sceneIndex?: number;
+        totalScenes?: number;
+        sceneImageDataUrl?: string;
+        characterRefs?: { dataUrl: string; name?: string }[];
+      };
       if (!String(prompt).trim()) {
         return res.status(400).json({ error: 'Thiếu mô tả phân cảnh để dựng clip AI.' });
       }
       const result = await generateSceneVideoWithOmniFlash({
         engine: engine === 'muse2api' ? 'muse2api' : 'gemini',
         prompt: String(prompt),
-        aspectRatio: aspectRatio === '9:16' ? '9:16' : '16:9',
+        aspectRatio: aspectRatio === '9:16' ? '9:16' : aspectRatio === '1:1' ? '1:1' : '16:9',
         durationSec: Number(durationSec) || 8,
+        videoStyle,
+        characterBible: String(characterBible || ''),
+        settingBible: String(settingBible || ''),
+        visualStyleBible: String(visualStyleBible || ''),
+        costumeBible: String(costumeBible || ''),
+        continuityBible: String(continuityBible || ''),
+        sceneIndex: typeof sceneIndex === 'number' ? sceneIndex : undefined,
+        totalScenes: typeof totalScenes === 'number' ? totalScenes : undefined,
         sceneImageDataUrl,
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
       });
@@ -4735,58 +4851,142 @@ async function startServer() {
   app.post('/api/derivative/learn', async (req, res) => {
     try {
       const {
+        mode = 'derivative',
+        scriptMode = 'series',
+        videoCount = 3,
+        perVideoDurations,
+        ideaPrompt = '',
         query = '',
-        videos,
-        stylePreset = 'summary_fast',
+        videos = [],
+        stylePreset = 'none',
+        videoStyle = 'cinematic',
         aspectRatio = '9:16',
         targetDurationSec,
         targetDuration = 'short',
+        desiredSceneCount,
         outputLanguage = 'vi',
         useProModel = false,
         characterSummary = '',
+        characterBible = '',
+        settingBible = '',
+        visualStyleBible = '',
+        costumeBible = '',
+        continuityBible = '',
         customInstruction = '',
+        enableVoiceover = true,
         aiProvider = 'gemini',
       } = (req.body || {}) as {
+        mode?: StudioCreationMode;
+        scriptMode?: StudioScriptMode;
+        videoCount?: number;
+        perVideoDurations?: number[];
+        ideaPrompt?: string;
         query?: string;
         videos?: DerivativeSourceInput[];
         stylePreset?: DerivativeStylePreset;
+        videoStyle?: StudioVideoStyle;
         aspectRatio?: DerivativeAspectRatio;
         targetDurationSec?: number;
         targetDuration?: 'short' | 'medium';
+        desiredSceneCount?: number;
         outputLanguage?: DerivativeOutputLanguage;
         useProModel?: boolean;
         characterSummary?: string;
+        characterBible?: string;
+        settingBible?: string;
+        visualStyleBible?: string;
+        costumeBible?: string;
+        continuityBible?: string;
         customInstruction?: string;
+        enableVoiceover?: boolean;
         aiProvider?: AiProviderId;
       };
 
-      if (!Array.isArray(videos) || videos.length === 0) {
-        return res.status(400).json({ error: 'Vui lòng chọn hoặc tải lên ít nhất 1 video để AI học nội dung.' });
+      const studioMode: StudioCreationMode = mode === 'creative' ? 'creative' : 'derivative';
+      const resolvedScriptMode: StudioScriptMode =
+        scriptMode === 'independent_batch' ? 'independent_batch' : 'series';
+      const safeVideos = Array.isArray(videos) ? videos.slice(0, 8) : [];
+
+      if (studioMode === 'creative') {
+        if (!String(ideaPrompt || query || customInstruction || '').trim()) {
+          return res.status(400).json({ error: 'Vui lòng nhập ý tưởng hoặc mô tả chủ đề để Studio Sáng Tạo lên kịch bản.' });
+        }
+      } else if (safeVideos.length === 0) {
+        return res.status(400).json({ error: 'Vui lòng chọn hoặc tải lên ít nhất 1 video tham chiếu để AI học nội dung.' });
       }
 
       const validProvider: AiProviderId =
         aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse2api'
           ? aiProvider
           : 'gemini';
+      const resolvedAspectRatio: DerivativeAspectRatio =
+        aspectRatio === '16:9' ? '16:9' : aspectRatio === '1:1' ? '1:1' : '9:16';
+
+      if (resolvedScriptMode === 'independent_batch') {
+        const count = Math.max(2, Math.min(15, Math.round(Number(videoCount || 3))));
+        const cleanDurations = Array.isArray(perVideoDurations)
+          ? perVideoDurations.map((d) => Math.max(10, Math.min(900, Math.round(Number(d) || 30))))
+          : undefined;
+        const batchResult = await learnAndCreateIndependentBatch({
+          mode: studioMode,
+          ideaPrompt: String(ideaPrompt || ''),
+          query: String(query || ''),
+          videos: safeVideos,
+          videoCount: count,
+          perVideoDurations: cleanDurations,
+          targetDurationSec: typeof targetDurationSec === 'number' ? targetDurationSec : undefined,
+          desiredSceneCount: typeof desiredSceneCount === 'number' ? desiredSceneCount : undefined,
+          stylePreset,
+          videoStyle,
+          aspectRatio: resolvedAspectRatio,
+          outputLanguage,
+          useProModel: Boolean(useProModel),
+          characterSummary: String(characterSummary || ''),
+          characterBible: String(characterBible || ''),
+          settingBible: String(settingBible || ''),
+          visualStyleBible: String(visualStyleBible || ''),
+          costumeBible: String(costumeBible || ''),
+          continuityBible: String(continuityBible || ''),
+          customInstruction: String(customInstruction || ''),
+          enableVoiceover: enableVoiceover !== false,
+          aiProvider: validProvider,
+        });
+        return res.json({
+          blueprint: batchResult.blueprints[0],
+          blueprints: batchResult.blueprints,
+          sharedSpiritNote: batchResult.sharedSpiritNote,
+        });
+      }
 
       const blueprint = await learnVideosAndCreateBlueprint({
+        mode: studioMode,
+        scriptMode: 'series',
+        ideaPrompt: String(ideaPrompt || ''),
         query: String(query || ''),
-        videos: videos.slice(0, 8),
+        videos: safeVideos,
         stylePreset,
-        aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16',
+        videoStyle,
+        aspectRatio: resolvedAspectRatio,
         targetDurationSec: typeof targetDurationSec === 'number' ? targetDurationSec : undefined,
         targetDuration: targetDuration === 'medium' ? 'medium' : 'short',
+        desiredSceneCount: typeof desiredSceneCount === 'number' ? desiredSceneCount : undefined,
         outputLanguage,
         useProModel: Boolean(useProModel),
         characterSummary: String(characterSummary || ''),
+        characterBible: String(characterBible || ''),
+        settingBible: String(settingBible || ''),
+        visualStyleBible: String(visualStyleBible || ''),
+        costumeBible: String(costumeBible || ''),
+        continuityBible: String(continuityBible || ''),
         customInstruction: String(customInstruction || ''),
+        enableVoiceover: enableVoiceover !== false,
         aiProvider: validProvider,
       });
 
-      res.json({ blueprint });
+      res.json({ blueprint, blueprints: [blueprint] });
     } catch (err: any) {
       console.error('Derivative learn error:', err);
-      const msg = String(err?.message || 'Không thể phân tích & học nội dung video.');
+      const msg = String(err?.message || 'Không thể phân tích & lập kịch bản video.');
       res.status(msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500).json({ error: msg });
     }
   });
@@ -4863,10 +5063,16 @@ async function startServer() {
       };
 
       if (!blueprint || !Array.isArray(blueprint.scenes) || blueprint.scenes.length === 0) {
-        return res.status(400).json({ error: 'Thiếu kịch bản phân cảnh để tạo video phái sinh.' });
+        return res.status(400).json({ error: 'Thiếu kịch bản phân cảnh để dựng video.' });
       }
-      if (!Array.isArray(sources) || sources.length === 0) {
-        return res.status(400).json({ error: 'Thiếu danh sách video nguồn.' });
+      const safeSources = Array.isArray(sources) ? sources.slice(0, 8) : [];
+      if (blueprint.mode !== 'creative' && safeSources.length === 0) {
+        const hasSelfContainedVisuals = blueprint.scenes.some(
+          (sc) => Boolean(sc.sceneImageDataUrl || sc.omniClipAssetId)
+        );
+        if (!hasSelfContainedVisuals && visualMode === 'remix') {
+          return res.status(400).json({ error: 'Thiếu danh sách video nguồn tham chiếu hoặc ảnh/clip phân cảnh.' });
+        }
       }
 
       const validVisualMode: DerivativeVisualMode =
@@ -4878,7 +5084,7 @@ async function startServer() {
 
       const job = startDerivativeVideoJob({
         blueprint,
-        sources: sources.slice(0, 8),
+        sources: safeSources,
         visualMode: validVisualMode,
         voice: voice || 'Kore',
         voiceMode,

@@ -16,10 +16,18 @@ import {
   AlertCircle,
   CheckCircle2,
   Image as ImageIcon,
-  Volume2,
   BookOpen,
   Settings,
   X,
+  Clapperboard,
+  Layers,
+  Clock,
+  ListVideo,
+  ChevronDown,
+  ChevronUp,
+  FolderOpen,
+  Save,
+  Library,
 } from 'lucide-react';
 import {
   AiProviderId,
@@ -37,14 +45,32 @@ import {
   OfflineTtsVoiceOption,
   ServerCapabilitiesStatus,
   StudioCharacterRef,
+  StudioCreationMode,
   StudioDefaultConfig,
+  StudioLibraryVideoItem,
   StudioMusicTrack,
+  StudioProjectProfile,
+  StudioScriptMode,
   StudioUploadedAsset,
+  StudioVideoStyle,
   TrendingPlatformId,
   TrendingVideoItem,
 } from '../types/bilibili';
 import { formatBytes, formatDuration } from '../utils/formatters';
 import { getDiscoveryThumbUrl } from './VideoDiscoveryCard';
+import {
+  compileScenePromptClient,
+  compressImageFileToDataUrl,
+  DURATION_PRESETS,
+  fetchStudioJsonWithAutoRetry,
+  LANGUAGE_OPTIONS,
+  parseJsonSafe,
+  STYLE_OPTIONS,
+  uploadMediaFileToStudio,
+  VIDEO_STYLE_OPTIONS,
+  VOICE_OPTIONS,
+} from './studio/studioConfig';
+import { StudioSceneCard } from './studio/StudioSceneCard';
 
 export interface StudioUploadedSourceItem {
   videoItem: TrendingVideoItem & {
@@ -65,162 +91,36 @@ interface StudioPanelProps {
   onOpenSettings: () => void;
 }
 
-const STYLE_OPTIONS: { value: DerivativeStylePreset; label: string }[] = [
-  { value: 'summary_fast', label: 'Tóm tắt & Điểm tin nhanh' },
-  { value: 'storytelling_review', label: 'Kể chuyện / Review cuốn hút' },
-  { value: 'top_list', label: 'Top điểm nổi bật / So sánh' },
-  { value: 'tips_tutorial', label: 'Mẹo hay & Hướng dẫn ngắn' },
+const CREATIVE_IDEA_STARTERS = [
+  {
+    label: 'Điện ảnh ngắn · 10 cảnh',
+    idea: 'Một lập trình viên trẻ tình cờ phát hiện trí tuệ nhân tạo mình tạo ra có cảm xúc thật, quyết định bảo vệ nó giữa thành phố mưa đêm.',
+    style: 'cinematic' as StudioVideoStyle,
+    scenes: 10,
+    dur: 60,
+  },
+  {
+    label: 'Người que · Giải thích',
+    idea: 'Giải thích quy tắc 80/20 trong quản lý thời gian và cách người bình thường bứt phá hiệu suất chỉ trong 1 tuần.',
+    style: 'stickman' as StudioVideoStyle,
+    scenes: 6,
+    dur: 40,
+  },
+  {
+    label: 'Anime · Hành trình',
+    idea: 'Cô gái kiếm sĩ trẻ bước vào khu rừng cổ đại để tìm lại ký ức bị đánh mất cùng người bạn đồng hành.',
+    style: 'anime' as StudioVideoStyle,
+    scenes: 8,
+    dur: 60,
+  },
+  {
+    label: 'Chuyên nghiệp · Kinh doanh',
+    idea: '3 sai lầm phổ biến khiến video ngắn không có lượt xem và công thức giữ chân khán giả trong 3 giây đầu.',
+    style: 'professional' as StudioVideoStyle,
+    scenes: 5,
+    dur: 30,
+  },
 ];
-
-const VOICE_OPTIONS: { value: DerivativeVoiceId; label: string; style: string }[] = [
-  { value: 'Kore', label: 'Kore · Nữ rõ ràng, truyền cảm', style: 'Clear, engaging female narrator' },
-  { value: 'Puck', label: 'Puck · Nam năng động, nhịp nhanh', style: 'Energetic, upbeat young male creator' },
-  { value: 'Zephyr', label: 'Zephyr · Tự nhiên, nhẹ nhàng', style: 'Warm, conversational natural voice' },
-  { value: 'Charon', label: 'Charon · Nam trầm ấm, chuyên sâu', style: 'Deep, authoritative storytelling narrator' },
-  { value: 'Fenrir', label: 'Fenrir · Mạnh mẽ, dứt khoát', style: 'Punchy, confident high-retention narrator' },
-];
-
-const LANGUAGE_OPTIONS: { value: DerivativeOutputLanguage; label: string }[] = [
-  { value: 'vi', label: 'Tiếng Việt' },
-  { value: 'en', label: 'English (Tiếng Anh)' },
-  { value: 'zh', label: '中文 (Tiếng Trung)' },
-  { value: 'vi_en', label: 'Song ngữ Việt - Anh' },
-];
-
-async function parseJsonSafe<T = any>(res: Response): Promise<T> {
-  const text = await res.text();
-  if (!text) {
-    throw new Error(`Máy chủ trả về phản hồi rỗng (HTTP ${res.status}).`);
-  }
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    const trimmed = text.trim();
-    if (res.status === 413) {
-      throw new Error('Dung lượng gói tải lên vượt giới hạn máy chủ trung gian (HTTP 413). Hệ thống đã tự chuyển sang tải chia nhỏ — vui lòng thử lại.');
-    }
-    if (res.status === 429) {
-      throw new Error('Quá nhiều yêu cầu cùng lúc (HTTP 429). Vui lòng đợi vài giây rồi thử lại.');
-    }
-    if (trimmed.startsWith('<')) {
-      throw new Error(`Máy chủ hoặc cổng proxy trả về lỗi HTML (HTTP ${res.status}). Vui lòng thử lại.`);
-    }
-    throw new Error(`Phản hồi không phải JSON hợp lệ (HTTP ${res.status}): ${trimmed.slice(0, 100)}`);
-  }
-}
-
-async function fetchStudioJsonWithAutoRetry<T>(
-  url: string,
-  init: RequestInit,
-  onRetrying?: () => void
-): Promise<{ res: Response; data: T }> {
-  let res = await fetch(url, init);
-  let data = await parseJsonSafe<T>(res);
-  const errStr = String((data as any)?.error || '');
-  if (!res.ok && (res.status === 503 || errStr.includes('503') || errStr.includes('truy cập cao'))) {
-    onRetrying?.();
-    await new Promise((r) => setTimeout(r, 3200));
-    res = await fetch(url, init);
-    data = await parseJsonSafe<T>(res);
-  }
-  return { res, data };
-}
-
-const STUDIO_UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024; // 4 MiB chunks (safely under Cloud Run 32 MiB limit)
-
-async function uploadMediaFileToStudio<T>(
-  file: File,
-  kind: 'video' | 'audio',
-  onProgress?: (percent: number) => void
-): Promise<T> {
-  // Small files <= 3 MiB can upload in a single request
-  if (file.size <= 3 * 1024 * 1024) {
-    const endpoint = kind === 'video' ? '/api/studio/upload-video' : '/api/studio/upload-audio';
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'x-file-name': encodeURIComponent(file.name),
-      },
-      body: file,
-    });
-    const data = await parseJsonSafe<{ asset?: T; error?: string }>(res);
-    if (!res.ok || !data.asset) {
-      throw new Error(data.error || `Không thể tải lên "${file.name}" (HTTP ${res.status}).`);
-    }
-    onProgress?.(100);
-    return data.asset;
-  }
-
-  // Larger files upload sequentially in 4 MiB chunks
-  const initRes = await fetch('/api/studio/uploads/init', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind, fileName: file.name }),
-  });
-  const initData = await parseJsonSafe<{ uploadId?: string; error?: string }>(initRes);
-  if (!initRes.ok || !initData.uploadId) {
-    throw new Error(initData.error || `Không thể khởi tạo tải lên "${file.name}".`);
-  }
-
-  const uploadId = initData.uploadId;
-  let offset = 0;
-  let chunkIndex = 0;
-  while (offset < file.size) {
-    const end = Math.min(file.size, offset + STUDIO_UPLOAD_CHUNK_SIZE);
-    const slice = file.slice(offset, end);
-    const chunkRes = await fetch(`/api/studio/uploads/${uploadId}/chunk?index=${chunkIndex}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
-      body: slice,
-    });
-    const chunkData = await parseJsonSafe<{ ok?: boolean; error?: string }>(chunkRes);
-    if (!chunkRes.ok || !chunkData.ok) {
-      throw new Error(chunkData.error || `Lỗi tải đoạn #${chunkIndex + 1} của "${file.name}".`);
-    }
-    offset = end;
-    chunkIndex += 1;
-    onProgress?.(Math.min(95, Math.round((offset / file.size) * 95)));
-  }
-
-  const completeRes = await fetch(`/api/studio/uploads/${uploadId}/complete`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
-  });
-  const completeData = await parseJsonSafe<{ asset?: T; error?: string }>(completeRes);
-  if (!completeRes.ok || !completeData.asset) {
-    throw new Error(completeData.error || `Không thể xử lý tệp "${file.name}" sau khi tải lên.`);
-  }
-  onProgress?.(100);
-  return completeData.asset;
-}
-
-async function compressImageFileToDataUrl(file: File, maxDim = 1024): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const rawUrl = String(reader.result || '');
-      const img = new Image();
-      img.onload = () => {
-        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-        const w = Math.max(1, Math.round(img.width * scale));
-        const h = Math.max(1, Math.round(img.height * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return resolve(rawUrl);
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.88));
-      };
-      img.onerror = () => resolve(rawUrl);
-      img.src = rawUrl;
-    };
-    reader.onerror = () => reject(new Error('Không đọc được tệp ảnh.'));
-    reader.readAsDataURL(file);
-  });
-}
 
 export const StudioPanel: React.FC<StudioPanelProps> = ({
   incomingVideos,
@@ -233,7 +133,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 }) => {
   const [capabilities, setCapabilities] = useState<ServerCapabilitiesStatus | null>(null);
 
-  // 1. Source videos (uploaded local + searched/pushed online)
+  // Separate Studio Mode: 'creative' (Studio Sáng Tạo) vs 'derivative' (Tạo Video Phái Sinh)
+  const [studioMode, setStudioMode] = useState<StudioCreationMode>('creative');
+
+  // Mode 1: Creative Idea Inputs
+  const [ideaPrompt, setIdeaPrompt] = useState('');
+
+  // Mode 2: Derivative Reference Video Sources (uploaded local + searched/pushed online)
   const [sources, setSources] = useState<
     (TrendingVideoItem & { localAssetId?: string; keyframes?: string[]; hasAudio?: boolean })[]
   >([]);
@@ -242,14 +148,26 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [uploadError, setUploadError] = useState('');
   const videoUploadInputRef = useRef<HTMLInputElement>(null);
 
-  // Inline Search Drawer to pull videos directly into Studio
+  // Inline Project Library Drawer for Derivative Reference Videos
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryItems, setLibraryItems] = useState<StudioLibraryVideoItem[]>([]);
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
+  const [importingJobId, setImportingJobId] = useState<string | null>(null);
+
+  // Inline Search Drawer to pull videos directly into Derivative mode
   const [searchQueryInput, setSearchQueryInput] = useState('');
   const [searchPlatform, setSearchPlatform] = useState<TrendingPlatformId>('all');
   const [isSearchingSources, setIsSearchingSources] = useState(false);
   const [searchResults, setSearchResults] = useState<TrendingVideoItem[]>([]);
   const [searchError, setSearchError] = useState('');
 
-  // Character References
+  // Shared Project Profiles & 5-Component Consistency Bibles
+  const [projectProfiles, setProjectProfiles] = useState<StudioProjectProfile[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string>('');
+  const [projectNameInput, setProjectNameInput] = useState<string>('');
+  const [isSavingProject, setIsSavingProject] = useState(false);
+  const [projectStatusMsg, setProjectStatusMsg] = useState('');
+
   const [characters, setCharacters] = useState<StudioCharacterRef[]>([]);
   const [charNameInput, setCharNameInput] = useState('');
   const [charPromptInput, setCharPromptInput] = useState('');
@@ -257,29 +175,113 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [charError, setCharError] = useState('');
   const charUploadInputRef = useRef<HTMLInputElement>(null);
 
-  // 2. Learning & Script Config
+  const [characterBibleDraft, setCharacterBibleDraft] = useState('');
+  const [settingBibleDraft, setSettingBibleDraft] = useState('');
+  const [visualStyleBibleDraft, setVisualStyleBibleDraft] = useState('');
+  const [costumeBibleDraft, setCostumeBibleDraft] = useState('');
+  const [continuityBibleDraft, setContinuityBibleDraft] = useState('');
+
+  // Script & Production Config
   const [aiProvider, setAiProvider] = useState<AiProviderId>(
     (studioDefaults.aiProvider as string) === 'muse' ? 'gemini' : studioDefaults.aiProvider || 'gemini'
   );
   const [useProModel, setUseProModel] = useState(false);
   const [outputLanguage, setOutputLanguage] = useState<DerivativeOutputLanguage>('vi');
+  const [videoStyle, setVideoStyle] = useState<StudioVideoStyle>('cinematic');
+  const [enableNarrativeStyle, setEnableNarrativeStyle] = useState<boolean>(false);
   const [stylePreset, setStylePreset] = useState<DerivativeStylePreset>(
-    studioDefaults.stylePreset || 'storytelling_review'
+    studioDefaults.stylePreset && studioDefaults.stylePreset !== 'none'
+      ? studioDefaults.stylePreset
+      : 'storytelling_review'
   );
   const [aspectRatio, setAspectRatio] = useState<DerivativeAspectRatio>(
-    studioDefaults.aspectRatioMode === '16:9' ? '16:9' : '9:16'
+    studioDefaults.aspectRatioMode === '16:9'
+      ? '16:9'
+      : studioDefaults.aspectRatioMode === '1:1'
+      ? '1:1'
+      : '9:16'
   );
   const [targetDurationSec, setTargetDurationSec] = useState<number>(
-    studioDefaults.targetDurationSec >= 20 ? studioDefaults.targetDurationSec : 60
+    studioDefaults.targetDurationSec >= 10 ? studioDefaults.targetDurationSec : 60
   );
+  const [scriptMode, setScriptMode] = useState<StudioScriptMode>('series');
+  const [batchVideoCount, setBatchVideoCount] = useState<number>(3);
+  const [batchDurationMode, setBatchDurationMode] = useState<'uniform' | 'per_video'>('uniform');
+  const [perVideoDurations, setPerVideoDurations] = useState<number[]>([30, 30, 30]);
+  const [showScriptModeGuide, setShowScriptModeGuide] = useState(false);
+  const [desiredSceneCount, setDesiredSceneCount] = useState<number | 'auto'>(10);
   const [customInstruction, setCustomInstruction] = useState('');
 
+  // Independent Blueprints & Jobs per mode so switching tabs preserves user's work
+  const [batchBlueprintsByMode, setBatchBlueprintsByMode] = useState<
+    Record<StudioCreationMode, DerivativeBlueprint[]>
+  >({
+    creative: [],
+    derivative: [],
+  });
+  const [activeBatchIdxByMode, setActiveBatchIdxByMode] = useState<
+    Record<StudioCreationMode, number>
+  >({
+    creative: 0,
+    derivative: 0,
+  });
+  const [sharedSpiritByMode, setSharedSpiritByMode] = useState<
+    Record<StudioCreationMode, string>
+  >({
+    creative: '',
+    derivative: '',
+  });
   const [isLearning, setIsLearning] = useState(false);
   const [learnError, setLearnError] = useState('');
   const [learnSuccess, setLearnSuccess] = useState('');
-  const [blueprint, setBlueprint] = useState<DerivativeBlueprint | null>(null);
 
-  // 3. Per-scene generation states
+  const blueprints = batchBlueprintsByMode[studioMode];
+  const activeBatchIndex = Math.min(
+    Math.max(0, activeBatchIdxByMode[studioMode]),
+    Math.max(0, blueprints.length - 1)
+  );
+  const blueprint = blueprints[activeBatchIndex] || null;
+  const activeJobKey = `${studioMode}:${activeBatchIndex}`;
+
+  const setActiveBatchIndex = (idx: number) => {
+    setActiveBatchIdxByMode((prev) => ({ ...prev, [studioMode]: idx }));
+  };
+
+  const setBlueprint = (
+    updater:
+      | DerivativeBlueprint
+      | null
+      | ((prev: DerivativeBlueprint | null) => DerivativeBlueprint | null)
+  ) => {
+    setBatchBlueprintsByMode((prevMap) => {
+      const list = prevMap[studioMode] || [];
+      const targetIdx = Math.min(Math.max(0, activeBatchIdxByMode[studioMode]), Math.max(0, list.length - 1));
+      const current = list[targetIdx] || null;
+      const nextVal = typeof updater === 'function' ? updater(current) : updater;
+      if (!nextVal) {
+        return { ...prevMap, [studioMode]: [] };
+      }
+      if (list.length === 0) {
+        return { ...prevMap, [studioMode]: [nextVal] };
+      }
+      const nextList = list.map((item, i) => (i === targetIdx ? nextVal : item));
+      return { ...prevMap, [studioMode]: nextList };
+    });
+  };
+
+  const handleUpdateBatchVideoCount = (nextRaw: number) => {
+    const count = Math.max(2, Math.min(15, Math.round(nextRaw || 2)));
+    setBatchVideoCount(count);
+    setPerVideoDurations((prev) => {
+      const next = [...prev];
+      while (next.length < count) {
+        next.push(targetDurationSec);
+      }
+      return next.slice(0, count);
+    });
+  };
+
+  // Per-scene generation states
   const [imageEngineMode, setImageEngineMode] = useState<'gemini_standard' | 'gemini_pro' | 'muse2api'>(
     studioDefaults.visualMode === 'gemini_omni' ? 'gemini_standard' : 'muse2api'
   );
@@ -295,7 +297,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [sceneMediaError, setSceneMediaError] = useState('');
   const batchImageAbortRef = useRef(false);
 
-  // 4. Production: Visual engine + Music + Voice + Final Render
+  // Production: Visual engine + Music + Voice + Final Render
   const [visualMode, setVisualMode] = useState<DerivativeVisualMode>(
     (studioDefaults.visualMode as string) === 'muse_edison'
       ? 'muse2api_video'
@@ -304,7 +306,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [brollSource, setBrollSource] = useState<BrollSourceId>(studioDefaults.brollSource || 'wikimedia');
 
   const [musicMode, setMusicMode] = useState<DerivativeMusicMode>('none');
-  const [musicPrompt, setMusicPrompt] = useState('Nhạc nền hiện đại, truyền cảm hứng, tiết tấu vừa phải cho video review');
+  const [musicPrompt, setMusicPrompt] = useState(
+    'Nhạc nền hiện đại, truyền cảm hứng, tiết tấu vừa phải cho video kể chuyện'
+  );
   const [musicTrackTier, setMusicTrackTier] = useState<'clip' | 'pro'>('clip');
   const [musicVolume, setMusicVolume] = useState(18);
   const [isGeneratingMusic, setIsGeneratingMusic] = useState(false);
@@ -332,10 +336,23 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const previewObjectUrlRef = useRef<string | null>(null);
   const [keepSourceAudio, setKeepSourceAudio] = useState(studioDefaults.keepSourceAudio);
 
-  const [job, setJob] = useState<DerivativeJobState | null>(null);
+  const [jobsByKey, setJobsByKey] = useState<Record<string, DerivativeJobState>>({});
   const [isGeneratingFinal, setIsGeneratingFinal] = useState(false);
+  const [isBatchRenderingAll, setIsBatchRenderingAll] = useState(false);
+  const [batchRenderStatusText, setBatchRenderStatusText] = useState('');
   const [genError, setGenError] = useState('');
   const pollTimerRef = useRef<number | null>(null);
+  const batchRenderAbortRef = useRef(false);
+
+  const job = jobsByKey[activeJobKey] || null;
+  const setJobForKey = (key: string, nextJob: DerivativeJobState | null) => {
+    setJobsByKey((prev) => {
+      const copy = { ...prev };
+      if (!nextJob) delete copy[key];
+      else copy[key] = nextJob;
+      return copy;
+    });
+  };
 
   const fetchCapabilitiesAndVoices = async () => {
     try {
@@ -359,6 +376,181 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       }
     } catch {
       // ignore
+    }
+    try {
+      const pr = await fetch('/api/studio/projects');
+      if (pr.ok) {
+        const pData = await parseJsonSafe<{ projects?: StudioProjectProfile[] }>(pr);
+        if (Array.isArray(pData.projects)) {
+          setProjectProfiles(pData.projects);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const fetchLibraryVideos = async () => {
+    setIsLoadingLibrary(true);
+    try {
+      const res = await fetch('/api/studio/library-videos');
+      if (res.ok) {
+        const data = await parseJsonSafe<{ videos?: StudioLibraryVideoItem[] }>(res);
+        setLibraryItems(Array.isArray(data.videos) ? data.videos : []);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingLibrary(false);
+    }
+  };
+
+  const handleLoadProjectProfile = (profileId: string) => {
+    setActiveProjectId(profileId);
+    const found = projectProfiles.find((p) => p.id === profileId);
+    if (!found) return;
+    setProjectNameInput(found.name);
+    if (found.videoStyle) setVideoStyle(found.videoStyle);
+    setCharacterBibleDraft(found.characterBible || '');
+    setSettingBibleDraft(found.settingBible || '');
+    setVisualStyleBibleDraft(found.visualStyleBible || '');
+    setCostumeBibleDraft(found.costumeBible || '');
+    setContinuityBibleDraft(found.continuityBible || '');
+    setCharacters(Array.isArray(found.characterRefs) ? found.characterRefs : []);
+    if (blueprint) {
+      setBlueprint({
+        ...blueprint,
+        videoStyle: found.videoStyle || blueprint.videoStyle,
+        characterBible: found.characterBible || blueprint.characterBible,
+        settingBible: found.settingBible || blueprint.settingBible,
+        visualStyleBible: found.visualStyleBible || blueprint.visualStyleBible,
+        costumeBible: found.costumeBible || blueprint.costumeBible,
+        continuityBible: found.continuityBible || blueprint.continuityBible,
+      });
+    }
+    setProjectStatusMsg(`Đã nạp hồ sơ dự án "${found.name}" (dùng chung cho Sáng tạo & Phái sinh).`);
+  };
+
+  const handleSaveProjectProfile = async () => {
+    const cleanName =
+      projectNameInput.trim() ||
+      blueprint?.derivativeTitle?.trim() ||
+      `Dự án Studio ${new Date().toLocaleDateString('vi-VN')}`;
+    setIsSavingProject(true);
+    setProjectStatusMsg('');
+    try {
+      const res = await fetch('/api/studio/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: activeProjectId || undefined,
+          name: cleanName,
+          videoStyle: blueprint?.videoStyle || videoStyle,
+          characterBible: blueprint?.characterBible ?? characterBibleDraft,
+          settingBible: blueprint?.settingBible ?? settingBibleDraft,
+          visualStyleBible: blueprint?.visualStyleBible ?? visualStyleBibleDraft,
+          costumeBible: blueprint?.costumeBible ?? costumeBibleDraft,
+          continuityBible: blueprint?.continuityBible ?? continuityBibleDraft,
+          characterRefs: characters.slice(0, 3),
+        }),
+      });
+      const data = await parseJsonSafe<{ project?: StudioProjectProfile; error?: string }>(res);
+      if (!res.ok || !data.project) throw new Error(data.error || `HTTP ${res.status}`);
+      const saved = data.project;
+      setProjectProfiles((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
+      setActiveProjectId(saved.id);
+      setProjectNameInput(saved.name);
+      setProjectStatusMsg(`Đã lưu hồ sơ dự án "${saved.name}" vào kho dùng chung.`);
+    } catch (err: any) {
+      setProjectStatusMsg(err?.message || 'Không lưu được hồ sơ dự án.');
+    } finally {
+      setIsSavingProject(false);
+    }
+  };
+
+  const handleDeleteProjectProfile = async (id: string) => {
+    try {
+      const res = await fetch(`/api/studio/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (res.ok) {
+        setProjectProfiles((prev) => prev.filter((p) => p.id !== id));
+        if (activeProjectId === id) {
+          setActiveProjectId('');
+        }
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handlePickLibraryVideo = async (item: StudioLibraryVideoItem) => {
+    if (sources.length >= 8) return;
+    if (item.kind === 'uploaded' && item.localAssetId) {
+      if (sources.some((s) => s.localAssetId === item.localAssetId)) return;
+      setSources((prev) => [
+        ...prev,
+        {
+          id: `lib_${item.localAssetId}`,
+          platform: 'other',
+          platformLabel: 'Thư viện dự án',
+          title: item.title,
+          author: 'Kho dự án',
+          pic: item.keyframes?.[0] || '',
+          sourceUrl: item.previewUrl,
+          duration: Math.round(item.durationSec),
+          views: 0,
+          score: 99,
+          category: 'library',
+          categoryLabel: item.resolution || 'HD',
+          orientation: 'unknown',
+          localAssetId: item.localAssetId,
+          keyframes: item.keyframes || [],
+          hasAudio: true,
+        },
+      ]);
+      return;
+    }
+
+    if (item.kind === 'rendered' && item.jobId) {
+      setImportingJobId(item.jobId);
+      setUploadError('');
+      try {
+        const res = await fetch('/api/studio/library-videos/import-job', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId: item.jobId }),
+        });
+        const data = await parseJsonSafe<{ asset?: StudioUploadedAsset; error?: string }>(res);
+        if (!res.ok || !data.asset) throw new Error(data.error || `HTTP ${res.status}`);
+        const asset = data.asset;
+        setSources((prev) => {
+          if (prev.length >= 8 || prev.some((s) => s.localAssetId === asset.assetId)) return prev;
+          return [
+            ...prev,
+            {
+              id: `lib_${asset.assetId}`,
+              platform: 'other',
+              platformLabel: 'Video đã xuất dự án',
+              title: item.title,
+              author: 'Kho dự án',
+              pic: asset.keyframes[0] || '',
+              sourceUrl: asset.previewUrl,
+              duration: Math.round(asset.durationSec),
+              views: 0,
+              score: 99,
+              category: 'library',
+              categoryLabel: asset.resolution,
+              orientation: 'unknown',
+              localAssetId: asset.assetId,
+              keyframes: asset.keyframes,
+              hasAudio: asset.hasAudio,
+            },
+          ];
+        });
+      } catch (err: any) {
+        setUploadError(err?.message || 'Không thể nạp video từ thư viện dự án.');
+      } finally {
+        setImportingJobId(null);
+      }
     }
   };
 
@@ -384,9 +576,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     };
   }, []);
 
-  // Sync incoming videos when pushed from Search or Trending tabs
+  // Automatically switch to 'derivative' mode when videos are pushed from Search or Trending tabs
   useEffect(() => {
     if (incomingVideos.length === 0) return;
+    setStudioMode('derivative');
     setSources((prev) => {
       const existingIds = new Set(prev.map((s) => s.sourceUrl || s.id));
       const merged = [...prev];
@@ -507,7 +700,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setSources((prev) => prev.filter((s) => s.id !== id));
   };
 
-  // Character uploads & AI generation
+  // Character uploads & AI generation (always adheres to active videoStyle for visual consistency!)
   const handleUploadCharacters = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
@@ -524,6 +717,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               id: `char_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
               name: charNameInput.trim() || file.name.replace(/\.[^.]+$/, ''),
               dataUrl,
+              description: charPromptInput.trim() || undefined,
               source: 'uploaded',
             },
           ];
@@ -535,8 +729,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  const handleGenerateCharacterAi = async () => {
-    const desc = charPromptInput.trim();
+  const handleGenerateCharacterAi = async (overrideDesc?: string, overrideName?: string) => {
+    const desc = (overrideDesc ?? charPromptInput).trim();
     if (!desc) {
       setCharError('Hãy nhập mô tả ngoại hình nhân vật để AI vẽ mẫu.');
       return;
@@ -555,6 +749,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             aspectRatio: '1:1',
             quality: imageEngineMode === 'gemini_pro' ? 'pro' : 'standard',
             engine: imageEngineMode === 'muse2api' ? 'muse2api' : 'gemini',
+            videoStyle: blueprint?.videoStyle || videoStyle,
+            characterBible: blueprint?.characterBible || characterBibleDraft || desc,
+            settingBible: blueprint?.settingBible || settingBibleDraft,
+            visualStyleBible: blueprint?.visualStyleBible || visualStyleBibleDraft,
+            costumeBible: blueprint?.costumeBible || costumeBibleDraft,
+            continuityBible: blueprint?.continuityBible || continuityBibleDraft,
           }),
         }
       );
@@ -564,13 +764,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         ...prev.slice(0, 2),
         {
           id: `char_ai_${Date.now()}`,
-          name: charNameInput.trim() || 'Nhân vật AI',
+          name: (overrideName ?? charNameInput).trim() || 'Nhân vật chính',
           description: desc,
           dataUrl: generatedUrl,
           source: 'ai_generated',
         },
       ]);
-      setCharNameInput('');
+      if (!overrideName) setCharNameInput('');
     } catch (err: any) {
       setCharError(err?.message || 'Không thể tạo ảnh nhân vật AI.');
     } finally {
@@ -578,50 +778,122 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // AI Learn & Create Script
+  // AI Learn & Create Script (supports Series mode & Independent Multi-Video Batch mode)
   const handleLearnAndCreateScript = async () => {
-    if (sources.length === 0) {
-      setLearnError('Vui lòng tải lên hoặc thêm ít nhất 1 video nguồn ở Bước 1.');
+    if (studioMode === 'creative') {
+      if (!ideaPrompt.trim() && !customInstruction.trim()) {
+        setLearnError('Vui lòng nhập ý tưởng hoặc mô tả nội dung ở Bước 1 để Studio Sáng Tạo lên kịch bản.');
+        return;
+      }
+    } else if (sources.length === 0) {
+      setLearnError('Vui lòng tải lên hoặc thêm ít nhất 1 video tham chiếu ở Bước 1.');
       return;
     }
+
     setIsLearning(true);
     setLearnError('');
     setLearnSuccess('');
     setSceneMediaError('');
     setSceneImageErrors({});
-    setJob(null);
     stopPolling();
+    setJobsByKey((prev) => {
+      const copy = { ...prev };
+      Object.keys(copy).forEach((k) => {
+        if (k.startsWith(`${studioMode}:`)) delete copy[k];
+      });
+      return copy;
+    });
 
     const charSummary = characters
       .map((c) => `${c.name}${c.description ? `: ${c.description}` : ''}`)
       .join('; ');
 
+    const effectiveBatchDurations =
+      scriptMode === 'independent_batch'
+        ? Array.from({ length: batchVideoCount }, (_, idx) =>
+            batchDurationMode === 'per_video' ? perVideoDurations[idx] || targetDurationSec : targetDurationSec
+          )
+        : undefined;
+
+    const effectiveStylePreset: DerivativeStylePreset = enableNarrativeStyle
+      ? stylePreset === 'none'
+        ? 'storytelling_review'
+        : stylePreset
+      : 'none';
+
     try {
       const { res, data } = await fetchStudioJsonWithAutoRetry<{
         blueprint?: DerivativeBlueprint;
+        blueprints?: DerivativeBlueprint[];
+        sharedSpiritNote?: string;
         error?: string;
       }>('/api/derivative/learn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          query: searchQueryInput.trim() || incomingQuery,
-          videos: sources,
-          stylePreset,
+          mode: studioMode,
+          scriptMode,
+          videoCount: scriptMode === 'independent_batch' ? batchVideoCount : 1,
+          perVideoDurations: effectiveBatchDurations,
+          ideaPrompt: ideaPrompt.trim(),
+          query: studioMode === 'creative' ? ideaPrompt.trim() : searchQueryInput.trim() || incomingQuery,
+          videos: studioMode === 'derivative' ? sources : [],
+          stylePreset: effectiveStylePreset,
+          videoStyle,
           aspectRatio,
           targetDurationSec,
+          desiredSceneCount: desiredSceneCount === 'auto' ? undefined : desiredSceneCount,
           outputLanguage,
           useProModel: aiProvider === 'gemini' && useProModel,
           characterSummary: charSummary,
-          customInstruction,
+          characterBible: characterBibleDraft.trim(),
+          settingBible: settingBibleDraft.trim(),
+          visualStyleBible: visualStyleBibleDraft.trim(),
+          costumeBible: costumeBibleDraft.trim(),
+          continuityBible: continuityBibleDraft.trim(),
+          customInstruction: customInstruction.trim(),
+          enableVoiceover: voiceMode !== 'none',
           aiProvider,
         }),
       });
-      if (!res.ok || !data.blueprint) {
+
+      const returnedList =
+        Array.isArray(data.blueprints) && data.blueprints.length > 0
+          ? data.blueprints
+          : data.blueprint
+          ? [data.blueprint]
+          : [];
+
+      if (!res.ok || returnedList.length === 0) {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
-      setBlueprint(data.blueprint);
+
+      setBatchBlueprintsByMode((prev) => ({ ...prev, [studioMode]: returnedList }));
+      setActiveBatchIdxByMode((prev) => ({ ...prev, [studioMode]: 0 }));
+      setSharedSpiritByMode((prev) => ({
+        ...prev,
+        [studioMode]: data.sharedSpiritNote || returnedList[0]?.sharedSpiritNote || '',
+      }));
+
+      const first = returnedList[0];
+      if (first?.characterBible) setCharacterBibleDraft(first.characterBible);
+      if (first?.settingBible) setSettingBibleDraft(first.settingBible);
+      if (first?.visualStyleBible) setVisualStyleBibleDraft(first.visualStyleBible);
+      if (first?.costumeBible) setCostumeBibleDraft(first.costumeBible);
+      if (first?.continuityBible) setContinuityBibleDraft(first.continuityBible);
+
+      const styleLabel = VIDEO_STYLE_OPTIONS.find((s) => s.value === (first?.videoStyle || videoStyle))?.label || '';
+      if (scriptMode === 'independent_batch') {
+        setLearnSuccess(
+          `Đã sáng tạo ${returnedList.length} kịch bản video độc lập cùng tinh thần tham chiếu (${styleLabel}). Chọn từng video ở Bước 3 để chỉnh sửa hoặc dựng hàng loạt.`
+        );
+      } else {
+        setLearnSuccess(
+          `Đã khởi tạo kịch bản Series ${first.scenes.length} phân cảnh nối tiếp liên hoàn (${styleLabel}).`
+        );
+      }
     } catch (err: any) {
-      setLearnError(err?.message || 'AI không thể phân tích nội dung video.');
+      setLearnError(err?.message || 'AI không thể phân tích hoặc tạo kịch bản.');
     } finally {
       setIsLearning(false);
     }
@@ -641,16 +913,39 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setBlueprint((prev) => {
       if (!prev || prev.scenes.length >= 24) return prev;
       const idx = prev.scenes.length;
+      const styleMeta = VIDEO_STYLE_OPTIONS.find((s) => s.value === (prev.videoStyle || videoStyle)) || VIDEO_STYLE_OPTIONS[1];
+      const lastScene = prev.scenes[idx - 1];
+      const sceneCode = `Scene ${String(idx + 1).padStart(2, '0')}`;
       const newScene: DerivativeScene = {
         id: `scene_custom_${Date.now()}`,
         sceneIndex: idx + 1,
-        durationSec: 10,
-        sourceVideoIndex: idx % Math.max(1, sources.length),
+        sceneTitle: `Tiếp nối diễn biến (${sceneCode})`,
+        sceneSummary: 'Nhân vật tiếp tục hành động nối tiếp trạng thái cuối của phân cảnh trước.',
+        durationSec: Math.max(4, Math.round(lastScene?.durationSec || 6)),
+        sourceVideoIndex: sources.length > 0 ? idx % sources.length : 0,
         sourceStartPercent: (idx * 20) % 75,
-        onScreenText: `Phân cảnh #${idx + 1}`,
-        narration: 'Tiếp nối nội dung chuyên sâu với góc nhìn thực tế giúp người xem dễ áp dụng.',
-        visualNote: 'Nhân vật trình bày trong bối cảnh hiện đại, ánh sáng rõ nét.',
-        brollKeywordEn: 'creative studio presentation',
+        onScreenText: sceneCode,
+        dialogue: '',
+        narration:
+          voiceMode === 'none'
+            ? ''
+            : 'Tiếp nối diễn biến câu chuyện với góc nhìn rõ nét và nhịp dẫn mạch lạc.',
+        charactersInScene: lastScene?.charactersInScene || 'Nhân vật chính theo Hồ sơ đồng bộ',
+        actionDetail: 'Nhân vật tiếp tục hành động nối tiếp trạng thái cuối của phân cảnh trước',
+        settingDetail: lastScene?.settingDetail || prev.settingBible || 'Bối cảnh đồng bộ xuyên suốt',
+        cameraAngle: 'Trung cảnh (Medium shot)',
+        cameraMovement: 'Đẩy máy chậm vào chủ thể (Slow Dolly-in)',
+        lighting: lastScene?.lighting || 'Ánh sáng cân bằng đồng bộ tông màu',
+        costume: lastScene?.costume || prev.costumeBible || 'Trang phục giữ nguyên theo hồ sơ nhân vật',
+        shotStyle: styleMeta.shotDefault,
+        continuityNote: lastScene?.sceneEndState
+          ? `Tiếp nối từ ${lastScene.sceneEndState}`
+          : `Tiếp nối mạch từ Scene ${String(Math.max(1, idx)).padStart(2, '0')}`,
+        sceneEndState: 'Nhân vật hoàn tất động tác chuyển sang nhịp tiếp theo',
+        imagePrompt: 'Khung hình rõ nét, bố cục cân đối giữ nguyên ngoại hình nhân vật, trang phục, ánh sáng và bối cảnh đồng bộ.',
+        videoPrompt: 'Chuyển động tự nhiên mượt mà, máy quay đẩy chậm giữ trọn không khí và tính liên tục.',
+        visualNote: 'Nhân vật xuất hiện nối tiếp tự nhiên trong bối cảnh đồng bộ.',
+        brollKeywordEn: 'cinematic story scene',
       };
       return { ...prev, scenes: [...prev.scenes, newScene] };
     });
@@ -668,11 +963,29 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     });
   };
 
-  // Generate AI Scene Image keeping Character Ref
+  const handleMoveScene = (sceneId: string, direction: 'up' | 'down') => {
+    setBlueprint((prev) => {
+      if (!prev) return prev;
+      const idx = prev.scenes.findIndex((s) => s.id === sceneId);
+      if (idx < 0) return prev;
+      const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+      if (targetIdx < 0 || targetIdx >= prev.scenes.length) return prev;
+      const copy = [...prev.scenes];
+      const [item] = copy.splice(idx, 1);
+      copy.splice(targetIdx, 0, item);
+      return {
+        ...prev,
+        scenes: copy.map((s, i) => ({ ...s, sceneIndex: i + 1 })),
+      };
+    });
+  };
+
+  // Generate AI Scene Image keeping Character Ref + Consistency Bibles + Video Style
   const generateSingleSceneImage = async (
     sc: DerivativeScene,
     opts?: { preserveGlobalError?: boolean }
   ): Promise<boolean> => {
+    if (!blueprint) return false;
     setBusySceneImageIds((prev) => new Set(prev).add(sc.id));
     setQueuedSceneImageIds((prev) => {
       const next = new Set(prev);
@@ -688,6 +1001,25 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     if (!opts?.preserveGlobalError) {
       setSceneMediaError('');
     }
+
+    const activeStyle = blueprint.videoStyle || videoStyle;
+    const activeCharBible = blueprint.characterBible ?? characterBibleDraft;
+    const activeSettingBible = blueprint.settingBible ?? settingBibleDraft;
+    const activeVisualStyleBible = blueprint.visualStyleBible ?? visualStyleBibleDraft;
+    const activeCostumeBible = blueprint.costumeBible ?? costumeBibleDraft;
+    const activeContinuityBible = blueprint.continuityBible ?? continuityBibleDraft;
+    const compiledPrompt = compileScenePromptClient({
+      scene: sc,
+      videoStyle: activeStyle,
+      characterBible: activeCharBible,
+      settingBible: activeSettingBible,
+      visualStyleBible: activeVisualStyleBible,
+      costumeBible: activeCostumeBible,
+      continuityBible: activeContinuityBible,
+      totalScenes: blueprint.scenes.length,
+      mediaType: 'image',
+    });
+
     try {
       const { res, data } = await fetchStudioJsonWithAutoRetry<{ dataUrl?: string; error?: string }>(
         '/api/studio/generate-image',
@@ -696,10 +1028,19 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             mode: 'scene',
-            prompt: `${sc.visualNote || sc.onScreenText}. Context: ${sc.narration.slice(0, 140)}`,
+            mediaType: 'image',
+            prompt: compiledPrompt,
             aspectRatio,
             quality: imageEngineMode === 'gemini_pro' ? 'pro' : 'standard',
             engine: imageEngineMode === 'muse2api' ? 'muse2api' : 'gemini',
+            videoStyle: activeStyle,
+            characterBible: activeCharBible,
+            settingBible: activeSettingBible,
+            visualStyleBible: activeVisualStyleBible,
+            costumeBible: activeCostumeBible,
+            continuityBible: activeContinuityBible,
+            sceneIndex: sc.sceneIndex,
+            totalScenes: blueprint.scenes.length,
             characterRefs: characters.map((c) => ({ dataUrl: c.dataUrl, name: c.name })),
           }),
         }
@@ -708,9 +1049,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       updateScene(sc.id, { sceneImageDataUrl: data.dataUrl });
       return true;
     } catch (err: any) {
-      const errMsg = err?.message || `Không thể tạo ảnh cho cảnh ${sc.sceneIndex}.`;
+      const errMsg = err?.message || `Không thể tạo ảnh cho phân cảnh ${sc.sceneIndex}.`;
       setSceneImageErrors((prev) => ({ ...prev, [sc.id]: errMsg }));
-      setSceneMediaError(`Cảnh ${sc.sceneIndex}: ${errMsg}`);
+      setSceneMediaError(`Phân cảnh ${sc.sceneIndex}: ${errMsg}`);
       return false;
     } finally {
       setBusySceneImageIds((prev) => {
@@ -749,7 +1090,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setIsBatchGeneratingImages(false);
     if (failedCount > 0 && !batchImageAbortRef.current) {
       setSceneMediaError(
-        `Đã hoàn tất lượt tạo hàng loạt (${pendingScenes.length - failedCount}/${pendingScenes.length} cảnh thành công, ${failedCount} cảnh lỗi — xem chi tiết ngay dưới từng cảnh).`
+        `Đã hoàn tất lượt tạo hàng loạt (${pendingScenes.length - failedCount}/${pendingScenes.length} phân cảnh thành công, ${failedCount} cảnh lỗi — xem chi tiết ngay dưới từng cảnh).`
       );
     }
   };
@@ -768,10 +1109,29 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // Generate AI Video Clip with Gemini Omni Flash (gemini-omni-1.2-flash) or Muse2API (muse-video)
+  // Generate AI Video Clip with Gemini Omni Flash or Muse2API keeping full consistency context
   const handleGenerateSceneOmniClip = async (sc: DerivativeScene) => {
+    if (!blueprint) return;
     setBusySceneVideoIds((prev) => new Set(prev).add(sc.id));
     setSceneMediaError('');
+    const activeStyle = blueprint.videoStyle || videoStyle;
+    const activeCharBible = blueprint.characterBible ?? characterBibleDraft;
+    const activeSettingBible = blueprint.settingBible ?? settingBibleDraft;
+    const activeVisualStyleBible = blueprint.visualStyleBible ?? visualStyleBibleDraft;
+    const activeCostumeBible = blueprint.costumeBible ?? costumeBibleDraft;
+    const activeContinuityBible = blueprint.continuityBible ?? continuityBibleDraft;
+    const compiledPrompt = compileScenePromptClient({
+      scene: sc,
+      videoStyle: activeStyle,
+      characterBible: activeCharBible,
+      settingBible: activeSettingBible,
+      visualStyleBible: activeVisualStyleBible,
+      costumeBible: activeCostumeBible,
+      continuityBible: activeContinuityBible,
+      totalScenes: blueprint.scenes.length,
+      mediaType: 'video',
+    });
+
     try {
       const { res, data } = await fetchStudioJsonWithAutoRetry<{
         assetId?: string;
@@ -782,9 +1142,18 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           engine: sceneVideoEngine,
-          prompt: `${sc.visualNote || sc.onScreenText}. ${sc.narration.slice(0, 160)}`,
+          mediaType: 'video',
+          prompt: compiledPrompt,
           aspectRatio,
           durationSec: Math.min(sceneVideoEngine === 'muse2api' ? 12 : 15, Math.max(4, Math.round(sc.durationSec || 8))),
+          videoStyle: activeStyle,
+          characterBible: activeCharBible,
+          settingBible: activeSettingBible,
+          visualStyleBible: activeVisualStyleBible,
+          costumeBible: activeCostumeBible,
+          continuityBible: activeContinuityBible,
+          sceneIndex: sc.sceneIndex,
+          totalScenes: blueprint.scenes.length,
           sceneImageDataUrl: sc.sceneImageDataUrl,
           characterRefs: characters.map((c) => ({ dataUrl: c.dataUrl, name: c.name })),
         }),
@@ -797,7 +1166,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     } catch (err: any) {
       setSceneMediaError(
         err?.message ||
-          `Không tạo được clip ${sceneVideoEngine === 'muse2api' ? 'Muse2API' : 'Omni Flash'} cho cảnh ${sc.sceneIndex}.`
+          `Không tạo được clip ${sceneVideoEngine === 'muse2api' ? 'Muse2API' : 'Omni Flash'} cho phân cảnh ${sc.sceneIndex}.`
       );
     } finally {
       setBusySceneVideoIds((prev) => {
@@ -828,15 +1197,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // Rehearse offline speech (uses VieNeu-TTS WAV preview when offline VieNeu is active, else browser speechSynthesis)
   const handleSpeakOfflineBrowserPreview = async (text: string, sceneKey = 'sample') => {
     const cleanText = text.trim();
     if (!cleanText) return;
 
-    if (
-      voiceMode === 'offline_system' &&
-      capabilities?.localTools.offlineTts.engineId === 'vieneu'
-    ) {
+    if (voiceMode === 'offline_system' && capabilities?.localTools.offlineTts.engineId === 'vieneu') {
       setPreviewingSceneId(sceneKey);
       setOfflineTtsNotice('');
       try {
@@ -973,19 +1338,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // Final Render Pipeline
-  const handleRenderFinalVideo = async () => {
-    if (!blueprint || sources.length === 0) return;
-    stopPolling();
-    setIsGeneratingFinal(true);
-    setGenError('');
-    setJob({
-      jobId: '',
-      status: 'queued',
-      progress: 5,
-      stepLabel: 'Đang gửi yêu cầu dựng video hoàn chỉnh...',
-    });
-
+  // Submit and wait for a single blueprint render job
+  const renderBlueprintAndAwait = async (
+    targetBp: DerivativeBlueprint,
+    targetKey: string
+  ): Promise<DerivativeJobState> => {
     const voiceObj = VOICE_OPTIONS.find((v) => v.value === voice);
     const activeMusicAssetId =
       musicMode === 'ai_lyria'
@@ -994,270 +1351,635 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         ? uploadedAudioTrack?.assetId
         : undefined;
 
-    try {
-      const res = await fetch('/api/derivative/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          blueprint: { ...blueprint, aspectRatio },
-          sources,
-          visualMode,
-          voice: voiceMode === 'ai_online' ? voice : 'none',
-          voiceMode,
-          voiceStyle: voiceObj?.style || '',
-          offlineVoice: voiceMode === 'offline_system' ? offlineVoice : undefined,
-          keepSourceAudio,
-          brollSource,
-          musicMode,
-          musicAssetId: activeMusicAssetId,
-          publicMusicUrl: musicMode === 'public_free' ? selectedPublicTrack?.url : undefined,
-          musicPrompt,
-          musicVolume: musicVolume / 100,
-          characterRefs: characters.map((c) => ({ dataUrl: c.dataUrl, name: c.name })),
-          sessdata,
-          ytCookies,
-        }),
-      });
-      const data = await parseJsonSafe<{ jobId?: string; error?: string }>(res);
-      if (!res.ok || !data.jobId) {
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
+    setJobForKey(targetKey, {
+      jobId: '',
+      status: 'queued',
+      progress: 5,
+      stepLabel:
+        studioMode === 'creative'
+          ? 'Đang gửi yêu cầu dựng video sáng tạo...'
+          : 'Đang gửi yêu cầu dựng video phái sinh...',
+    });
 
-      const jobId = data.jobId;
+    const res = await fetch('/api/derivative/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        blueprint: {
+          ...targetBp,
+          mode: studioMode,
+          videoStyle: targetBp.videoStyle || videoStyle,
+          characterBible: targetBp.characterBible ?? characterBibleDraft,
+          settingBible: targetBp.settingBible ?? settingBibleDraft,
+          visualStyleBible: targetBp.visualStyleBible ?? visualStyleBibleDraft,
+          costumeBible: targetBp.costumeBible ?? costumeBibleDraft,
+          continuityBible: targetBp.continuityBible ?? continuityBibleDraft,
+          aspectRatio,
+          enableVoiceover: voiceMode !== 'none',
+        },
+        sources: studioMode === 'derivative' ? sources : [],
+        visualMode,
+        voice: voiceMode === 'ai_online' ? voice : 'none',
+        voiceMode,
+        voiceStyle: voiceObj?.style || '',
+        offlineVoice: voiceMode === 'offline_system' ? offlineVoice : undefined,
+        keepSourceAudio: studioMode === 'derivative' ? keepSourceAudio : false,
+        brollSource,
+        musicMode,
+        musicAssetId: activeMusicAssetId,
+        publicMusicUrl: musicMode === 'public_free' ? selectedPublicTrack?.url : undefined,
+        musicPrompt,
+        musicVolume: musicVolume / 100,
+        characterRefs: characters.map((c) => ({ dataUrl: c.dataUrl, name: c.name })),
+        sessdata,
+        ytCookies,
+      }),
+    });
+    const data = await parseJsonSafe<{ jobId?: string; error?: string }>(res);
+    if (!res.ok || !data.jobId) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+
+    const jobId = data.jobId;
+    return new Promise((resolve) => {
+      stopPolling();
       pollTimerRef.current = window.setInterval(async () => {
         try {
           const stRes = await fetch(`/api/derivative/jobs/${jobId}`);
           if (!stRes.ok) return;
           const stData = await parseJsonSafe<DerivativeJobState>(stRes);
-          setJob(stData);
+          setJobForKey(targetKey, stData);
           if (stData.status === 'completed' || stData.status === 'error') {
             stopPolling();
-            setIsGeneratingFinal(false);
-            if (stData.status === 'error') {
-              setGenError(stData.error || 'Tạo video thất bại.');
-            }
+            resolve(stData);
           }
         } catch {
           // ignore transient poll error
         }
       }, 1400);
+    });
+  };
+
+  // Final Render Pipeline for currently selected video
+  const handleRenderFinalVideo = async () => {
+    if (!blueprint) return;
+    if (studioMode === 'derivative' && sources.length === 0) {
+      const hasMedia = blueprint.scenes.some((s) => Boolean(s.sceneImageDataUrl || s.omniClipAssetId));
+      if (!hasMedia) {
+        setGenError('Chế độ Tạo Video Phái Sinh cần ít nhất 1 video nguồn hoặc ảnh/clip phân cảnh.');
+        return;
+      }
+    }
+
+    setIsGeneratingFinal(true);
+    setGenError('');
+    try {
+      const finalState = await renderBlueprintAndAwait(blueprint, activeJobKey);
+      if (finalState.status === 'error') {
+        setGenError(finalState.error || 'Tạo video thất bại.');
+      }
     } catch (err: any) {
-      setIsGeneratingFinal(false);
       setGenError(err?.message || 'Không thể khởi tạo tác vụ dựng video.');
+    } finally {
+      setIsGeneratingFinal(false);
+    }
+  };
+
+  // Batch Render all independent videos sequentially
+  const handleBatchRenderAllVideos = async () => {
+    if (blueprints.length <= 1 || isGeneratingFinal || isBatchRenderingAll) return;
+    if (studioMode === 'derivative' && sources.length === 0) {
+      setGenError('Cần ít nhất 1 video nguồn tham chiếu hoặc ảnh/clip phân cảnh để dựng hàng loạt.');
+      return;
+    }
+
+    batchRenderAbortRef.current = false;
+    setIsBatchRenderingAll(true);
+    setIsGeneratingFinal(true);
+    setGenError('');
+
+    let failed = 0;
+    for (let idx = 0; idx < blueprints.length; idx += 1) {
+      if (batchRenderAbortRef.current) break;
+      const bp = blueprints[idx];
+      const key = `${studioMode}:${idx}`;
+      if (jobsByKey[key]?.status === 'completed') continue;
+
+      setActiveBatchIndex(idx);
+      setBatchRenderStatusText(`Đang dựng Video ${idx + 1}/${blueprints.length}: ${bp.derivativeTitle}`);
+      try {
+        const result = await renderBlueprintAndAwait(bp, key);
+        if (result.status === 'error') failed += 1;
+      } catch (err: any) {
+        failed += 1;
+        setJobForKey(key, {
+          jobId: '',
+          status: 'error',
+          progress: 0,
+          stepLabel: 'Lỗi dựng video',
+          error: err?.message || 'Không thể khởi tạo dựng video.',
+        });
+      }
+    }
+
+    setBatchRenderStatusText('');
+    setIsBatchRenderingAll(false);
+    setIsGeneratingFinal(false);
+    if (failed > 0 && !batchRenderAbortRef.current) {
+      setGenError(`Hoàn tất dựng hàng loạt: có ${failed}/${blueprints.length} video gặp lỗi — bấm vào từng video để xem chi tiết.`);
     }
   };
 
   const totalSceneSec = blueprint
     ? Math.round(blueprint.scenes.reduce((sum, s) => sum + Number(s.durationSec || 0), 0))
     : 0;
+  const activeVideoStyleMeta = VIDEO_STYLE_OPTIONS.find((s) => s.value === videoStyle) || VIDEO_STYLE_OPTIONS[1];
+  const canSubmitLearn =
+    studioMode === 'creative'
+      ? Boolean(ideaPrompt.trim() || customInstruction.trim())
+      : sources.length > 0;
 
   return (
     <div className="space-y-6">
-      {/* Studio Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 border-b border-slate-200 dark:border-[#00464A]/80 pb-4">
-        <div>
-          <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-            Studio Sáng Tạo Video Phái Sinh
-          </h1>
-          <p className="text-sm text-slate-600 dark:text-teal-100/75 mt-1">
-            Tải nhiều video lên hoặc chọn từ tìm kiếm · AI học khung hình, phụ đề & lời thoại · Dựng clip Omni Flash, ảnh nhân vật, nhạc nền & lồng tiếng.
-          </p>
+      {/* Studio Page Header + Separated 2-Mode Segmented Switcher */}
+      <div className="flex flex-col gap-4 border-b border-slate-200 dark:border-[#00464A]/80 pb-4">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+          <div>
+            <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+              {studioMode === 'creative' ? 'Studio Sáng Tạo Video Từ Ý Tưởng' : 'Tạo Video Phái Sinh Từ Nguồn Tham Chiếu'}
+            </h1>
+            <p className="text-sm text-slate-600 dark:text-teal-100/75 mt-1">
+              {studioMode === 'creative'
+                ? 'Nhập ý tưởng · AI lên kịch bản phân cảnh đánh số liền lạc, đồng bộ nhân vật & bối cảnh, tạo ảnh/clip, lồng tiếng & ghép nhạc.'
+                : 'Đưa video tham chiếu từ máy hoặc tìm trực tuyến · AI phân tích nội dung, phát triển kịch bản đồng bộ phân cảnh & dựng video mới.'}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-mono tabular-nums text-slate-500 dark:text-teal-200/75">
+              {studioMode === 'derivative' ? `${sources.length}/8 video tham chiếu · ` : ''}
+              {characters.length}/3 nhân vật đồng bộ
+            </span>
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-teal-100 bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] hover:bg-slate-50 dark:hover:bg-[#002935] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              <span>Cấu hình AI</span>
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-mono tabular-nums text-slate-500 dark:text-teal-200/75">
-            {sources.length}/8 video nguồn · {characters.length}/3 nhân vật
-          </span>
+
+        {/* Functional 2-Mode Switcher */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <button
             type="button"
-            onClick={onOpenSettings}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-teal-100 bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] hover:bg-slate-50 dark:hover:bg-[#002935] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            onClick={() => {
+              setStudioMode('creative');
+              setLearnError('');
+              setLearnSuccess('');
+            }}
+            className={`text-left p-3.5 rounded-xl border transition-colors cursor-pointer flex items-start gap-3 ${
+              studioMode === 'creative'
+                ? 'bg-[#003B3E]/10 dark:bg-[#003B3E]/45 border-[#003B3E] dark:border-[#1BA8AD]'
+                : 'bg-white dark:bg-[#001722] border-slate-200 dark:border-[#00464A] hover:bg-slate-50 dark:hover:bg-[#002935]/50'
+            }`}
           >
-            <Settings className="w-3.5 h-3.5" />
-            <span>Cấu hình AI</span>
+            <div
+              className={`p-2 rounded-lg shrink-0 ${
+                studioMode === 'creative'
+                  ? 'bg-[#003B3E] text-white dark:bg-[#1BA8AD] dark:text-[#001722]'
+                  : 'bg-slate-100 dark:bg-[#000A10] text-slate-600 dark:text-teal-200'
+              }`}
+            >
+              <Clapperboard className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-slate-900 dark:text-white">
+                Studio Sáng Tạo
+              </div>
+              <p className="text-xs text-slate-600 dark:text-teal-100/75 mt-0.5 leading-snug">
+                Sáng tạo video mới hoàn toàn từ ý tưởng, câu chuyện hoặc chủ đề (không cần video nguồn).
+              </p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setStudioMode('derivative');
+              setLearnError('');
+              setLearnSuccess('');
+            }}
+            className={`text-left p-3.5 rounded-xl border transition-colors cursor-pointer flex items-start gap-3 ${
+              studioMode === 'derivative'
+                ? 'bg-[#003B3E]/10 dark:bg-[#003B3E]/45 border-[#003B3E] dark:border-[#1BA8AD]'
+                : 'bg-white dark:bg-[#001722] border-slate-200 dark:border-[#00464A] hover:bg-slate-50 dark:hover:bg-[#002935]/50'
+            }`}
+          >
+            <div
+              className={`p-2 rounded-lg shrink-0 ${
+                studioMode === 'derivative'
+                  ? 'bg-[#003B3E] text-white dark:bg-[#1BA8AD] dark:text-[#001722]'
+                  : 'bg-slate-100 dark:bg-[#000A10] text-slate-600 dark:text-teal-200'
+              }`}
+            >
+              <Layers className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-slate-900 dark:text-white">
+                Tạo Video Phái Sinh
+              </div>
+              <p className="text-xs text-slate-600 dark:text-teal-100/75 mt-0.5 leading-snug">
+                Đưa nguồn video tham chiếu để AI học khung hình, phụ đề, lời thoại rồi phát triển kịch bản mới.
+              </p>
+            </div>
           </button>
         </div>
+
+        {/* Shared Project Profile Bar (Dùng chung cho Studio Sáng Tạo & Tạo Video Phái Sinh) */}
+        <div className="p-3 rounded-xl bg-slate-50/80 dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2 min-w-0">
+            <FolderOpen className="w-4 h-4 text-[#003B3E] dark:text-[#1BA8AD] shrink-0" />
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                Kho Dự Án Đồng Bộ Dùng Chung ({projectProfiles.length})
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-teal-200/70 truncate">
+                Lưu và dùng chung Nhân vật · Bối cảnh · Phong cách · Trang phục · Mạch truyện giữa Studio Sáng Tạo & Phái Sinh.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {projectProfiles.length > 0 && (
+              <select
+                value={activeProjectId}
+                onChange={(e) => handleLoadProjectProfile(e.target.value)}
+                aria-label="Chọn hồ sơ dự án đã lưu"
+                className="h-8 px-2.5 text-xs bg-white dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white max-w-[200px]"
+              >
+                <option value="">-- Nạp dự án đã lưu --</option>
+                {projectProfiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.characterRefs.length} ảnh mẫu)
+                  </option>
+                ))}
+              </select>
+            )}
+            <input
+              type="text"
+              value={projectNameInput}
+              onChange={(e) => setProjectNameInput(e.target.value)}
+              placeholder="Tên dự án dùng chung..."
+              className="h-8 px-2.5 text-xs bg-white dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white w-44"
+            />
+            <button
+              type="button"
+              disabled={isSavingProject}
+              onClick={() => void handleSaveProjectProfile()}
+              className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] rounded-lg transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
+            >
+              {isSavingProject ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              <span>{activeProjectId ? 'Cập nhật dự án' : 'Lưu dự án'}</span>
+            </button>
+            {activeProjectId && (
+              <button
+                type="button"
+                onClick={() => void handleDeleteProjectProfile(activeProjectId)}
+                title="Xóa dự án đang chọn"
+                className="p-1.5 text-slate-400 hover:text-rose-500 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+        {projectStatusMsg && (
+          <p className="text-[11px] text-emerald-700 dark:text-emerald-300 font-medium">{projectStatusMsg}</p>
+        )}
       </div>
 
-      {/* SECTION 1: MULTI-VIDEO SOURCES & CHARACTER REFERENCES */}
+      {/* SECTION 1: MODE-SPECIFIC INPUT (IDEA OR REFERENCE VIDEOS) + CHARACTER CONSISTENCY */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-        {/* Left: Video Sources (7 cols) */}
-        <div className="lg:col-span-7 bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-xl p-5 flex flex-col justify-between space-y-4">
-          <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+        {/* Left: Input Box (7 cols) */}
+        {studioMode === 'creative' ? (
+          <div className="lg:col-span-7 bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-xl p-5 flex flex-col justify-between space-y-4">
+            <div className="space-y-3">
               <div>
                 <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
-                  1. Nguồn video tham chiếu ({sources.length}/8)
+                  1. Nhập ý tưởng & Định hướng sáng tạo
                 </h2>
-                <p className="text-xs text-slate-500 dark:text-teal-200/70">
-                  Tải nhiều video từ máy tính hoặc tìm trực tiếp từ các nền tảng video.
+                <p className="text-xs text-slate-500 dark:text-teal-200/70 mt-0.5">
+                  Mô tả nội dung, thông điệp, nhân vật hoặc diễn biến chính — AI sẽ biên soạn kịch bản, hồ sơ đồng bộ và prompt phân cảnh chi tiết.
                 </p>
               </div>
-              <div>
-                <input
-                  ref={videoUploadInputRef}
-                  type="file"
-                  multiple
-                  accept="video/*"
-                  onChange={handleUploadVideos}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  disabled={isUploadingVideos || sources.length >= 8}
-                  onClick={() => videoUploadInputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  {isUploadingVideos ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-                  <span>{isUploadingVideos ? uploadProgressText || 'Đang trích xuất...' : 'Tải nhiều video lên'}</span>
-                </button>
+
+              <textarea
+                rows={5}
+                value={ideaPrompt}
+                onChange={(e) => setIdeaPrompt(e.target.value)}
+                placeholder="VD: Kể câu chuyện về một chàng kỹ sư trẻ phát hiện căn hầm bí mật dưới thư viện cũ... hoặc Giải thích cách AI hoạt động qua cuộc đối thoại hài hước của 2 nhân vật người que..."
+                className="w-full p-3 text-xs sm:text-sm bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E] resize-y leading-relaxed"
+              />
+
+              <div className="space-y-1.5">
+                <span className="block text-[11px] font-medium text-slate-500 dark:text-teal-200/75">
+                  Gợi ý nhanh ý tưởng & cấu trúc mẫu:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {CREATIVE_IDEA_STARTERS.map((starter) => (
+                    <button
+                      key={starter.label}
+                      type="button"
+                      onClick={() => {
+                        setIdeaPrompt(starter.idea);
+                        setVideoStyle(starter.style);
+                        setDesiredSceneCount(starter.scenes);
+                        setTargetDurationSec(starter.dur);
+                      }}
+                      className="px-2.5 py-1 text-[11px] font-medium bg-slate-100 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] hover:border-[#003B3E] dark:hover:border-[#1BA8AD] text-slate-700 dark:text-teal-100 rounded-md transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      {starter.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
-            {uploadError && (
-              <div className="flex items-start gap-2 p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-900/60 text-xs text-rose-700 dark:text-rose-300">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{uploadError}</span>
+            <div className="pt-3 border-t border-slate-200 dark:border-[#00464A]/80 space-y-2">
+              <label className="block space-y-1">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/80">
+                  Bối cảnh / Thế giới chủ đạo mong muốn (tùy chọn — để trống AI tự thiết lập đồng bộ)
+                </span>
+                <input
+                  type="text"
+                  value={settingBibleDraft}
+                  onChange={(e) => setSettingBibleDraft(e.target.value)}
+                  placeholder="VD: Thành phố tương lai mưa đêm ánh đèn neon xanh tím, không khí trầm lắng..."
+                  className="w-full h-9 px-3 text-xs bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+                />
+              </label>
+            </div>
+          </div>
+        ) : (
+          <div className="lg:col-span-7 bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-xl p-5 flex flex-col justify-between space-y-4">
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
+                    1. Nguồn video tham chiếu ({sources.length}/8)
+                  </h2>
+                  <p className="text-xs text-slate-500 dark:text-teal-200/70">
+                    Tải nhiều video từ máy tính hoặc tìm trực tiếp từ các nền tảng video để AI học & phát triển nội dung.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextOpen = !libraryOpen;
+                      setLibraryOpen(nextOpen);
+                      if (nextOpen) void fetchLibraryVideos();
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#003B3E] dark:text-[#1BA8AD] bg-[#003B3E]/10 dark:bg-[#1BA8AD]/15 border border-[#003B3E]/30 dark:border-[#1BA8AD]/40 hover:bg-[#003B3E]/20 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Library className="w-3.5 h-3.5" />
+                    <span>{libraryOpen ? 'Đóng thư viện dự án' : 'Chọn từ thư viện dự án'}</span>
+                  </button>
+                  <input
+                    ref={videoUploadInputRef}
+                    type="file"
+                    multiple
+                    accept="video/*"
+                    onChange={handleUploadVideos}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    disabled={isUploadingVideos || sources.length >= 8}
+                    onClick={() => videoUploadInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    {isUploadingVideos ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                    <span>{isUploadingVideos ? uploadProgressText || 'Đang trích xuất...' : 'Tải nhiều video lên'}</span>
+                  </button>
+                </div>
               </div>
-            )}
 
-            {/* Selected Sources List */}
-            {sources.length === 0 ? (
-              <div className="border border-dashed border-slate-300 dark:border-[#00464A] rounded-lg p-6 text-center space-y-2">
-                <Film className="w-6 h-6 text-slate-400 dark:text-teal-300/60 mx-auto" />
-                <p className="text-xs text-slate-600 dark:text-teal-100/75">
-                  Chưa có video nguồn nào. Bấm <strong>Tải nhiều video lên</strong> hoặc tìm kiếm bên dưới để thêm video cho AI học nội dung.
-                </p>
-              </div>
-            ) : (
-              <div className="divide-y divide-slate-200 dark:divide-[#00464A]/70 border border-slate-200 dark:border-[#00464A] rounded-lg overflow-hidden">
-                {sources.map((src, idx) => {
-                  const thumb = src.keyframes?.[0] || (src.pic ? getDiscoveryThumbUrl(src.pic) : '');
-                  return (
-                    <div
-                      key={src.id}
-                      className="flex items-center gap-3 p-2.5 bg-slate-50/50 dark:bg-[#000A10]/40 hover:bg-slate-100/60 dark:hover:bg-[#002935]/40 transition-colors"
+              {libraryOpen && (
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-900 dark:text-white">
+                      Thư viện video sẵn có trong dự án (đã tải lên & đã dựng MP4)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void fetchLibraryVideos()}
+                      className="text-[11px] text-[#003B3E] dark:text-[#1BA8AD] hover:underline cursor-pointer"
                     >
-                      <span className="text-xs font-mono font-semibold tabular-nums text-slate-500 dark:text-teal-200/70 w-5 text-center shrink-0">
-                        #{idx + 1}
-                      </span>
-                      <div className="w-16 h-10 rounded bg-slate-200 dark:bg-slate-800 overflow-hidden shrink-0">
-                        {thumb && (
-                          <img src={thumb} alt={src.title} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs font-medium text-slate-900 dark:text-white truncate">
-                          {src.translatedTitle || src.title}
-                        </div>
-                        <div className="text-[11px] text-slate-500 dark:text-teal-200/70 flex items-center gap-1.5 tabular-nums truncate">
-                          <span>{src.localAssetId ? 'Video tải lên' : src.platformLabel}</span>
-                          <span>·</span>
-                          <span>{src.duration > 0 ? formatDuration(src.duration) : '--:--'}</span>
-                          {src.keyframes && src.keyframes.length > 0 && (
-                            <>
-                              <span>·</span>
-                              <span>{src.keyframes.length} khung hình</span>
-                            </>
+                      Làm mới
+                    </button>
+                  </div>
+                  {isLoadingLibrary ? (
+                    <div className="flex items-center gap-2 text-xs text-slate-500 py-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Đang tải danh sách video trong dự án...</span>
+                    </div>
+                  ) : libraryItems.length === 0 ? (
+                    <p className="text-[11px] text-slate-500 dark:text-teal-200/70">
+                      Chưa có video nào lưu trong thư viện dự án. Hãy tải video lên hoặc xuất video MP4 để xuất hiện tại đây.
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                      {libraryItems.map((item) => {
+                        const alreadyAdded =
+                          Boolean(item.localAssetId && sources.some((s) => s.localAssetId === item.localAssetId)) ||
+                          sources.some((s) => s.title === item.title);
+                        const busyImport = Boolean(item.jobId && importingJobId === item.jobId);
+                        return (
+                          <div
+                            key={item.id}
+                            className="flex items-center justify-between gap-2 p-2 rounded-lg border border-slate-200 dark:border-[#00464A] bg-white dark:bg-[#001722]"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[11px] font-medium text-slate-900 dark:text-white truncate">
+                                {item.title}
+                              </div>
+                              <div className="text-[10px] text-slate-500 dark:text-teal-200/70 tabular-nums truncate">
+                                {item.kind === 'rendered' ? 'Đã dựng MP4' : 'Video đã tải'} ·{' '}
+                                {Math.round(item.durationSec)}s · {item.resolution || 'HD'}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={alreadyAdded || busyImport || sources.length >= 8}
+                              onClick={() => void handlePickLibraryVideo(item)}
+                              className="px-2 py-1 text-[11px] font-semibold text-white bg-[#003B3E] hover:bg-[#002729] disabled:bg-slate-400 dark:disabled:bg-slate-700 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              {busyImport ? 'Đang nạp...' : alreadyAdded ? 'Đã chọn' : '+ Chọn'}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {uploadError && (
+                <div className="flex items-start gap-2 p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-900/60 text-xs text-rose-700 dark:text-rose-300">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{uploadError}</span>
+                </div>
+              )}
+
+              {sources.length === 0 ? (
+                <div className="border border-dashed border-slate-300 dark:border-[#00464A] rounded-lg p-6 text-center space-y-2">
+                  <Film className="w-6 h-6 text-slate-400 dark:text-teal-300/60 mx-auto" />
+                  <p className="text-xs text-slate-600 dark:text-teal-100/75">
+                    Chưa có video tham chiếu nào. Bấm <strong>Tải nhiều video lên</strong> hoặc tìm kiếm bên dưới để thêm video cho AI học & phát triển kịch bản.
+                  </p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-200 dark:divide-[#00464A]/70 border border-slate-200 dark:border-[#00464A] rounded-lg overflow-hidden">
+                  {sources.map((src, idx) => {
+                    const thumb = src.keyframes?.[0] || (src.pic ? getDiscoveryThumbUrl(src.pic) : '');
+                    return (
+                      <div
+                        key={src.id}
+                        className="flex items-center gap-3 p-2.5 bg-slate-50/50 dark:bg-[#000A10]/40 hover:bg-slate-100/60 dark:hover:bg-[#002935]/40 transition-colors"
+                      >
+                        <span className="text-xs font-mono font-semibold tabular-nums text-slate-500 dark:text-teal-200/70 w-5 text-center shrink-0">
+                          #{idx + 1}
+                        </span>
+                        <div className="w-16 h-10 rounded bg-slate-200 dark:bg-slate-800 overflow-hidden shrink-0">
+                          {thumb && (
+                            <img src={thumb} alt={src.title} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                           )}
                         </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-medium text-slate-900 dark:text-white truncate">
+                            {src.translatedTitle || src.title}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-teal-200/70 flex items-center gap-1.5 tabular-nums truncate">
+                            <span>{src.localAssetId ? 'Video tải lên' : src.platformLabel}</span>
+                            <span>·</span>
+                            <span>{src.duration > 0 ? formatDuration(src.duration) : '--:--'}</span>
+                            {src.keyframes && src.keyframes.length > 0 && (
+                              <>
+                                <span>·</span>
+                                <span>{src.keyframes.length} khung hình</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveSource(src.id)}
+                          title="Xóa video nguồn này"
+                          className="p-1.5 text-slate-400 hover:text-rose-500 cursor-pointer shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveSource(src.id)}
-                        title="Xóa video nguồn này"
-                        className="p-1.5 text-slate-400 hover:text-rose-500 cursor-pointer shrink-0"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
-          {/* Inline Search Bar inside Studio */}
-          <div className="pt-3 border-t border-slate-200 dark:border-[#00464A]/80 space-y-2.5">
-            <form onSubmit={handleSearchSources} className="flex flex-wrap sm:flex-nowrap gap-2">
-              <select
-                value={searchPlatform}
-                onChange={(e) => setSearchPlatform(e.target.value as TrendingPlatformId)}
-                aria-label="Nền tảng tìm kiếm"
-                className="h-9 px-2.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white focus:outline-none focus:border-[#003B3E]"
-              >
-                <option value="all">Tất cả nguồn</option>
-                <option value="youtube">YouTube</option>
-                <option value="tiktok">TikTok</option>
-                <option value="douyin">Douyin</option>
-                <option value="bilibili">Bilibili</option>
-                <option value="dailymotion">Dailymotion</option>
-              </select>
+            {/* Inline Search & Optional Expansion Idea */}
+            <div className="pt-3 border-t border-slate-200 dark:border-[#00464A]/80 space-y-2.5">
+              <form onSubmit={handleSearchSources} className="flex flex-wrap sm:flex-nowrap gap-2">
+                <select
+                  value={searchPlatform}
+                  onChange={(e) => setSearchPlatform(e.target.value as TrendingPlatformId)}
+                  aria-label="Nền tảng tìm kiếm"
+                  className="h-9 px-2.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white focus:outline-none focus:border-[#003B3E]"
+                >
+                  <option value="all">Tất cả nguồn</option>
+                  <option value="youtube">YouTube</option>
+                  <option value="tiktok">TikTok</option>
+                  <option value="douyin">Douyin</option>
+                  <option value="bilibili">Bilibili</option>
+                  <option value="dailymotion">Dailymotion</option>
+                </select>
+                <input
+                  type="text"
+                  value={searchQueryInput}
+                  onChange={(e) => setSearchQueryInput(e.target.value)}
+                  placeholder="Tìm nhanh video trên YouTube, TikTok, Bilibili để đưa vào tham chiếu..."
+                  className="flex-1 min-w-[180px] h-9 px-3 text-xs bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+                />
+                <button
+                  type="submit"
+                  disabled={isSearchingSources}
+                  className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold text-slate-800 dark:text-white bg-slate-100 dark:bg-[#002935] border border-slate-200 dark:border-[#00464A] hover:bg-slate-200/80 dark:hover:bg-[#003B3E] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  {isSearchingSources ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                  <span>Tìm nguồn</span>
+                </button>
+              </form>
+
+              {searchError && <p className="text-xs text-rose-600 dark:text-rose-400">{searchError}</p>}
+
+              {searchResults.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
+                  {searchResults.map((vid) => {
+                    const alreadyAdded = sources.some((s) => s.id === vid.id || s.sourceUrl === vid.sourceUrl);
+                    return (
+                      <div
+                        key={vid.id}
+                        className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 dark:border-[#00464A] bg-slate-50/70 dark:bg-[#000A10]/60"
+                      >
+                        <img
+                          src={getDiscoveryThumbUrl(vid.pic)}
+                          alt={vid.title}
+                          referrerPolicy="no-referrer"
+                          className="w-12 h-8 object-cover rounded shrink-0 bg-slate-200 dark:bg-slate-800"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[11px] font-medium text-slate-900 dark:text-white truncate">
+                            {vid.translatedTitle || vid.title}
+                          </p>
+                          <p className="text-[10px] text-slate-500 dark:text-teal-200/70 truncate tabular-nums">
+                            {vid.platformLabel} · {formatDuration(vid.duration)}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={alreadyAdded || sources.length >= 8}
+                          onClick={() => handleAddSearchVideo(vid)}
+                          className="px-2 py-1 text-[11px] font-semibold text-white bg-[#003B3E] hover:bg-[#002729] disabled:bg-slate-300 dark:disabled:bg-slate-700 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                        >
+                          {alreadyAdded ? 'Đã thêm' : '+ Thêm'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               <input
                 type="text"
-                value={searchQueryInput}
-                onChange={(e) => setSearchQueryInput(e.target.value)}
-                placeholder="Tìm nhanh video trên YouTube, TikTok, Bilibili để thêm vào Studio..."
-                className="flex-1 min-w-[180px] h-9 px-3 text-xs bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+                value={ideaPrompt}
+                onChange={(e) => setIdeaPrompt(e.target.value)}
+                placeholder="Góc nhìn / Ý tưởng phát triển từ video tham chiếu (VD: Tái hiện lại bằng nhân vật Anime hoặc mở rộng thêm phân tích)..."
+                className="w-full h-9 px-3 text-xs bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
               />
-              <button
-                type="submit"
-                disabled={isSearchingSources}
-                className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold text-slate-800 dark:text-white bg-slate-100 dark:bg-[#002935] border border-slate-200 dark:border-[#00464A] hover:bg-slate-200/80 dark:hover:bg-[#003B3E] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                {isSearchingSources ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
-                <span>Tìm nguồn</span>
-              </button>
-            </form>
-
-            {searchError && <p className="text-xs text-rose-600 dark:text-rose-400">{searchError}</p>}
-
-            {searchResults.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
-                {searchResults.map((vid) => {
-                  const alreadyAdded = sources.some((s) => s.id === vid.id || s.sourceUrl === vid.sourceUrl);
-                  return (
-                    <div
-                      key={vid.id}
-                      className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 dark:border-[#00464A] bg-slate-50/70 dark:bg-[#000A10]/60"
-                    >
-                      <img
-                        src={getDiscoveryThumbUrl(vid.pic)}
-                        alt={vid.title}
-                        referrerPolicy="no-referrer"
-                        className="w-12 h-8 object-cover rounded shrink-0 bg-slate-200 dark:bg-slate-800"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[11px] font-medium text-slate-900 dark:text-white truncate">
-                          {vid.translatedTitle || vid.title}
-                        </p>
-                        <p className="text-[10px] text-slate-500 dark:text-teal-200/70 truncate tabular-nums">
-                          {vid.platformLabel} · {formatDuration(vid.duration)}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={alreadyAdded || sources.length >= 8}
-                        onClick={() => handleAddSearchVideo(vid)}
-                        className="px-2 py-1 text-[11px] font-semibold text-white bg-[#003B3E] hover:bg-[#002729] disabled:bg-slate-300 dark:disabled:bg-slate-700 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                      >
-                        {alreadyAdded ? 'Đã thêm' : '+ Thêm'}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Right: Character References (5 cols) */}
+        {/* Right: Character References & Identity Synchronization (5 cols) */}
         <div className="lg:col-span-5 bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-xl p-5 flex flex-col justify-between space-y-4">
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <UserCheck className="w-4 h-4 text-[#003B3E] dark:text-[#1BA8AD]" />
                 <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
-                  Nhân vật tham chiếu ({characters.length}/3)
+                  Nhân vật đồng bộ ({characters.length}/3)
                 </h2>
               </div>
               <div>
@@ -1280,8 +2002,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 </button>
               </div>
             </div>
-            <p className="text-xs text-slate-500 dark:text-teal-200/70">
-              Dùng để AI giữ nguyên ngoại hình nhân vật khi tạo ảnh đại diện từng phân cảnh hoặc dựng clip Omni Flash.
+
+            <p className="text-xs text-slate-500 dark:text-teal-200/70 leading-relaxed">
+              Dùng làm ảnh gốc giữ nguyên gương mặt, trang phục & phong cách <strong>{activeVideoStyleMeta.label}</strong> khi vẽ toàn bộ các phân cảnh nối tiếp nhau.
             </p>
 
             {/* AI Character Generator */}
@@ -1291,14 +2014,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   type="text"
                   value={charNameInput}
                   onChange={(e) => setCharNameInput(e.target.value)}
-                  placeholder="Tên nhân vật (VD: Minh Review)"
+                  placeholder="Tên nhân vật"
                   className="w-1/3 h-8 px-2.5 text-xs bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
                 />
                 <input
                   type="text"
                   value={charPromptInput}
                   onChange={(e) => setCharPromptInput(e.target.value)}
-                  placeholder="Mô tả ngoại hình để AI vẽ (VD: cô gái trẻ áo vest xanh phòng thu)..."
+                  placeholder="Mô tả ngoại hình, trang phục để AI vẽ mẫu đồng bộ..."
                   className="flex-1 h-8 px-2.5 text-xs bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
                 />
               </div>
@@ -1310,19 +2033,19 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   className="h-8 px-2 text-[11px] bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-700 dark:text-teal-100 focus:outline-none"
                 >
                   <option value="muse2api">
-                    Muse2API (muse-image · Ưu tiên · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
+                    Muse2API (muse-image · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
                   </option>
-                  <option value="gemini_standard">Gemini Flash Image (gemini-3.1-flash-lite-image)</option>
-                  <option value="gemini_pro">Nano Banana 2.1 (Chất lượng cao 1K)</option>
+                  <option value="gemini_standard">Gemini Flash Image</option>
+                  <option value="gemini_pro">Nano Banana 2.1 (1K)</option>
                 </select>
                 <button
                   type="button"
                   disabled={isGeneratingChar || characters.length >= 3}
-                  onClick={handleGenerateCharacterAi}
+                  onClick={() => void handleGenerateCharacterAi()}
                   className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   {isGeneratingChar ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                  <span>AI tạo nhân vật mới</span>
+                  <span>AI vẽ nhân vật</span>
                 </button>
               </div>
             </div>
@@ -1335,7 +2058,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
             {/* Character Thumbnails Grid */}
             {characters.length > 0 && (
-              <div className="grid grid-cols-3 gap-2.5 pt-2">
+              <div className="grid grid-cols-3 gap-2.5 pt-1">
                 {characters.map((ch) => (
                   <div
                     key={ch.id}
@@ -1357,44 +2080,289 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 ))}
               </div>
             )}
+
+            <label className="block space-y-1 pt-1">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/80">
+                Ghi chú ngoại hình nhân vật cố định (tùy chọn trước khi lập kịch bản)
+              </span>
+              <input
+                type="text"
+                value={characterBibleDraft}
+                onChange={(e) => setCharacterBibleDraft(e.target.value)}
+                placeholder="VD: Nam 25 tuổi, tóc đen ngắn rẽ ngôi, mặc áo khoác bomber xám..."
+                className="w-full h-8 px-2.5 text-xs bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+              />
+            </label>
           </div>
         </div>
       </section>
 
-      {/* SECTION 2: AI LEARNING & SCRIPT SETTINGS */}
+      {/* SECTION 2: AI ENGINE, SCRIPT MODE (SERIES VS INDEPENDENT BATCH), VIDEO STYLE & DURATION */}
       <section className="bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-xl p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-[#003B3E] dark:text-[#1BA8AD]" />
             <div>
               <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
-                2. AI học nội dung & Sáng tạo kịch bản mới
+                {studioMode === 'creative'
+                  ? '2. Thiết lập AI & Lên kịch bản phân cảnh đồng bộ'
+                  : '2. Thiết lập AI phân tích video & Lên kịch bản phân cảnh đồng bộ'}
               </h2>
               <p className="text-xs text-slate-500 dark:text-teal-200/70">
-                Phân tích tiêu đề, mô tả, khung hình, phụ đề & chép lời từ video nguồn để biên soạn phân cảnh chi tiết.
+                Chọn chế độ sáng tạo kịch bản (Series xuyên suốt hoặc Nhiều video độc lập), hệ thống AI, phong cách & thời lượng.
               </p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
-              disabled={isLearning || sources.length === 0}
+              disabled={isLearning || !canSubmitLearn}
               onClick={handleLearnAndCreateScript}
               className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
             >
               {isLearning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
               <span>
                 {isLearning
-                  ? 'Đang xử lý...'
-                  : aiProvider === 'muse2api'
-                  ? 'Muse2API học & Lập kịch bản'
-                  : 'AI học video & Lập kịch bản'}
+                  ? scriptMode === 'independent_batch'
+                    ? `Đang sáng tạo ${batchVideoCount} kịch bản...`
+                    : 'Đang khởi tạo kịch bản Series...'
+                  : scriptMode === 'independent_batch'
+                  ? `AI Lên Kịch Bản ${batchVideoCount} Video Độc Lập`
+                  : 'AI Lên Kịch Bản Phân Cảnh'}
               </span>
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        {/* 2 Script Creation Modes Selector */}
+        <div className="p-3.5 rounded-xl bg-slate-50/70 dark:bg-[#000A10]/60 border border-slate-200 dark:border-[#00464A] space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-900 dark:text-white">
+              Chế độ sáng tạo kịch bản
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowScriptModeGuide((v) => !v)}
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[#003B3E] dark:text-[#1BA8AD] hover:underline cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <span>Bảng phân biệt 2 chế độ</span>
+              {showScriptModeGuide ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={() => {
+                setScriptMode('series');
+                if (desiredSceneCount === 'auto') setDesiredSceneCount(10);
+              }}
+              className={`text-left p-3 rounded-lg border transition-colors cursor-pointer flex items-start gap-2.5 ${
+                scriptMode === 'series'
+                  ? 'bg-white dark:bg-[#001722] border-[#003B3E] dark:border-[#1BA8AD]'
+                  : 'bg-white/60 dark:bg-[#001722]/40 border-slate-200 dark:border-[#00464A]/80 hover:border-slate-300 dark:hover:border-[#1BA8AD]/50'
+              }`}
+            >
+              <div
+                className={`p-1.5 rounded-md shrink-0 mt-0.5 ${
+                  scriptMode === 'series'
+                    ? 'bg-[#003B3E] text-white dark:bg-[#1BA8AD] dark:text-[#001722]'
+                    : 'bg-slate-200/80 dark:bg-[#002935] text-slate-600 dark:text-teal-200'
+                }`}
+              >
+                <Layers className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                  Chế độ 1: Kịch bản Series (Cốt truyện xuyên suốt)
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-teal-100/75 mt-0.5 leading-snug">
+                  Kể 1 câu chuyện liền mạch qua chuỗi phân cảnh nối tiếp nhau (mặc định 10 cảnh) · Đồng nhất nhân vật, trang phục & tiến trình bối cảnh.
+                </p>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setScriptMode('independent_batch');
+                if (desiredSceneCount === 10) setDesiredSceneCount('auto');
+              }}
+              className={`text-left p-3 rounded-lg border transition-colors cursor-pointer flex items-start gap-2.5 ${
+                scriptMode === 'independent_batch'
+                  ? 'bg-white dark:bg-[#001722] border-[#003B3E] dark:border-[#1BA8AD]'
+                  : 'bg-white/60 dark:bg-[#001722]/40 border-slate-200 dark:border-[#00464A]/80 hover:border-slate-300 dark:hover:border-[#1BA8AD]/50'
+              }`}
+            >
+              <div
+                className={`p-1.5 rounded-md shrink-0 mt-0.5 ${
+                  scriptMode === 'independent_batch'
+                    ? 'bg-[#003B3E] text-white dark:bg-[#1BA8AD] dark:text-[#001722]'
+                    : 'bg-slate-200/80 dark:bg-[#002935] text-slate-600 dark:text-teal-200'
+                }`}
+              >
+                <ListVideo className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                  Chế độ 2: Nhiều video độc lập cùng chủ đề
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-teal-100/75 mt-0.5 leading-snug">
+                  Sáng tạo nhiều câu chuyện riêng biệt (nhân vật & bối cảnh khác nhau) · Giữ chung tinh thần, chủ đề & phong cách tham chiếu.
+                </p>
+              </div>
+            </button>
+          </div>
+
+          {/* Collapsible 2-Mode Comparison Table */}
+          {showScriptModeGuide && (
+            <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-[#00464A] bg-white dark:bg-[#001722]">
+              <table className="w-full text-left text-[11px]">
+                <thead className="border-b border-slate-200 dark:border-[#00464A] text-slate-500 dark:text-teal-200/80">
+                  <tr>
+                    <th className="py-2 px-3 font-semibold">Tiêu chí</th>
+                    <th className="py-2 px-3 font-semibold text-[#003B3E] dark:text-[#1BA8AD]">Chế độ 1: Series</th>
+                    <th className="py-2 px-3 font-semibold text-[#003B3E] dark:text-[#1BA8AD]">Chế độ 2: Nhiều video độc lập</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200/70 dark:divide-[#00464A]/60 text-slate-700 dark:text-teal-100/85">
+                  <tr>
+                    <td className="py-1.5 px-3 font-medium">Nội dung</td>
+                    <td className="py-1.5 px-3">Một câu chuyện xuyên suốt nhiều phân cảnh</td>
+                    <td className="py-1.5 px-3">Nhiều câu chuyện riêng biệt, không lặp ý tưởng</td>
+                  </tr>
+                  <tr>
+                    <td className="py-1.5 px-3 font-medium">Nhân vật & Bối cảnh</td>
+                    <td className="py-1.5 px-3">Đồng nhất xuyên suốt theo tiến trình cốt truyện</td>
+                    <td className="py-1.5 px-3">Nhân vật & bối cảnh riêng biệt ở từng video</td>
+                  </tr>
+                  <tr>
+                    <td className="py-1.5 px-3 font-medium">Liên kết</td>
+                    <td className="py-1.5 px-3">Cảnh sau nối tiếp cảnh trước</td>
+                    <td className="py-1.5 px-3">Mỗi video có mở đầu – diễn biến – kết thúc độc lập</td>
+                  </tr>
+                  <tr>
+                    <td className="py-1.5 px-3 font-medium">Số lượng & Thời lượng</td>
+                    <td className="py-1.5 px-3">Mặc định 10 phân cảnh · Theo cấu hình series</td>
+                    <td className="py-1.5 px-3">Tùy chọn số lượng video (2–15) · Thời lượng chung hoặc riêng từng video</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Mode 2 Controls: Batch Video Count & Per-Video Duration Settings */}
+          {scriptMode === 'independent_batch' && (
+            <div className="pt-2 border-t border-slate-200 dark:border-[#00464A]/70 grid grid-cols-1 lg:grid-cols-12 gap-3 items-start">
+              <div className="lg:col-span-5 space-y-1.5">
+                <span className="block text-[11px] font-medium text-slate-600 dark:text-teal-200/85">
+                  Số lượng video độc lập muốn tạo (2–15)
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[2, 3, 5, 8, 10].map((cnt) => {
+                    const active = batchVideoCount === cnt;
+                    return (
+                      <button
+                        key={cnt}
+                        type="button"
+                        onClick={() => handleUpdateBatchVideoCount(cnt)}
+                        className={`h-8 px-3 text-xs font-medium rounded-lg border transition-colors tabular-nums cursor-pointer whitespace-nowrap ${
+                          active
+                            ? 'bg-[#003B3E] text-white border-[#003B3E] dark:bg-[#1BA8AD] dark:text-[#001722] dark:border-[#1BA8AD]'
+                            : 'bg-white dark:bg-[#001722] text-slate-700 dark:text-teal-100 border-slate-200 dark:border-[#00464A] hover:border-[#003B3E]'
+                        }`}
+                      >
+                        {cnt} video
+                      </button>
+                    );
+                  })}
+                  <input
+                    type="number"
+                    min={2}
+                    max={15}
+                    value={batchVideoCount}
+                    onChange={(e) => handleUpdateBatchVideoCount(Number(e.target.value))}
+                    aria-label="Nhập số lượng video muốn tạo"
+                    className="w-16 h-8 px-2 text-xs font-mono tabular-nums text-center bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+                  />
+                </div>
+              </div>
+
+              <div className="lg:col-span-7 space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-slate-600 dark:text-teal-200/85">
+                    Cấu hình thời lượng từng video trong đợt
+                  </span>
+                  <div className="inline-flex rounded-lg border border-slate-200 dark:border-[#00464A] overflow-hidden bg-white dark:bg-[#001722]">
+                    <button
+                      type="button"
+                      onClick={() => setBatchDurationMode('uniform')}
+                      className={`px-2.5 py-1 text-[11px] font-medium cursor-pointer whitespace-nowrap ${
+                        batchDurationMode === 'uniform'
+                          ? 'bg-[#003B3E] text-white dark:bg-[#1BA8AD] dark:text-[#001722]'
+                          : 'text-slate-600 dark:text-teal-200/80'
+                      }`}
+                    >
+                      Áp dụng chung ({targetDurationSec}s/video)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBatchDurationMode('per_video')}
+                      className={`px-2.5 py-1 text-[11px] font-medium cursor-pointer whitespace-nowrap ${
+                        batchDurationMode === 'per_video'
+                          ? 'bg-[#003B3E] text-white dark:bg-[#1BA8AD] dark:text-[#001722]'
+                          : 'text-slate-600 dark:text-teal-200/80'
+                      }`}
+                    >
+                      Tùy chỉnh riêng từng video
+                    </button>
+                  </div>
+                </div>
+
+                {batchDurationMode === 'per_video' ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    {Array.from({ length: batchVideoCount }, (_, idx) => (
+                      <label
+                        key={idx}
+                        className="flex items-center justify-between gap-1.5 px-2 py-1 rounded-lg bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A]"
+                      >
+                        <span className="text-[11px] font-mono tabular-nums text-slate-600 dark:text-teal-200">
+                          V{String(idx + 1).padStart(2, '0')}
+                        </span>
+                        <input
+                          type="number"
+                          min={10}
+                          max={900}
+                          step={5}
+                          value={perVideoDurations[idx] ?? targetDurationSec}
+                          onChange={(e) => {
+                            const val = Math.max(10, Math.min(900, Number(e.target.value) || 10));
+                            setPerVideoDurations((prev) => {
+                              const next = Array.from({ length: batchVideoCount }, (__, j) => prev[j] ?? targetDurationSec);
+                              next[idx] = val;
+                              return next;
+                            });
+                          }}
+                          aria-label={`Thời lượng Video ${idx + 1} (giây)`}
+                          className="w-14 h-6 px-1 text-[11px] font-mono tabular-nums text-right bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded text-slate-900 dark:text-white focus:outline-none"
+                        />
+                        <span className="text-[10px] text-slate-400">s</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-500 dark:text-teal-200/70">
+                    Tất cả <strong className="font-mono">{batchVideoCount}</strong> video độc lập sẽ dùng thời lượng mục tiêu{' '}
+                    <strong className="font-mono">{targetDurationSec}s</strong> (chỉnh ở bảng thời lượng bên dưới).
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Row 1: AI Provider, Language, Video Visual Style, Narrative Style, Aspect Ratio, Scene Count */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
           <label className="space-y-1">
             <span className="block text-[11px] font-medium text-slate-500 dark:text-teal-200/80">
               Hệ thống AI phân tích
@@ -1421,7 +2389,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
           <label className="space-y-1">
             <span className="block text-[11px] font-medium text-slate-500 dark:text-teal-200/80">
-              Ngôn ngữ lời thoại & phụ đề
+              Ngôn ngữ lời thoại
             </span>
             <select
               value={outputLanguage}
@@ -1438,24 +2406,61 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
           <label className="space-y-1">
             <span className="block text-[11px] font-medium text-slate-500 dark:text-teal-200/80">
-              Phong cách biên tập
+              Phong cách video (Hình ảnh)
             </span>
             <select
-              value={stylePreset}
-              onChange={(e) => setStylePreset(e.target.value as DerivativeStylePreset)}
+              value={videoStyle}
+              onChange={(e) => setVideoStyle(e.target.value as StudioVideoStyle)}
               className="w-full h-9 px-2.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
             >
-              {STYLE_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
+              {VIDEO_STYLE_OPTIONS.map((st) => (
+                <option key={st.value} value={st.value}>
+                  {st.label}
                 </option>
               ))}
             </select>
           </label>
 
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/80">
+                Kiểu dẫn chuyện
+              </span>
+              <button
+                type="button"
+                onClick={() => setEnableNarrativeStyle((v) => !v)}
+                className={`px-2 py-0.5 text-[10px] font-semibold rounded border transition-colors cursor-pointer whitespace-nowrap ${
+                  enableNarrativeStyle
+                    ? 'bg-[#003B3E] text-white border-[#003B3E] dark:bg-[#1BA8AD] dark:text-[#001722] dark:border-[#1BA8AD]'
+                    : 'bg-slate-100 dark:bg-[#000A10] text-slate-500 dark:text-teal-200/70 border-slate-200 dark:border-[#00464A]'
+                }`}
+              >
+                {enableNarrativeStyle ? 'Đang BẬT' : 'Đang TẮT'}
+              </button>
+            </div>
+            {enableNarrativeStyle ? (
+              <select
+                value={stylePreset === 'none' ? 'storytelling_review' : stylePreset}
+                onChange={(e) => setStylePreset(e.target.value as DerivativeStylePreset)}
+                aria-label="Kiểu dẫn chuyện"
+                className="w-full h-9 px-2.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+              >
+                {STYLE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="h-9 px-2.5 flex items-center text-[11px] text-slate-500 dark:text-teal-200/70 bg-slate-50/70 dark:bg-[#000A10]/60 border border-dashed border-slate-200 dark:border-[#00464A] rounded-lg truncate">
+                AI tự do sáng tạo theo ý tưởng
+              </div>
+            )}
+          </div>
+
           <label className="space-y-1">
             <span className="block text-[11px] font-medium text-slate-500 dark:text-teal-200/80">
-              Tỉ lệ khung hình
+              Tỷ lệ khung hình
             </span>
             <select
               value={aspectRatio}
@@ -1464,52 +2469,129 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             >
               <option value="9:16">9:16 Dọc (Shorts / TikTok)</option>
               <option value="16:9">16:9 Ngang (YouTube / Web)</option>
+              <option value="1:1">1:1 Vuông (Social / Feed)</option>
             </select>
           </label>
 
-          <div className="space-y-1">
-            <span className="block text-[11px] font-medium text-slate-500 dark:text-teal-200/80 tabular-nums">
-              Thời lượng ({Math.floor(targetDurationSec / 60)}p {targetDurationSec % 60}s)
+          <label className="space-y-1">
+            <span className="block text-[11px] font-medium text-slate-500 dark:text-teal-200/80">
+              {scriptMode === 'independent_batch' ? 'Số cảnh mỗi video' : 'Số phân cảnh Series'}
             </span>
-            <div className="flex items-center gap-1.5">
-              <select
-                value={[30, 60, 180, 300, 360, 480, 600].includes(targetDurationSec) ? String(targetDurationSec) : 'custom'}
-                onChange={(e) => {
-                  if (e.target.value !== 'custom') setTargetDurationSec(Number(e.target.value));
-                }}
-                aria-label="Mốc thời lượng"
-                className="flex-1 h-9 px-2 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none"
-              >
-                <option value="30">30s</option>
-                <option value="60">1 phút</option>
-                <option value="180">3 phút</option>
-                <option value="300">5 phút</option>
-                <option value="360">6 phút</option>
-                <option value="480">8 phút</option>
-                <option value="600">10 phút</option>
-                {![30, 60, 180, 300, 360, 480, 600].includes(targetDurationSec) && (
-                  <option value="custom">{targetDurationSec}s</option>
-                )}
-              </select>
-              <input
-                type="number"
-                min={20}
-                max={900}
-                step={15}
-                value={targetDurationSec}
-                onChange={(e) => setTargetDurationSec(Math.max(20, Math.min(900, Number(e.target.value) || 30)))}
-                className="w-16 h-9 px-1.5 text-xs font-mono tabular-nums text-center bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none"
-              />
+            <select
+              value={String(desiredSceneCount)}
+              onChange={(e) =>
+                setDesiredSceneCount(e.target.value === 'auto' ? 'auto' : Number(e.target.value))
+              }
+              className="w-full h-9 px-2.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+            >
+              <option value="auto">Tự động theo thời lượng</option>
+              <option value="3">3 phân cảnh</option>
+              <option value="5">5 phân cảnh</option>
+              <option value="6">6 phân cảnh</option>
+              <option value="8">8 phân cảnh</option>
+              <option value="10">10 phân cảnh (Mặc định Series)</option>
+              <option value="12">12 phân cảnh</option>
+              <option value="16">16 phân cảnh</option>
+              <option value="20">20 phân cảnh</option>
+            </select>
+          </label>
+        </div>
+
+        {/* Row 2: Flexible Duration Presets (10s .. 10m) + Custom Seconds Box + Voiceover Toggle */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pt-2 border-t border-slate-200/70 dark:border-[#00464A]/60 items-start">
+          <div className="lg:col-span-8 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-600 dark:text-teal-200/80 tabular-nums">
+                <Clock className="w-3.5 h-3.5 text-[#003B3E] dark:text-[#1BA8AD]" />
+                <span>
+                  Thời lượng mục tiêu: <strong className="font-mono text-slate-900 dark:text-white">{targetDurationSec}s</strong> (
+                  {Math.floor(targetDurationSec / 60)}p {targetDurationSec % 60}s)
+                </span>
+              </div>
+              <div className="inline-flex items-center gap-1.5">
+                <span className="text-[11px] text-slate-500 dark:text-teal-200/75">Nhập số giây linh động:</span>
+                <input
+                  type="number"
+                  min={10}
+                  max={900}
+                  step={5}
+                  value={targetDurationSec}
+                  onChange={(e) =>
+                    setTargetDurationSec(Math.max(10, Math.min(900, Number(e.target.value) || 10)))
+                  }
+                  aria-label="Nhập số giây linh động"
+                  className="w-20 h-8 px-2 text-xs font-mono tabular-nums text-center bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+                />
+                <span className="text-[11px] text-slate-500">giây</span>
+              </div>
             </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {DURATION_PRESETS.map((preset) => {
+                const active = targetDurationSec === preset.sec;
+                return (
+                  <button
+                    key={preset.sec}
+                    type="button"
+                    onClick={() => setTargetDurationSec(preset.sec)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-colors tabular-nums cursor-pointer whitespace-nowrap ${
+                      active
+                        ? 'bg-[#003B3E] text-white border-[#003B3E] dark:bg-[#1BA8AD] dark:text-[#001722] dark:border-[#1BA8AD]'
+                        : 'bg-slate-50 dark:bg-[#000A10] text-slate-700 dark:text-teal-100 border-slate-200 dark:border-[#00464A] hover:border-[#003B3E]'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="lg:col-span-4 space-y-2">
+            <span className="block text-[11px] font-medium text-slate-600 dark:text-teal-200/80">
+              Tùy chọn lồng tiếng kịch bản
+            </span>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (voiceMode === 'none') setVoiceMode('ai_online');
+                }}
+                className={`h-8 px-2.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+                  voiceMode !== 'none'
+                    ? 'bg-[#003B3E] text-white border-[#003B3E] dark:bg-[#1BA8AD] dark:text-[#001722] dark:border-[#1BA8AD]'
+                    : 'bg-slate-50 dark:bg-[#000A10] text-slate-700 dark:text-teal-100 border-slate-200 dark:border-[#00464A]'
+                }`}
+              >
+                Có lồng tiếng
+              </button>
+              <button
+                type="button"
+                onClick={() => setVoiceMode('none')}
+                className={`h-8 px-2.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+                  voiceMode === 'none'
+                    ? 'bg-[#003B3E] text-white border-[#003B3E] dark:bg-[#1BA8AD] dark:text-[#001722] dark:border-[#1BA8AD]'
+                    : 'bg-slate-50 dark:bg-[#000A10] text-slate-700 dark:text-teal-100 border-slate-200 dark:border-[#00464A]'
+                }`}
+              >
+                Không lồng tiếng
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-teal-200/70">
+              {voiceMode === 'none'
+                ? 'Video chỉ xuất hình ảnh + chữ phụ đề + nhạc nền (nếu bật).'
+                : 'Chọn giọng AI Online hoặc VieNeu-TTS Offline ở Bước 4.'}
+            </p>
           </div>
         </div>
 
+        {/* Row 3: Custom Instruction & Gemini Pro toggle */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
           <input
             type="text"
             value={customInstruction}
             onChange={(e) => setCustomInstruction(e.target.value)}
-            placeholder="Chỉ đạo thêm cho AI (VD: Nhấn mạnh số liệu thực tế, giữ giọng văn dí dỏm, thêm lời kêu gọi cuối video)..."
+            placeholder="Chỉ đạo thêm cho AI (VD: Nhấn mạnh nhịp chuyển cảnh liền mạch, góc quay điện ảnh, lời thoại tự nhiên không sáo rỗng)..."
             className="flex-1 h-9 px-3 text-xs bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
           />
           {aiProvider === 'gemini' && (
@@ -1550,15 +2632,92 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         )}
       </section>
 
-      {/* SECTION 3: STORYBOARD EDITOR, AI SCENE IMAGES & OMNI FLASH CLIPS */}
+      {/* SECTION 3: INDEPENDENT VIDEO SWITCHER (IF BATCH) + CONSISTENCY ANCHOR & STORYBOARD */}
       {blueprint && (
         <section className="bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-xl p-5 space-y-5">
-          {/* AI Learned Insights */}
+          {/* Batch Video Switcher when Multiple Independent Videos are generated */}
+          {blueprints.length > 1 && (
+            <div className="p-4 rounded-xl bg-slate-50/70 dark:bg-[#000A10]/60 border border-slate-200 dark:border-[#00464A] space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-xs font-semibold text-slate-900 dark:text-white">
+                    Danh sách {blueprints.length} kịch bản video độc lập cùng chủ đề
+                  </h3>
+                  {(sharedSpiritByMode[studioMode] || blueprint.sharedSpiritNote) && (
+                    <p className="text-[11px] text-slate-500 dark:text-teal-200/75 mt-0.5">
+                      Tinh thần & phong cách chung: {sharedSpiritByMode[studioMode] || blueprint.sharedSpiritNote}
+                    </p>
+                  )}
+                </div>
+                <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-teal-200/80">
+                  Đang xem Video {String(activeBatchIndex + 1).padStart(2, '0')}/{String(blueprints.length).padStart(2, '0')}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                {blueprints.map((bpItem, idx) => {
+                  const isActive = idx === activeBatchIndex;
+                  const itemJob = jobsByKey[`${studioMode}:${idx}`];
+                  const itemDur =
+                    bpItem.targetDurationSec ||
+                    Math.round(bpItem.scenes.reduce((s, sc) => s + Number(sc.durationSec || 0), 0));
+                  return (
+                    <button
+                      key={`${bpItem.derivativeTitle}_${idx}`}
+                      type="button"
+                      onClick={() => {
+                        setActiveBatchIndex(idx);
+                        setCharacterBibleDraft(bpItem.characterBible || '');
+                        setSettingBibleDraft(bpItem.settingBible || '');
+                        setVisualStyleBibleDraft(bpItem.visualStyleBible || '');
+                        setCostumeBibleDraft(bpItem.costumeBible || '');
+                        setContinuityBibleDraft(bpItem.continuityBible || '');
+                      }}
+                      className={`text-left p-2.5 rounded-lg border transition-colors cursor-pointer space-y-1 ${
+                        isActive
+                          ? 'bg-white dark:bg-[#001722] border-[#003B3E] dark:border-[#1BA8AD]'
+                          : 'bg-white/60 dark:bg-[#001722]/40 border-slate-200 dark:border-[#00464A]/80 hover:border-slate-300 dark:hover:border-[#1BA8AD]/50'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="text-[11px] font-mono font-semibold tabular-nums text-[#003B3E] dark:text-[#1BA8AD]">
+                          Video {String(idx + 1).padStart(2, '0')}
+                        </span>
+                        <span className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-teal-200/70">
+                          {bpItem.scenes.length} cảnh · {itemDur}s
+                        </span>
+                      </div>
+                      <div className="text-xs font-medium text-slate-900 dark:text-white line-clamp-1">
+                        {bpItem.derivativeTitle}
+                      </div>
+                      <div className="text-[10px] text-slate-500 dark:text-teal-200/70 truncate">
+                        {itemJob?.status === 'completed'
+                          ? 'Đã xuất MP4'
+                          : itemJob?.status === 'error'
+                          ? 'Lỗi dựng video'
+                          : itemJob
+                          ? `Đang dựng ${itemJob.progress}%`
+                          : 'Sẵn sàng chỉnh sửa & dựng'}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Summary + Title + Hook */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pb-4 border-b border-slate-200 dark:border-[#00464A]/80">
             <div className="lg:col-span-7 space-y-2">
               <div className="flex items-center gap-2 text-xs font-semibold text-[#003B3E] dark:text-[#1BA8AD]">
                 <BookOpen className="w-4 h-4" />
-                <span>AI đã tổng hợp từ {blueprint.sourcesAnalyzed.length} video ({blueprint.usedModel || blueprint.usedProvider})</span>
+                <span>
+                  {blueprints.length > 1
+                    ? `Video độc lập #${activeBatchIndex + 1}/${blueprints.length} (${blueprint.usedModel || blueprint.usedProvider})`
+                    : studioMode === 'creative'
+                    ? `Kịch bản Series sáng tạo (${blueprint.usedModel || blueprint.usedProvider})`
+                    : `AI tổng hợp Series từ ${blueprint.sourcesAnalyzed.length} video tham chiếu (${blueprint.usedModel || blueprint.usedProvider})`}
+                </span>
               </div>
               <p className="text-xs text-slate-700 dark:text-teal-100/85 leading-relaxed">
                 {blueprint.learnedSummary}
@@ -1577,7 +2736,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
             <div className="lg:col-span-5 space-y-2.5">
               <label className="block space-y-1">
-                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/80">Tiêu đề video phái sinh</span>
+                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/80">
+                  Tiêu đề video
+                </span>
                 <input
                   type="text"
                   value={blueprint.derivativeTitle}
@@ -1586,7 +2747,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 />
               </label>
               <label className="block space-y-1">
-                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/80">Chữ Hook nổi bật 3.5 giây đầu</span>
+                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/80">
+                  Chữ Hook nổi bật 3.5 giây đầu
+                </span>
                 <input
                   type="text"
                   value={blueprint.derivativeHook}
@@ -1600,10 +2763,191 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             </div>
           </div>
 
+          {/* 9-Dimension Reference Video Analysis Panel (Derivative Mode) */}
+          {studioMode === 'derivative' && blueprint.referenceAnalysis && (
+            <div className="p-4 rounded-xl bg-slate-50/70 dark:bg-[#000A10]/60 border border-slate-200 dark:border-[#00464A] space-y-3">
+              <div>
+                <h3 className="text-xs font-semibold text-slate-900 dark:text-white">
+                  AI Phân Tích Video Tham Chiếu (9 Chiều Đạo Diễn · Phát Triển Kịch Bản Phái Sinh Mới)
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-teal-200/70">
+                  Dữ liệu bóc tách tự động từ video tham chiếu — AI giữ tinh thần & ngôn ngữ điện ảnh nhưng sáng tạo câu chuyện phái sinh mới hoàn toàn.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-[11px]">
+                {[
+                  { label: 'Nội dung & Chủ đề chính', value: blueprint.referenceAnalysis.mainTheme },
+                  { label: 'Cốt truyện & Diễn biến', value: blueprint.referenceAnalysis.plotProgression },
+                  { label: 'Nhân vật & Đặc điểm nhận dạng', value: blueprint.referenceAnalysis.characterTraits },
+                  { label: 'Bối cảnh & Không gian', value: blueprint.referenceAnalysis.settingAndSpace },
+                  { label: 'Phong cách hình ảnh', value: blueprint.referenceAnalysis.visualStyle },
+                  { label: 'Góc máy & Chuyển động camera', value: blueprint.referenceAnalysis.cameraAndMovement },
+                  { label: 'Ánh sáng & Màu sắc', value: blueprint.referenceAnalysis.lightingAndColor },
+                  { label: 'Nhịp độ dựng phim', value: blueprint.referenceAnalysis.editingPacing },
+                  { label: 'Lời thoại, Âm thanh & Giọng đọc', value: blueprint.referenceAnalysis.dialogueAndAudio },
+                ]
+                  .filter((item) => item.value && item.value.trim())
+                  .map((item) => (
+                    <div
+                      key={item.label}
+                      className="p-2.5 rounded-lg bg-white dark:bg-[#001722] border border-slate-200/80 dark:border-[#00464A]/80 space-y-0.5"
+                    >
+                      <div className="font-semibold text-[#003B3E] dark:text-[#1BA8AD]">{item.label}</div>
+                      <p className="text-slate-700 dark:text-teal-100/85 leading-snug">{item.value}</p>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+
+          {/* 5-Component Global Consistency Bible */}
+          <div className="p-4 rounded-xl bg-slate-50/70 dark:bg-[#000A10]/60 border border-slate-200 dark:border-[#00464A] space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-semibold text-slate-900 dark:text-white">
+                  Cơ chế Đồng Bộ 5 Thành Phần Giữa Các Phân Cảnh (Scene 01 → Scene {String(blueprint.scenes.length).padStart(2, '0')})
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-teal-200/70">
+                  Khóa chặt Character · Environment · Visual Style · Costume · Story Continuity để toàn bộ các phân cảnh ghép thành một bộ phim thống nhất.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {characters.length < 3 && (blueprint.characterBible || characterBibleDraft) && (
+                  <button
+                    type="button"
+                    disabled={isGeneratingChar}
+                    onClick={() =>
+                      void handleGenerateCharacterAi(
+                        blueprint.characterBible || characterBibleDraft,
+                        'Nhân vật đồng bộ'
+                      )
+                    }
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-white bg-[#003B3E] hover:bg-[#002729] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                  >
+                    {isGeneratingChar ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+                    <span>Vẽ ảnh nhân vật chuẩn từ Hồ sơ này</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={isSavingProject}
+                  onClick={() => void handleSaveProjectProfile()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-[#003B3E] dark:text-[#1BA8AD] bg-[#003B3E]/10 dark:bg-[#1BA8AD]/15 border border-[#003B3E]/30 dark:border-[#1BA8AD]/40 hover:bg-[#003B3E]/20 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Lưu hồ sơ vào Dự án</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+              <label className="md:col-span-6 space-y-1">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/75">
+                  1. Character Reference (Nhân vật & Đặc điểm nhận dạng cố định)
+                </span>
+                <textarea
+                  rows={2}
+                  value={blueprint.characterBible ?? ''}
+                  onChange={(e) => {
+                    setBlueprint({ ...blueprint, characterBible: e.target.value });
+                    setCharacterBibleDraft(e.target.value);
+                  }}
+                  placeholder="Mô tả cố định ngoại hình, tuổi tác, kiểu tóc, gương mặt nhân vật..."
+                  className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E] resize-y"
+                />
+              </label>
+
+              <label className="md:col-span-6 space-y-1">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/75">
+                  2. Environment Reference (Bối cảnh, Địa điểm & Không gian)
+                </span>
+                <textarea
+                  rows={2}
+                  value={blueprint.settingBible ?? ''}
+                  onChange={(e) => {
+                    setBlueprint({ ...blueprint, settingBible: e.target.value });
+                    setSettingBibleDraft(e.target.value);
+                  }}
+                  placeholder="Mô tả không gian, kiến trúc, bối cảnh đồng bộ từ Scene 01 đến cảnh cuối..."
+                  className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E] resize-y"
+                />
+              </label>
+
+              <label className="md:col-span-4 space-y-1">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/75">
+                  3. Visual Style Reference (Bảng màu & Ngôn ngữ hình ảnh)
+                </span>
+                <textarea
+                  rows={2}
+                  value={blueprint.visualStyleBible ?? ''}
+                  onChange={(e) => {
+                    setBlueprint({ ...blueprint, visualStyleBible: e.target.value });
+                    setVisualStyleBibleDraft(e.target.value);
+                  }}
+                  placeholder="Tông màu chủ đạo, độ tương phản, ánh sáng, chất liệu phim xuyên suốt..."
+                  className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E] resize-y"
+                />
+              </label>
+
+              <label className="md:col-span-3 space-y-1">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/75">
+                  4. Costume Reference (Trang phục & Phụ kiện)
+                </span>
+                <textarea
+                  rows={2}
+                  value={blueprint.costumeBible ?? ''}
+                  onChange={(e) => {
+                    setBlueprint({ ...blueprint, costumeBible: e.target.value });
+                    setCostumeBibleDraft(e.target.value);
+                  }}
+                  placeholder="Áo choàng, phụ kiện, vật phẩm cầm tay cố định..."
+                  className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E] resize-y"
+                />
+              </label>
+
+              <label className="md:col-span-3 space-y-1">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/75">
+                  5. Story Continuity (Trục liên tục câu chuyện)
+                </span>
+                <textarea
+                  rows={2}
+                  value={blueprint.continuityBible ?? ''}
+                  onChange={(e) => {
+                    setBlueprint({ ...blueprint, continuityBible: e.target.value });
+                    setContinuityBibleDraft(e.target.value);
+                  }}
+                  placeholder="Tiến trình thời gian, hành động & mối liên kết mạch truyện..."
+                  className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E] resize-y"
+                />
+              </label>
+
+              <label className="md:col-span-2 space-y-1">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-teal-200/75">
+                  Phong cách đồng bộ
+                </span>
+                <select
+                  value={blueprint.videoStyle || videoStyle}
+                  onChange={(e) => {
+                    const nextStyle = e.target.value as StudioVideoStyle;
+                    setVideoStyle(nextStyle);
+                    setBlueprint({ ...blueprint, videoStyle: nextStyle });
+                  }}
+                  className="w-full h-9 px-2 text-xs font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
+                >
+                  {VIDEO_STYLE_OPTIONS.map((st) => (
+                    <option key={st.value} value={st.value}>
+                      {st.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+
           {/* Storyboard Controls Header */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-xs text-slate-600 dark:text-teal-100/85 tabular-nums">
-              <strong>3. Dàn phân cảnh ({blueprint.scenes.length} cảnh)</strong> · Tổng ước lượng{' '}
+              <strong>3. Dàn phân cảnh nối tiếp ({blueprint.scenes.length} phân cảnh)</strong> · Tổng ước lượng{' '}
               <span className="font-mono font-semibold text-[#003B3E] dark:text-[#1BA8AD]">
                 {Math.floor(totalSceneSec / 60)}p {totalSceneSec % 60}s
               </span>
@@ -1629,8 +2973,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   {isBatchGeneratingImages
                     ? `Đang tạo ảnh ${batchImageProgress ? `${batchImageProgress.current}/${batchImageProgress.total}` : 'các cảnh'}...`
                     : imageEngineMode === 'muse2api'
-                    ? 'Tạo ảnh Muse2API tất cả cảnh'
-                    : 'Tạo ảnh AI cho tất cả cảnh'}
+                    ? 'Tạo ảnh đồng bộ Muse2API tất cả cảnh'
+                    : 'Tạo ảnh AI đồng bộ tất cả cảnh'}
                 </span>
               </button>
               {isBatchGeneratingImages && (
@@ -1661,219 +3005,40 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             </div>
           )}
 
-          {/* Scenes List (Clean hairline dividers, single elevation) */}
+          {/* Sequentially Numbered Scene Cards */}
           <div className="divide-y divide-slate-200 dark:divide-[#00464A]/80 border border-slate-200 dark:border-[#00464A] rounded-xl overflow-hidden">
-            {blueprint.scenes.map((sc, idx) => {
-              const busyImg = busySceneImageIds.has(sc.id);
-              const queuedImg = queuedSceneImageIds.has(sc.id);
-              const busyVid = busySceneVideoIds.has(sc.id);
-              const sceneErr = sceneImageErrors[sc.id];
-              return (
-                <div key={sc.id} className="p-4 bg-slate-50/40 dark:bg-[#000A10]/40 grid grid-cols-1 lg:grid-cols-12 gap-4">
-                  {/* Visual Preview + Media Actions (4 cols) */}
-                  <div className="lg:col-span-4 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-mono font-semibold text-[#003B3E] dark:text-[#1BA8AD] tabular-nums">
-                        Cảnh {idx + 1}/{blueprint.scenes.length}
-                      </span>
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          type="number"
-                          min={4}
-                          max={45}
-                          value={Math.round(sc.durationSec || 6)}
-                          onChange={(e) =>
-                            updateScene(sc.id, {
-                              durationSec: Math.max(4, Math.min(45, Number(e.target.value) || 6)),
-                            })
-                          }
-                          aria-label="Thời lượng cảnh"
-                          className="w-12 h-6 px-1 text-[11px] font-mono tabular-nums text-center bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded text-slate-900 dark:text-white"
-                        />
-                        <span className="text-[11px] text-slate-500">giây</span>
-                        {blueprint.scenes.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteScene(sc.id)}
-                            title="Xóa cảnh này"
-                            className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="relative aspect-video rounded-lg overflow-hidden bg-slate-200 dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] flex items-center justify-center">
-                      {sc.omniClipPreviewUrl ? (
-                        <video
-                          src={sc.omniClipPreviewUrl}
-                          controls
-                          muted
-                          className="w-full h-full object-contain bg-black"
-                        />
-                      ) : sc.sceneImageDataUrl ? (
-                        <img
-                          src={sc.sceneImageDataUrl}
-                          alt={`Cảnh ${idx + 1}`}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="text-center px-3 space-y-1">
-                          <ImageIcon className="w-5 h-5 text-slate-400 dark:text-teal-300/50 mx-auto" />
-                          <p className="text-[11px] text-slate-500 dark:text-teal-200/70">
-                            Dùng clip nguồn / Wikimedia hoặc bấm tạo ảnh · clip AI bên dưới
-                          </p>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap gap-1.5">
-                      <button
-                        type="button"
-                        disabled={busyImg || queuedImg}
-                        onClick={() => generateSingleSceneImage(sc)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-[#002935] text-slate-800 dark:text-teal-100 rounded transition-colors cursor-pointer disabled:opacity-60"
-                      >
-                        {busyImg || queuedImg ? (
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <ImageIcon className="w-3 h-3" />
-                        )}
-                        <span>
-                          {busyImg
-                            ? 'Đang tạo ảnh...'
-                            : queuedImg
-                            ? 'Đang chờ lượt...'
-                            : sc.sceneImageDataUrl
-                            ? 'Tạo lại ảnh AI'
-                            : 'Tạo ảnh AI'}
-                        </span>
-                      </button>
-
-                      <label className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-[#002935] text-slate-800 dark:text-teal-100 rounded transition-colors cursor-pointer">
-                        <Upload className="w-3 h-3" />
-                        <span>Tải ảnh</span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={(e) => {
-                            const f = e.target.files?.[0];
-                            e.target.value = '';
-                            if (f) void handleUploadSceneImage(sc.id, f);
-                          }}
-                        />
-                      </label>
-
-                      <button
-                        type="button"
-                        disabled={busyVid}
-                        onClick={() => handleGenerateSceneOmniClip(sc)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold bg-[#003B3E] hover:bg-[#002729] text-white rounded transition-colors cursor-pointer disabled:opacity-50"
-                      >
-                        {busyVid ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
-                        <span>
-                          {busyVid
-                            ? sceneVideoEngine === 'muse2api'
-                              ? 'Đang tạo Muse2API...'
-                              : 'Đang tạo Omni...'
-                            : sceneVideoEngine === 'muse2api'
-                            ? 'Dựng clip Muse2API'
-                            : 'Dựng clip Omni'}
-                        </span>
-                      </button>
-                    </div>
-                    {sceneErr && (
-                      <div className="p-2 rounded bg-rose-50 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-900/60 text-[11px] text-rose-700 dark:text-rose-300 leading-snug">
-                        {sceneErr}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Editable Scene Text Fields (8 cols) */}
-                  <div className="lg:col-span-8 space-y-2.5">
-                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-                      <label className="sm:col-span-6 space-y-1">
-                        <span className="text-[11px] text-slate-500 dark:text-teal-200/75">Chữ hiển thị trên màn hình</span>
-                        <input
-                          type="text"
-                          value={sc.onScreenText}
-                          onChange={(e) => updateScene(sc.id, { onScreenText: e.target.value })}
-                          className="w-full h-8 px-2.5 text-xs font-medium bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
-                        />
-                      </label>
-                      <label className="sm:col-span-6 space-y-1">
-                        <span className="text-[11px] text-slate-500 dark:text-teal-200/75">Mô tả hình ảnh (Ảnh AI / Omni)</span>
-                        <input
-                          type="text"
-                          value={sc.visualNote || ''}
-                          onChange={(e) => updateScene(sc.id, { visualNote: e.target.value })}
-                          className="w-full h-8 px-2.5 text-xs bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E]"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500 dark:text-teal-200/75">Lời thuyết minh lồng tiếng</span>
-                        <button
-                          type="button"
-                          disabled={previewingSceneId === sc.id}
-                          onClick={() => void handleSpeakOfflineBrowserPreview(sc.narration, sc.id)}
-                          className="inline-flex items-center gap-1 text-[11px] text-[#003B3E] dark:text-[#1BA8AD] hover:underline cursor-pointer disabled:opacity-50"
-                        >
-                          {previewingSceneId === sc.id ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Volume2 className="w-3 h-3" />
-                          )}
-                          <span>
-                            {previewingSceneId === sc.id
-                              ? 'Đang tạo giọng VieNeu...'
-                              : voiceMode === 'offline_system' && capabilities?.localTools.offlineTts.engineId === 'vieneu'
-                              ? 'Nghe thử VieNeu'
-                              : 'Nghe nháp trình duyệt'}
-                          </span>
-                        </button>
-                      </div>
-                      <textarea
-                        rows={2}
-                        value={sc.narration}
-                        onChange={(e) => updateScene(sc.id, { narration: e.target.value })}
-                        className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E] resize-y"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <label className="space-y-1">
-                        <span className="text-[11px] text-slate-500 dark:text-teal-200/75">Video nguồn cắt ghép</span>
-                        <select
-                          value={sc.sourceVideoIndex}
-                          onChange={(e) => updateScene(sc.id, { sourceVideoIndex: Number(e.target.value) })}
-                          className="w-full h-8 px-2 text-xs bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white"
-                        >
-                          {sources.map((s, sIdx) => (
-                            <option key={s.id} value={sIdx}>
-                              #{sIdx + 1} · {(s.translatedTitle || s.title).slice(0, 42)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="space-y-1">
-                        <span className="text-[11px] text-slate-500 dark:text-teal-200/75">Từ khóa Wikimedia B-roll (EN)</span>
-                        <input
-                          type="text"
-                          value={sc.brollKeywordEn || ''}
-                          onChange={(e) => updateScene(sc.id, { brollKeywordEn: e.target.value })}
-                          className="w-full h-8 px-2.5 text-xs font-mono bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+            {blueprint.scenes.map((sc, idx) => (
+              <StudioSceneCard
+                key={sc.id}
+                scene={sc}
+                index={idx}
+                totalScenes={blueprint.scenes.length}
+                mode={studioMode}
+                videoStyle={blueprint.videoStyle || videoStyle}
+                characterBible={blueprint.characterBible ?? characterBibleDraft}
+                settingBible={blueprint.settingBible ?? settingBibleDraft}
+                visualStyleBible={blueprint.visualStyleBible ?? visualStyleBibleDraft}
+                costumeBible={blueprint.costumeBible ?? costumeBibleDraft}
+                continuityBible={blueprint.continuityBible ?? continuityBibleDraft}
+                hasCharacterRefs={characters.length > 0}
+                sources={sources}
+                busyImg={busySceneImageIds.has(sc.id)}
+                queuedImg={queuedSceneImageIds.has(sc.id)}
+                busyVid={busySceneVideoIds.has(sc.id)}
+                sceneErr={sceneImageErrors[sc.id]}
+                sceneVideoEngine={sceneVideoEngine}
+                voiceMode={voiceMode}
+                previewingSceneId={previewingSceneId}
+                capabilities={capabilities}
+                onUpdateScene={updateScene}
+                onDeleteScene={handleDeleteScene}
+                onMoveScene={handleMoveScene}
+                onGenerateImage={(s) => void generateSingleSceneImage(s)}
+                onUploadSceneImage={(sceneId, f) => void handleUploadSceneImage(sceneId, f)}
+                onGenerateOmniClip={(s) => void handleGenerateSceneOmniClip(s)}
+                onSpeakPreview={(txt, id) => void handleSpeakOfflineBrowserPreview(txt, id)}
+              />
+            ))}
           </div>
         </section>
       )}
@@ -1914,8 +3079,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   Muse2API Video (muse-video · Ưu tiên · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
                 </option>
                 <option value="gemini_omni">Gemini Omni Flash (gemini-omni-1.2-flash · Trả phí)</option>
-                <option value="remix">Video nguồn / Tải lên + Kho Wikimedia (Miễn phí)</option>
-                <option value="storyboard_motion">Ảnh đại diện cảnh + Chuyển động Ken Burns</option>
+                <option value="storyboard_motion">Ảnh phân cảnh AI + Chuyển động Ken Burns</option>
+                <option value="remix">
+                  {studioMode === 'derivative'
+                    ? 'Video nguồn / Tải lên + Kho Wikimedia (Miễn phí)'
+                    : 'Ảnh phân cảnh + Kho video Wikimedia (Miễn phí)'}
+                </option>
               </select>
             </label>
             {visualMode === 'muse2api_video' && !capabilities?.aiProviders.muse2api?.configured && (
@@ -1941,18 +3110,20 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 <option value="none">Không dùng kho B-roll ngoài</option>
               </select>
             </label>
-            <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-teal-100/90 pt-1 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={keepSourceAudio}
-                onChange={(e) => setKeepSourceAudio(e.target.checked)}
-                className="rounded border-slate-300 text-[#003B3E] focus:ring-[#003B3E]"
-              />
-              <span>Giữ âm thanh gốc video nguồn nhỏ (12%)</span>
-            </label>
+            {studioMode === 'derivative' && (
+              <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-teal-100/90 pt-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={keepSourceAudio}
+                  onChange={(e) => setKeepSourceAudio(e.target.checked)}
+                  className="rounded border-slate-300 text-[#003B3E] focus:ring-[#003B3E]"
+                />
+                <span>Giữ âm thanh gốc video nguồn nhỏ (12%)</span>
+              </label>
+            )}
           </div>
 
-          {/* Column B: Voiceover Online / Offline */}
+          {/* Column B: Voiceover Online / Offline / None */}
           <div className="space-y-3">
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
               <Mic className="w-4 h-4 text-[#003B3E] dark:text-[#1BA8AD]" />
@@ -2026,7 +3197,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       {previewingSceneId === 'sample' ? (
                         <Loader2 className="w-3 h-3 animate-spin" />
                       ) : (
-                        <Volume2 className="w-3 h-3" />
+                        <Mic className="w-3 h-3" />
                       )}
                       <span>{previewingSceneId === 'sample' ? 'Đang tạo audio...' : 'Nghe thử giọng VieNeu'}</span>
                     </button>
@@ -2063,7 +3234,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             )}
           </div>
 
-          {/* Column C: Background Music (AI Lyria / Public Free / Uploaded) */}
+          {/* Column C: Background Music */}
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
@@ -2177,9 +3348,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     })}
                   </div>
                 )}
-                {selectedPublicTrack?.url && (
-                  <audio controls src={selectedPublicTrack.url} className="w-full h-8" />
-                )}
+                {selectedPublicTrack?.url && <audio controls src={selectedPublicTrack.url} className="w-full h-8" />}
               </div>
             )}
 
@@ -2202,9 +3371,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 </button>
                 {uploadedAudioTrack?.url && (
                   <div className="space-y-1">
-                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300 truncate">
-                      {uploadedAudioTrack.title}
-                    </p>
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300 truncate">{uploadedAudioTrack.title}</p>
                     <audio controls src={uploadedAudioTrack.url} className="w-full h-8" />
                   </div>
                 )}
@@ -2217,20 +3384,57 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
         {/* Final Render CTA */}
         <div className="pt-4 border-t border-slate-200 dark:border-[#00464A]/80 flex flex-wrap items-center justify-between gap-4">
-          <div className="text-xs text-slate-500 dark:text-teal-200/75">
+          <div className="text-xs text-slate-500 dark:text-teal-200/75 tabular-nums">
             {!blueprint
-              ? 'Hãy bấm "AI học video & Lập kịch bản" ở Bước 2 để có danh sách phân cảnh trước khi dựng.'
-              : `Sẵn sàng dựng ${blueprint.scenes.length} phân cảnh (${aspectRatio}) với chất lượng 1080p HD.`}
+              ? 'Hãy bấm nút "AI Lên Kịch Bản..." ở Bước 2 trước khi dựng video.'
+              : batchRenderStatusText
+              ? batchRenderStatusText
+              : blueprints.length > 1
+              ? `Đang chọn Video ${activeBatchIndex + 1}/${blueprints.length} (${blueprint.scenes.length} phân cảnh · ${aspectRatio} · ${
+                  voiceMode === 'none' ? 'Không lồng tiếng' : 'Có lồng tiếng'
+                }).`
+              : `Sẵn sàng dựng ${blueprint.scenes.length} phân cảnh (${aspectRatio} · ${
+                  voiceMode === 'none' ? 'Không lồng tiếng' : 'Có lồng tiếng'
+                }) chất lượng 1080p HD.`}
           </div>
-          <button
-            type="button"
-            disabled={!blueprint || isGeneratingFinal}
-            onClick={handleRenderFinalVideo}
-            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            {isGeneratingFinal ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            <span>{isGeneratingFinal ? 'Đang dựng Video Phái Sinh...' : 'Dựng & Xuất Video Phái Sinh (.MP4)'}</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {blueprints.length > 1 && (
+              <button
+                type="button"
+                disabled={isGeneratingFinal || isBatchRenderingAll}
+                onClick={handleBatchRenderAllVideos}
+                className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-[#003B3E] dark:text-[#1BA8AD] bg-[#003B3E]/10 dark:bg-[#1BA8AD]/15 border border-[#003B3E]/30 dark:border-[#1BA8AD]/40 hover:bg-[#003B3E]/20 rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                {isBatchRenderingAll ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListVideo className="w-4 h-4" />}
+                <span>
+                  {isBatchRenderingAll
+                    ? 'Đang dựng hàng loạt...'
+                    : `Dựng Hàng Loạt ${blueprints.length} Video (.MP4)`}
+                </span>
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={!blueprint || isGeneratingFinal}
+              onClick={handleRenderFinalVideo}
+              className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {isGeneratingFinal && !isBatchRenderingAll ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Play className="w-4 h-4" />
+              )}
+              <span>
+                {isGeneratingFinal && !isBatchRenderingAll
+                  ? 'Đang dựng Video...'
+                  : blueprints.length > 1
+                  ? `Dựng Video #${activeBatchIndex + 1} (.MP4)`
+                  : studioMode === 'creative'
+                  ? 'Dựng & Xuất Video Series (.MP4)'
+                  : 'Dựng & Xuất Video Phái Sinh (.MP4)'}
+              </span>
+            </button>
+          </div>
         </div>
 
         {genError && (
@@ -2260,7 +3464,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
               <div
                 className={`h-full transition-all duration-300 ${
-                  job.status === 'error' ? 'bg-rose-500' : job.status === 'completed' ? 'bg-emerald-500' : 'bg-[#003B3E] dark:bg-[#1BA8AD]'
+                  job.status === 'error'
+                    ? 'bg-rose-500'
+                    : job.status === 'completed'
+                    ? 'bg-emerald-500'
+                    : 'bg-[#003B3E] dark:bg-[#1BA8AD]'
                 }`}
                 style={{ width: `${Math.min(100, Math.max(4, job.progress))}%` }}
               />
@@ -2287,7 +3495,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </div>
                   <a
                     href={`/api/derivative/jobs/${job.jobId}/file?download=1`}
-                    download={job.fileName || 'video_phai_sinh.mp4'}
+                    download={job.fileName || 'studio_video.mp4'}
                     className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors whitespace-nowrap"
                   >
                     <Download className="w-4 h-4" />
