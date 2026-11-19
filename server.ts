@@ -5416,7 +5416,7 @@ async function startServer() {
   // Inspect one or multiple Bilibili / YouTube URLs
   app.post('/api/bilibili/inspect', async (req, res) => {
     try {
-      const { urls, expandPages = true, sessdata, ytCookies } = (req.body || {}) as {
+      const { urls, expandPages = false, sessdata, ytCookies } = (req.body || {}) as {
         urls?: string[];
         expandPages?: boolean;
         sessdata?: string;
@@ -6189,7 +6189,7 @@ async function startServer() {
     } catch {
       // ignore package.json read error
     }
-    return '1.0.1';
+    return '1.0.2';
   };
 
   app.get('/api/system/update-status', async (_req, res) => {

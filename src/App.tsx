@@ -777,14 +777,14 @@ export default function App() {
     }
   }, [items, concurrency, runJobForItem]);
 
-  const handleInspect = async (urls: string[], expandPages: boolean) => {
+  const handleInspect = async (urls: string[]) => {
     setIsInspecting(true);
     setInspectErrors([]);
     try {
       const res = await fetch('/api/bilibili/inspect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls, expandPages, sessdata, ytCookies }),
+        body: JSON.stringify({ urls, expandPages: false, sessdata, ytCookies }),
       });
       const data = await parseJsonSafe(res);
       if (!res.ok) {
@@ -1137,7 +1137,7 @@ export default function App() {
         /\.(com|tv|be|watch|cn)\//i.test(q);
       if (isDirectVideoLink) {
         setActiveTab('download');
-        handleInspect([q], true);
+        handleInspect([q]);
       } else {
         setMountedDiscovery(true);
         setActiveTab('trending');

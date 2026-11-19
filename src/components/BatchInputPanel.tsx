@@ -6,7 +6,7 @@ import { parseUrlsFromText } from '../utils/formatters';
 interface BatchInputPanelProps {
   isInspecting: boolean;
   inspectErrors: InspectError[];
-  onInspect: (urls: string[], expandPages: boolean) => Promise<void>;
+  onInspect: (urls: string[]) => Promise<void>;
   onClearErrors: () => void;
 }
 
@@ -23,14 +23,13 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
   onClearErrors,
 }) => {
   const [rawText, setRawText] = useState('');
-  const [expandPages, setExpandPages] = useState(true);
 
   const detectedUrls = parseUrlsFromText(rawText);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (detectedUrls.length === 0 || isInspecting) return;
-    await onInspect(detectedUrls, expandPages);
+    await onInspect(detectedUrls);
     setRawText('');
   };
 
@@ -84,30 +83,17 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
         />
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-          <div className="space-y-1">
-            <label className="inline-flex items-center gap-2 text-xs sm:text-sm text-slate-700 dark:text-slate-200 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={expandPages}
-                onChange={(e) => setExpandPages(e.target.checked)}
-                className="w-4 h-4 rounded accent-emerald-500 cursor-pointer"
-              />
-              <span className="font-medium">
-                Tự động tách tất cả tập (P1, P2...) nếu là video Bilibili nhiều phần
-              </span>
-            </label>
-            <p
-              className={`text-[11px] pl-6 font-mono tabular-nums ${
-                detectedUrls.length > 0
-                  ? 'text-cyan-700 dark:text-cyan-300 font-semibold'
-                  : 'text-slate-500 dark:text-slate-400 font-sans'
-              }`}
-            >
-              {detectedUrls.length > 0
-                ? `${detectedUrls.length} liên kết hợp lệ được nhận diện`
-                : 'Hỗ trợ Facebook (Video, Reels, Watch, Trang), YouTube, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Xigua...'}
-            </p>
-          </div>
+          <p
+            className={`text-[11px] font-mono tabular-nums ${
+              detectedUrls.length > 0
+                ? 'text-cyan-700 dark:text-cyan-300 font-semibold'
+                : 'text-slate-500 dark:text-slate-400 font-sans'
+            }`}
+          >
+            {detectedUrls.length > 0
+              ? `${detectedUrls.length} liên kết hợp lệ được nhận diện`
+              : 'Hỗ trợ Facebook (Video, Reels, Watch, Trang), YouTube, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Xigua...'}
+          </p>
 
           <button
             type="submit"
