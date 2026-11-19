@@ -37,14 +37,14 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
   return (
     <section
       id="input-panel"
-      className="bg-white dark:bg-[#001722] border border-slate-200/80 dark:border-[#00464A] rounded-2xl p-6 sm:p-7 shadow-[0_1px_2px_rgba(15,23,42,0.03)]"
+      className="glass-card rounded-2xl p-4 sm:p-5 space-y-3.5"
     >
-      <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
-        <div className="space-y-1">
-          <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white text-balance">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1 max-w-2xl">
+          <h1 className="font-display text-base sm:text-lg font-bold tracking-tight text-slate-900 dark:text-white">
             Tải video đa nền tảng hàng loạt
           </h1>
-          <p className="text-sm text-slate-500 dark:text-teal-100/80">
+          <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
             Dán một hoặc nhiều liên kết Video, Reels, Watch, Playlist hay Kênh (Facebook, Bilibili, YouTube, TikTok, Douyin, Kuaishou, Xiaohongshu, Xigua...) để tự động tách danh sách và tải đồng loạt.
           </p>
         </div>
@@ -53,7 +53,7 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
           <button
             type="button"
             onClick={() => setRawText(SAMPLE_URLS)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-teal-100 hover:text-[#003B3E] dark:hover:text-white bg-slate-100/80 dark:bg-[#000A10] hover:bg-[#003B3E]/10 dark:hover:bg-[#000E16] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-500/10 dark:bg-violet-500/15 hover:bg-violet-500/20 border border-violet-400/35 text-violet-700 dark:text-violet-200 text-xs font-semibold transition whitespace-nowrap cursor-pointer"
           >
             <ClipboardPaste className="w-3.5 h-3.5" />
             <span>Dán mẫu thử</span>
@@ -62,58 +62,57 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
             <button
               type="button"
               onClick={() => setRawText('')}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-rose-600 dark:text-teal-100/80 dark:hover:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-slate-500 hover:text-rose-600 dark:text-slate-300 dark:hover:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/30 border border-slate-200 dark:border-slate-400/20 transition whitespace-nowrap cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>Xóa ô nhập</span>
+              <span>Xóa</span>
             </button>
           )}
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="relative">
-          <textarea
-            rows={4}
-            value={rawText}
-            onChange={(e) => {
-              setRawText(e.target.value);
-              if (inspectErrors.length > 0) onClearErrors();
-            }}
-            placeholder={`https://www.facebook.com/watch/?v=...\nhttps://www.facebook.com/reel/...\nhttps://fb.watch/...\nhttps://www.youtube.com/watch?v=...\nhttps://www.bilibili.com/video/BV1xx411c7mD\nhttps://www.tiktok.com/@user/video/...`}
-            className="w-full px-4 py-3.5 text-sm font-mono bg-[#F8FAFB] dark:bg-[#000A10] border border-slate-200/90 dark:border-[#00464A] rounded-xl text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-teal-200/45 focus:outline-none focus:border-[#003B3E] dark:focus:border-[#1BA8AD] focus:ring-3 focus:ring-[#003B3E]/15 transition-all resize-y"
-          />
-        </div>
+      <form onSubmit={handleSubmit} className="space-y-3.5">
+        <textarea
+          rows={5}
+          value={rawText}
+          onChange={(e) => {
+            setRawText(e.target.value);
+            if (inspectErrors.length > 0) onClearErrors();
+          }}
+          placeholder={`https://www.facebook.com/reel/...\nhttps://fb.watch/...\nhttps://www.youtube.com/watch?v=...\nhttps://www.bilibili.com/video/BV1xx411c7mD\nhttps://www.tiktok.com/@user/video/...`}
+          className="w-full rounded-xl bg-slate-50 dark:bg-[#0c1021]/95 border border-slate-200 dark:border-slate-400/20 focus:border-cyan-500 dark:focus:border-cyan-400/70 focus:outline-none p-3.5 text-xs sm:text-sm font-mono text-slate-900 dark:text-cyan-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 transition-colors resize-y"
+        />
 
-        <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-            <label className="inline-flex items-center gap-2.5 text-sm text-slate-700 dark:text-teal-50 cursor-pointer select-none">
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <div className="space-y-1">
+            <label className="inline-flex items-center gap-2 text-xs sm:text-sm text-slate-700 dark:text-slate-200 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={expandPages}
                 onChange={(e) => setExpandPages(e.target.checked)}
-                className="w-4 h-4 rounded border-slate-300 dark:border-teal-700 accent-[#003B3E] cursor-pointer"
+                className="w-4 h-4 rounded accent-emerald-500 cursor-pointer"
               />
-              <span>Tự động tách tất cả tập (P1, P2...) nếu là video Bilibili nhiều phần</span>
+              <span className="font-medium">
+                Tự động tách tất cả tập (P1, P2...) nếu là video Bilibili nhiều phần
+              </span>
             </label>
-
-            <span
-              className={`text-xs font-mono tabular-nums ${
+            <p
+              className={`text-[11px] pl-6 font-mono tabular-nums ${
                 detectedUrls.length > 0
-                  ? 'font-medium text-[#003B3E] dark:text-[#1BA8AD]'
-                  : 'text-slate-500 dark:text-teal-100/75'
+                  ? 'text-cyan-700 dark:text-cyan-300 font-semibold'
+                  : 'text-slate-500 dark:text-slate-400 font-sans'
               }`}
             >
               {detectedUrls.length > 0
                 ? `${detectedUrls.length} liên kết hợp lệ được nhận diện`
-                : 'Hỗ trợ Facebook (Video, Reels, Watch, Trang), YouTube, Bilibili, TikTok, Douyin...'}
-            </span>
+                : 'Hỗ trợ Facebook (Video, Reels, Watch, Trang), YouTube, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Xigua...'}
+            </p>
           </div>
 
           <button
             type="submit"
             disabled={detectedUrls.length === 0 || isInspecting}
-            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] active:scale-[0.98] disabled:bg-slate-200 dark:disabled:bg-[#000A10] disabled:text-slate-400 dark:disabled:text-teal-200/40 disabled:cursor-not-allowed rounded-xl shadow-xs transition-all duration-150 whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#003B3E]"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:brightness-110 disabled:opacity-45 disabled:cursor-not-allowed text-slate-950 font-bold text-xs sm:text-sm shadow-lg shadow-emerald-500/20 transition whitespace-nowrap shrink-0 cursor-pointer"
           >
             {isInspecting ? (
               <>
@@ -131,21 +130,21 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
       </form>
 
       {inspectErrors.length > 0 && (
-        <div className="mt-4 p-4 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/60 rounded-xl space-y-1.5">
+        <div className="p-3.5 bg-rose-50 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-800/60 rounded-xl space-y-1.5">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-xs font-semibold text-rose-700 dark:text-rose-400">
+            <div className="flex items-center gap-2 text-xs font-semibold text-rose-700 dark:text-rose-300">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>Một số liên kết không thể phân tích</span>
             </div>
             <button
               type="button"
               onClick={onClearErrors}
-              className="text-xs text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+              className="text-xs text-rose-600 dark:text-rose-300 hover:underline cursor-pointer"
             >
               Ẩn thông báo
             </button>
           </div>
-          <ul className="space-y-1 text-xs text-rose-700 dark:text-rose-300 font-mono">
+          <ul className="space-y-1 text-xs text-rose-700 dark:text-rose-200 font-mono">
             {inspectErrors.map((err, i) => (
               <li key={i} className="flex items-center gap-2 truncate">
                 <Link2 className="w-3 h-3 shrink-0" />

@@ -1,0 +1,2668 @@
+<!DOCTYPE html>
+<html lang="vi" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GaConPro V1.0 — Tải Hàng Loạt & Studio Phái Sinh AI</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif']
+          },
+          colors: {
+            void: '#070913',
+            midnight: '#0c1021',
+            glass: 'rgba(17, 23, 46, 0.78)',
+            glassSoft: 'rgba(24, 32, 64, 0.85)',
+            borderGlow: 'rgba(139, 92, 246, 0.24)',
+            borderSubtle: 'rgba(148, 163, 184, 0.14)'
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    /* Nền chiều sâu vũ trụ/indigo tương tự ảnh mẫu Quantix */
+    body {
+      background-color: #070913;
+      background-image:
+        radial-gradient(circle at 12% 10%, rgba(124, 58, 237, 0.16), transparent 34%),
+        radial-gradient(circle at 86% 14%, rgba(6, 182, 212, 0.13), transparent 36%),
+        radial-gradient(circle at 55% 88%, rgba(16, 185, 129, 0.08), transparent 40%);
+      color: #f1f5f9;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      overflow-x: hidden;
+    }
+
+    .glass-card {
+      background: linear-gradient(155deg, rgba(20, 26, 52, 0.84) 0%, rgba(11, 15, 32, 0.92) 100%);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      box-shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.75), inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+    }
+
+    .glass-card-accent {
+      background: linear-gradient(150deg, rgba(49, 32, 92, 0.42) 0%, rgba(14, 19, 41, 0.92) 55%, rgba(9, 39, 52, 0.45) 100%);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(139, 92, 246, 0.34);
+      box-shadow: 0 20px 44px -18px rgba(109, 40, 217, 0.35), inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+    }
+
+    /* Thanh cuộn tinh tế */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(9, 13, 28, 0.8);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(139, 92, 246, 0.32);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(34, 211, 238, 0.5);
+    }
+
+    /* Switch toggle đẹp */
+    .ios-switch {
+      position: relative;
+      display: inline-block;
+      width: 42px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+    .ios-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .ios-slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background-color: rgba(51, 65, 85, 0.85);
+      transition: 0.25s;
+      border-radius: 9999px;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+    .ios-slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 2px;
+      bottom: 2px;
+      background-color: #f8fafc;
+      transition: 0.25s;
+      border-radius: 9999px;
+    }
+    .ios-switch input:checked + .ios-slider {
+      background: linear-gradient(90deg, #10b981, #06b6d4);
+      border-color: rgba(16, 185, 129, 0.6);
+    }
+    .ios-switch input:checked + .ios-slider:before {
+      transform: translateX(20px);
+    }
+  </style>
+</head>
+<body class="min-h-screen text-slate-100 antialiased selection:bg-violet-500/40 selection:text-white">
+  <!-- Toast / Message Box thay thế hoàn toàn alert() -->
+  <div id="gacon-toast" class="hidden fixed bottom-5 right-5 z-[70] max-w-md glass-card-accent rounded-2xl px-4 py-3 text-xs sm:text-sm text-white flex items-center gap-3">
+    <span class="w-6 h-6 rounded-full bg-emerald-400/20 border border-emerald-400/50 text-emerald-300 flex items-center justify-center font-bold shrink-0">✓</span>
+    <span id="gacon-toast-msg" class="leading-snug">Đã cập nhật cấu hình.</span>
+  </div>
+
+  <!-- Khung tổng thể: Sidebar trái + Khu vực chính phải -->
+  <div class="min-h-screen flex flex-col lg:flex-row">
+    <!-- =================================================================== -->
+    <!-- 1. LEFT SIDEBAR (PHONG CÁCH QUANTIX: NHÓM MENU + CTA CARD DƯỚI CÙNG) -->
+    <!-- =================================================================== -->
+    <aside id="left-sidebar" class="w-full lg:w-[258px] lg:shrink-0 glass-card border-b lg:border-b-0 lg:border-r border-borderSubtle flex flex-col justify-between p-4 lg:sticky lg:top-0 lg:h-screen overflow-y-auto z-30">
+      <div class="space-y-6">
+        <!-- Brand Header -->
+        <div class="flex items-center justify-between gap-2 pb-3 border-b border-borderSubtle">
+          <div class="flex items-center gap-2.5">
+            <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 via-indigo-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-violet-600/30 font-extrabold text-white text-sm">
+              GP
+            </div>
+            <div>
+              <div class="flex items-center gap-1.5">
+                <span class="font-extrabold text-sm tracking-tight text-white">GaConPro</span>
+                <span class="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-violet-500/20 text-violet-300 border border-violet-400/30">V1.0</span>
+              </div>
+              <p class="text-[11px] text-slate-400">Batch & Derivative AI Suite</p>
+            </div>
+          </div>
+          <button id="btn-mobile-menu-toggle" class="lg:hidden px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-200">
+            Menu
+          </button>
+        </div>
+
+        <!-- Nhóm menu chính -->
+        <div id="sidebar-nav-groups" class="space-y-5">
+          <!-- Nhóm 1: LUỒNG CHÍNH -->
+          <div>
+            <div class="px-2.5 mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              LUỒNG CHÍNH
+            </div>
+            <ul class="space-y-1 text-xs sm:text-[13px]">
+              <li>
+                <button data-view="download" class="side-nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition">
+                  <span class="flex items-center gap-2.5">
+                    <span>📥</span>
+                    <span>Tải hàng loạt</span>
+                  </span>
+                  <span id="sidebar-dl-badge" class="text-[10px] px-1.5 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-400/25 font-semibold">5</span>
+                </button>
+              </li>
+              <li>
+                <button data-view="trending" class="side-nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition">
+                  <span class="flex items-center gap-2.5">
+                    <span>🔥</span>
+                    <span>Xu hướng</span>
+                  </span>
+                  <span id="sidebar-trend-badge" class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-400/25 font-semibold">153</span>
+                </button>
+              </li>
+              <li>
+                <button data-view="studio" class="side-nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition">
+                  <span class="flex items-center gap-2.5">
+                    <span>🎬</span>
+                    <span>Studio</span>
+                  </span>
+                  <span id="sidebar-studio-badge" class="text-[10px] px-1.5 py-0.5 rounded-md bg-violet-500/20 text-violet-300 border border-violet-400/30 font-semibold">3 Pha</span>
+                </button>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Nhóm 2: HỆ THỐNG & DỮ LIỆU -->
+          <div>
+            <div class="px-2.5 mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              HỆ THỐNG & DỮ LIỆU
+            </div>
+            <ul class="space-y-1 text-xs sm:text-[13px]">
+              <li>
+                <button data-view="settings" class="side-nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition">
+                  <span class="flex items-center gap-2.5">
+                    <span>⚙️</span>
+                    <span>Cấu hình • Đã lưu</span>
+                  </span>
+                  <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                </button>
+              </li>
+              <li>
+                <button data-view="update" class="side-nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition">
+                  <span class="flex items-center gap-2.5">
+                    <span>🔄</span>
+                    <span>Cập nhật</span>
+                  </span>
+                  <span class="text-[10px] text-emerald-300 font-medium">V1.0</span>
+                </button>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Thẻ CTA ở đáy Sidebar (lấy cảm hứng từ khối "Activate Quantum AI") -->
+      <div class="mt-6 rounded-2xl glass-card-accent p-3.5 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-violet-200">Batch Engine</span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 font-semibold">
+            FFmpeg Ready
+          </span>
+        </div>
+        <div class="space-y-1 text-[11px] text-slate-300">
+          <div class="flex justify-between">
+            <span class="text-slate-400">Muse2API Pool:</span>
+            <span class="text-cyan-300 font-medium">3/3 kênh • 36 media</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-slate-400">Thư mục xuất:</span>
+            <span id="sidebar-folder-name" class="text-white font-medium truncate max-w-[115px]">Nhung Kinh</span>
+          </div>
+        </div>
+        <button id="btn-sidebar-run-batch" class="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 text-white font-bold text-xs shadow-lg shadow-violet-600/30 transition flex items-center justify-center gap-1.5">
+          <span>🚀</span>
+          <span>Chạy Lô Phái Sinh / Tải</span>
+        </button>
+        <div class="text-[10px] text-center text-slate-400">© 2026 GaConPro • FFmpeg Stream</div>
+      </div>
+    </aside>
+
+    <!-- =================================================================== -->
+    <!-- 2. KHU VỰC PHẢI: TOP BAR + WORKSPACE ĐẦY ĐỦ CHI TIẾT                  -->
+    <!-- =================================================================== -->
+    <div class="flex-1 flex flex-col min-w-0">
+      <!-- Top Bar -->
+      <header class="sticky top-0 z-20 glass-card border-b border-borderSubtle px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
+        <!-- Ô tìm kiếm nhanh toàn cục -->
+        <div class="flex items-center gap-2 flex-1 min-w-[210px] max-w-md rounded-xl bg-midnight/90 border border-borderSubtle focus-within:border-violet-400/60 px-3 py-1.5">
+          <span class="text-slate-400 text-xs">🔎</span>
+          <input id="global-quick-search" type="text" placeholder="Tìm nhanh từ khóa, link hoặc chuyển mục..." class="w-full bg-transparent text-xs sm:text-sm text-white placeholder:text-slate-500 focus:outline-none" />
+          <span class="hidden sm:inline-block text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-slate-400 border border-white/10">⌘K</span>
+        </div>
+
+        <!-- Trạng thái hệ thống & Nút thao tác nhanh bên phải -->
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <div class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-midnight/85 border border-borderSubtle text-slate-300">
+            <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+            <span>FFmpeg & Queue Live</span>
+          </div>
+
+          <button id="btn-top-health-pill" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 font-medium transition">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span>Cookie & AI Pool Health</span>
+          </button>
+
+          <button id="btn-top-download-all" class="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:brightness-110 text-slate-950 font-bold shadow-md shadow-emerald-500/20 transition flex items-center gap-1.5">
+            <span>⚡</span>
+            <span>Tải tất cả</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Workspace -->
+      <main id="workspace-main" class="flex-1 p-3 sm:p-5 space-y-5 max-w-[1680px] w-full mx-auto">
+
+        <!-- Thanh nổi thao tác hàng loạt khi chọn video ở tab Xu hướng (gộp Tìm kiếm & Xu hướng) -->
+        <div id="discover-batch-floating-bar" class="hidden fixed bottom-4 left-1/2 -translate-x-1/2 z-40 glass-card-accent rounded-2xl px-4 py-2.5 flex flex-wrap items-center justify-center gap-2.5 text-xs">
+          <span class="text-white font-semibold">Đã chọn <strong id="discover-selected-count" class="text-cyan-300">0</strong> video</span>
+          <button id="btn-discover-send-download" type="button" class="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition">
+            ⬇ Đưa vào Tải hàng loạt
+          </button>
+          <button id="btn-discover-send-studio" type="button" class="px-3 py-1.5 rounded-xl bg-violet-500/25 hover:bg-violet-500/35 border border-violet-400/40 text-violet-200 font-bold transition">
+            🎬 Đưa sang Studio phái sinh
+          </button>
+          <button id="btn-discover-clear-sel" type="button" class="px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300">
+            Bỏ chọn
+          </button>
+        </div>
+
+        <!-- Modal / Drawer chỉnh sửa kịch bản chi tiết theo từng video trong lô -->
+        <div id="script-editor-modal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div class="glass-card-accent rounded-2xl w-full max-w-2xl p-5 space-y-4 text-xs">
+            <div class="flex items-center justify-between gap-2 border-b border-borderSubtle pb-3">
+              <div>
+                <div class="text-[10px] uppercase tracking-wider text-cyan-300 font-bold">BIÊN TẬP KỊCH BẢN PHÂN CẢNH TRONG LÔ</div>
+                <h3 id="modal-script-title" class="text-base font-extrabold text-white mt-0.5">Kịch bản #01</h3>
+              </div>
+              <button id="btn-close-script-modal" type="button" class="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 font-semibold">
+                ✕ Đóng
+              </button>
+            </div>
+
+            <div id="modal-scenes-list" class="space-y-2 max-h-64 overflow-y-auto pr-1">
+              <!-- Render bằng JS -->
+            </div>
+
+            <div class="flex items-center justify-end gap-2 pt-2 border-t border-borderSubtle">
+              <button id="btn-save-script-modal" type="button" class="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-400 text-slate-950 font-bold">
+                ✓ Lưu chỉnh sửa kịch bản
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- =============================================================== -->
+        <!-- VIEW 1: TẢI HÀNG LOẠT (BATCH DOWNLOAD)                          -->
+        <!-- =============================================================== -->
+        <section id="view-download" class="app-view space-y-5">
+          <!-- Hàng 4 thẻ KPI + Sparkline phong cách Dashboard mẫu -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
+            <div class="glass-card rounded-2xl p-4 flex items-center justify-between gap-3">
+              <div>
+                <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Tốc độ tải trung bình</div>
+                <div class="text-xl sm:text-2xl font-extrabold text-white mt-1">14.8 MB/s</div>
+                <div class="text-[11px] text-emerald-400 mt-0.5">▲ +18.4% • 3 luồng hoạt động</div>
+              </div>
+              <svg class="w-20 h-10 text-emerald-400 shrink-0" viewBox="0 0 80 40" fill="none">
+                <path d="M2 32 L18 24 L32 28 L48 14 L62 18 L78 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </div>
+
+            <div class="glass-card rounded-2xl p-4 flex items-center justify-between gap-3">
+              <div>
+                <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Tỷ lệ tải thành công</div>
+                <div class="text-xl sm:text-2xl font-extrabold text-white mt-1">94.2%</div>
+                <div class="text-[11px] text-cyan-300 mt-0.5">● Cookie 7/11 nền tảng sẵn sàng</div>
+              </div>
+              <svg class="w-20 h-10 text-cyan-400 shrink-0" viewBox="0 0 80 40" fill="none">
+                <path d="M2 28 L16 26 L30 18 L45 21 L60 11 L78 9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </div>
+
+            <div class="glass-card rounded-2xl p-4 flex items-center justify-between gap-3">
+              <div>
+                <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Tổng lô hiện tại</div>
+                <div id="kpi-queue-total" class="text-xl sm:text-2xl font-extrabold text-white mt-1">5 mục</div>
+                <div class="text-[11px] text-violet-300 mt-0.5">Tự động tách P1/P2 Bilibili</div>
+              </div>
+              <svg class="w-20 h-10 text-violet-400 shrink-0" viewBox="0 0 80 40" fill="none">
+                <path d="M2 34 L20 29 L36 22 L52 25 L66 13 L78 8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </div>
+
+            <div class="glass-card rounded-2xl p-4 flex items-center justify-between gap-3">
+              <div>
+                <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Xử lý FFmpeg & Logo</div>
+                <div class="text-xl sm:text-2xl font-extrabold text-white mt-1">Auto Clean</div>
+                <div class="text-[11px] text-amber-300 mt-0.5">MP4 H.264/AAC • Zoom & Logo</div>
+              </div>
+              <svg class="w-20 h-10 text-amber-300 shrink-0" viewBox="0 0 80 40" fill="none">
+                <path d="M2 24 L18 30 L34 16 L50 19 L64 12 L78 14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </div>
+          </div>
+
+          <!-- Khu vực 2 cột chính: Trái (Nhập liên kết + Hàng đợi) | Phải (Cấu hình đầu ra & xử lý video) -->
+          <div class="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+            <!-- CỘT TRÁI (7/12) -->
+            <div class="xl:col-span-7 space-y-4">
+              <!-- Khối dán link hàng loạt -->
+              <div class="glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h1 class="text-base sm:text-lg font-bold text-white">Tải video đa nền tảng hàng loạt</h1>
+                    <p class="text-xs text-slate-400">
+                      Dán một hoặc nhiều liên kết Video, Reels, Watch, Playlist hay Kênh (Facebook, Bilibili, YouTube, TikTok, Douyin, Kuaishou, Xiaohongshu, Xigua, Dailymotion...) để tự động tách danh sách và tải đồng loạt.
+                    </p>
+                  </div>
+                  <button id="btn-paste-sample-urls" class="px-3 py-1.5 rounded-xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-400/35 text-violet-200 text-xs font-semibold transition">
+                    📋 Dán mẫu thử
+                  </button>
+                </div>
+
+                <textarea id="batch-url-input" rows="5" placeholder="https://www.facebook.com/reel/...&#10;https://fb.watch/...&#10;https://www.youtube.com/watch?v=...&#10;https://www.bilibili.com/video/BV1xx411c7mD&#10;https://www.tiktok.com/@user/video/..." class="w-full rounded-xl bg-midnight/95 border border-borderSubtle focus:border-cyan-400/70 focus:outline-none p-3.5 text-xs sm:text-sm font-mono text-cyan-100 placeholder:text-slate-500"></textarea>
+
+                <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+                  <div class="space-y-1">
+                    <label class="inline-flex items-center gap-2 text-xs sm:text-sm text-slate-200 cursor-pointer select-none">
+                      <input id="chk-bilibili-split" type="checkbox" checked class="w-4 h-4 rounded accent-emerald-500" />
+                      <span class="font-medium">Tự động tách tất cả tập (P1, P2...) nếu là video Bilibili nhiều phần</span>
+                    </label>
+                    <p class="text-[11px] text-slate-400 pl-6">
+                      Hỗ trợ Facebook (Video, Reels, Watch, Trang), YouTube, Bilibili, TikTok, Douyin, Kuaishou, Xiaohongshu, Xigua...
+                    </p>
+                  </div>
+
+                  <button id="btn-add-to-queue" class="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:brightness-110 text-slate-950 font-bold text-xs sm:text-sm shadow-lg shadow-emerald-500/20 transition flex items-center gap-2">
+                    <span>➕</span>
+                    <span>Phân tích & Thêm vào hàng đợi</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Bảng hàng đợi tải xuống -->
+              <div class="glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <button data-qfilter="all" class="qfilter-btn px-3 py-1.5 rounded-xl text-xs font-semibold bg-violet-500/25 text-violet-200 border border-violet-400/40">
+                      Tất cả (<span id="q-cnt-all">0</span>)
+                    </button>
+                    <button data-qfilter="downloading" class="qfilter-btn px-3 py-1.5 rounded-xl text-xs font-medium bg-midnight text-slate-300 border border-borderSubtle hover:bg-white/5">
+                      Đang tải (<span id="q-cnt-dl">0</span>)
+                    </button>
+                    <button data-qfilter="done" class="qfilter-btn px-3 py-1.5 rounded-xl text-xs font-medium bg-midnight text-slate-300 border border-borderSubtle hover:bg-white/5">
+                      Hoàn tất (<span id="q-cnt-done">0</span>)
+                    </button>
+                    <button data-qfilter="error" class="qfilter-btn px-3 py-1.5 rounded-xl text-xs font-medium bg-rose-500/10 text-rose-300 border border-rose-500/25 hover:bg-rose-500/20">
+                      Lỗi / Cookie (<span id="q-cnt-err">0</span>)
+                    </button>
+                  </div>
+
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button id="btn-retry-failed-queue" class="px-2.5 py-1.5 rounded-xl text-xs bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-400/30 font-medium transition">
+                      ↻ Thử lại lỗi
+                    </button>
+                    <button id="btn-push-queue-to-studio" class="px-3 py-1.5 rounded-xl text-xs font-bold bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 border border-cyan-400/40 transition">
+                      🎬 Đưa mục đã chọn sang Studio phái sinh
+                    </button>
+                  </div>
+                </div>
+
+                <div id="batch-queue-rows" class="divide-y divide-borderSubtle rounded-xl border border-borderSubtle bg-midnight/75 overflow-hidden">
+                  <!-- Render bằng JS -->
+                </div>
+              </div>
+            </div>
+
+            <!-- CỘT PHẢI (5/12): CẤU HÌNH ĐẦU RA & XỬ LÝ VIDEO -->
+            <aside class="xl:col-span-5 glass-card rounded-2xl p-4 sm:p-5 space-y-4 xl:sticky xl:top-20">
+              <div class="flex flex-wrap items-start justify-between gap-2 pb-3 border-b border-borderSubtle">
+                <div>
+                  <h2 class="text-sm sm:text-base font-bold text-white">Cấu hình đầu ra & xử lý video</h2>
+                  <p class="text-[11px] text-slate-400">Áp dụng mặc định cho video mới thêm hoặc đồng bộ lại toàn bộ hàng đợi</p>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <select id="dl-preset-select" class="rounded-xl bg-midnight border border-borderSubtle px-2.5 py-1.5 text-xs text-cyan-300 focus:outline-none">
+                    <option value="default">Preset: Chuẩn Reup</option>
+                    <option value="bilibili_series">Preset: Bilibili Series 1080p</option>
+                    <option value="shorts_clean">Preset: Shorts 9:16 Xóa Logo</option>
+                  </select>
+                  <button id="btn-apply-all-output" class="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-300 text-xs font-semibold transition">
+                    ✓ Áp dụng cho tất cả
+                  </button>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label class="block text-slate-400 mb-1">Độ phân giải</label>
+                  <select id="out-resolution" class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white focus:border-violet-400 focus:outline-none">
+                    <option>Tốt nhất (Auto)</option>
+                    <option>1080p (Full HD)</option>
+                    <option>720p (HD)</option>
+                    <option>4K (Nếu nguồn hỗ trợ)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1">Định dạng tệp</label>
+                  <select id="out-format" class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white focus:border-violet-400 focus:outline-none">
+                    <option>MP4 — H.264 / AAC • Phổ biến</option>
+                    <option>MKV — Giữ nguyên luồng đa kênh</option>
+                    <option>WEBM — VP9 / Opus</option>
+                    <option>MP3 — Tách âm thanh chất lượng cao</option>
+                    <option>M4A — Âm thanh AAC gốc</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1">Xóa logo gốc</label>
+                  <select id="out-remove-logo" class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white focus:border-violet-400 focus:outline-none">
+                    <option>Tự động phát hiện & xóa</option>
+                    <option>Xóa logo góc trên/dưới (Douyin/TikTok)</option>
+                    <option>Làm mờ nhẹ vùng logo (Delogo)</option>
+                    <option>Không xóa logo gốc</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1">Tải đồng thời</label>
+                  <select id="out-concurrency" class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white focus:border-violet-400 focus:outline-none">
+                    <option value="1 luồng">1 luồng</option>
+                    <option value="3 luồng" selected>3 luồng</option>
+                    <option value="5 luồng">5 luồng</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1">Logo thương hiệu</label>
+                  <div class="flex items-center justify-between rounded-xl bg-midnight border border-borderSubtle px-3 py-2">
+                    <div class="flex items-center gap-2">
+                      <label class="ios-switch">
+                        <input id="out-brand-logo-toggle" type="checkbox" checked />
+                        <span class="ios-slider"></span>
+                      </label>
+                      <span id="out-brand-logo-label" class="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Đang bật</span>
+                    </div>
+                    <button id="btn-edit-logo-config" type="button" class="text-cyan-300 hover:underline font-semibold">Sửa</button>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block text-slate-400 mb-1">Biến đổi khung hình</label>
+                  <div class="flex items-center justify-between rounded-xl bg-midnight border border-borderSubtle px-3 py-2">
+                    <span id="out-transform-text" class="text-slate-100 font-medium">0.9x • Zoom 110%</span>
+                    <button id="btn-cycle-transform" type="button" class="text-xs px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-violet-300">Đổi</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Tự động lưu về máy & thư mục -->
+              <div class="rounded-xl bg-midnight/90 border border-borderSubtle p-3.5 space-y-2.5 text-xs">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <label class="inline-flex items-center gap-2 cursor-pointer font-semibold text-white">
+                    <input id="out-autosave-chk" type="checkbox" checked class="w-4 h-4 rounded accent-emerald-500" />
+                    <span>Tự động lưu về máy</span>
+                  </label>
+                  <span class="text-[11px] text-slate-400">Lưu tự động vào Downloads • Xuất ZIP theo thư mục</span>
+                </div>
+
+                <div class="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                  <span class="text-slate-400 shrink-0">Thư mục lưu trữ</span>
+                  <input id="out-folder-input" type="text" value="Nhung Kinh" class="flex-1 min-w-0 rounded-xl bg-panelSoft border border-borderSubtle px-3 py-1.5 text-white font-medium focus:border-emerald-400 focus:outline-none" />
+                  <button id="btn-choose-folder-local" type="button" class="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-slate-100 font-medium shrink-0">
+                    📁 Chọn thư mục trên máy
+                  </button>
+                </div>
+                <p class="text-[11px] text-emerald-300/90">
+                  Xuất ZIP theo thư mục "<span id="out-zip-folder-label" class="font-bold underline">Nhung Kinh</span>"
+                </p>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- =============================================================== -->
+        <!-- VIEW 2: STUDIO (TẠO VIDEO PHÁI SINH HÀNG LOẠT — 3 GIAI ĐOẠN)   -->
+        <!-- =============================================================== -->
+        <section id="view-studio" class="app-view hidden space-y-5">
+          <!-- Thanh đầu Studio: Chế độ Derivative/Creative + Kho dự án đồng bộ + Chế độ lô (1-ra-1 / N-ra-1) + Chuyển nhanh 3 giai đoạn -->
+          <div class="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h1 id="studio-main-heading" class="text-lg sm:text-xl font-extrabold text-white">
+                  Studio Phái Sinh & Sáng Tạo Video Hàng Loạt
+                </h1>
+                <p id="studio-main-sub" class="text-xs text-slate-400 mt-0.5">
+                  Bố trí 3 giai đoạn rõ ràng: <strong>(1) Nguồn & Nhân vật đồng bộ</strong> → <strong>(2) Kịch bản, Hình ảnh & Âm thanh</strong> → <strong>(3) Duyệt kịch bản lô & Xuất MP4</strong>.
+                </p>
+              </div>
+              <div class="flex flex-wrap items-center gap-2 text-xs">
+                <span id="studio-counter-pill" class="px-3 py-1.5 rounded-xl bg-violet-500/15 border border-violet-400/30 text-violet-200 font-semibold">
+                  3 nguồn tham chiếu • 1 nhân vật đồng bộ
+                </span>
+                <button id="btn-studio-jump-ai-cfg" type="button" class="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 font-medium">
+                  ⚙️ Cấu hình AI
+                </button>
+              </div>
+            </div>
+
+            <!-- 2 thẻ chế độ Studio -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <button id="tab-studio-derivative" type="button" class="text-left rounded-2xl p-3.5 border transition flex items-start gap-3 bg-violet-500/15 border-violet-400/50 shadow-md shadow-violet-900/25">
+                <span class="w-9 h-9 rounded-xl bg-violet-500/25 text-violet-200 flex items-center justify-center text-base shrink-0">🧬</span>
+                <div>
+                  <div class="text-sm font-bold text-white">Tạo Video Phái Sinh</div>
+                  <div class="text-xs text-slate-300 mt-0.5">Đưa nguồn video tham chiếu để AI học khung hình, phụ đề, lời thoại rồi phát triển kịch bản mới hàng loạt.</div>
+                </div>
+              </button>
+
+              <button id="tab-studio-creative" type="button" class="text-left rounded-2xl p-3.5 border transition flex items-start gap-3 bg-midnight/85 border-borderSubtle hover:border-cyan-400/40">
+                <span class="w-9 h-9 rounded-xl bg-cyan-500/20 text-cyan-200 flex items-center justify-center text-base shrink-0">✨</span>
+                <div>
+                  <div class="text-sm font-bold text-white">Studio Sáng Tạo</div>
+                  <div class="text-xs text-slate-400 mt-0.5">Sáng tạo video mới hoàn toàn từ ý tưởng, câu chuyện hoặc chủ đề (không cần video nguồn).</div>
+                </div>
+              </button>
+            </div>
+
+            <!-- Kho dự án đồng bộ dùng chung + Chế độ chạy lô -->
+            <div class="rounded-xl bg-midnight/90 border border-borderSubtle p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div class="flex flex-wrap items-center gap-2 flex-1 min-w-[240px]">
+                <span class="font-bold text-emerald-300">📁 Kho Dự Án Đồng Bộ Dùng Chung (<span id="shared-vault-count">2</span>)</span>
+                <span class="text-slate-400 hidden sm:inline">• Lưu & dùng chung Nhân vật • Bối cảnh • Phong cách • Trang phục</span>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <div class="flex items-center rounded-xl bg-panelSoft border border-borderSubtle p-0.5">
+                  <button type="button" data-bmode="1to1" class="bmode-pill px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold">
+                    1-ra-1 (Mỗi nguồn → 1 video)
+                  </button>
+                  <button type="button" data-bmode="nto1" class="bmode-pill px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">
+                    N-ra-1 (Tổng hợp / Series)
+                  </button>
+                </div>
+                <input id="shared-project-name" type="text" placeholder="Tên dự án dùng chung..." class="rounded-xl bg-panelSoft border border-borderSubtle px-3 py-1.5 text-white w-44 focus:border-cyan-400 focus:outline-none" />
+                <button id="btn-save-shared-project" type="button" class="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-300 font-semibold">
+                  💾 Lưu dự án
+                </button>
+              </div>
+            </div>
+
+            <!-- Thanh điều hướng 3 giai đoạn gọn gàng -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 text-xs">
+              <a href="#studio-phase-1" class="rounded-xl bg-midnight/85 hover:bg-violet-500/10 border border-borderSubtle hover:border-violet-400/40 px-3.5 py-2.5 flex items-center justify-between transition">
+                <span class="font-bold text-white">Giai đoạn 1: Nguồn & Nhân vật</span>
+                <span class="text-violet-300 font-semibold">Bước 1 →</span>
+              </a>
+              <a href="#studio-phase-2" class="rounded-xl bg-midnight/85 hover:bg-cyan-500/10 border border-borderSubtle hover:border-cyan-400/40 px-3.5 py-2.5 flex items-center justify-between transition">
+                <span class="font-bold text-white">Giai đoạn 2: Kịch bản, Ảnh & Âm thanh</span>
+                <span class="text-cyan-300 font-semibold">Bước 2 →</span>
+              </a>
+              <a href="#studio-phase-3" class="rounded-xl bg-midnight/85 hover:bg-emerald-500/10 border border-borderSubtle hover:border-emerald-400/40 px-3.5 py-2.5 flex items-center justify-between transition">
+                <span class="font-bold text-white">Giai đoạn 3: Duyệt lô & Xuất MP4</span>
+                <span class="text-emerald-300 font-semibold">Bước 3 ✓</span>
+              </a>
+            </div>
+          </div>
+
+          <!-- GIAI ĐOẠN 1: NGUỒN VIDEO THAM CHIẾU / Ý TƯỞNG + NHÂN VẬT ĐỒNG BỘ -->
+          <div id="studio-phase-1" class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            <!-- Trái: Nguồn video tham chiếu & Ý tưởng -->
+            <div class="lg:col-span-7 glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span class="text-[10px] font-bold uppercase tracking-widest text-violet-300">GIAI ĐOẠN 1 • ĐẦU VÀO NỘI DUNG</span>
+                  <h2 id="sec1-heading" class="text-sm sm:text-base font-bold text-white">1. Nguồn video tham chiếu (<span id="sec1-count">3</span>/8+)</h2>
+                  <p class="text-[11px] text-slate-400">Tải nhiều video từ máy, chọn từ thư viện tải về hoặc tìm nhanh để AI học & phát triển nội dung hàng loạt.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 text-xs">
+                  <button id="btn-pick-from-library" type="button" class="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 font-medium">
+                    📚 Chọn từ thư viện dự án
+                  </button>
+                  <button id="btn-upload-multi-videos" type="button" class="px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/35 text-cyan-200 font-semibold">
+                    ⬆ Tải nhiều video lên
+                  </button>
+                </div>
+              </div>
+
+              <!-- Khối dành riêng khi bật Studio Sáng Tạo -->
+              <div id="creative-mode-fields" class="hidden space-y-3 rounded-xl bg-midnight/85 border border-cyan-400/25 p-3.5 text-xs">
+                <div>
+                  <label class="block text-cyan-200 font-semibold mb-1">Nhập ý tưởng & định hướng sáng tạo</label>
+                  <textarea id="creative-idea-textarea" rows="3" placeholder="Mô tả nội dung, thông điệp, nhân vật hoặc diễn biến chính — AI sẽ biên soạn kịch bản phân cảnh, hồ sơ đồng bộ và prompt phân cảnh chi tiết..." class="w-full rounded-xl bg-panelSoft border border-borderSubtle p-2.5 text-white focus:border-cyan-400 focus:outline-none"></textarea>
+                </div>
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <span class="text-slate-400 mr-1">Gợi ý nhanh ý tưởng & cấu trúc mẫu:</span>
+                  <button type="button" class="tpl-chip px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200">Điện ảnh ngắn • 10 cảnh</button>
+                  <button type="button" class="tpl-chip px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200">Người que • Giải thích</button>
+                  <button type="button" class="tpl-chip px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200">Anime • Hành trình</button>
+                  <button type="button" class="tpl-chip px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200">Chuyên nghiệp • Kinh doanh</button>
+                </div>
+                <div>
+                  <label class="block text-slate-400 mb-1">Bối cảnh / Thế giới chủ đạo mong muốn (tùy chọn — để trống AI tự thiết lập đồng bộ)</label>
+                  <input id="creative-world-input" type="text" placeholder="VD: Thành phố tương lai mưa đêm ánh đèn neon xanh tím, không khí trầm lắng..." class="w-full rounded-xl bg-panelSoft border border-borderSubtle px-3 py-2 text-white focus:outline-none" />
+                </div>
+              </div>
+
+              <!-- Tìm nhanh video nguồn -->
+              <div class="flex flex-col sm:flex-row gap-2 text-xs">
+                <select id="studio-quick-source-plat" class="rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-slate-200">
+                  <option>Tất cả nguồn</option>
+                  <option>YouTube</option>
+                  <option>TikTok</option>
+                  <option>Bilibili</option>
+                </select>
+                <input id="studio-quick-source-query" type="text" placeholder="Tìm nhanh video trên YouTube, TikTok, Bilibili để đưa vào tham chiếu..." class="flex-1 rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white focus:border-violet-400 focus:outline-none" />
+                <button id="btn-studio-find-source" type="button" class="px-3.5 py-2 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-400/40 text-violet-200 font-semibold whitespace-nowrap">
+                  🔍 Tìm nguồn
+                </button>
+              </div>
+
+              <!-- Danh sách nguồn tham chiếu có ghi chú góc nhìn từng video -->
+              <div id="studio-ref-list" class="space-y-2 max-h-64 overflow-y-auto pr-1">
+                <!-- Render bằng JS -->
+              </div>
+            </div>
+
+            <!-- Phải: Nhân vật đồng bộ -->
+            <div class="lg:col-span-5 glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
+              <div class="flex items-center justify-between gap-2">
+                <div>
+                  <span class="text-[10px] font-bold uppercase tracking-widest text-cyan-300">GIAI ĐOẠN 1 • KHÓA NHÂN VẬT</span>
+                  <h2 class="text-sm sm:text-base font-bold text-white">2. Nhân vật đồng bộ (<span id="char-count-label">1</span>/3)</h2>
+                  <p class="text-[11px] text-slate-400">Dùng làm ảnh gốc giữ nguyên gương mặt, trang phục & phong cách xuyên suốt các phân cảnh.</p>
+                </div>
+                <button id="btn-upload-char-ref" type="button" class="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-200">
+                  ⬆ Tải ảnh mẫu
+                </button>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                <div>
+                  <label class="text-slate-400 block mb-1">Tên nhân vật</label>
+                  <input id="st-char-name" type="text" value="Bờm — Cậu bé quạt mo" placeholder="Tên nhân vật..." class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white focus:border-violet-400 focus:outline-none" />
+                </div>
+                <div>
+                  <label class="text-slate-400 block mb-1">Engine vẽ nhân vật</label>
+                  <select id="st-char-engine" class="w-full rounded-xl bg-midnight border border-borderSubtle px-2.5 py-2 text-cyan-200 focus:outline-none">
+                    <option>Muse2API (muse-image • Sẵn sàng)</option>
+                    <option>Gemini Image Gen</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="flex items-start gap-3 text-xs">
+                <img id="st-char-avatar" src="https://placehold.co/96x96/1e1b4b/c4b5fd?text=NV+AI" onerror="this.src='https://placehold.co/96x96/1e1b4b/c4b5fd?text=NV'" alt="Ảnh nhân vật đồng bộ" class="w-20 h-20 rounded-2xl object-cover border border-violet-400/40 shrink-0" />
+                <div class="flex-1 space-y-2">
+                  <textarea id="st-char-appearance" rows="2" placeholder="Mô tả ngoại hình, trang phục để AI vẽ mẫu đồng bộ..." class="w-full rounded-xl bg-midnight border border-borderSubtle p-2 text-white focus:border-violet-400 focus:outline-none">Nam 13 tuổi, tóc đen ngắn rẽ ngôi, áo bà ba nâu mộc mạc, mang quạt mo tre, biểu cảm tươi tắn.</textarea>
+                  <button id="btn-ai-render-character" type="button" class="w-full py-1.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:brightness-110 text-white font-semibold text-xs shadow">
+                    🎨 AI vẽ nhân vật đồng bộ
+                  </button>
+                </div>
+              </div>
+
+              <div class="text-xs">
+                <label class="text-slate-400 block mb-1">Ghi chú ngoại hình nhân vật cố định (tùy chọn trước khi lập kịch bản)</label>
+                <input id="st-char-fixed-note" type="text" value="VD: Nam 25 tuổi, tóc đen ngắn rẽ ngôi, áo khoác bomber xám..." class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-slate-200 focus:outline-none" />
+              </div>
+            </div>
+          </div>
+
+          <!-- GIAI ĐOẠN 2: THIẾT LẬP KỊCH BẢN, HÌNH ẢNH, B-ROLL, GIỌNG ĐỌC & NHẠC NỀN -->
+          <div id="studio-phase-2" class="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-borderSubtle pb-3">
+              <div>
+                <span class="text-[10px] font-bold uppercase tracking-widest text-cyan-300">GIAI ĐOẠN 2 • KỊCH BẢN & ĐA PHƯƠNG TIỆN</span>
+                <h2 class="text-base sm:text-lg font-bold text-white">3. Thiết lập Kịch bản, AI phân tích, Hình ảnh & Âm thanh</h2>
+                <p class="text-xs text-slate-400">Cấu hình chế độ kịch bản (Series / Nhiều video độc lập), thông số khung hình, thời lượng, lồng tiếng, B-roll & nhạc nền.</p>
+              </div>
+              <div class="flex items-center gap-1.5 text-xs">
+                <button type="button" data-p2tab="script" class="p2-tab-btn px-3 py-1.5 rounded-xl bg-violet-500/20 text-violet-200 border border-violet-400/40 font-bold">
+                  Kịch bản & Khung hình
+                </button>
+                <button type="button" data-p2tab="media" class="p2-tab-btn px-3 py-1.5 rounded-xl bg-midnight text-slate-300 border border-borderSubtle hover:bg-white/5 font-medium">
+                  Ảnh, B-roll, Voice & Nhạc nền
+                </button>
+                <button type="button" data-p2tab="all" class="p2-tab-btn px-3 py-1.5 rounded-xl bg-midnight text-slate-300 border border-borderSubtle hover:bg-white/5 font-medium">
+                  Xem cả 2 khối
+                </button>
+              </div>
+            </div>
+
+            <!-- Khối 2A: Kịch bản & Thông số khung hình -->
+            <div id="p2-block-script" class="space-y-4">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                <div id="sc-card-series" class="sc-mode-card rounded-2xl p-3.5 border bg-violet-500/15 border-violet-400/50 cursor-pointer">
+                  <div class="font-bold text-sm text-white">Chế độ 1: Kịch bản Series (Cốt truyện xuyên suốt)</div>
+                  <p class="text-slate-300 mt-1">
+                    Kể 1 câu chuyện liền mạch qua chuỗi phân cảnh nối tiếp nhau (mặc định 10 cảnh) • Đồng nhất nhân vật, trang phục & tiến trình bối cảnh.
+                  </p>
+                </div>
+
+                <div id="sc-card-independent" class="sc-mode-card rounded-2xl p-3.5 border bg-midnight/85 border-borderSubtle hover:border-cyan-400/40 cursor-pointer">
+                  <div class="font-bold text-sm text-white">Chế độ 2: Nhiều video độc lập cùng chủ đề</div>
+                  <p class="text-slate-400 mt-1">
+                    Sáng tạo nhiều câu chuyện riêng biệt (nhân vật & bối cảnh khác nhau) • Giữ chung tinh thần, chủ đề & phong cách tham chiếu.
+                  </p>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                <div>
+                  <label class="text-slate-400 block mb-1">Hệ thống AI phân tích</label>
+                  <select id="sc-ai-provider" class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white">
+                    <option>Google Gemini (Sẵn sàng)</option>
+                    <option>OpenAI (ChatGPT)</option>
+                    <option>Meta AI (Llama)</option>
+                    <option>Muse2API (muse-open)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="text-slate-400 block mb-1">Ngôn ngữ lời thoại</label>
+                  <select id="sc-language" class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white">
+                    <option selected>Tiếng Việt</option>
+                    <option>中文 (Tiếng Trung)</option>
+                    <option>English</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="text-slate-400 block mb-1">Phong cách video (Hình ảnh)</label>
+                  <select id="sc-visual-style" class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white">
+                    <option selected>Điện ảnh</option>
+                    <option>Anime • Hành trình</option>
+                    <option>Người que • Giải thích</option>
+                    <option>3D Hoạt hình</option>
+                  </select>
+                </div>
+
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <label class="text-slate-400">Kiểu dẫn chuyện</label>
+                    <span class="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 text-[10px] font-bold">Bảng TẤT</span>
+                  </div>
+                  <input id="sc-narration-style" type="text" value="AI tự do sáng tạo theo ý tưởng" class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-slate-200" />
+                </div>
+
+                <div>
+                  <label class="text-slate-400 block mb-1">Tỷ lệ khung hình</label>
+                  <select id="sc-aspect-ratio" class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white">
+                    <option selected>9:16 Dọc (Shorts / TikTok)</option>
+                    <option>16:9 Ngang (YouTube)</option>
+                    <option>1:1 Vuông</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="text-slate-400 block mb-1">Số phân cảnh Series</label>
+                  <select id="sc-scene-count" class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white">
+                    <option selected>10 phân cảnh (Mặc định Serie)</option>
+                    <option>6 phân cảnh (Nhanh)</option>
+                    <option>15 phân cảnh (Chi tiết)</option>
+                  </select>
+                </div>
+
+                <!-- Thời lượng mục tiêu + chip nhanh -->
+                <div class="sm:col-span-2">
+                  <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+                    <label class="text-slate-400">Thời lượng mục tiêu: <strong id="sc-duration-preview" class="text-cyan-300">60s (1p 0s)</strong></label>
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-slate-400">Nhập số giây linh động:</span>
+                      <input id="sc-seconds-input" type="number" min="10" max="600" value="60" class="w-20 rounded-lg bg-midnight border border-borderSubtle px-2 py-1 text-white text-center font-semibold" />
+                      <span class="text-slate-400">giây</span>
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap gap-1.5 pt-0.5" id="duration-chips-bar">
+                    <button type="button" data-sec="10" class="dur-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-300">10s</button>
+                    <button type="button" data-sec="20" class="dur-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-300">20s</button>
+                    <button type="button" data-sec="30" class="dur-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-300">30s</button>
+                    <button type="button" data-sec="40" class="dur-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-300">40s</button>
+                    <button type="button" data-sec="60" class="dur-chip px-2.5 py-1 rounded-lg bg-cyan-500/20 border border-cyan-400/50 text-cyan-200 font-bold">60s</button>
+                    <button type="button" data-sec="120" class="dur-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-300">2 phút</button>
+                    <button type="button" data-sec="180" class="dur-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-300">3 phút</button>
+                    <button type="button" data-sec="300" class="dur-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-300">5 phút</button>
+                    <button type="button" data-sec="600" class="dur-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-300">10 phút</button>
+                  </div>
+                </div>
+
+                <!-- Tùy chọn lồng tiếng kịch bản -->
+                <div class="sm:col-span-2">
+                  <label class="text-slate-400 block mb-1">Tùy chọn lồng tiếng kịch bản</label>
+                  <div class="grid grid-cols-2 gap-2">
+                    <button type="button" id="btn-vo-yes" class="py-2 rounded-xl bg-teal-500/25 border border-teal-400/50 text-teal-200 font-bold">
+                      Có lồng tiếng
+                    </button>
+                    <button type="button" id="btn-vo-no" class="py-2 rounded-xl bg-midnight border border-borderSubtle text-slate-300 hover:bg-white/5">
+                      Không lồng tiếng
+                    </button>
+                  </div>
+                  <p class="text-[11px] text-slate-400 mt-1">Chọn giọng AI Online hoặc VieNeu-TTS Offline ở khối Âm thanh.</p>
+                </div>
+
+                <div class="sm:col-span-2 flex flex-col justify-between gap-2">
+                  <div>
+                    <label class="text-slate-400 block mb-1">Chỉ đạo thêm cho AI</label>
+                    <input id="sc-extra-direction" type="text" placeholder="VD: Nhấn mạnh nhịp chuyển cảnh liên mạch, góc quay điện ảnh, lời thoại tự nhiên không sáo rỗng..." class="w-full rounded-xl bg-midnight border border-borderSubtle px-3 py-2 text-white" />
+                  </div>
+                  <label class="inline-flex items-center gap-2 cursor-pointer text-slate-200 pt-1">
+                    <input id="sc-gemini-pro" type="checkbox" class="w-4 h-4 rounded accent-violet-500" />
+                    <span>Dùng Gemini Pro (<code class="text-violet-300">gemini-4-argon • Trả phí</code>)</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Khối 2B: Công cụ tạo hình ảnh, B-roll, Lồng tiếng & Nhạc nền -->
+            <div id="p2-block-media" class="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs pt-2 border-t border-borderSubtle">
+              <div class="rounded-2xl bg-midnight/85 border border-borderSubtle p-3.5 space-y-3">
+                <div class="font-bold text-cyan-300 flex items-center gap-1.5">
+                  <span>🖼</span><span>Công cụ tạo hình ảnh video</span>
+                </div>
+                <div>
+                  <label class="text-slate-400 block mb-1">Chế độ dựng video</label>
+                  <select id="m4-build-mode" class="w-full rounded-xl bg-panelSoft border border-borderSubtle px-3 py-2 text-white">
+                    <option>Video nguồn / Tải lên + Kho Wikimedia (Miễn phí)</option>
+                    <option>Ảnh phân cảnh + Kho Wikimedia (Miễn phí)</option>
+                    <option>Chỉ dùng ảnh Ken Burns</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-slate-400 block mb-1">Kho video dự phòng B-roll</label>
+                  <select id="m4-broll-source" class="w-full rounded-xl bg-panelSoft border border-borderSubtle px-3 py-2 text-white">
+                    <option>Wikimedia Commons (Ưu tiên • Không cần key)</option>
+                    <option>Pexels Video</option>
+                    <option>Pixabay Video</option>
+                    <option>Tự động kết hợp (Wikimedia + Pexels)</option>
+                  </select>
+                </div>
+                <label class="inline-flex items-center gap-2 cursor-pointer text-slate-200 pt-1">
+                  <input id="m4-keep-orig-audio" type="checkbox" checked class="w-4 h-4 rounded accent-emerald-500" />
+                  <span>Giữ âm thanh gốc video nguồn nhỏ (12%)</span>
+                </label>
+              </div>
+
+              <div class="rounded-2xl bg-midnight/85 border border-borderSubtle p-3.5 space-y-3">
+                <div class="font-bold text-emerald-300 flex items-center gap-1.5">
+                  <span>🎙</span><span>Lồng tiếng & Giọng đọc</span>
+                </div>
+                <div>
+                  <label class="text-slate-400 block mb-1">Chế độ giọng đọc</label>
+                  <select id="m4-tts-mode" class="w-full rounded-xl bg-panelSoft border border-borderSubtle px-3 py-2 text-white">
+                    <option>Giọng đọc Online AI (Gemini Flash Lite TTS)</option>
+                    <option>VieNeu-TTS Offline (Tiếng Việt)</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-slate-400 block mb-1">Chọn chất giọng AI</label>
+                  <select id="m4-voice-preset" class="w-full rounded-xl bg-panelSoft border border-borderSubtle px-3 py-2 text-white">
+                    <option>Kore - Nữ rõ ràng, truyền cảm</option>
+                    <option>Puck - Nam kể chuyện tự nhiên</option>
+                    <option>Aoede - Nữ trầm ấm, giàu cảm xúc</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="rounded-2xl bg-midnight/85 border border-borderSubtle p-3.5 space-y-3">
+                <div class="font-bold text-violet-300 flex items-center gap-1.5">
+                  <span>🎵</span><span>Ghép nhạc nền</span>
+                </div>
+                <div>
+                  <label class="text-slate-400 block mb-1">Nhạc nền</label>
+                  <select id="m4-bgm-select" class="w-full rounded-xl bg-panelSoft border border-borderSubtle px-3 py-2 text-white">
+                    <option>Không chèn nhạc nền</option>
+                    <option>Nhạc nền Chill / Lo-Fi nhẹ nhàng</option>
+                    <option>Nhạc kịch tính / Dẫn dắt câu chuyện</option>
+                  </select>
+                </div>
+                <div class="rounded-xl bg-panelSoft/70 border border-borderSubtle p-2.5 text-[11px] text-slate-300">
+                  Tự động cân bằng âm lượng (Ducking) để giọng đọc luôn nổi bật trên nền nhạc và âm thanh gốc.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- GIAI ĐOẠN 3: DUYỆT KỊCH BẢN LÔ & XUẤT VIDEO PHÁI SINH (.MP4) -->
+          <div id="studio-phase-3" class="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-borderSubtle pb-3">
+              <div>
+                <span class="text-[10px] font-bold uppercase tracking-widest text-emerald-300">GIAI ĐOẠN 3 • KIỂM DUYỆT & XUẤT HÀNG LOẠT</span>
+                <h2 class="text-base sm:text-lg font-bold text-white">4. Kịch bản lô & Xuất Video Phái Sinh Hoàn Chỉnh (.MP4)</h2>
+                <p class="text-xs text-slate-400">Tạo kịch bản cho toàn bộ lô, mở từng kịch bản để sửa nhanh phân cảnh trước khi dựng và xuất hàng loạt bằng FFmpeg.</p>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button id="btn-ai-plan-batch-scripts" type="button" class="px-4 py-2 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-400/40 text-violet-200 font-bold text-xs transition flex items-center gap-1.5">
+                  <span>🧠</span>
+                  <span>AI Lên Kịch Bản Cho Cả Lô</span>
+                </button>
+                <button id="btn-render-derivative-mp4" type="button" class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-emerald-500 hover:brightness-110 text-white font-extrabold text-xs shadow-lg shadow-violet-600/30 transition flex items-center gap-2">
+                  <span>▶</span>
+                  <span id="btn-render-mp4-label">Dựng & Xuất Toàn Bộ Lô (.MP4)</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between text-xs">
+              <span class="font-bold text-white">Danh sách kịch bản theo lô (<span id="generated-script-count">0</span>)</span>
+              <span id="studio-render-status-text" class="text-slate-400">Sẵn sàng dựng video hàng loạt</span>
+            </div>
+
+            <div id="generated-scripts-container" class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <div class="md:col-span-3 rounded-xl bg-midnight/75 border border-borderSubtle p-4 text-center text-slate-400">
+                Bấm <strong class="text-violet-300">AI Lên Kịch Bản Cho Cả Lô</strong> để xem/sửa từng kịch bản phân cảnh, hoặc bấm <strong class="text-emerald-300">Dựng & Xuất Toàn Bộ Lô (.MP4)</strong> để chạy ngay.
+              </div>
+            </div>
+
+            <div class="rounded-2xl bg-midnight/90 border border-borderSubtle p-3.5 space-y-2.5">
+              <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span id="studio-export-progress-label" class="text-slate-300">Sẵn sàng xử lý luồng dựng video & ghép âm thanh bằng FFmpeg.</span>
+                <span id="studio-export-percent" class="font-bold text-emerald-400">0%</span>
+              </div>
+              <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+                <div id="studio-export-bar" class="h-full w-0 bg-gradient-to-r from-violet-500 via-cyan-400 to-emerald-400 transition-all duration-300"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- =============================================================== -->
+        <!-- VIEW 3: XU HƯỚNG (GỘP TÌM KIẾM ĐỘC LẬP + XU HƯỚNG TOÀN CẦU)    -->
+        <!-- =============================================================== -->
+        <section id="view-trending" class="app-view hidden space-y-4">
+          <div class="glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <span id="discover-mode-eyebrow" class="text-[11px] font-bold uppercase tracking-widest text-amber-300">
+                  🌐 BẢNG XẾP HẠNG XU HƯỚNG TOÀN CẦU & TÌM KIẾM ĐA NỀN TẢNG
+                </span>
+                <h1 id="discover-main-title" class="text-lg sm:text-xl font-extrabold text-white">
+                  Video & Đề tài đang thịnh hành
+                </h1>
+                <p id="discover-main-sub" class="text-xs text-slate-400">
+                  Tìm kiếm theo từ khóa/chủ đề hoặc theo dõi bảng xếp hạng xu hướng — chuyển sang <strong>Tìm video độc lập</strong> khi muốn bỏ lọc xu hướng.
+                </p>
+              </div>
+
+              <!-- Công tắc bật/tắt chế độ Xu hướng vs Tìm video độc lập -->
+              <div class="flex flex-wrap items-center gap-2 text-xs">
+                <div class="flex items-center gap-2 rounded-xl bg-midnight border border-borderSubtle px-3 py-1.5">
+                  <label class="ios-switch">
+                    <input id="toggle-trending-mode" type="checkbox" checked />
+                    <span class="ios-slider"></span>
+                  </label>
+                  <span id="trending-mode-label" class="font-bold text-amber-300">Chế độ Xu hướng (Đang bật)</span>
+                </div>
+
+                <select class="rounded-xl bg-midnight border border-borderSubtle px-3 py-1.5 text-slate-200">
+                  <option>Khu vực: Việt Nam</option>
+                  <option>Khu vực: Trung Quốc</option>
+                  <option>Khu vực: Hoa Kỳ</option>
+                </select>
+                <button id="btn-trend-translate" type="button" class="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 font-medium">
+                  🌐 Dịch tiêu đề
+                </button>
+                <button id="btn-trend-refresh" type="button" class="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/35 text-emerald-300 font-semibold">
+                  ↻ Làm mới
+                </button>
+              </div>
+            </div>
+
+            <!-- Thanh tìm kiếm tích hợp ngay trong Xu hướng -->
+            <div class="flex flex-col sm:flex-row gap-2 text-xs">
+              <input id="discover-search-input" type="text" placeholder="Nhập từ khóa tìm video độc lập hoặc lọc trong xu hướng (tiếng Việt, Anh, Trung)..." class="flex-1 rounded-xl bg-midnight border border-borderSubtle focus:border-cyan-400 focus:outline-none px-3.5 py-2 text-white" />
+              <button id="btn-discover-search-run" type="button" class="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-violet-500 hover:brightness-110 text-slate-950 font-bold">
+                🔍 Tìm kiếm
+              </button>
+            </div>
+
+            <!-- Gợi ý nhanh khi tìm video độc lập / chủ đề -->
+            <div class="flex flex-wrap items-center gap-1.5 text-xs">
+              <span class="text-slate-400 mr-1">Gợi ý nhanh:</span>
+              <button type="button" class="discover-quick-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-200">Phim ngắn triệu view</button>
+              <button type="button" class="discover-quick-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-200">Ẩm thực đường phố</button>
+              <button type="button" class="discover-quick-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-200">Thủ công sáng tạo DIY</button>
+              <button type="button" class="discover-quick-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-200">Review công nghệ AI</button>
+              <button type="button" class="discover-quick-chip px-2.5 py-1 rounded-lg bg-midnight border border-borderSubtle hover:border-cyan-400/50 text-slate-200">funny</button>
+            </div>
+
+            <!-- Sub-tabs: Video thịnh hành / Đề tài hot / Đã lưu -->
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+              <button type="button" data-ttab="videos" class="trend-subtab px-3.5 py-1.5 rounded-xl font-bold bg-violet-500/20 text-violet-200 border border-violet-400/40">
+                Video thịnh hành (153)
+              </button>
+              <button type="button" data-ttab="topics" class="trend-subtab px-3.5 py-1.5 rounded-xl font-medium bg-midnight text-slate-300 border border-borderSubtle hover:bg-white/5">
+                Đề tài hot (100)
+              </button>
+              <button type="button" data-ttab="saved" class="trend-subtab px-3.5 py-1.5 rounded-xl font-medium bg-midnight text-slate-300 border border-borderSubtle hover:bg-white/5">
+                Đã lưu (<span id="trend-saved-count">0</span>)
+              </button>
+            </div>
+
+            <!-- Chip nền tảng kèm số lượng -->
+            <div id="trend-platform-chips" class="flex flex-wrap gap-1.5 text-xs">
+              <!-- JS -->
+            </div>
+
+            <!-- Chip chủ đề (ẩn hoặc làm mờ khi tắt chế độ Xu hướng để tìm video độc lập) -->
+            <div id="trend-category-chips" class="flex flex-wrap gap-1.5 text-xs">
+              <!-- JS -->
+            </div>
+
+            <!-- Bộ lọc + AI học Top 4 video & Tạo phái sinh -->
+            <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-borderSubtle text-xs">
+              <div class="flex flex-wrap gap-2">
+                <select class="rounded-xl bg-midnight border border-borderSubtle px-3 py-1.5 text-slate-200">
+                  <option>Mọi độ dài</option>
+                  <option>Ngắn (&lt; 60s)</option>
+                  <option>Dài (&gt; 1 phút)</option>
+                </select>
+                <select class="rounded-xl bg-midnight border border-borderSubtle px-3 py-1.5 text-slate-200">
+                  <option>Mọi khung hình</option>
+                  <option>Dọc</option>
+                  <option>Ngang</option>
+                </select>
+                <select class="rounded-xl bg-midnight border border-borderSubtle px-3 py-1.5 text-slate-200">
+                  <option>Đáng tải nhất</option>
+                  <option>Điểm cao nhất</option>
+                  <option>Tăng trưởng/giờ</option>
+                </select>
+              </div>
+
+              <div class="flex items-center gap-3">
+                <button id="btn-ai-learn-top4-trend" type="button" class="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 hover:brightness-110 text-white font-bold shadow">
+                  ✨ AI học Top 4 video & Tạo phái sinh
+                </button>
+                <span id="discover-status-meta" class="text-slate-400 hidden sm:inline">153 video • cập nhật lúc 18:09</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Lưới thẻ video xu hướng / tìm kiếm -->
+          <div id="trending-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3.5">
+            <!-- JS -->
+          </div>
+        </section>
+
+        <!-- =============================================================== -->
+        <!-- VIEW 4: CẤU HÌNH • ĐÃ LƯU (GIỮ ĐẦY ĐỦ 5 KHỐI CHI TIẾT)           -->
+        <!-- =============================================================== -->
+        <section id="view-settings" class="app-view hidden space-y-5">
+          <div class="glass-card rounded-2xl p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h1 class="text-lg sm:text-xl font-extrabold text-white">Thiết lập & Cấu hình</h1>
+              <p class="text-xs text-slate-400">Quản lý cookie riêng từng nền tảng, chọn công cụ AI, Muse2API Pool, B-roll và cài đặt mặc định cho mọi video phái sinh mới.</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5 text-xs">
+              <span class="px-2.5 py-1 rounded-xl bg-emerald-500/15 text-emerald-300 border border-emerald-400/30 font-semibold">
+                Cookie đã lưu: 4/11 nền tảng
+              </span>
+              <button type="button" data-jump-ctab="cookies" class="cfg-quick-tab-btn px-2.5 py-1 rounded-xl bg-midnight border border-borderSubtle text-slate-200 hover:border-violet-400/50">1. Cookies</button>
+              <button type="button" data-jump-ctab="ai" class="cfg-quick-tab-btn px-2.5 py-1 rounded-xl bg-midnight border border-borderSubtle text-slate-200 hover:border-violet-400/50">2. Kết nối AI</button>
+              <button type="button" data-jump-ctab="muse" class="cfg-quick-tab-btn px-2.5 py-1 rounded-xl bg-midnight border border-borderSubtle text-slate-200 hover:border-violet-400/50">3. Muse2API</button>
+              <a href="#cfg-broll-box" class="px-2.5 py-1 rounded-xl bg-midnight border border-borderSubtle text-slate-200 hover:border-violet-400/50">B-roll</a>
+              <a href="#cfg-modules-box" class="px-2.5 py-1 rounded-xl bg-midnight border border-borderSubtle text-slate-200 hover:border-violet-400/50">Mô-đun</a>
+            </div>
+          </div>
+
+          <!-- BẢNG TỔNG HỢP 3 MỤC QUẢN LÝ BẰNG 3 TAB (COOKIES | KẾT NỐI AI | DỊCH VỤ MUSE2API) -->
+          <div id="cfg-unified-table-card" class="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-borderSubtle pb-3.5">
+              <div>
+                <span class="text-[10px] font-bold uppercase tracking-widest text-cyan-300">BẢNG QUẢN LÝ HỢP NHẤT • 3 TAB CHỨC NĂNG</span>
+                <h2 class="text-sm sm:text-base font-bold text-white mt-0.5">
+                  Trung tâm Xác thực, AI Kịch bản & Muse2API Pool
+                </h2>
+              </div>
+
+              <!-- 3 Tab điều khiển chính -->
+              <div role="tablist" aria-label="3 tab cấu hình hợp nhất" class="flex flex-wrap items-center gap-1.5 rounded-2xl bg-midnight/95 border border-borderSubtle p-1 text-xs">
+                <button type="button" role="tab" aria-selected="true" data-ctab="cookies" class="cfg-main-tab px-3.5 py-2 rounded-xl font-bold bg-violet-500/25 text-violet-200 border border-violet-400/45 transition flex items-center gap-1.5">
+                  <span>🍪</span>
+                  <span>1. Cookies nền tảng</span>
+                </button>
+                <button type="button" role="tab" aria-selected="false" data-ctab="ai" class="cfg-main-tab px-3.5 py-2 rounded-xl font-medium text-slate-300 hover:bg-white/5 border border-transparent transition flex items-center gap-1.5">
+                  <span>🤖</span>
+                  <span>2. Kết nối AI kịch bản</span>
+                </button>
+                <button type="button" role="tab" aria-selected="false" data-ctab="muse" class="cfg-main-tab px-3.5 py-2 rounded-xl font-medium text-slate-300 hover:bg-white/5 border border-transparent transition flex items-center gap-1.5">
+                  <span>⚡</span>
+                  <span>3. Dịch vụ Muse2API & Pool</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Bảng 1 khung thống nhất chứa nội dung của 3 tab -->
+            <div class="rounded-2xl bg-midnight/85 border border-borderSubtle overflow-hidden">
+              <!-- TAB 1: COOKIE ĐĂNG NHẬP RIÊNG TỪNG NỀN TẢNG -->
+              <div id="cfg-tab-panel-cookies" class="cfg-tab-panel p-4 space-y-3.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
+                    <span>🍪</span><span>Cookie đăng nhập riêng từng nền tảng</span>
+                  </div>
+                  <span class="text-[11px] text-slate-400">Lưu cục bộ trên trình duyệt & lọc đúng tên miền</span>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-4 text-xs">
+                  <div id="cfg-cookie-sidebar" class="md:col-span-4 rounded-xl bg-midnight/95 border border-borderSubtle divide-y divide-borderSubtle overflow-hidden">
+                    <!-- JS -->
+                  </div>
+
+                  <div class="md:col-span-8 rounded-xl bg-midnight/95 border border-borderSubtle p-4 space-y-3">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div id="cfg-cookie-selected-title" class="text-sm font-bold text-white">YouTube (.youtube.com)</div>
+                        <div class="text-[11px] text-slate-400">Dùng xác thực khi tải video riêng tư & trình bày làm video phái sinh.</div>
+                      </div>
+                      <button id="btn-cfg-pick-cookie-file" type="button" class="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 font-medium">
+                        📄 Chọn tệp .txt / .json
+                      </button>
+                    </div>
+
+                    <textarea id="cfg-cookie-textarea" rows="6" class="w-full rounded-xl bg-panelSoft border border-borderSubtle p-3 font-mono text-[11px] text-emerald-200 focus:border-emerald-400 focus:outline-none"></textarea>
+
+                    <p class="text-[11px] text-slate-400">
+                      Hỗ trợ Netscape cookies.txt, JSON từ Cookie-Editor hoặc chuỗi Cookie header (k=v; ...).
+                    </p>
+
+                    <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <button id="btn-cfg-clear-cookie" type="button" class="px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-medium">
+                        🗑 Xóa cookie trang này
+                      </button>
+                      <button id="btn-cfg-save-cookie" type="button" class="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold">
+                        Lưu Cookie <span id="cfg-cookie-btn-platform">YouTube</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- TAB 2: KẾT NỐI AI VIẾT KỊCH BẢN & HỌC NỘI DUNG VIDEO -->
+              <div id="cfg-tab-panel-ai" class="cfg-tab-panel hidden p-4 space-y-3.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 class="text-sm font-bold text-white">🤖 Kết nối AI viết kịch bản & học nội dung video</h3>
+                    <p class="text-[11px] text-slate-400">Chọn thẻ cung cấp AI mặc định cho Studio Video Phái Sinh (đang dùng mặc định Gemini Flash Lite TTS).</p>
+                  </div>
+                  <button id="btn-test-selected-ai" type="button" class="px-3.5 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/35 text-cyan-200 font-semibold text-xs">
+                    🔍 Kiểm tra kết nối AI đang chọn
+                  </button>
+                </div>
+
+                <!-- Bảng danh sách nhà cung cấp AI dạng bảng gọn dễ so sánh -->
+                <div class="overflow-x-auto rounded-xl border border-borderSubtle">
+                  <table class="w-full text-left text-xs border-collapse">
+                    <thead class="bg-panelSoft/90 text-slate-300 border-b border-borderSubtle">
+                      <tr>
+                        <th class="py-2.5 px-3">Nhà cung cấp AI</th>
+                        <th class="py-2.5 px-3">Chức năng chính</th>
+                        <th class="py-2.5 px-3">Model / Endpoint</th>
+                        <th class="py-2.5 px-3">Biến khóa / Cấu hình</th>
+                        <th class="py-2.5 px-3 text-right">Trạng thái</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-borderSubtle text-slate-200">
+                      <tr class="hover:bg-white/[0.03]">
+                        <td class="py-2.5 px-3 font-bold text-white">Google Gemini</td>
+                        <td class="py-2.5 px-3 text-slate-400">Học đa phương tiện • Lồng tiếng AI • Dựng với</td>
+                        <td class="py-2.5 px-3 font-mono text-cyan-300">gemini-2.5-flash</td>
+                        <td class="py-2.5 px-3 font-mono text-slate-400">SECRETS_API_KEY</td>
+                        <td class="py-2.5 px-3 text-right"><span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold">Đang dùng</span></td>
+                      </tr>
+                      <tr class="hover:bg-white/[0.03]">
+                        <td class="py-2.5 px-3 font-bold text-white">OpenAI (ChatGPT)</td>
+                        <td class="py-2.5 px-3 text-slate-400">Phân tích kịch bản & viết lời bình sắc bén</td>
+                        <td class="py-2.5 px-3 font-mono">gpt-4o-mini</td>
+                        <td class="py-2.5 px-3 font-mono text-slate-400">OPENAI_API_KEY</td>
+                        <td class="py-2.5 px-3 text-right"><span class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px] font-semibold">Chưa sử dụng</span></td>
+                      </tr>
+                      <tr class="hover:bg-white/[0.03]">
+                        <td class="py-2.5 px-3 font-bold text-white">Meta AI (Llama)</td>
+                        <td class="py-2.5 px-3 text-slate-400">Tóm tắt nhanh & tổng hợp nội dung đa nguồn</td>
+                        <td class="py-2.5 px-3 font-mono">llama-4-scout-17b</td>
+                        <td class="py-2.5 px-3 font-mono text-slate-400">META_API_KEY</td>
+                        <td class="py-2.5 px-3 text-right"><span class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px] font-semibold">Chưa sử dụng</span></td>
+                      </tr>
+                      <tr class="hover:bg-white/[0.03]">
+                        <td class="py-2.5 px-3 font-bold text-white">Muse2API (Tự host / Tunnel)</td>
+                        <td class="py-2.5 px-3 text-slate-400">Gọi trực tiếp muse-open • muse-image & muse-video qua tài khoản muse.ai</td>
+                        <td class="py-2.5 px-3 font-mono text-violet-300">muse-open / image</td>
+                        <td class="py-2.5 px-3 font-mono text-slate-400">MUSE2API_BASE_URL</td>
+                        <td class="py-2.5 px-3 text-right"><span class="px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 text-[10px] font-semibold">Đang dùng</span></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">
+                  <div class="ai-card rounded-2xl p-3.5 bg-midnight/95 border border-emerald-400/50 space-y-2">
+                    <div class="flex items-center justify-between font-bold text-white">
+                      <span>Google Gemini</span>
+                      <span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px]">Đang dùng</span>
+                    </div>
+                    <p class="text-slate-400">Học đa phương tiện • Lồng tiếng AI • Dựng với</p>
+                    <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                      <span class="font-mono text-cyan-300">gemini-2.5-flash</span>
+                      <span>SECRETS_API_KEY</span>
+                    </div>
+                  </div>
+
+                  <div class="ai-card rounded-2xl p-3.5 bg-midnight/95 border border-borderSubtle space-y-2">
+                    <div class="flex items-center justify-between font-bold text-white">
+                      <span>OpenAI (ChatGPT)</span>
+                      <span class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px]">Chưa sử dụng</span>
+                    </div>
+                    <p class="text-slate-400">Phân tích kịch bản & viết lời bình sắc bén</p>
+                    <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                      <span class="font-mono">gpt-4o-mini</span>
+                      <span>OPENAI_API_KEY</span>
+                    </div>
+                  </div>
+
+                  <div class="ai-card rounded-2xl p-3.5 bg-midnight/95 border border-borderSubtle space-y-2">
+                    <div class="flex items-center justify-between font-bold text-white">
+                      <span>Meta AI (Llama)</span>
+                      <span class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px]">Chưa sử dụng</span>
+                    </div>
+                    <p class="text-slate-400">Tóm tắt nhanh & tổng hợp nội dung đa nguồn</p>
+                    <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                      <span class="font-mono">llama-4-scout-17b</span>
+                      <span>META_API_KEY</span>
+                    </div>
+                  </div>
+
+                  <div class="ai-card rounded-2xl p-3.5 bg-midnight/95 border border-violet-400/50 space-y-2">
+                    <div class="flex items-center justify-between font-bold text-white">
+                      <span>Muse2API (Tự host / Tunnel)</span>
+                      <span class="px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 text-[10px]">Đang dùng</span>
+                    </div>
+                    <p class="text-slate-400">Gọi trực tiếp muse-open • muse-image & muse-video qua tài khoản muse.ai</p>
+                    <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                      <span class="font-mono text-violet-300">muse-open / image</span>
+                      <span>MUSE2API_BASE_URL</span>
+                    </div>
+                  </div>
+                </div>
+
+                <p class="text-[11px] text-slate-400">
+                  Bảo mật khóa API: Các khóa (<code class="text-slate-300">SECRETS_API_KEY</code>, <code class="text-slate-300">OPENAI_API_KEY</code>, <code class="text-slate-300">META_API_KEY</code>, <code class="text-slate-300">MUSE2API_KEY</code>) được đọc an toàn phía máy chủ từ Settings &gt; Secrets hoặc tệp <code class="text-slate-300">.env</code> / <code class="text-slate-300">muse2api/.env</code>.
+                </p>
+              </div>
+
+              <!-- TAB 3: DỊCH VỤ MUSE2API & QUẢN LÝ POOL TÀI KHOẢN MUSE.AI -->
+              <div id="cfg-tab-panel-muse" class="cfg-tab-panel hidden p-4 space-y-3.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 class="text-sm font-bold text-white">⚡ Dịch vụ Muse2API & Quản lý Pool tài khoản muse.ai</h3>
+                    <p class="text-[11px] text-slate-400">Điều khiển khoá local / tunnel, API OpenAI tương thích (muse-open, muse-image, muse-video).</p>
+                  </div>
+                  <div class="flex items-center gap-2 text-xs">
+                    <button id="btn-stop-muse" type="button" class="px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-semibold">
+                      ⏹ Dừng Muse2API
+                    </button>
+                    <button id="btn-refresh-muse" type="button" class="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 font-medium">
+                      ↻ Làm mới trạng thái
+                    </button>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                  <div class="rounded-xl bg-midnight/95 border border-borderSubtle p-3">
+                    <div class="text-slate-400">Trạng thái dịch vụ</div>
+                    <div id="muse-status-badge" class="text-emerald-400 font-bold mt-1">● Sẵn sàng hoạt động</div>
+                  </div>
+                  <div class="rounded-xl bg-midnight/95 border border-borderSubtle p-3">
+                    <div class="text-slate-400">Địa chỉ máy chủ đích</div>
+                    <div class="font-mono text-white font-semibold mt-1">http://127.0.0.1:18511</div>
+                  </div>
+                  <div class="rounded-xl bg-midnight/95 border border-borderSubtle p-3">
+                    <div class="text-slate-400">Tài khoản muse.ai</div>
+                    <div class="text-cyan-300 font-semibold mt-1">3/3 kênh • 36 tệp media</div>
+                  </div>
+                  <div class="rounded-xl bg-midnight/95 border border-borderSubtle p-3">
+                    <div class="text-slate-400">MUSE2API_KEY (Secrets / .env)</div>
+                    <div class="font-mono text-violet-300 font-semibold mt-1">m2a_sk_...a3f5 (muse2api/.env)</div>
+                  </div>
+                </div>
+
+                <!-- Nạp Cookie phiên đăng nhập manual -->
+                <div class="rounded-xl bg-midnight/95 border border-borderSubtle p-3.5 space-y-2.5 text-xs">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span class="font-bold text-white">🔑 Nạp Cookie phiên đăng nhập manual (hỗ trợ Header, Cookie-Editor JSON, Netscape .txt)</span>
+                    <button id="btn-renew-all-cookies" type="button" class="px-3 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-emerald-300 font-semibold">
+                      ↻ Gia hạn tất cả
+                    </button>
+                  </div>
+
+                  <div class="flex flex-col sm:flex-row gap-2">
+                    <select class="rounded-xl bg-panelSoft border border-borderSubtle px-3 py-2 text-slate-200">
+                      <option>Vô hiệu hóa AI</option>
+                      <option>Tự động xoay vòng AI</option>
+                    </select>
+                    <input id="pool-new-cookie-input" type="text" placeholder="Dán cookie muse.ai (match_csr=..., match_ge=... ) hoặc JSON Cookie-Editor..." class="flex-1 rounded-xl bg-panelSoft border border-borderSubtle px-3 py-2 text-white" />
+                    <button id="btn-add-pool-account" type="button" class="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold whitespace-nowrap">
+                      + Thêm tài khoản
+                    </button>
+                  </div>
+
+                  <div id="muse-pool-accounts" class="divide-y divide-borderSubtle pt-1">
+                    <!-- JS -->
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 5.4 Kho Video nền B-roll miễn phí + 5.5 Thiết lập mặc định & Mô-đun máy chủ -->
+          <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            <div id="cfg-broll-box" class="lg:col-span-6 glass-card rounded-2xl p-4 sm:p-5 space-y-3 text-xs">
+              <h2 class="text-sm sm:text-base font-bold text-white">🎞 Kho Video nền B-roll miễn phí khi nguồn gốc bị hạn chế</h2>
+              <p class="text-[11px] text-slate-400">Khi video nguồn (ví dụ YouTube) bị chặn hoặc chưa trích xuất được, Studio sẽ tự lấy clip chuyển động phù hợp cho bạn chọn thay vì chỉ dùng ảnh tĩnh.</p>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div class="rounded-xl bg-midnight/90 border border-emerald-400/40 p-3 space-y-1">
+                  <div class="flex justify-between font-bold text-white"><span>Wikimedia Commons</span><span class="text-emerald-400 text-[10px]">Ưu tiên • Không cần key</span></div>
+                  <p class="text-slate-400">Kho video phạm vi công cộng CC0 / CC BY. Miễn phí 100%, không cần API key.</p>
+                </div>
+                <div class="rounded-xl bg-midnight/90 border border-borderSubtle p-3 space-y-1">
+                  <div class="flex justify-between font-bold text-white"><span>Tự động kết hợp</span><span class="text-cyan-300 text-[10px]">Khuyên dùng</span></div>
+                  <p class="text-slate-400">Ưu tiên video nguồn gốc -&gt; Wikimedia Commons -&gt; Pexels -&gt; Pixabay.</p>
+                </div>
+                <div class="rounded-xl bg-midnight/90 border border-borderSubtle p-3 space-y-1">
+                  <div class="flex justify-between font-bold text-white"><span>Pexels Video</span><span class="text-slate-400 text-[10px]">Chưa đặt key</span></div>
+                  <p class="text-slate-400">Kho video nền HD miễn phí dùng thương mại khi khai báo PEXELS_API_KEY.</p>
+                </div>
+                <div class="rounded-xl bg-midnight/90 border border-borderSubtle p-3 space-y-1">
+                  <div class="flex justify-between font-bold text-white"><span>Pixabay Video</span><span class="text-slate-400 text-[10px]">Chưa đặt key</span></div>
+                  <p class="text-slate-400">Kho clip đa chủ đề miễn phí khi khai báo PIXABAY_API_KEY.</p>
+                </div>
+              </div>
+
+              <div class="rounded-xl bg-midnight/90 border border-borderSubtle p-3 space-y-2.5 pt-3">
+                <div class="font-bold text-white">Thiết lập mặc định Studio Video Phái Sinh</div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label class="text-slate-400 block mb-1">Phong cách mặc định</label>
+                    <select class="w-full rounded-xl bg-panelSoft border border-borderSubtle px-2.5 py-1.5 text-white">
+                      <option>Tóm tắt & Điểm tin nhanh</option>
+                      <option>Kể chuyện kể series</option>
+                      <option>Phân tích chuyên sâu</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-slate-400 block mb-1">Tỷ lệ khung hình</label>
+                    <select class="w-full rounded-xl bg-panelSoft border border-borderSubtle px-2.5 py-1.5 text-white">
+                      <option>Tự động theo video nguồn</option>
+                      <option>9:16 Dọc</option>
+                      <option>16:9 Ngang</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-slate-400 block mb-1">Chế độ dựng hình ảnh</label>
+                    <select class="w-full rounded-xl bg-panelSoft border border-borderSubtle px-2.5 py-1.5 text-white">
+                      <option>Trình cắt ghép video nguồn + voice</option>
+                      <option>Ảnh phân cảnh AI + voice</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-slate-400 block mb-1">Giọng đọc AI tiếng Việt</label>
+                    <select class="w-full rounded-xl bg-panelSoft border border-borderSubtle px-2.5 py-1.5 text-white">
+                      <option>Kore - Nữ rõ ràng, truyền cảm</option>
+                      <option>VieNeu-TTS Offline</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Mô-đun xử lý video chạy trên máy chủ -->
+            <div id="cfg-modules-box" class="lg:col-span-6 glass-card rounded-2xl p-4 sm:p-5 space-y-3 text-xs">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h2 class="text-sm sm:text-base font-bold text-white">🧩 Mô-đun xử lý video chạy trên máy chủ</h2>
+                  <p class="text-[11px] text-slate-400">Chạy ngoại tuyến ngay trên máy — không tốn phí API, không giới hạn lượt dựng video.</p>
+                </div>
+                <button id="btn-check-all-modules" type="button" class="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 font-semibold">
+                  ↻ Kiểm tra lại
+                </button>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="rounded-xl bg-midnight/90 border border-emerald-400/35 p-3.5 space-y-1.5">
+                  <div class="flex items-center justify-between font-bold text-white">
+                    <span>FFmpeg + 1-Click</span>
+                    <span class="text-emerald-400 text-[11px]">Sẵn sàng</span>
+                  </div>
+                  <p class="text-slate-400">Ghép luồng video/âm thanh, cắt khung hình, nén xuất file và nhúng phụ đề tiếng Việt ASS.</p>
+                  <div class="text-[11px] font-mono text-slate-400">ffmpeg version 8.0.1-full_build</div>
+                </div>
+
+                <div class="rounded-xl bg-midnight/90 border border-emerald-400/35 p-3.5 space-y-1.5">
+                  <div class="flex items-center justify-between font-bold text-white">
+                    <span>yt-dlp + Đổi mã luồng</span>
+                    <span class="text-emerald-400 text-[11px]">Sẵn sàng</span>
+                  </div>
+                  <p class="text-slate-400">Trích xuất video đa nền tảng (YouTube, TikTok, Douyin, Bilibili, Weibo...).</p>
+                  <div class="text-[11px] font-mono text-slate-400">Phiên bản: 2025.10.22</div>
+                </div>
+
+                <div class="rounded-xl bg-midnight/90 border border-emerald-400/35 p-3.5 space-y-1.5">
+                  <div class="flex items-center justify-between font-bold text-white">
+                    <span>Node.js Runtime (NLR)</span>
+                    <span class="text-emerald-400 text-[11px]">Sẵn sàng</span>
+                  </div>
+                  <p class="text-slate-400">Giải thể thách thức JavaScript của YouTube khi tải và trích đoạn video.</p>
+                  <div class="text-[11px] font-mono text-slate-400">v24.11.1</div>
+                </div>
+
+                <div class="rounded-xl bg-midnight/90 border border-emerald-400/35 p-3.5 space-y-1.5">
+                  <div class="flex items-center justify-between font-bold text-white">
+                    <span>VieNeu-TTS Offline</span>
+                    <span class="text-emerald-400 text-[11px]">Sẵn sàng</span>
+                  </div>
+                  <p class="text-slate-400">Đọc tiếng Việt tự nhiên ngoại tuyến (ONNX CPU), thay thế bộ đọc hệ thống.</p>
+                  <div class="text-[11px] font-mono text-slate-400">VieNeu-TTS (Tiếng Việt Offline • 04/05)</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- =============================================================== -->
+        <!-- VIEW 5: CẬP NHẬT (UPDATES & CHANGELOG)                          -->
+        <!-- =============================================================== -->
+        <section id="view-update" class="app-view hidden space-y-4">
+          <div class="glass-card rounded-2xl p-5 max-w-4xl space-y-4 text-xs sm:text-sm">
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-borderSubtle pb-4">
+              <div>
+                <h1 class="text-lg sm:text-xl font-extrabold text-white">Cập nhật GaConPro V1.0</h1>
+                <p class="text-xs text-slate-400">Phiên bản hiện tại: <strong class="text-emerald-300">V1.0.4</strong> • Sẵn sàng tải hàng loạt & dựng video phái sinh hàng loạt</p>
+              </div>
+              <button id="btn-run-update-check" type="button" class="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 hover:brightness-110 text-white font-bold text-xs shadow">
+                ↻ Kiểm tra bản cập nhật mới
+              </button>
+            </div>
+
+            <div class="space-y-2.5 text-xs text-slate-300">
+              <div class="rounded-xl bg-midnight/90 border border-borderSubtle p-3.5">
+                <div class="font-bold text-cyan-300">• Luồng Tải hàng loạt & Xử lý FFmpeg</div>
+                <p class="text-slate-400 mt-1">Tách tập Bilibili P1/P2 tự động, xóa logo gốc, gắn logo thương hiệu, biến đổi khung hình và xuất ZIP theo thư mục cấu hình.</p>
+              </div>
+              <div class="rounded-xl bg-midnight/90 border border-borderSubtle p-3.5">
+                <div class="font-bold text-violet-300">• Studio Phái Sinh & Sáng Tạo Hàng Loạt</div>
+                <p class="text-slate-400 mt-1">Hỗ trợ chế độ 1-ra-1 và N-ra-1, khóa nhân vật đồng bộ, lên kịch bản hàng loạt và dựng xuất MP4 với giọng đọc AI / VieNeu-TTS Offline.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </main>
+
+      <!-- Footer -->
+      <footer class="border-t border-borderSubtle bg-midnight/85 px-4 py-2.5 text-[11px] text-slate-400">
+        <div class="max-w-[1680px] mx-auto flex flex-wrap items-center justify-between gap-2">
+          <span>GaConPro V1.0 • Hỗ trợ Phần Mềm: Zalo Đỗ Oanh 08.2626.8282</span>
+          <span>Hỗ trợ MP4, MKV, WEBM, MP3, M4A • Xử lý ghép luồng bằng FFmpeg</span>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- 3. JAVASCRIPT TƯƠNG TÁC ĐẦY ĐỦ CHO TOÀN BỘ VIEW                      -->
+  <!-- ===================================================================== -->
+  <script>
+    (function () {
+      const state = {
+        currentView: 'download',
+        queueFilter: 'all',
+        studioMode: 'derivative',
+        batchMode: '1to1',
+        scriptMode: 'series',
+        voiceoverEnabled: true,
+        selectedDiscover: new Set(['tr1', 'tr2']),
+        trendPlatform: 'Tất cả',
+        trendCategory: 'Đang hot',
+        savedTrendIds: new Set(),
+        selectedCookiePlatform: 'YouTube',
+        museRunning: true,
+        transformIndex: 0,
+        transforms: ['0.9x • Zoom 110%', 'Lật ngang • Zoom 108%', '1.0x • Không biến đổi'],
+
+        queue: [
+          { id: 'dl1', name: 'Bilibili_BV1xx411c7mD_P1.mp4', platform: 'Bilibili', meta: '1080p • 04:12 • Tách tập P1', progress: 100, status: 'done', checked: true },
+          { id: 'dl2', name: 'Bilibili_BV1xx411c7mD_P2.mp4', platform: 'Bilibili', meta: '1080p • 03:48 • Tách tập P2', progress: 100, status: 'done', checked: true },
+          { id: 'dl3', name: 'Douyin_74192837461_Short.mp4', platform: 'Douyin', meta: '9:16 • 01:05 • Xóa logo', progress: 72, status: 'downloading', checked: false },
+          { id: 'dl4', name: 'TikTok_bep_viet_trieu_view.mp4', platform: 'TikTok', meta: '9:16 • 00:42', progress: 0, status: 'error', error: 'Cần cập nhật Cookie TikTok', checked: false },
+          { id: 'dl5', name: 'FB_Reel_Cuoc_Song_Mien_Que.mp4', platform: 'Facebook', meta: '1080p • 00:58', progress: 100, status: 'done', checked: true }
+        ],
+
+        studioSources: [
+          { id: 'src1', title: 'Bilibili_BV1xx411c7mD_P1.mp4', duration: '04:12', note: 'Lấy đoạn mở đầu thu hút, biến tấu nhân vật chính kể lại mạch chuyện', checked: true },
+          { id: 'src2', title: 'Douyin_74192837461_Short.mp4', duration: '01:05', note: 'Tăng nhịp chuyển cảnh, giữ giọng kể truyền cảm cho bản dọc 9:16', checked: true },
+          { id: 'src3', title: 'FB_Reel_Cuoc_Song_Mien_Que.mp4', duration: '00:58', note: 'Đồng bộ nhân vật và bối cảnh làng quê đồng nhất xuyên suốt', checked: true }
+        ],
+
+        generatedScripts: [],
+
+        trendingVideos: [
+          { id: 'tr1', score: 93, duration: '08:15', platform: 'TikTok', title: 'bộ y tế đề nghị 😅 #truonggiang #nghesitruonggiang #showbiz...', views: '7,0 Tr', likes: '742,6 N', growth: '60,6 N/giờ', sub: 'Giải trí • bamboo • Doc • 4 ngày trước', img: 'https://placehold.co/320x180/171d3b/38bdf8?text=TikTok+93' },
+          { id: 'tr2', score: 92, duration: 'Ngắn', platform: 'Douyin', title: '现场视频! 墨西哥总统乘红旗轿车抵达深圳南山医院参观...', views: '94,6 Tr', likes: '3,9 Tr/giờ', growth: 'Nhanh', sub: 'Ô tô • 中国新闻网 • Doc', img: 'https://placehold.co/320x180/171d3b/a78bfa?text=Douyin+92' },
+          { id: 'tr3', score: 91, duration: 'Ngắn', platform: 'Douyin', title: '手工锯出0.2毫米实心钢片实现"水上漂"! 第九届全国职工...', views: '45,6 Tr', likes: '1,9 Tr/giờ', growth: 'Thủ công', sub: 'Thủ công • 人民日报 • Doc', img: 'https://placehold.co/320x180/171d3b/34d399?text=DIY+91' },
+          { id: 'tr4', score: 88, duration: 'Ngắn', platform: 'Douyin', title: '现场视频! 美国总统特朗普抵达深圳。#媒体原创', views: '38,8 Tr', likes: '1,6 Tr/giờ', growth: 'Tin nóng', sub: 'Giải trí • 央视新闻 • Doc', img: 'https://placehold.co/320x180/171d3b/f472b6?text=Douyin+88' },
+          { id: 'tr5', score: 87, duration: '00:21', platform: 'Bilibili', title: '怎么不算换背景呢', views: '1,4 Tr', likes: '298,6 N', growth: '13,8 N/giờ', sub: '国风舞蹈 • 小雨桑Ovo • Doc • 4 ngày trước', img: 'https://placehold.co/320x180/171d3b/22d3ee?text=Bilibili+87' }
+        ],
+
+        searchVideos: [
+          { id: 'sr1', platform: 'YouTube', duration: '03:45', title: 'Top 10 AI Video Tools Workflow 2026 — Full Pipeline', views: '1,2 Tr', img: 'https://placehold.co/320x180/151b38/34d399?text=AI+Video+01' },
+          { id: 'sr2', platform: 'Bilibili', duration: '05:12', title: '多集连载短剧分镜与角色一致性实战解析', views: '860 N', img: 'https://placehold.co/320x180/151b38/a78bfa?text=Bilibili+02' },
+          { id: 'sr3', platform: 'TikTok', duration: '00:48', title: 'Ẩm thực đường phố 60s — Bí quyết làm nước sốt', views: '4,5 Tr', img: 'https://placehold.co/320x180/151b38/fbbf24?text=TikTok+03' },
+          { id: 'sr4', platform: 'Douyin', duration: '01:15', title: '创意手工DIY改造老物件前后对比', views: '2,9 Tr', img: 'https://placehold.co/320x180/151b38/22d3ee?text=Douyin+04' }
+        ],
+
+        cookieList: [
+          { name: 'YouTube', label: 'YouTube', domain: 'YouTube (.youtube.com)', status: 'Đã nhập', active: true, content: '# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tFALSE\t1793828820\tSIDCC\tSAMPLE_YOUTUBE_SESSION' },
+          { name: 'TikTok', label: 'TikTok', domain: 'TikTok (.tiktok.com)', status: 'Trống', active: false, content: '' },
+          { name: 'Bilibili', label: 'Bilibili (B站)', domain: 'Bilibili (.bilibili.com)', status: 'Đã nhập', active: false, content: '# Netscape HTTP Cookie File\n.bilibili.com\tTRUE\t/\tFALSE\t1793828820\tSESSDATA\tSAMPLE_BILI_SESSDATA' },
+          { name: 'Douyin', label: 'Douyin (抖音)', domain: 'Douyin (.douyin.com)', status: 'Trống', active: false, content: '' },
+          { name: 'Kuaishou', label: 'Kuaishou (快手)', domain: 'Kuaishou (.kuaishou.com)', status: 'Trống', active: false, content: '' },
+          { name: 'Xiaohongshu', label: 'Xiaohongshu (小红书)', domain: 'Xiaohongshu (.xiaohongshu.com)', status: 'Trống', active: false, content: '' },
+          { name: 'Weibo', label: 'Weibo (微博)', domain: 'Weibo (.weibo.com)', status: 'Trống', active: false, content: '' },
+          { name: 'Xigua', label: 'Xigua Video (西瓜视频)', domain: 'Xigua Video (.ixigua.com)', status: 'Đã nhập', active: false, content: '# Netscape HTTP Cookie File\n.ixigua.com\tTRUE\t/\tFALSE\t1793828820\tttwid\tSAMPLE_XIGUA_ID' },
+          { name: 'Facebook', label: 'Facebook', domain: 'Facebook (.facebook.com)', status: 'Đã nhập', active: false, content: '# Netscape HTTP Cookie File\n.facebook.com\tTRUE\t/\tFALSE\t1793828820\tc_user\t1000889911' },
+          { name: 'Meta AI', label: 'Meta AI (Không cần key)', domain: 'Meta AI (.meta.ai)', status: 'Trống', active: false, content: '' },
+          { name: 'Trung Quốc 102', label: 'Trung Quốc 102 (X / Vimeo...)', domain: 'Trung Quốc 102', status: 'Trống', active: false, content: '' }
+        ],
+
+        museAccounts: [
+          { name: 'accPro1', status: 'Hoạt động', cookiesCount: 12, detail: 'quota: {"new":"Settings/General/Connectors/Wallet/Secure store/afPermissions/messaging channels/services/aData controls/nho"}' },
+          { name: 'accPro2', status: 'Hoạt động', cookiesCount: 11, detail: 'quota: {"new":"Settings/General/Connectors/Wallet/Secure store/afPermissions/messaging channels/services/aData controls/nho"}' },
+          { name: 'accPro3', status: 'Hoạt động', cookiesCount: 13, detail: 'quota: {"new":"Settings/General/Connectors/Wallet/Secure store/afPermissions/messaging channels/services/aData controls/nho"}' }
+        ]
+      };
+
+      const searchPlatforms = ['Tất cả', 'YouTube', 'TikTok', 'Douyin', 'Bilibili', 'Kuaishou', 'Xiaohongshu', 'Weibo', 'Xigua', 'Dailymotion'];
+      const trendPlatforms = [
+        { name: 'Tất cả', count: '' },
+        { name: 'YouTube', count: '35' },
+        { name: 'TikTok', count: '23' },
+        { name: 'Douyin', count: '38' },
+        { name: 'Bilibili', count: '36' },
+        { name: 'Kuaishou', count: '' },
+        { name: 'Xiaohongshu', count: '' },
+        { name: 'Weibo', count: '51' },
+        { name: 'Xigua', count: '' },
+        { name: 'Dailymotion', count: '24' }
+      ];
+      const trendCategories = ['Đang hot', 'Kiến thức', 'Phim ngắn', 'Ẩm thực', 'Thú cưng', 'Nông thôn', 'Du lịch', 'Ô tô', 'Công nghệ', 'AI', 'Giải trí', 'Thể thao', 'Thủ công', 'Vlog', 'Game', 'Anime', 'Âm nhạc', 'Chế / Hài', 'Nhảy'];
+
+      function notify(msg) {
+        const box = document.getElementById('gacon-toast');
+        document.getElementById('gacon-toast-msg').textContent = msg;
+        box.classList.remove('hidden');
+        clearTimeout(window.__gaconToastTimer);
+        window.__gaconToastTimer = setTimeout(() => box.classList.add('hidden'), 2800);
+      }
+
+      // Chuyển view toàn cục
+      function navigateTo(viewKey) {
+        const mappedKey = viewKey === 'search' ? 'trending' : viewKey;
+        state.currentView = mappedKey;
+        document.querySelectorAll('.app-view').forEach((el) => el.classList.add('hidden'));
+        const target = document.getElementById(`view-${mappedKey}`);
+        if (target) target.classList.remove('hidden');
+
+        document.querySelectorAll('.side-nav-btn').forEach((btn) => {
+          const active = btn.dataset.view === mappedKey;
+          btn.className = `side-nav-btn w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition ${
+            active
+              ? 'bg-gradient-to-r from-violet-600/35 to-cyan-500/15 text-white border border-violet-400/45 shadow-sm'
+              : 'text-slate-300 hover:bg-white/5 border border-transparent'
+          }`;
+        });
+
+        updateDiscoverFloatingBar();
+        if (mappedKey === 'trending') renderTrending();
+        if (mappedKey === 'download') renderBatchQueue();
+        if (mappedKey === 'studio') renderStudioSources();
+        if (mappedKey === 'settings') renderSettingsAll();
+      }
+
+      document.querySelectorAll('.side-nav-btn').forEach((btn) => {
+        btn.addEventListener('click', () => navigateTo(btn.dataset.view));
+      });
+
+      // Mobile menu toggle
+      document.getElementById('btn-mobile-menu-toggle').addEventListener('click', () => {
+        const groups = document.getElementById('sidebar-nav-groups');
+        groups.classList.toggle('hidden');
+      });
+
+      // Global search shortcut / filter -> gộp vào Xu hướng
+      const globalSearch = document.getElementById('global-quick-search');
+      globalSearch.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          globalSearch.focus();
+        }
+        if (e.key === 'Enter' && globalSearch.value.trim()) {
+          document.getElementById('discover-search-input').value = globalSearch.value.trim();
+          navigateTo('trending');
+          renderTrending();
+        }
+      });
+
+      // Thanh nổi chọn nhiều video ở Xu hướng / Tìm kiếm
+      function updateDiscoverFloatingBar() {
+        const bar = document.getElementById('discover-batch-floating-bar');
+        const cnt = state.selectedDiscover.size;
+        document.getElementById('discover-selected-count').textContent = cnt;
+        if (state.currentView === 'trending' && cnt > 0) {
+          bar.classList.remove('hidden');
+        } else {
+          bar.classList.add('hidden');
+        }
+      }
+
+      document.getElementById('btn-discover-send-download').addEventListener('click', () => {
+        const allItems = [...state.trendingVideos, ...state.searchVideos];
+        let added = 0;
+        state.selectedDiscover.forEach((id) => {
+          const v = allItems.find((x) => x.id === id);
+          if (v) {
+            state.queue.unshift({
+              id: `dl_${Date.now()}_${id}`,
+              name: `${v.platform}_${v.id}.mp4`,
+              platform: v.platform,
+              meta: `Đưa từ Xu hướng/Tìm kiếm • ${v.duration}`,
+              progress: 100,
+              status: 'done',
+              checked: true
+            });
+            added++;
+          }
+        });
+        navigateTo('download');
+        notify(`Đã đưa ${added} video đã chọn vào Tải hàng loạt.`);
+      });
+
+      document.getElementById('btn-discover-send-studio').addEventListener('click', () => {
+        const allItems = [...state.trendingVideos, ...state.searchVideos];
+        let added = 0;
+        state.selectedDiscover.forEach((id) => {
+          const v = allItems.find((x) => x.id === id);
+          if (v) {
+            state.studioSources.push({
+              id: `src_${Date.now()}_${id}`,
+              title: v.title,
+              duration: v.duration,
+              note: `Phái sinh từ nguồn đã chọn (${v.platform})`,
+              checked: true
+            });
+            added++;
+          }
+        });
+        navigateTo('studio');
+        notify(`Đã đưa ${added} video đã chọn sang Studio phái sinh.`);
+      });
+
+      document.getElementById('btn-discover-clear-sel').addEventListener('click', () => {
+        state.selectedDiscover.clear();
+        updateDiscoverFloatingBar();
+        renderTrending();
+      });
+
+      // Render Batch Download Queue
+      function renderBatchQueue() {
+        const container = document.getElementById('batch-queue-rows');
+        const all = state.queue.length;
+        const dl = state.queue.filter((x) => x.status === 'downloading').length;
+        const done = state.queue.filter((x) => x.status === 'done').length;
+        const err = state.queue.filter((x) => x.status === 'error').length;
+
+        document.getElementById('q-cnt-all').textContent = all;
+        document.getElementById('q-cnt-dl').textContent = dl;
+        document.getElementById('q-cnt-done').textContent = done;
+        document.getElementById('q-cnt-err').textContent = err;
+        document.getElementById('kpi-queue-total').textContent = `${all} mục`;
+        document.getElementById('sidebar-dl-badge').textContent = all;
+
+        const filtered = state.queue.filter((x) => (state.queueFilter === 'all' ? true : x.status === state.queueFilter));
+        if (filtered.length === 0) {
+          container.innerHTML = `<div class="p-6 text-center text-xs text-slate-400">Chưa có video nào trong hàng đợi ở mục lọc này. Dán liên kết ở trên và bấm "Phân tích & Thêm vào hàng đợi".</div>`;
+          return;
+        }
+
+        container.innerHTML = filtered
+          .map((item) => {
+            let badge = '';
+            if (item.status === 'done') {
+              badge = `<span class="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-400/30 text-[11px] font-semibold">Hoàn tất • 100%</span>`;
+            } else if (item.status === 'downloading') {
+              badge = `<span class="px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-400/30 text-[11px] font-semibold">Đang tải • ${item.progress}%</span>`;
+            } else {
+              badge = `<span class="px-2 py-0.5 rounded-lg bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[11px] font-semibold">${item.error || 'Lỗi tải'}</span>`;
+            }
+
+            return `
+              <div class="p-3 sm:px-4 flex flex-wrap items-center justify-between gap-3 hover:bg-white/[0.02] transition">
+                <div class="flex items-start sm:items-center gap-3 min-w-0 flex-1">
+                  <input type="checkbox" data-dlid="${item.id}" class="dl-row-chk w-4 h-4 rounded accent-emerald-500 mt-1 sm:mt-0" ${item.checked ? 'checked' : ''} />
+                  <div class="min-w-0 flex-1">
+                    <div class="text-xs sm:text-sm font-semibold text-white truncate">${item.name}</div>
+                    <div class="text-[11px] text-slate-400 flex flex-wrap items-center gap-2 mt-0.5">
+                      <span class="text-violet-300 font-medium">${item.platform}</span>
+                      <span>•</span>
+                      <span>${item.meta}</span>
+                    </div>
+                    <div class="w-full max-w-sm h-1.5 rounded-full bg-slate-800 mt-1.5 overflow-hidden">
+                      <div class="h-full ${item.status === 'error' ? 'bg-rose-400' : 'bg-gradient-to-r from-cyan-400 to-emerald-400'}" style="width:${item.status === 'error' ? 100 : item.progress}%"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  ${badge}
+                  ${
+                    item.status === 'error'
+                      ? `<button data-retryid="${item.id}" class="dl-retry-btn px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-xs font-semibold">Thử lại</button>`
+                      : `<button data-to-st="${item.id}" class="dl-to-studio-btn px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-cyan-300 text-xs font-semibold">+ Studio</button>`
+                  }
+                </div>
+              </div>
+            `;
+          })
+          .join('');
+
+        container.querySelectorAll('.dl-row-chk').forEach((chk) => {
+          chk.addEventListener('change', (e) => {
+            const row = state.queue.find((x) => x.id === e.target.dataset.dlid);
+            if (row) row.checked = e.target.checked;
+          });
+        });
+
+        container.querySelectorAll('.dl-retry-btn').forEach((btn) => {
+          btn.addEventListener('click', (e) => {
+            const row = state.queue.find((x) => x.id === e.target.dataset.retryid);
+            if (row) {
+              row.status = 'downloading';
+              row.progress = 48;
+              renderBatchQueue();
+              notify(`Đang thử lại tải ${row.name}...`);
+            }
+          });
+        });
+
+        container.querySelectorAll('.dl-to-studio-btn').forEach((btn) => {
+          btn.addEventListener('click', (e) => {
+            const row = state.queue.find((x) => x.id === e.target.dataset.toSt);
+            if (row) {
+              state.studioSources.push({
+                id: `src_${Date.now()}`,
+                title: row.name,
+                duration: '01:15',
+                note: 'Phát triển từ video đã tải hàng loạt',
+                checked: true
+              });
+              navigateTo('studio');
+              notify(`Đã đưa "${row.name}" sang Studio phái sinh.`);
+            }
+          });
+        });
+      }
+
+      document.querySelectorAll('.qfilter-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.queueFilter = btn.dataset.qfilter;
+          document.querySelectorAll('.qfilter-btn').forEach((b) => {
+            b.className = 'qfilter-btn px-3 py-1.5 rounded-xl text-xs font-medium bg-midnight text-slate-300 border border-borderSubtle hover:bg-white/5';
+          });
+          btn.className = 'qfilter-btn px-3 py-1.5 rounded-xl text-xs font-semibold bg-violet-500/25 text-violet-200 border border-violet-400/40';
+          renderBatchQueue();
+        });
+      });
+
+      document.getElementById('btn-paste-sample-urls').addEventListener('click', () => {
+        document.getElementById('batch-url-input').value = [
+          'https://www.facebook.com/reel/987654321012345',
+          'https://www.bilibili.com/video/BV1xx411c7mD',
+          'https://www.douyin.com/video/74192837461',
+          'https://www.tiktok.com/@creator/video/74011223344',
+          'https://www.youtube.com/watch?v=GaConProDemo01'
+        ].join('\n');
+        notify('Đã dán 5 liên kết mẫu thử (Facebook, Bilibili, Douyin, TikTok, YouTube).');
+      });
+
+      document.getElementById('btn-add-to-queue').addEventListener('click', () => {
+        const raw = document.getElementById('batch-url-input').value.trim();
+        const splitBili = document.getElementById('chk-bilibili-split').checked;
+        if (!raw) {
+          notify('Vui lòng dán ít nhất 1 liên kết video trước khi phân tích.');
+          return;
+        }
+        const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+        let added = 0;
+        lines.forEach((line, idx) => {
+          const isBili = line.includes('bilibili.com');
+          const parts = isBili && splitBili ? 2 : 1;
+          for (let p = 1; p <= parts; p++) {
+            const pTag = parts > 1 ? `_P${p}` : '';
+            state.queue.unshift({
+              id: `dl_${Date.now()}_${idx}_${p}`,
+              name: `Batch_${idx + 1}${pTag}.mp4`,
+              platform: isBili ? 'Bilibili' : line.includes('douyin') ? 'Douyin' : line.includes('tiktok') ? 'TikTok' : line.includes('facebook') ? 'Facebook' : 'YouTube',
+              meta: `${document.getElementById('out-resolution').value} • ${document.getElementById('out-transform-text').textContent}`,
+              progress: 100,
+              status: 'done',
+              checked: true
+            });
+            added++;
+          }
+        });
+        document.getElementById('batch-url-input').value = '';
+        renderBatchQueue();
+        notify(`Đã phân tích và thêm ${added} mục vào hàng đợi tải xuống.`);
+      });
+
+      document.getElementById('btn-retry-failed-queue').addEventListener('click', () => {
+        let count = 0;
+        state.queue.forEach((item) => {
+          if (item.status === 'error') {
+            item.status = 'downloading';
+            item.progress = 60;
+            count++;
+          }
+        });
+        renderBatchQueue();
+        notify(count > 0 ? `Đang thử lại ${count} mục lỗi.` : 'Hiện không có mục lỗi nào trong hàng đợi.');
+      });
+
+      document.getElementById('btn-push-queue-to-studio').addEventListener('click', () => {
+        const selected = state.queue.filter((x) => x.checked);
+        if (selected.length === 0) {
+          notify('Hãy tích chọn ít nhất 1 video trong hàng đợi để đưa sang Studio.');
+          return;
+        }
+        selected.forEach((item) => {
+          state.studioSources.push({
+            id: `src_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+            title: item.name,
+            duration: '01:00',
+            note: 'Biên tập phái sinh từ hàng đợi tải xuống',
+            checked: true
+          });
+        });
+        navigateTo('studio');
+        notify(`Đã đưa ${selected.length} video sang Studio phái sinh hàng loạt.`);
+      });
+
+      // Output processing controls
+      document.getElementById('out-brand-logo-toggle').addEventListener('change', (e) => {
+        const lbl = document.getElementById('out-brand-logo-label');
+        if (e.target.checked) {
+          lbl.textContent = 'Đang bật';
+          lbl.className = 'px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold';
+        } else {
+          lbl.textContent = 'Đang tắt';
+          lbl.className = 'px-2 py-0.5 rounded-md bg-slate-700/60 text-slate-300 text-[11px] font-semibold';
+        }
+      });
+
+      document.getElementById('btn-edit-logo-config').addEventListener('click', () => {
+        notify('Đã mở tùy chọn vị trí & kích thước Logo thương hiệu cho luồng FFmpeg.');
+      });
+
+      document.getElementById('btn-cycle-transform').addEventListener('click', () => {
+        state.transformIndex = (state.transformIndex + 1) % state.transforms.length;
+        document.getElementById('out-transform-text').textContent = state.transforms[state.transformIndex];
+      });
+
+      document.getElementById('out-folder-input').addEventListener('input', (e) => {
+        const val = e.target.value.trim() || 'Nhung Kinh';
+        document.getElementById('out-zip-folder-label').textContent = val;
+        document.getElementById('sidebar-folder-name').textContent = val;
+      });
+
+      document.getElementById('btn-choose-folder-local').addEventListener('click', () => {
+        const folder = document.getElementById('out-folder-input').value.trim() || 'Nhung Kinh';
+        notify(`Đã xác nhận thư mục lưu trữ cục bộ: "${folder}"`);
+      });
+
+      document.getElementById('btn-apply-all-output').addEventListener('click', () => {
+        const res = document.getElementById('out-resolution').value;
+        const tr = document.getElementById('out-transform-text').textContent;
+        const folder = document.getElementById('out-folder-input').value.trim() || 'Nhung Kinh';
+        document.getElementById('out-zip-folder-label').textContent = folder;
+        document.getElementById('sidebar-folder-name').textContent = folder;
+        state.queue.forEach((item) => {
+          item.meta = `${res} • ${tr}`;
+        });
+        renderBatchQueue();
+        notify(`Đã áp dụng cấu hình (${res}, ${tr}) cho toàn bộ hàng đợi.`);
+      });
+
+      function triggerDownloadAll() {
+        state.queue.forEach((item) => {
+          item.status = 'done';
+          item.progress = 100;
+        });
+        renderBatchQueue();
+        notify('Đã kích hoạt tải tất cả video trong hàng đợi.');
+      }
+
+      document.getElementById('btn-top-download-all').addEventListener('click', triggerDownloadAll);
+      document.getElementById('btn-sidebar-run-batch').addEventListener('click', () => {
+        if (state.currentView === 'studio') {
+          document.getElementById('btn-render-derivative-mp4').click();
+        } else {
+          navigateTo('download');
+          triggerDownloadAll();
+        }
+      });
+
+      document.getElementById('btn-top-health-pill').addEventListener('click', () => {
+        navigateTo('settings');
+        notify('Đang xem tình trạng Cookie, AI & Muse2API Pool.');
+      });
+
+      // Studio controls
+      function setStudioMode(mode) {
+        state.studioMode = mode;
+        const isDeriv = mode === 'derivative';
+        document.getElementById('tab-studio-derivative').className = `text-left rounded-2xl p-3.5 border transition flex items-start gap-3 ${
+          isDeriv ? 'bg-violet-500/15 border-violet-400/50 shadow-md shadow-violet-900/25' : 'bg-midnight/85 border-borderSubtle hover:border-cyan-400/40'
+        }`;
+        document.getElementById('tab-studio-creative').className = `text-left rounded-2xl p-3.5 border transition flex items-start gap-3 ${
+          !isDeriv ? 'bg-cyan-500/15 border-cyan-400/50 shadow-md shadow-cyan-900/20' : 'bg-midnight/85 border-borderSubtle hover:border-cyan-400/40'
+        }`;
+
+        document.getElementById('studio-main-heading').textContent = isDeriv
+          ? 'Tạo Video Phái Sinh Từ Nguồn Tham Chiếu (Hàng Loạt)'
+          : 'Studio Sáng Tạo Video Từ Ý Tưởng (Hàng Loạt)';
+        document.getElementById('studio-main-sub').textContent = isDeriv
+          ? 'Đưa nhiều video tham chiếu từ máy, kho tải hoặc tìm kiếm — AI phân tích nội dung, đồng bộ nhân vật & dựng kịch bản/video phái sinh hàng loạt.'
+          : 'Nhập ý tưởng hoặc chuỗi ý tưởng — AI lên kịch bản phân cảnh liên mạch, đồng bộ nhân vật & bối cảnh, tạo ảnh/clip, lồng tiếng & ghép nhạc.';
+        document.getElementById('creative-mode-fields').classList.toggle('hidden', isDeriv);
+        document.getElementById('btn-render-mp4-label').textContent = isDeriv
+          ? 'Dựng & Xuất Video Phái Sinh (.MP4)'
+          : 'Dựng & Xuất Video Series (.MP4)';
+      }
+
+      document.getElementById('tab-studio-derivative').addEventListener('click', () => setStudioMode('derivative'));
+      document.getElementById('tab-studio-creative').addEventListener('click', () => setStudioMode('creative'));
+
+      document.querySelectorAll('.bmode-pill').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.batchMode = btn.dataset.bmode;
+          document.querySelectorAll('.bmode-pill').forEach((b) => {
+            b.className = 'bmode-pill px-2.5 py-1 rounded-lg text-slate-400 hover:text-white';
+          });
+          btn.className = 'bmode-pill px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold';
+          notify(state.batchMode === '1to1' ? 'Chế độ lô 1-ra-1: Mỗi video nguồn tạo 1 video phái sinh.' : 'Chế độ lô N-ra-1: Gộp/học chéo nhiều nguồn thành series/tổng hợp.');
+        });
+      });
+
+      document.getElementById('btn-save-shared-project').addEventListener('click', () => {
+        const projName = document.getElementById('shared-project-name').value.trim() || document.getElementById('st-char-name').value.trim();
+        const cntEl = document.getElementById('shared-vault-count');
+        cntEl.textContent = String(Number(cntEl.textContent || '2') + 1);
+        notify(`Đã lưu dự án "${projName}" vào Kho Dự Án Đồng Bộ Dùng Chung.`);
+      });
+
+      document.getElementById('btn-studio-jump-ai-cfg').addEventListener('click', () => {
+        navigateTo('settings');
+      });
+
+      document.getElementById('btn-upload-multi-videos').addEventListener('click', () => {
+        const idx = state.studioSources.length + 1;
+        state.studioSources.push({
+          id: `src_${Date.now()}`,
+          title: `Uploaded_Source_0${idx}.mp4`,
+          duration: '01:30',
+          note: 'Video tải lên trực tiếp từ máy để làm phái sinh',
+          checked: true
+        });
+        renderStudioSources();
+        notify(`Đã thêm Uploaded_Source_0${idx}.mp4 vào danh sách nguồn tham chiếu.`);
+      });
+
+      document.getElementById('btn-pick-from-library').addEventListener('click', () => {
+        const doneItems = state.queue.filter((q) => q.status === 'done');
+        if (doneItems.length > 0) {
+          const picked = doneItems[0];
+          state.studioSources.push({
+            id: `src_${Date.now()}`,
+            title: picked.name,
+            duration: '02:00',
+            note: 'Lấy từ thư viện video đã tải',
+            checked: true
+          });
+          renderStudioSources();
+          notify(`Đã nạp "${picked.name}" từ thư viện tải về.`);
+        }
+      });
+
+      document.getElementById('btn-studio-find-source').addEventListener('click', () => {
+        const q = document.getElementById('studio-quick-source-query').value.trim() || 'Trend Clip';
+        const plat = document.getElementById('studio-quick-source-plat').value;
+        state.studioSources.push({
+          id: `src_${Date.now()}`,
+          title: `[${plat}] ${q}.mp4`,
+          duration: '00:55',
+          note: 'Tìm nhanh từ nền tảng tham chiếu',
+          checked: true
+        });
+        document.getElementById('studio-quick-source-query').value = '';
+        renderStudioSources();
+        notify(`Đã thêm nguồn tìm nhanh "${q}" vào danh sách.`);
+      });
+
+      document.querySelectorAll('.tpl-chip').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          const ta = document.getElementById('creative-idea-textarea');
+          ta.value = `${chip.textContent.trim()}: Kể câu chuyện cuốn hút, phân cảnh mạch lạc, đồng nhất nhân vật và bối cảnh.`;
+          notify(`Đã áp dụng mẫu "${chip.textContent.trim()}".`);
+        });
+      });
+
+      function renderStudioSources() {
+        const list = document.getElementById('studio-ref-list');
+        document.getElementById('sec1-count').textContent = state.studioSources.length;
+        document.getElementById('studio-counter-pill').textContent = `${state.studioSources.length} nguồn tham chiếu • 1 nhân vật đồng bộ`;
+
+        list.innerHTML = state.studioSources
+          .map(
+            (s, i) => `
+            <div class="rounded-xl bg-midnight/90 border border-borderSubtle p-2.5 space-y-1.5 text-xs">
+              <div class="flex items-center justify-between gap-2">
+                <label class="flex items-center gap-2 font-semibold text-white truncate cursor-pointer">
+                  <input type="checkbox" data-srcid="${s.id}" class="src-item-chk w-4 h-4 rounded accent-violet-500" ${s.checked ? 'checked' : ''} />
+                  <span class="truncate">#${i + 1} ${s.title}</span>
+                </label>
+                <span class="text-[11px] text-cyan-300 shrink-0">${s.duration}</span>
+              </div>
+              <input type="text" data-srcnote="${s.id}" value="${s.note}" placeholder="Góc nhìn / Ý tưởng phát triển từ video tham chiếu..." class="src-item-note w-full rounded-lg bg-panelSoft border border-borderSubtle px-2.5 py-1 text-[11px] text-slate-200 focus:border-violet-400 focus:outline-none" />
+            </div>
+          `
+          )
+          .join('');
+
+        list.querySelectorAll('.src-item-chk').forEach((chk) => {
+          chk.addEventListener('change', (e) => {
+            const target = state.studioSources.find((x) => x.id === e.target.dataset.srcid);
+            if (target) target.checked = e.target.checked;
+          });
+        });
+
+        list.querySelectorAll('.src-item-note').forEach((inp) => {
+          inp.addEventListener('input', (e) => {
+            const target = state.studioSources.find((x) => x.id === e.target.dataset.srcnote);
+            if (target) target.note = e.target.value;
+          });
+        });
+      }
+
+      document.getElementById('btn-ai-render-character').addEventListener('click', () => {
+        const cname = document.getElementById('st-char-name').value.trim() || 'NV AI';
+        document.getElementById('st-char-avatar').src = `https://placehold.co/96x96/312e81/e9d5ff?text=${encodeURIComponent(cname.slice(0, 6))}`;
+        notify(`AI đã dựng mẫu nhân vật đồng bộ cho "${cname}".`);
+      });
+
+      // Phase 2 sub-tabs (Kịch bản vs Media vs Cả 2)
+      document.querySelectorAll('.p2-tab-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const mode = btn.dataset.p2tab;
+          document.querySelectorAll('.p2-tab-btn').forEach((b) => {
+            b.className = 'p2-tab-btn px-3 py-1.5 rounded-xl bg-midnight text-slate-300 border border-borderSubtle hover:bg-white/5 font-medium';
+          });
+          btn.className = 'p2-tab-btn px-3 py-1.5 rounded-xl bg-violet-500/20 text-violet-200 border border-violet-400/40 font-bold';
+          document.getElementById('p2-block-script').classList.toggle('hidden', mode === 'media');
+          document.getElementById('p2-block-media').classList.toggle('hidden', mode === 'script');
+        });
+      });
+
+      // Batch script generation, scene edit modal & MP4 render
+      let activeEditingScriptId = null;
+
+      function buildBatchScripts() {
+        const active = state.studioSources.filter((s) => s.checked);
+        const charName = document.getElementById('st-char-name').value.trim() || 'Nhân vật đồng bộ';
+        const style = document.getElementById('sc-visual-style').value;
+        const aspect = document.getElementById('sc-aspect-ratio').value;
+        const durText = document.getElementById('sc-duration-preview').textContent;
+
+        const targets = active.length > 0 ? active : [{ id: 'fallback1', title: 'Video_Phai_Sinh_01.mp4', note: 'Kịch bản tự động' }];
+        state.generatedScripts = targets.map((item, idx) => ({
+          id: `gsc_${idx + 1}`,
+          title: `Kịch bản #0${idx + 1} • ${item.title}`,
+          spec: `${durText} • ${aspect} • ${style}`,
+          body: `Nhân vật: ${charName}. Góc nhìn: ${item.note || 'Khai thác điểm nhấn hấp dẫn & giữ nhịp kể chuyện.'}`,
+          scenes: [
+            `Cảnh 1 (Hook 0-15s): Mở đầu bằng tình huống gây tò mò với ${charName} (${style}).`,
+            `Cảnh 2 (Phát triển 15-40s): Triển khai diễn biến chính — ${item.note || 'giữ nhịp chặt chẽ'}.`,
+            `Cảnh 3 (Cao trào & Kết 40-60s): Chốt thông điệp & CTA rõ ràng cho khung hình ${aspect}.`
+          ]
+        }));
+
+        renderGeneratedScripts();
+        notify(`AI đã lên ${state.generatedScripts.length} kịch bản cho toàn bộ lô.`);
+      }
+
+      function openScriptEditorModal(scriptId) {
+        const sc = state.generatedScripts.find((x) => x.id === scriptId);
+        if (!sc) return;
+        activeEditingScriptId = scriptId;
+        document.getElementById('modal-script-title').textContent = sc.title;
+        document.getElementById('modal-scenes-list').innerHTML = sc.scenes
+          .map(
+            (sceneText, i) => `
+            <div class="rounded-xl bg-midnight border border-borderSubtle p-3 space-y-1">
+              <div class="text-[11px] font-bold text-cyan-300">Phân cảnh ${i + 1}</div>
+              <textarea data-scene-idx="${i}" rows="2" class="modal-scene-input w-full rounded-lg bg-panelSoft border border-borderSubtle p-2 text-xs text-white focus:border-violet-400 focus:outline-none">${sceneText}</textarea>
+            </div>
+          `
+          )
+          .join('');
+        document.getElementById('script-editor-modal').classList.remove('hidden');
+      }
+
+      document.getElementById('btn-close-script-modal').addEventListener('click', () => {
+        document.getElementById('script-editor-modal').classList.add('hidden');
+        activeEditingScriptId = null;
+      });
+
+      document.getElementById('btn-save-script-modal').addEventListener('click', () => {
+        const sc = state.generatedScripts.find((x) => x.id === activeEditingScriptId);
+        if (sc) {
+          const inputs = Array.from(document.querySelectorAll('.modal-scene-input'));
+          sc.scenes = inputs.map((inp) => inp.value.trim()).filter(Boolean);
+          sc.body = sc.scenes[0] || sc.body;
+          renderGeneratedScripts();
+          notify(`Đã lưu chỉnh sửa cho ${sc.title}.`);
+        }
+        document.getElementById('script-editor-modal').classList.add('hidden');
+        activeEditingScriptId = null;
+      });
+
+      function renderGeneratedScripts() {
+        const box = document.getElementById('generated-scripts-container');
+        document.getElementById('generated-script-count').textContent = state.generatedScripts.length;
+        if (state.generatedScripts.length === 0) return;
+
+        box.innerHTML = state.generatedScripts
+          .map(
+            (sc) => `
+            <div class="rounded-xl bg-midnight/95 border border-violet-400/30 p-3.5 flex flex-col justify-between gap-2.5">
+              <div class="space-y-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-bold text-white truncate">${sc.title}</span>
+                  <span class="px-2 py-0.5 rounded bg-violet-500/15 text-violet-200 text-[10px] shrink-0">${sc.scenes.length} cảnh</span>
+                </div>
+                <div class="text-[11px] text-cyan-300 font-medium">${sc.spec}</div>
+                <p class="text-[11px] text-slate-300 leading-relaxed line-clamp-2">${sc.body}</p>
+              </div>
+              <button type="button" data-editsc="${sc.id}" class="edit-script-btn w-full py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-cyan-200 font-semibold">
+                ✏ Xem & Sửa phân cảnh
+              </button>
+            </div>
+          `
+          )
+          .join('');
+
+        box.querySelectorAll('.edit-script-btn').forEach((b) => {
+          b.addEventListener('click', (e) => openScriptEditorModal(e.target.dataset.editsc));
+        });
+      }
+
+      document.getElementById('btn-ai-plan-batch-scripts').addEventListener('click', buildBatchScripts);
+
+      document.getElementById('btn-render-derivative-mp4').addEventListener('click', () => {
+        if (state.generatedScripts.length === 0) {
+          buildBatchScripts();
+        }
+        const total = Math.max(1, state.generatedScripts.length);
+        let step = 0;
+        const bar = document.getElementById('studio-export-bar');
+        const pct = document.getElementById('studio-export-percent');
+        const lbl = document.getElementById('studio-export-progress-label');
+        const statusTxt = document.getElementById('studio-render-status-text');
+
+        clearInterval(window.__studioBatchTimer);
+        window.__studioBatchTimer = setInterval(() => {
+          step++;
+          const current = Math.min(total, step);
+          const percent = Math.round((current / total) * 100);
+          bar.style.width = `${percent}%`;
+          pct.textContent = `${percent}%`;
+
+          if (current < total) {
+            lbl.textContent = `Đang dựng phân cảnh, lồng tiếng & ghép FFmpeg (${current}/${total} video)...`;
+            statusTxt.textContent = `Đang xử lý ${current}/${total}`;
+          } else {
+            lbl.textContent = `Hoàn tất dựng & xuất ${total} video (.MP4) vào thư mục "${document.getElementById('out-folder-input').value || 'Nhung Kinh'}"!`;
+            statusTxt.textContent = `Hoàn tất ${total}/${total}`;
+            clearInterval(window.__studioBatchTimer);
+            notify(`Đã xuất xong toàn bộ lô ${total} video (.MP4).`);
+          }
+        }, 480);
+      });
+
+      // Render Trending + Merged Standalone Search
+      let trendingModeActive = true;
+
+      document.getElementById('toggle-trending-mode').addEventListener('change', (e) => {
+        trendingModeActive = e.target.checked;
+        const lbl = document.getElementById('trending-mode-label');
+        const title = document.getElementById('discover-main-title');
+        const sub = document.getElementById('discover-main-sub');
+        const catBox = document.getElementById('trend-category-chips');
+        const meta = document.getElementById('discover-status-meta');
+
+        if (trendingModeActive) {
+          lbl.textContent = 'Chế độ Xu hướng (Đang bật)';
+          lbl.className = 'font-bold text-amber-300';
+          title.textContent = 'Video & Đề tài đang thịnh hành';
+          sub.innerHTML = 'Theo dõi bảng xếp hạng xu hướng và tìm kiếm theo chủ đề — gạt công tắc để <strong>Tìm video độc lập (bỏ lọc xu hướng)</strong>.';
+          catBox.classList.remove('opacity-40', 'pointer-events-none');
+          meta.textContent = '153 video • cập nhật lúc 18:09';
+        } else {
+          lbl.textContent = 'Tìm video độc lập (Đã bỏ lọc xu hướng)';
+          lbl.className = 'font-bold text-cyan-300';
+          title.textContent = 'Tìm kiếm video độc lập đa nền tảng';
+          sub.innerHTML = 'Đang tìm kiếm trực tiếp không giới hạn bảng xếp hạng xu hướng — gạt công tắc để bật lại <strong>Chế độ Xu hướng</strong>.';
+          catBox.classList.add('opacity-40', 'pointer-events-none');
+          meta.textContent = 'Chế độ tìm độc lập • Đa nền tảng';
+        }
+        renderTrending();
+      });
+
+      function renderTrending() {
+        const pBox = document.getElementById('trend-platform-chips');
+        pBox.innerHTML = trendPlatforms
+          .map((p) => {
+            const active = state.trendPlatform === p.name;
+            return `
+              <button type="button" data-tplat="${p.name}" class="tplat-btn px-2.5 py-1 rounded-xl border ${
+                active ? 'bg-violet-500/25 text-violet-200 border-violet-400/50 font-bold' : 'bg-midnight text-slate-300 border-borderSubtle hover:bg-white/5'
+              }">
+                <span>${p.name}</span>
+                ${trendingModeActive && p.count ? `<span class="ml-1 text-[10px] text-cyan-300 font-semibold">${p.count}</span>` : ''}
+              </button>
+            `;
+          })
+          .join('');
+
+        pBox.querySelectorAll('.tplat-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            state.trendPlatform = btn.dataset.tplat;
+            renderTrending();
+          });
+        });
+
+        const cBox = document.getElementById('trend-category-chips');
+        cBox.innerHTML = trendCategories
+          .map((c) => {
+            const active = state.trendCategory === c;
+            return `
+              <button type="button" data-tcat="${c}" class="tcat-btn px-2.5 py-1 rounded-xl border ${
+                active ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40 font-bold' : 'bg-midnight text-slate-300 border-borderSubtle hover:bg-white/5'
+              }">${c}</button>
+            `;
+          })
+          .join('');
+
+        cBox.querySelectorAll('.tcat-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            state.trendCategory = btn.dataset.tcat;
+            renderTrending();
+          });
+        });
+
+        const q = (document.getElementById('discover-search-input').value || '').trim().toLowerCase();
+        const combinedPool = trendingModeActive
+          ? state.trendingVideos
+          : [
+              ...state.searchVideos.map((s) => ({
+                id: s.id,
+                score: 95,
+                duration: s.duration,
+                platform: s.platform,
+                title: s.title,
+                views: s.views,
+                likes: 'Tìm độc lập',
+                growth: 'Kết quả trực tiếp',
+                sub: `${s.platform} • Độc lập`,
+                img: s.img
+              })),
+              ...state.trendingVideos
+            ];
+
+        const list = combinedPool.filter((v) => {
+          const matchPlat = state.trendPlatform === 'Tất cả' || v.platform === state.trendPlatform;
+          const matchQ = !q || v.title.toLowerCase().includes(q) || v.platform.toLowerCase().includes(q) || v.sub.toLowerCase().includes(q);
+          return matchPlat && matchQ;
+        });
+
+        const grid = document.getElementById('trending-grid');
+        grid.innerHTML = list
+          .map((v) => {
+            const checked = state.selectedDiscover.has(v.id);
+            const saved = state.savedTrendIds.has(v.id);
+            return `
+              <div class="glass-card rounded-2xl p-3 flex flex-col justify-between gap-2.5 border ${checked ? 'border-cyan-400/60' : 'border-borderSubtle'}">
+                <div class="space-y-2">
+                  <div class="relative rounded-xl overflow-hidden bg-midnight aspect-video">
+                    <img src="${v.img}" onerror="this.src='https://placehold.co/320x180/151b38/38bdf8?text=Video'" alt="${v.title}" class="w-full h-full object-cover" />
+                    <label class="absolute top-2 left-2 bg-midnight/85 p-1 rounded-md cursor-pointer">
+                      <input type="checkbox" data-trchk="${v.id}" class="tr-chk w-4 h-4 accent-cyan-400" ${checked ? 'checked' : ''} />
+                    </label>
+                    <span class="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-amber-400 text-slate-950 font-extrabold text-[11px]">${v.score}</span>
+                    <span class="absolute bottom-2 left-2 px-1.5 py-0.5 rounded bg-midnight/90 text-[10px] font-semibold text-cyan-300">${v.platform}</span>
+                    <span class="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-midnight/90 text-[10px] font-semibold text-white">${v.duration}</span>
+                  </div>
+                  <div class="text-xs font-semibold text-white line-clamp-2">${v.title}</div>
+                  <div class="text-[11px] text-slate-300 flex items-center gap-2">
+                    <span>👁 ${v.views}</span>
+                    <span>❤ ${v.likes}</span>
+                  </div>
+                  <div class="text-[10px] text-emerald-300 font-medium">↗ ${v.growth}</div>
+                  <div class="text-[10px] text-slate-400 truncate">${v.sub}</div>
+                </div>
+
+                <div class="flex items-center gap-1.5 pt-1 text-xs">
+                  <button type="button" data-trdl="${v.id}" class="tr-dl-btn flex-1 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white font-semibold">
+                    ⬇ Tải ngay
+                  </button>
+                  <button type="button" data-trst="${v.id}" class="tr-st-btn px-2.5 py-1.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-400/35 text-violet-200 font-bold" title="Đưa vào Studio">
+                    +
+                  </button>
+                  <button type="button" data-trsave="${v.id}" class="tr-save-btn px-2.5 py-1.5 rounded-xl ${saved ? 'bg-amber-400/25 text-amber-300 border border-amber-400/40' : 'bg-white/5 text-slate-300 border border-white/10'}">
+                    ${saved ? '★' : '☆'}
+                  </button>
+                </div>
+              </div>
+            `;
+          })
+          .join('');
+
+        updateDiscoverFloatingBar();
+
+        grid.querySelectorAll('.tr-chk').forEach((c) => {
+          c.addEventListener('change', (e) => {
+            if (e.target.checked) state.selectedDiscover.add(e.target.dataset.trchk);
+            else state.selectedDiscover.delete(e.target.dataset.trchk);
+            updateDiscoverFloatingBar();
+            renderTrending();
+          });
+        });
+
+        grid.querySelectorAll('.tr-dl-btn').forEach((b) => {
+          b.addEventListener('click', (e) => {
+            const v = combinedPool.find((x) => x.id === e.target.dataset.trdl);
+            if (v) {
+              state.queue.unshift({
+                id: `dl_${Date.now()}`,
+                name: `${v.platform}_${v.id}.mp4`,
+                platform: v.platform,
+                meta: `Điểm ${v.score} • ${v.duration}`,
+                progress: 100,
+                status: 'done',
+                checked: true
+              });
+              renderBatchQueue();
+              notify(`Đã thêm "${v.title.slice(0, 28)}..." vào hàng đợi tải.`);
+            }
+          });
+        });
+
+        grid.querySelectorAll('.tr-st-btn').forEach((b) => {
+          b.addEventListener('click', (e) => {
+            const v = combinedPool.find((x) => x.id === e.target.dataset.trst);
+            if (v) {
+              state.studioSources.push({
+                id: `src_${Date.now()}`,
+                title: v.title,
+                duration: v.duration,
+                note: `Phái sinh từ nguồn (${v.platform} • ${v.views})`,
+                checked: true
+              });
+              navigateTo('studio');
+              notify('Đã đưa video sang Studio phái sinh.');
+            }
+          });
+        });
+
+        grid.querySelectorAll('.tr-save-btn').forEach((b) => {
+          b.addEventListener('click', (e) => {
+            const id = e.target.dataset.trsave;
+            if (state.savedTrendIds.has(id)) state.savedTrendIds.delete(id);
+            else state.savedTrendIds.add(id);
+            document.getElementById('trend-saved-count').textContent = state.savedTrendIds.size;
+            renderTrending();
+          });
+        });
+      }
+
+      document.getElementById('btn-discover-search-run').addEventListener('click', renderTrending);
+      document.getElementById('discover-search-input').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') renderTrending();
+      });
+      document.querySelectorAll('.discover-quick-chip').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          document.getElementById('discover-search-input').value = chip.textContent.trim();
+          renderTrending();
+        });
+      });
+
+      document.getElementById('btn-ai-learn-top4-trend').addEventListener('click', () => {
+        state.trendingVideos.slice(0, 4).forEach((v) => {
+          state.studioSources.push({
+            id: `src_top4_${Date.now()}_${v.id}`,
+            title: v.title,
+            duration: v.duration,
+            note: `Học Top 4 xu hướng (${v.platform})`,
+            checked: true
+          });
+        });
+        navigateTo('studio');
+        buildBatchScripts();
+        notify('AI đã học Top 4 video xu hướng và dựng sẵn kịch bản lô trong Studio.');
+      });
+
+      // Render Settings (Cookie list + Muse2API pool)
+      function renderSettingsAll() {
+        const cSide = document.getElementById('cfg-cookie-sidebar');
+        cSide.innerHTML = state.cookieList
+          .map((c) => {
+            const selected = c.name === state.selectedCookiePlatform;
+            const hasCookie = c.status === 'Đã nhập';
+            return `
+              <button type="button" data-cplat="${c.name}" class="cfg-cplat-btn w-full px-3.5 py-2.5 flex items-center justify-between text-left transition ${
+                selected ? 'bg-violet-500/20 text-white font-bold' : 'text-slate-300 hover:bg-white/5'
+              }">
+                <span class="truncate">${c.label}</span>
+                <span class="text-[11px] font-semibold ${hasCookie ? 'text-emerald-400' : 'text-slate-500'}">${c.status}</span>
+              </button>
+            `;
+          })
+          .join('');
+
+        const cur = state.cookieList.find((x) => x.name === state.selectedCookiePlatform) || state.cookieList[0];
+        document.getElementById('cfg-cookie-selected-title').textContent = cur.domain;
+        document.getElementById('cfg-cookie-textarea').value = cur.content;
+        document.getElementById('cfg-cookie-btn-platform').textContent = cur.name;
+
+        cSide.querySelectorAll('.cfg-cplat-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            state.selectedCookiePlatform = btn.dataset.cplat;
+            renderSettingsAll();
+          });
+        });
+
+        const poolBox = document.getElementById('muse-pool-accounts');
+        poolBox.innerHTML = state.museAccounts
+          .map(
+            (acc) => `
+            <div class="py-2.5 flex flex-wrap items-center justify-between gap-2">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="font-bold text-white">${acc.name}</span>
+                  <span class="text-emerald-400 font-semibold">${acc.status}</span>
+                  <span class="text-slate-400">• ${acc.cookiesCount} cookies</span>
+                </div>
+                <div class="text-[11px] font-mono text-slate-400 truncate mt-0.5">${acc.detail}</div>
+              </div>
+              <div class="flex items-center gap-1.5 text-xs">
+                <button type="button" class="muse-act-btn px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10">Test phiên</button>
+                <button type="button" class="muse-act-btn px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10">Gia hạn</button>
+                <button type="button" class="muse-act-btn px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10">Hạn mức</button>
+              </div>
+            </div>
+          `
+          )
+          .join('');
+
+        poolBox.querySelectorAll('.muse-act-btn').forEach((b) => {
+          b.addEventListener('click', () => notify(`Đã thực hiện "${b.textContent.trim()}" cho tài khoản muse.ai.`));
+        });
+      }
+
+      document.getElementById('btn-cfg-save-cookie').addEventListener('click', () => {
+        const cur = state.cookieList.find((x) => x.name === state.selectedCookiePlatform);
+        const val = document.getElementById('cfg-cookie-textarea').value.trim();
+        if (cur) {
+          cur.content = val;
+          cur.status = val ? 'Đã nhập' : 'Trống';
+          renderSettingsAll();
+          notify(`Đã lưu cookie cho ${cur.domain}.`);
+        }
+      });
+
+      document.getElementById('btn-cfg-clear-cookie').addEventListener('click', () => {
+        const cur = state.cookieList.find((x) => x.name === state.selectedCookiePlatform);
+        if (cur) {
+          cur.content = '';
+          cur.status = 'Trống';
+          renderSettingsAll();
+          notify(`Đã xóa cookie của ${cur.name}.`);
+        }
+      });
+
+      document.getElementById('btn-cfg-pick-cookie-file').addEventListener('click', () => {
+        notify('Đã sẵn sàng đọc tệp Netscape .txt hoặc JSON Cookie-Editor.');
+      });
+
+      document.getElementById('btn-test-selected-ai').addEventListener('click', () => {
+        notify('Kết nối AI (Google Gemini & Muse2API) hoạt động ổn định.');
+      });
+
+      document.getElementById('btn-stop-muse').addEventListener('click', () => {
+        state.museRunning = !state.museRunning;
+        const badge = document.getElementById('muse-status-badge');
+        const btn = document.getElementById('btn-stop-muse');
+        if (state.museRunning) {
+          badge.textContent = '● Sẵn sàng hoạt động';
+          badge.className = 'text-emerald-400 font-bold mt-1';
+          btn.textContent = '⏹ Dừng Muse2API';
+          notify('Đã khởi động lại dịch vụ Muse2API.');
+        } else {
+          badge.textContent = '● Đã tạm dừng';
+          badge.className = 'text-amber-300 font-bold mt-1';
+          btn.textContent = '▶ Bật Muse2API';
+          notify('Đã tạm dừng dịch vụ Muse2API.');
+        }
+      });
+
+      document.getElementById('btn-refresh-muse').addEventListener('click', () => {
+        renderSettingsAll();
+        notify('Đã làm mới trạng thái Muse2API & Pool.');
+      });
+
+      document.getElementById('btn-add-pool-account').addEventListener('click', () => {
+        const raw = document.getElementById('pool-new-cookie-input').value.trim();
+        const nextIdx = state.museAccounts.length + 1;
+        state.museAccounts.push({
+          name: `accPro${nextIdx}`,
+          status: 'Hoạt động',
+          cookiesCount: 10,
+          detail: raw ? `cookie: ${raw.slice(0, 52)}...` : 'quota: {"new":"Settings/General/Connectors/Wallet/Secure store"}'
+        });
+        document.getElementById('pool-new-cookie-input').value = '';
+        renderSettingsAll();
+        notify(`Đã thêm tài khoản accPro${nextIdx} vào Pool.`);
+      });
+
+      document.getElementById('btn-renew-all-cookies').addEventListener('click', () => {
+        notify('Đã gia hạn phiên cho toàn bộ tài khoản trong Pool.');
+      });
+
+      document.getElementById('btn-check-all-modules').addEventListener('click', () => {
+        notify('FFmpeg, yt-dlp, Node.js Runtime và VieNeu-TTS Offline đều sẵn sàng.');
+      });
+
+      document.getElementById('btn-run-update-check').addEventListener('click', () => {
+        notify('GaConPro V1.0.4 đang ở bản mới nhất.');
+      });
+
+      // Điều khiển 3 tab trong bảng hợp nhất Cấu hình (Cookies | Kết nối AI | Dịch vụ Muse2API)
+      let activeConfigTab = 'cookies';
+      function switchConfigMainTab(tabKey) {
+        activeConfigTab = tabKey;
+        document.querySelectorAll('.cfg-main-tab').forEach((btn) => {
+          const isMatch = btn.dataset.ctab === tabKey;
+          btn.setAttribute('aria-selected', isMatch ? 'true' : 'false');
+          btn.className = isMatch
+            ? 'cfg-main-tab px-3.5 py-2 rounded-xl font-bold bg-violet-500/25 text-violet-200 border border-violet-400/45 transition flex items-center gap-1.5'
+            : 'cfg-main-tab px-3.5 py-2 rounded-xl font-medium text-slate-300 hover:bg-white/5 border border-transparent transition flex items-center gap-1.5';
+        });
+
+        ['cookies', 'ai', 'muse'].forEach((key) => {
+          const panel = document.getElementById(`cfg-tab-panel-${key}`);
+          if (panel) panel.classList.toggle('hidden', key !== tabKey);
+        });
+      }
+
+      document.querySelectorAll('.cfg-main-tab').forEach((btn) => {
+        btn.addEventListener('click', () => switchConfigMainTab(btn.dataset.ctab));
+      });
+
+      document.querySelectorAll('.cfg-quick-tab-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          switchConfigMainTab(btn.dataset.jumpCtab);
+          document.getElementById('cfg-unified-table-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      });
+
+      // Khởi tạo ứng dụng
+      switchConfigMainTab(activeConfigTab);
+      renderBatchQueue();
+      renderStudioSources();
+      renderTrending();
+      renderSettingsAll();
+      navigateTo('download');
+    })();
+  </script>
+</body>
+</html>

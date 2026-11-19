@@ -1,51 +1,148 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
-@layer base {
-  :root {
-    --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-    --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
-    --brand: #003B3E;
-    --brand-hover: #002729;
-    --brand-tint: rgba(0, 59, 62, 0.14);
-  }
+@theme {
+  --font-sans: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Plus Jakarta Sans", "DM Sans", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-void: #070913;
+  --color-midnight: #0c1021;
+  --color-panel-soft: #131a35;
+}
 
+@layer base {
   html {
-    scroll-behavior: smooth;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   body {
-    font-family: var(--font-sans);
-    background-color: #F5F7F8;
-    color: #0F172A;
+    min-height: 100vh;
+    overflow-x: hidden;
+    background-color: #f4f7fb;
+    background-image:
+      radial-gradient(circle at 12% 10%, rgba(124, 58, 237, 0.06), transparent 34%),
+      radial-gradient(circle at 86% 14%, rgba(6, 182, 212, 0.06), transparent 36%);
   }
 
   .dark body {
-    background-color: #000E16;
-    color: #F1F5F9;
+    background-color: #070913;
+    background-image:
+      radial-gradient(circle at 12% 10%, rgba(124, 58, 237, 0.16), transparent 34%),
+      radial-gradient(circle at 86% 14%, rgba(6, 182, 212, 0.13), transparent 36%),
+      radial-gradient(circle at 55% 88%, rgba(16, 185, 129, 0.08), transparent 40%);
+    color: #f1f5f9;
   }
 
-  h1, h2, h3, h4, .font-display {
+  .font-display {
     font-family: var(--font-display);
   }
-
-  .font-mono {
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .tabular-nums {
-    font-variant-numeric: tabular-nums;
-  }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
+.glass-card {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 12px 32px -18px rgba(15, 23, 42, 0.14);
 }
 
+.dark .glass-card {
+  background: linear-gradient(155deg, rgba(20, 26, 52, 0.84) 0%, rgba(11, 15, 32, 0.92) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  box-shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.75), inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+}
+
+.glass-card-accent {
+  background: linear-gradient(150deg, rgba(245, 243, 255, 0.96) 0%, rgba(240, 249, 255, 0.96) 100%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(124, 58, 237, 0.25);
+  box-shadow: 0 14px 32px -16px rgba(109, 40, 217, 0.16);
+}
+
+.dark .glass-card-accent {
+  background: linear-gradient(150deg, rgba(49, 32, 92, 0.44) 0%, rgba(14, 19, 41, 0.92) 55%, rgba(9, 39, 52, 0.45) 100%);
+  border: 1px solid rgba(139, 92, 246, 0.34);
+  box-shadow: 0 20px 44px -18px rgba(109, 40, 217, 0.35), inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+
+/* iOS-style switch toggle */
+.ios-switch {
+  position: relative;
+  display: inline-block;
+  width: 42px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.ios-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.ios-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: rgba(148, 163, 184, 0.45);
+  transition: 0.25s;
+  border-radius: 9999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.dark .ios-slider {
+  background-color: rgba(51, 65, 85, 0.85);
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+.ios-slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background-color: #ffffff;
+  transition: 0.25s;
+  border-radius: 9999px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.ios-switch input:checked + .ios-slider {
+  background: linear-gradient(90deg, #10b981, #06b6d4);
+  border-color: rgba(16, 185, 129, 0.6);
+}
+
+.ios-switch input:checked + .ios-slider:before {
+  transform: translateX(20px);
+}
+
+/* Subtle custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(241, 245, 249, 0.7);
+}
+
+.dark ::-webkit-scrollbar-track {
+  background: rgba(9, 13, 28, 0.85);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.35);
+  border-radius: 9999px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.32);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(6, 182, 212, 0.55);
+}

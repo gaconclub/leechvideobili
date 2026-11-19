@@ -9,6 +9,7 @@ import {
   Film,
   Loader2,
   Save,
+  Clapperboard,
 } from 'lucide-react';
 import {
   CustomLogoConfig,
@@ -16,6 +17,7 @@ import {
   OutputFormat,
   QueueVideoItem,
   RESOLUTION_PRESETS,
+  TrendingVideoItem,
   VideoTransformConfig,
   WATERMARK_PRESETS,
   WatermarkMode,
@@ -46,6 +48,7 @@ interface QueueTableProps {
   onClearAll: () => void;
   onSaveSingle: (item: QueueVideoItem) => void;
   onDownloadZip: () => void;
+  onPushToStudio?: (videos: TrendingVideoItem[], query?: string) => void;
   customLogo?: CustomLogoConfig;
   videoTransform?: VideoTransformConfig;
 }
@@ -55,8 +58,8 @@ const ThumbnailImage: React.FC<{ pic: string; title: string }> = ({ pic, title }
 
   if (!pic || failed) {
     return (
-      <div className="w-24 h-14 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center shrink-0">
-        <Film className="w-5 h-5 text-slate-400" />
+      <div className="w-20 h-12 rounded-lg bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 flex items-center justify-center shrink-0">
+        <Film className="w-4 h-4 text-slate-400" />
       </div>
     );
   }
@@ -67,10 +70,29 @@ const ThumbnailImage: React.FC<{ pic: string; title: string }> = ({ pic, title }
       alt={title}
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}
-      className="w-24 h-14 object-cover rounded-lg border border-slate-200/80 dark:border-slate-800 shrink-0 bg-slate-100 dark:bg-slate-800"
+      className="w-20 h-12 object-cover rounded-lg border border-slate-200/80 dark:border-slate-700/60 shrink-0 bg-slate-100 dark:bg-slate-800"
     />
   );
 };
+
+function queueItemToDiscoveryItem(item: QueueVideoItem): TrendingVideoItem {
+  return {
+    id: item.bvid || item.id,
+    platform: item.platform || 'other',
+    platformLabel: item.platform || 'Video',
+    title: item.partTitle ? `${item.title} — P${item.page}: ${item.partTitle}` : item.title,
+    author: item.author || 'Creator',
+    pic: item.pic || '',
+    sourceUrl: item.sourceUrl,
+    duration: item.duration || 0,
+    views: item.views || 0,
+    pubdate: item.pubdate,
+    score: 90,
+    category: 'all',
+    categoryLabel: 'Hàng đợi',
+    orientation: 'unknown',
+  };
+}
 
 export const QueueTable: React.FC<QueueTableProps> = ({
   items,
@@ -85,6 +107,7 @@ export const QueueTable: React.FC<QueueTableProps> = ({
   onClearAll,
   onSaveSingle,
   onDownloadZip,
+  onPushToStudio,
   customLogo,
   videoTransform,
 }) => {
@@ -93,7 +116,15 @@ export const QueueTable: React.FC<QueueTableProps> = ({
   const [pageSize, setPageSize] = useState<50 | 100 | 150 | 200 | 'all'>(50);
   const [currentPage, setCurrentPage] = useState<number>(1);
 
-  const selectedCount = items.filter((i) => i.selected).length;
+  const selectedItems = items.filter((i) => i.selected);
+  const selectedCount = selectedItems.length;
+  const pendingCount = items.filter(
+    (i) =>
+      i.status === 'idle' ||
+      i.status === 'queued' ||
+      i.status === 'downloading' ||
+      i.status === 'processing'
+  ).length;
   const completedCount = items.filter((i) => i.status === 'completed').length;
   const errorCount = items.filter((i) => i.status === 'error').length;
 
@@ -128,12 +159,8 @@ export const QueueTable: React.FC<QueueTableProps> = ({
       return true;
     })
     .sort((a, b) => {
-      if (sortBy === 'newest') {
-        return (b.pubdate || 0) - (a.pubdate || 0);
-      }
-      if (sortBy === 'views') {
-        return (b.views || 0) - (a.views || 0);
-      }
+      if (sortBy === 'newest') return (b.pubdate || 0) - (a.pubdate || 0);
+      if (sortBy === 'views') return (b.views || 0) - (a.views || 0);
       return 0;
     });
 
@@ -153,17 +180,17 @@ export const QueueTable: React.FC<QueueTableProps> = ({
     return (
       <section
         id="download-queue"
-        className="bg-white dark:bg-[#001722] border border-slate-200/80 dark:border-[#00464A] rounded-2xl p-14 text-center shadow-[0_1px_2px_rgba(15,23,42,0.03)]"
+        className="glass-card rounded-2xl p-12 text-center space-y-3"
       >
-        <div className="mx-auto w-12 h-12 rounded-xl bg-[#003B3E]/10 dark:bg-[#003B3E]/65 text-[#003B3E] dark:text-[#1BA8AD] flex items-center justify-center mb-4">
+        <div className="mx-auto w-12 h-12 rounded-xl bg-violet-500/15 border border-violet-400/30 text-violet-600 dark:text-violet-300 flex items-center justify-center">
           <Film className="w-6 h-6" />
         </div>
-        <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
+        <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
           Chưa có video nào trong hàng đợi
         </h2>
-        <p className="text-sm text-slate-500 dark:text-teal-100/80 max-w-md mx-auto mt-1.5">
-          Dán các liên kết Bilibili hoặc YouTube vào ô phía trên và nhấn{' '}
-          <span className="font-medium text-[#003B3E] dark:text-[#1BA8AD]">
+        <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+          Dán các liên kết vào ô phía trên và nhấn{' '}
+          <span className="font-semibold text-emerald-600 dark:text-emerald-300">
             Phân tích &amp; Thêm vào hàng đợi
           </span>{' '}
           để bắt đầu tải xuống.
@@ -175,113 +202,104 @@ export const QueueTable: React.FC<QueueTableProps> = ({
   return (
     <section
       id="download-queue"
-      className="bg-white dark:bg-[#001722] border border-slate-200/80 dark:border-[#00464A] rounded-2xl overflow-hidden shadow-[0_1px_2px_rgba(15,23,42,0.03)]"
+      className="glass-card rounded-2xl p-4 sm:p-5 space-y-3.5"
     >
-      {/* Queue Toolbar */}
-      <div className="px-6 py-4 border-b border-slate-200/80 dark:border-[#00464A]/80 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Segmented filter */}
-          <div className="flex items-center gap-1 p-1 bg-slate-100/90 dark:bg-[#000A10] rounded-lg">
-            {[
-              { key: 'all', label: `Tất cả (${items.length})` },
-              { key: 'pending', label: 'Đang chờ / Tải' },
-              { key: 'completed', label: `Hoàn tất (${completedCount})` },
-              { key: 'error', label: `Lỗi (${errorCount})` },
-            ].map((tab) => (
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {[
+            { key: 'all', label: `Tất cả (${items.length})` },
+            { key: 'pending', label: `Đang chờ / tải (${pendingCount})` },
+            { key: 'completed', label: `Hoàn tất (${completedCount})` },
+            { key: 'error', label: `Lỗi / Cookie (${errorCount})` },
+          ].map((tab) => {
+            const active = filter === tab.key;
+            const isErrTab = tab.key === 'error';
+            return (
               <button
                 key={tab.key}
                 type="button"
                 onClick={() => setFilter(tab.key as any)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-                  filter === tab.key
-                    ? 'bg-white dark:bg-[#001722] text-[#003B3E] dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-teal-100/75 hover:text-slate-900 dark:hover:text-white'
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition whitespace-nowrap shrink-0 cursor-pointer tabular-nums ${
+                  active
+                    ? 'bg-violet-500/20 dark:bg-violet-500/25 text-violet-800 dark:text-violet-200 border-violet-400/45'
+                    : isErrTab && errorCount > 0
+                    ? 'bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/25 hover:bg-rose-500/20'
+                    : 'bg-slate-50 dark:bg-[#0c1021] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-400/20 hover:bg-slate-100 dark:hover:bg-white/5'
                 }`}
               >
                 {tab.label}
               </button>
-            ))}
-          </div>
+            );
+          })}
 
-          {/* Sort by publish date or view count */}
-          <div className="flex items-center gap-1 p-1 bg-slate-100/90 dark:bg-[#000A10] rounded-lg">
-            {[
-              { key: 'default', label: 'Mặc định' },
-              { key: 'newest', label: 'Mới nhất' },
-              { key: 'views', label: 'Xem nhiều nhất' },
-            ].map((opt) => (
-              <button
-                key={opt.key}
-                type="button"
-                onClick={() => setSortBy(opt.key as any)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-                  sortBy === opt.key
-                    ? 'bg-white dark:bg-[#001722] text-[#003B3E] dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-teal-100/75 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="text-xs text-slate-500 dark:text-teal-100/80 font-mono tabular-nums">
-            <span>{selectedCount} đã chọn</span>
-            <span className="mx-2" aria-hidden="true">
-              ·
-            </span>
-            <span>
-              {completedCount}/{items.length} hoàn tất
-            </span>
-          </div>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as any)}
+            aria-label="Sắp xếp hàng đợi"
+            className="rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 px-2.5 py-1.5 text-xs text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
+          >
+            <option value="default">Sắp xếp: Mặc định</option>
+            <option value="newest">Mới nhất</option>
+            <option value="views">Xem nhiều nhất</option>
+          </select>
 
           {filteredItems.length > 50 && (
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="queue-page-size"
-                className="text-xs font-medium text-slate-500 dark:text-teal-100/80 whitespace-nowrap"
-              >
-                Hiển thị
-              </label>
-              <select
-                id="queue-page-size"
-                value={pageSize}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setPageSize(val === 'all' ? 'all' : (Number(val) as 50 | 100 | 150 | 200));
-                  setCurrentPage(1);
-                }}
-                className="px-2.5 py-1.5 text-xs font-mono bg-[#F8FAFB] dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E] cursor-pointer"
-              >
-                <option value={50}>50 / trang</option>
-                <option value={100}>100 / trang</option>
-                <option value={150}>150 / trang</option>
-                <option value={200}>200 / trang</option>
-                <option value="all">Tất cả</option>
-              </select>
-            </div>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                const val = e.target.value;
+                setPageSize(val === 'all' ? 'all' : (Number(val) as 50 | 100 | 150 | 200));
+                setCurrentPage(1);
+              }}
+              aria-label="Số mục mỗi trang"
+              className="rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 px-2.5 py-1.5 text-xs font-mono text-slate-700 dark:text-slate-200 cursor-pointer"
+            >
+              <option value={50}>50 / trang</option>
+              <option value={100}>100 / trang</option>
+              <option value={150}>150 / trang</option>
+              <option value={200}>200 / trang</option>
+              <option value="all">Tất cả</option>
+            </select>
           )}
         </div>
 
-        {/* Bulk actions */}
-        <div className="flex flex-wrap items-center gap-2">
+        {/* Bulk Actions */}
+        <div className="flex flex-wrap items-center gap-1.5">
           {selectedCount > 0 && (
             <>
               <button
                 type="button"
                 onClick={onStartSelected}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition whitespace-nowrap shrink-0 cursor-pointer tabular-nums"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Tải đã chọn ({selectedCount})</span>
               </button>
+
+              {onPushToStudio && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onPushToStudio(
+                      selectedItems.map(queueItemToDiscoveryItem),
+                      ''
+                    )
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-700 dark:text-cyan-200 border border-cyan-500/35 transition whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Clapperboard className="w-3.5 h-3.5" />
+                  <span>Đưa mục đã chọn sang Studio phái sinh</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={onRemoveSelected}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-slate-200 dark:border-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-300 hover:bg-rose-500/15 border border-rose-500/25 rounded-xl transition whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>Xóa đã chọn</span>
+                <span>Xóa chọn</span>
               </button>
             </>
           )}
@@ -291,7 +309,7 @@ export const QueueTable: React.FC<QueueTableProps> = ({
               <button
                 type="button"
                 onClick={onRetryErrors}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/50 border border-amber-200 dark:border-amber-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-200 border border-amber-400/30 font-semibold transition whitespace-nowrap cursor-pointer tabular-nums"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span>Thử lại lỗi ({errorCount})</span>
@@ -299,10 +317,10 @@ export const QueueTable: React.FC<QueueTableProps> = ({
               <button
                 type="button"
                 onClick={handleExportErrorList}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 font-medium transition whitespace-nowrap cursor-pointer"
               >
                 <Save className="w-3.5 h-3.5" />
-                <span>Xuất DS lỗi (.txt)</span>
+                <span>DS lỗi (.txt)</span>
               </button>
             </>
           )}
@@ -311,33 +329,31 @@ export const QueueTable: React.FC<QueueTableProps> = ({
             <button
               type="button"
               onClick={onDownloadZip}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/35 transition whitespace-nowrap cursor-pointer tabular-nums"
             >
               <FileArchive className="w-3.5 h-3.5" />
-              <span>Tải tất cả ZIP ({completedCount})</span>
+              <span>ZIP ({completedCount})</span>
             </button>
           )}
 
-          {items.length > 0 && (
-            <button
-              type="button"
-              onClick={onClearAll}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 border border-slate-200 dark:border-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              title="Xóa danh sách video khỏi hàng đợi (ngoại trừ video đang tải)"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Làm trống hàng đợi</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onClearAll}
+            title="Xóa danh sách video khỏi hàng đợi (trừ video đang tải)"
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-300 border border-slate-200 dark:border-slate-400/20 hover:bg-rose-500/10 transition whitespace-nowrap cursor-pointer"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Làm trống</span>
+          </button>
         </div>
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-400/20 bg-slate-50/70 dark:bg-[#0c1021]/80">
         <table className="w-full text-left border-collapse">
           <thead>
-            <tr className="border-b border-slate-200/80 dark:border-[#00464A]/80 bg-[#F8FAFB] dark:bg-[#000A10] text-xs font-semibold text-slate-500 dark:text-teal-100/85">
-              <th className="py-3 pl-6 pr-3 w-10">
+            <tr className="border-b border-slate-200 dark:border-slate-400/15 bg-slate-100/80 dark:bg-[#131a35]/80 text-[11px] font-semibold text-slate-500 dark:text-slate-300">
+              <th className="py-2.5 pl-4 pr-2 w-9">
                 <input
                   type="checkbox"
                   checked={allVisibleSelected}
@@ -348,18 +364,19 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                     )
                   }
                   aria-label="Chọn tất cả video đang hiển thị"
-                  className="w-4 h-4 rounded border-slate-300 dark:border-teal-700 accent-[#003B3E] cursor-pointer"
+                  className="w-4 h-4 rounded accent-emerald-500 cursor-pointer"
                 />
               </th>
-              <th className="py-3 px-3">Video</th>
-              <th className="py-3 px-3 w-36">Độ phân giải</th>
-              <th className="py-3 px-3 w-28">Định dạng</th>
-              <th className="py-3 px-3 w-40">Xóa logo</th>
-              <th className="py-3 px-3 w-44">Tiến trình</th>
-              <th className="py-3 pl-3 pr-6 w-36 text-right">Thao tác</th>
+              <th className="py-2.5 px-2.5">Video</th>
+              <th className="py-2.5 px-2 w-32">Độ phân giải</th>
+              <th className="py-2.5 px-2 w-24">Định dạng</th>
+              <th className="py-2.5 px-2 w-36">Xóa logo</th>
+              <th className="py-2.5 px-2 w-40">Tiến trình</th>
+              <th className="py-2.5 pl-2 pr-4 w-44 text-right">Thao tác</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-200/70 dark:divide-[#00464A]/60 text-sm">
+
+          <tbody className="divide-y divide-slate-200/80 dark:divide-slate-400/15 text-xs">
             {paginatedItems.map((item) => {
               const isBusy =
                 item.status === 'queued' ||
@@ -373,65 +390,58 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                   : RESOLUTION_PRESETS.slice(1)),
               ];
 
+              const platformName =
+                {
+                  bilibili: 'Bilibili',
+                  youtube: 'YouTube',
+                  tiktok: 'TikTok',
+                  douyin: 'Douyin',
+                  kuaishou: 'Kuaishou',
+                  xiaohongshu: 'Xiaohongshu',
+                  weibo: 'Weibo',
+                  xigua: 'Xigua',
+                  dailymotion: 'Dailymotion',
+                  facebook: 'Facebook',
+                  other: 'Video',
+                }[item.platform || 'bilibili'] || 'Bilibili';
+
               return (
                 <tr
                   key={item.id}
-                  className="hover:bg-[#003B3E]/[0.04] dark:hover:bg-[#003B3E]/25 transition-colors"
+                  className="hover:bg-white/60 dark:hover:bg-white/[0.03] transition-colors"
                 >
-                  <td className="py-3.5 pl-6 pr-3 align-middle">
+                  <td className="py-3 pl-4 pr-2 align-middle">
                     <input
                       type="checkbox"
                       checked={item.selected}
                       onChange={() => onToggleSelect(item.id)}
                       aria-label={`Chọn ${item.title}`}
-                      className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 accent-[#003B3E] cursor-pointer"
+                      className="w-4 h-4 rounded accent-emerald-500 cursor-pointer"
                     />
                   </td>
 
-                  {/* Video info */}
-                  <td className="py-3.5 px-3 align-middle">
-                    <div className="flex items-center gap-3.5 min-w-[280px]">
+                  {/* Video Info */}
+                  <td className="py-3 px-2.5 align-middle">
+                    <div className="flex items-center gap-3 min-w-[230px]">
                       <ThumbnailImage pic={item.pic} title={item.title} />
                       <div className="min-w-0 flex-1">
                         <a
                           href={item.sourceUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="font-medium text-slate-900 dark:text-slate-100 hover:text-[#003B3E] dark:hover:text-[#1BA8AD] transition-colors line-clamp-1"
+                          className="font-semibold text-slate-900 dark:text-white hover:text-cyan-600 dark:hover:text-cyan-300 transition-colors line-clamp-1"
                           title={item.title}
                         >
                           {item.partTitle
                             ? `${item.title} — P${item.page}: ${item.partTitle}`
                             : item.title}
                         </a>
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400 mt-1">
-                          <span
-                            className={`font-semibold ${
-                              item.platform === 'youtube'
-                                ? 'text-red-600 dark:text-red-400'
-                                : item.platform === 'facebook'
-                                ? 'text-blue-600 dark:text-blue-400'
-                                : 'text-[#003B3E] dark:text-[#1BA8AD]'
-                            }`}
-                          >
-                            {({
-                              bilibili: 'Bilibili',
-                              youtube: 'YouTube',
-                              tiktok: 'TikTok',
-                              douyin: 'Douyin',
-                              kuaishou: 'Kuaishou',
-                              xiaohongshu: 'Xiaohongshu',
-                              weibo: 'Weibo',
-                              xigua: 'Xigua',
-                              dailymotion: 'Dailymotion',
-                              facebook: 'Facebook',
-                              other: 'Video',
-                            }[item.platform || 'bilibili'] || 'Bilibili')}
+                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                          <span className="font-semibold text-violet-600 dark:text-violet-300">
+                            {platformName}
                           </span>
                           <span aria-hidden="true">·</span>
                           <span className="font-mono">{item.bvid}</span>
-                          <span aria-hidden="true">·</span>
-                          <span className="truncate max-w-[140px]">{item.author}</span>
                           <span aria-hidden="true">·</span>
                           <span className="font-mono tabular-nums">
                             {formatDuration(item.duration)}
@@ -457,8 +467,8 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                     </div>
                   </td>
 
-                  {/* Per-row Resolution */}
-                  <td className="py-3.5 px-3 align-middle">
+                  {/* Resolution */}
+                  <td className="py-3 px-2 align-middle">
                     <select
                       disabled={isBusy}
                       value={item.selectedQn}
@@ -470,7 +480,7 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                           item.selectedWatermark
                         )
                       }
-                      className="w-full h-8 px-2.5 text-xs font-medium bg-[#F8FAFB] dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white disabled:opacity-50 focus:outline-none focus:border-[#003B3E] cursor-pointer"
+                      className="w-full h-8 px-2 text-xs font-medium bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white disabled:opacity-50 focus:outline-none cursor-pointer"
                     >
                       {qualityOptions.map((q) => (
                         <option key={q.qn} value={q.qn}>
@@ -480,8 +490,8 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                     </select>
                   </td>
 
-                  {/* Per-row Output Format */}
-                  <td className="py-3.5 px-3 align-middle">
+                  {/* Format */}
+                  <td className="py-3 px-2 align-middle">
                     <select
                       disabled={isBusy}
                       value={item.selectedFormat}
@@ -493,7 +503,7 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                           item.selectedWatermark
                         )
                       }
-                      className="w-full h-8 px-2.5 text-xs font-mono font-medium bg-[#F8FAFB] dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white disabled:opacity-50 focus:outline-none focus:border-[#003B3E] cursor-pointer"
+                      className="w-full h-8 px-2 text-xs font-mono font-medium bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white disabled:opacity-50 focus:outline-none cursor-pointer"
                     >
                       {OUTPUT_FORMATS.map((fmt) => (
                         <option key={fmt.value} value={fmt.value}>
@@ -503,8 +513,8 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                     </select>
                   </td>
 
-                  {/* Per-row Watermark removal */}
-                  <td className="py-3.5 px-3 align-middle">
+                  {/* Watermark */}
+                  <td className="py-3 px-2 align-middle">
                     <select
                       disabled={
                         isBusy ||
@@ -520,7 +530,7 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                           e.target.value as WatermarkMode
                         )
                       }
-                      className="w-full h-8 px-2.5 text-xs font-medium bg-[#F8FAFB] dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white disabled:opacity-50 focus:outline-none focus:border-[#003B3E] cursor-pointer"
+                      className="w-full h-8 px-2 text-xs font-medium bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white disabled:opacity-50 focus:outline-none cursor-pointer"
                     >
                       {WATERMARK_PRESETS.map((wm) => (
                         <option key={wm.value} value={wm.value}>
@@ -532,11 +542,8 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                       customLogo.dataUrl &&
                       item.selectedFormat !== 'mp3' &&
                       item.selectedFormat !== 'm4a' && (
-                        <div
-                          className="mt-1 text-[11px] text-[#003B3E] dark:text-[#1BA8AD] font-medium truncate"
-                          title="Sẽ tự động chèn logo riêng của bạn vào video này"
-                        >
-                          + Chèn logo riêng
+                        <div className="mt-1 text-[10px] text-cyan-700 dark:text-cyan-300 font-medium truncate">
+                          + Logo riêng
                         </div>
                       )}
                     {videoTransform &&
@@ -554,10 +561,7 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                           tParts.push(`Zoom ${videoTransform.zoomPercent}%`);
                         if (tParts.length === 0) return null;
                         return (
-                          <div
-                            className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 font-medium truncate"
-                            title={`Sẽ áp dụng: ${tParts.join(', ')}`}
-                          >
+                          <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400 truncate">
                             + {tParts.join(' · ')}
                           </div>
                         );
@@ -565,35 +569,33 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                   </td>
 
                   {/* Status & Progress */}
-                  <td className="py-3.5 px-3 align-middle">
+                  <td className="py-3 px-2 align-middle">
                     {item.status === 'idle' && (
-                      <span className="text-xs text-slate-500 dark:text-slate-400">
-                        Sẵn sàng tải
+                      <span className="px-2 py-0.5 rounded-lg bg-slate-200/70 dark:bg-white/5 text-slate-600 dark:text-slate-300 text-[11px]">
+                        Sẵn sàng
                       </span>
                     )}
 
                     {item.status === 'queued' && (
-                      <span className="text-xs text-slate-500 dark:text-slate-400">
-                        Đang chờ lượt...
+                      <span className="px-2 py-0.5 rounded-lg bg-violet-500/15 text-violet-700 dark:text-violet-300 text-[11px]">
+                        Đang chờ...
                       </span>
                     )}
 
                     {(item.status === 'downloading' || item.status === 'processing') && (
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between text-xs font-mono tabular-nums">
-                          <span className="text-slate-700 dark:text-slate-300 font-sans font-medium">
-                            {item.status === 'processing' ? 'Đang ghép FFmpeg' : 'Đang tải'}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px] font-mono tabular-nums">
+                          <span className="text-cyan-700 dark:text-cyan-300 font-sans font-semibold">
+                            {item.status === 'processing' ? 'FFmpeg' : 'Đang tải'}
                           </span>
-                          <span className="text-[#003B3E] dark:text-[#1BA8AD] font-semibold">
+                          <span className="text-cyan-700 dark:text-cyan-300 font-semibold">
                             {item.progress}%
-                            {item.speedBytesPerSec
-                              ? ` · ${formatSpeed(item.speedBytesPerSec)}`
-                              : ''}
+                            {item.speedBytesPerSec ? ` · ${formatSpeed(item.speedBytesPerSec)}` : ''}
                           </span>
                         </div>
-                        <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                        <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden">
                           <div
-                            className="h-full bg-[#003B3E] dark:bg-[#1BA8AD] transition-all duration-200"
+                            className="h-full bg-gradient-to-r from-cyan-400 to-emerald-400 transition-all duration-200"
                             style={{ width: `${item.progress}%` }}
                           />
                         </div>
@@ -602,18 +604,18 @@ export const QueueTable: React.FC<QueueTableProps> = ({
 
                     {item.status === 'completed' && (
                       <div className="space-y-0.5">
-                        <div className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400">
-                          <CheckCircle2 className="w-4 h-4 shrink-0" />
-                          <span>{item.savedToDisk ? 'Đã lưu về máy' : 'Hoàn tất'}</span>
-                          {item.fileSize && (
-                            <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                              · {formatBytes(item.fileSize)}
-                            </span>
-                          )}
+                        <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-400/30 text-[11px] font-semibold">
+                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                          <span>{item.savedToDisk ? 'Đã lưu' : 'Hoàn tất'}</span>
                         </div>
+                        {item.fileSize && (
+                          <div className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                            {formatBytes(item.fileSize)}
+                          </div>
+                        )}
                         {item.saveError && (
                           <p
-                            className="text-[11px] text-amber-600 dark:text-amber-400 truncate max-w-[180px]"
+                            className="text-[10px] text-amber-600 dark:text-amber-300 truncate max-w-[140px]"
                             title={item.saveError}
                           >
                             {item.saveError}
@@ -624,50 +626,61 @@ export const QueueTable: React.FC<QueueTableProps> = ({
 
                     {item.status === 'error' && (
                       <div
-                        className="flex items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30 text-[11px] font-semibold max-w-[155px]"
                         title={item.error}
                       >
-                        <AlertTriangle className="w-4 h-4 shrink-0" />
-                        <span className="truncate max-w-[160px]">
-                          {item.error || 'Lỗi tải xuống'}
-                        </span>
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">{item.error || 'Lỗi tải'}</span>
                       </div>
                     )}
                   </td>
 
                   {/* Actions */}
-                  <td className="py-3.5 pl-3 pr-6 align-middle text-right">
-                    <div className="inline-flex items-center justify-end gap-1.5">
+                  <td className="py-3 pl-2 pr-4 align-middle text-right">
+                    <div className="inline-flex items-center justify-end gap-1">
                       {item.status === 'completed' && item.jobId ? (
                         <button
                           type="button"
                           onClick={() => onSaveSingle(item)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-800 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 rounded-lg transition whitespace-nowrap cursor-pointer"
                         >
-                          <Save className="w-3.5 h-3.5" />
-                          <span>Lưu tệp</span>
+                          <Save className="w-3 h-3" />
+                          <span>Lưu</span>
                         </button>
                       ) : isBusy ? (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-[#003B3E] dark:text-[#1BA8AD]">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 text-cyan-600 dark:text-cyan-300">
                           <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         </span>
                       ) : (
                         <button
                           type="button"
                           onClick={() => onStartSingle(item.id)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-[#003B3E] hover:text-white dark:hover:bg-[#003B3E] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-100 bg-slate-200/70 dark:bg-white/10 hover:bg-emerald-500 hover:text-slate-950 rounded-lg transition whitespace-nowrap cursor-pointer"
                         >
                           {item.status === 'error' ? (
                             <>
-                              <RotateCcw className="w-3.5 h-3.5" />
+                              <RotateCcw className="w-3 h-3" />
                               <span>Thử lại</span>
                             </>
                           ) : (
                             <>
-                              <Download className="w-3.5 h-3.5" />
-                              <span>Tải về</span>
+                              <Download className="w-3 h-3" />
+                              <span>Tải</span>
                             </>
                           )}
+                        </button>
+                      )}
+
+                      {onPushToStudio && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onPushToStudio([queueItemToDiscoveryItem(item)], '')
+                          }
+                          title="Đưa video này sang Studio phái sinh"
+                          className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-white/5 hover:bg-violet-500/20 border border-slate-200 dark:border-white/10 text-cyan-700 dark:text-cyan-300 text-[11px] font-semibold transition whitespace-nowrap cursor-pointer"
+                        >
+                          + Studio
                         </button>
                       )}
 
@@ -676,9 +689,9 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                         disabled={isBusy}
                         onClick={() => onRemoveItem(item.id)}
                         aria-label="Xóa khỏi hàng đợi"
-                        className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 disabled:opacity-30 rounded-lg transition-colors cursor-pointer"
+                        className="p-1 text-slate-400 hover:text-rose-500 disabled:opacity-30 rounded-lg transition cursor-pointer"
                       >
-                        <Trash2 className="w-4 h-4" />
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </td>
@@ -689,10 +702,10 @@ export const QueueTable: React.FC<QueueTableProps> = ({
         </table>
       </div>
 
-      {/* Pagination bar when more than 50 items or multiple pages */}
+      {/* Pagination */}
       {filteredItems.length > 50 && (
-        <div className="px-6 py-3.5 border-t border-slate-200/80 dark:border-[#00464A]/80 flex flex-wrap items-center justify-between gap-4 bg-[#F8FAFB] dark:bg-[#000A10]">
-          <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-teal-100/80">
+        <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
             Hiển thị {startIdx + 1}–{Math.min(startIdx + effectivePageSize, filteredItems.length)}{' '}
             trên {filteredItems.length} video
           </div>
@@ -703,7 +716,7 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                 type="button"
                 disabled={safePage <= 1}
                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-teal-100 bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-[#000E16] disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-colors cursor-pointer"
+                className="px-3 py-1 rounded-lg bg-slate-100 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 text-slate-700 dark:text-slate-200 disabled:opacity-40 cursor-pointer"
               >
                 Trước
               </button>
@@ -713,10 +726,10 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                   key={pageNum}
                   type="button"
                   onClick={() => setCurrentPage(pageNum)}
-                  className={`min-w-[32px] px-2.5 py-1.5 text-xs font-mono tabular-nums font-medium rounded-lg transition-colors cursor-pointer ${
+                  className={`min-w-[30px] px-2 py-1 font-mono tabular-nums rounded-lg cursor-pointer ${
                     pageNum === safePage
-                      ? 'bg-[#003B3E] text-white'
-                      : 'bg-white dark:bg-[#001722] text-slate-700 dark:text-teal-100 border border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-[#000E16]'
+                      ? 'bg-violet-600 text-white font-bold'
+                      : 'bg-slate-100 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 text-slate-700 dark:text-slate-200'
                   }`}
                 >
                   {pageNum}
@@ -727,7 +740,7 @@ export const QueueTable: React.FC<QueueTableProps> = ({
                 type="button"
                 disabled={safePage >= totalPages}
                 onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-teal-100 bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-[#000E16] disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-colors cursor-pointer"
+                className="px-3 py-1 rounded-lg bg-slate-100 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 text-slate-700 dark:text-slate-200 disabled:opacity-40 cursor-pointer"
               >
                 Sau
               </button>

@@ -1,9 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  SlidersHorizontal,
   Check,
-  Sun,
-  Moon,
   FolderOpen,
   X,
   Image as ImageIcon,
@@ -28,7 +25,6 @@ interface GlobalConfigBarProps {
   folderName: string;
   subfolderName: string;
   folderNotice: string;
-  darkMode: boolean;
   hasItems: boolean;
   customLogo: CustomLogoConfig;
   videoTransform: VideoTransformConfig;
@@ -36,6 +32,7 @@ interface GlobalConfigBarProps {
   onToggleCustomLogo: () => void;
   onOpenTransformModal: () => void;
   onResetTransform: () => void;
+  onApplyPreset?: (preset: 'default' | 'bilibili_series' | 'shorts_clean') => void;
   onChangeGlobalQn: (qn: number) => void;
   onChangeGlobalFormat: (fmt: OutputFormat) => void;
   onChangeGlobalWatermark: (wm: WatermarkMode) => void;
@@ -45,11 +42,10 @@ interface GlobalConfigBarProps {
   onPickFolder: () => void;
   onClearFolder: () => void;
   onApplyToAll: () => void;
-  onToggleDarkMode: () => void;
 }
 
-const selectBaseClass =
-  'w-full h-9 px-3 text-xs font-medium bg-[#F8FAFB] dark:bg-[#000A10] border border-slate-200/90 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E] dark:focus:border-[#1BA8AD] focus:ring-2 focus:ring-[#003B3E]/15 transition-all cursor-pointer';
+const fieldSelectClass =
+  'w-full rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 px-3 py-2 text-xs font-medium text-slate-900 dark:text-white focus:border-violet-500 dark:focus:border-violet-400 focus:outline-none cursor-pointer';
 
 export const GlobalConfigBar: React.FC<GlobalConfigBarProps> = ({
   globalQn,
@@ -60,7 +56,6 @@ export const GlobalConfigBar: React.FC<GlobalConfigBarProps> = ({
   folderName,
   subfolderName,
   folderNotice,
-  darkMode,
   hasItems,
   customLogo,
   videoTransform,
@@ -68,6 +63,7 @@ export const GlobalConfigBar: React.FC<GlobalConfigBarProps> = ({
   onToggleCustomLogo,
   onOpenTransformModal,
   onResetTransform,
+  onApplyPreset,
   onChangeGlobalQn,
   onChangeGlobalFormat,
   onChangeGlobalWatermark,
@@ -77,73 +73,91 @@ export const GlobalConfigBar: React.FC<GlobalConfigBarProps> = ({
   onPickFolder,
   onClearFolder,
   onApplyToAll,
-  onToggleDarkMode,
 }) => {
+  const [presetKey, setPresetKey] = useState<'default' | 'bilibili_series' | 'shorts_clean'>('default');
+
   const transformParts: string[] = [];
   if (Math.abs(videoTransform.speed - 1) > 0.01) transformParts.push(`${videoTransform.speed}x`);
   if (videoTransform.mirror === 'horizontal') transformParts.push('Lật ngang');
   else if (videoTransform.mirror === 'vertical') transformParts.push('Lật dọc');
   if (videoTransform.zoomPercent !== 100) transformParts.push(`Zoom ${videoTransform.zoomPercent}%`);
+  const transformSummary = transformParts.length > 0 ? transformParts.join(' • ') : '1.0x • Không biến đổi';
   const isTransformActive = transformParts.length > 0;
 
+  const handlePresetChange = (next: 'default' | 'bilibili_series' | 'shorts_clean') => {
+    setPresetKey(next);
+    if (onApplyPreset) {
+      onApplyPreset(next);
+    } else {
+      if (next === 'default') {
+        onChangeGlobalQn(0);
+        onChangeGlobalFormat('mp4');
+        onChangeGlobalWatermark('auto');
+      } else if (next === 'bilibili_series') {
+        onChangeGlobalQn(80);
+        onChangeGlobalFormat('mp4');
+        onChangeGlobalWatermark('auto');
+      } else if (next === 'shorts_clean') {
+        onChangeGlobalQn(0);
+        onChangeGlobalFormat('mp4');
+        onChangeGlobalWatermark('auto');
+      }
+    }
+  };
+
   return (
-    <section
+    <aside
       id="output-config"
-      className="bg-white dark:bg-[#001722] border border-slate-200/80 dark:border-[#00464A] rounded-2xl p-6 shadow-[0_1px_2px_rgba(15,23,42,0.03)]"
+      className="glass-card rounded-2xl p-4 sm:p-5 space-y-4 xl:sticky xl:top-20"
     >
-      {/* Header row */}
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200/70 dark:border-[#00464A]/80">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-[#003B3E]/10 dark:bg-[#003B3E]/65 text-[#003B3E] dark:text-[#1BA8AD] flex items-center justify-center shrink-0">
-            <SlidersHorizontal className="w-4 h-4" />
-          </div>
-          <div>
-            <h2 className="font-display text-sm font-semibold text-slate-900 dark:text-white">
-              Cấu hình đầu ra &amp; xử lý video
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-teal-100/80">
-              Áp dụng mặc định cho video mới thêm hoặc đồng bộ lại toàn bộ hàng đợi
-            </p>
-          </div>
+      {/* Header + Preset + Apply All */}
+      <div className="flex flex-wrap items-start justify-between gap-2 pb-3 border-b border-slate-200/80 dark:border-slate-400/15">
+        <div>
+          <h2 className="font-display text-sm sm:text-base font-bold text-slate-900 dark:text-white">
+            Cấu hình đầu ra &amp; xử lý video
+          </h2>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+            Áp dụng mặc định cho video mới thêm hoặc đồng bộ lại toàn bộ hàng đợi
+          </p>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <select
+            value={presetKey}
+            onChange={(e) =>
+              handlePresetChange(e.target.value as 'default' | 'bilibili_series' | 'shorts_clean')
+            }
+            aria-label="Chọn cấu hình nhanh"
+            className="rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 px-2.5 py-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-300 focus:outline-none cursor-pointer"
+          >
+            <option value="default">Preset: Chuẩn Reup</option>
+            <option value="bilibili_series">Preset: Bilibili Series 1080p</option>
+            <option value="shorts_clean">Preset: Shorts 9:16 Xóa Logo</option>
+          </select>
+
           <button
             type="button"
             disabled={!hasItems}
             onClick={onApplyToAll}
-            className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold text-[#003B3E] dark:text-[#1BA8AD] bg-[#003B3E]/10 dark:bg-[#000A10] hover:bg-[#003B3E]/16 dark:hover:bg-[#000E16] disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 disabled:opacity-40 disabled:cursor-not-allowed border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition whitespace-nowrap cursor-pointer"
           >
             <Check className="w-3.5 h-3.5" />
             <span>Áp dụng cho tất cả</span>
           </button>
-
-          <button
-            type="button"
-            onClick={onToggleDarkMode}
-            aria-label={darkMode ? 'Chuyển sang giao diện sáng' : 'Chuyển sang giao diện tối'}
-            className="h-9 w-9 inline-flex items-center justify-center text-slate-600 dark:text-teal-100 hover:text-[#003B3E] dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#000A10] border border-slate-200/90 dark:border-[#00464A] rounded-lg transition-colors cursor-pointer"
-          >
-            {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          </button>
         </div>
       </div>
 
-      {/* Main controls grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 py-4">
-        {/* Resolution selector */}
-        <div className="space-y-1.5">
-          <label
-            htmlFor="global-resolution"
-            className="block text-xs font-medium text-slate-500 dark:text-teal-100/80"
-          >
+      {/* 2-Column Compact Options Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+        <div>
+          <label htmlFor="global-resolution" className="block text-slate-500 dark:text-slate-400 mb-1">
             Độ phân giải
           </label>
           <select
             id="global-resolution"
             value={globalQn}
             onChange={(e) => onChangeGlobalQn(Number(e.target.value))}
-            className={selectBaseClass}
+            className={fieldSelectClass}
           >
             {RESOLUTION_PRESETS.map((opt) => (
               <option key={opt.qn} value={opt.qn}>
@@ -153,19 +167,15 @@ export const GlobalConfigBar: React.FC<GlobalConfigBarProps> = ({
           </select>
         </div>
 
-        {/* Format selector */}
-        <div className="space-y-1.5">
-          <label
-            htmlFor="global-format"
-            className="block text-xs font-medium text-slate-500 dark:text-teal-100/80"
-          >
+        <div>
+          <label htmlFor="global-format" className="block text-slate-500 dark:text-slate-400 mb-1">
             Định dạng tệp
           </label>
           <select
             id="global-format"
             value={globalFormat}
             onChange={(e) => onChangeGlobalFormat(e.target.value as OutputFormat)}
-            className={selectBaseClass}
+            className={fieldSelectClass}
           >
             {OUTPUT_FORMATS.map((fmt) => (
               <option key={fmt.value} value={fmt.value}>
@@ -175,19 +185,15 @@ export const GlobalConfigBar: React.FC<GlobalConfigBarProps> = ({
           </select>
         </div>
 
-        {/* Watermark removal selector */}
-        <div className="space-y-1.5">
-          <label
-            htmlFor="global-watermark"
-            className="block text-xs font-medium text-slate-500 dark:text-teal-100/80"
-          >
+        <div>
+          <label htmlFor="global-watermark" className="block text-slate-500 dark:text-slate-400 mb-1">
             Xóa logo gốc
           </label>
           <select
             id="global-watermark"
             value={globalWatermark}
             onChange={(e) => onChangeGlobalWatermark(e.target.value as WatermarkMode)}
-            className={selectBaseClass}
+            className={fieldSelectClass}
           >
             {WATERMARK_PRESETS.map((wm) => (
               <option key={wm.value} value={wm.value}>
@@ -197,19 +203,15 @@ export const GlobalConfigBar: React.FC<GlobalConfigBarProps> = ({
           </select>
         </div>
 
-        {/* Concurrency selector */}
-        <div className="space-y-1.5">
-          <label
-            htmlFor="global-concurrency"
-            className="block text-xs font-medium text-slate-500 dark:text-teal-100/80"
-          >
+        <div>
+          <label htmlFor="global-concurrency" className="block text-slate-500 dark:text-slate-400 mb-1">
             Tải đồng thời
           </label>
           <select
             id="global-concurrency"
             value={concurrency}
             onChange={(e) => onChangeConcurrency(Number(e.target.value))}
-            className={`${selectBaseClass} font-mono tabular-nums`}
+            className={`${fieldSelectClass} font-mono tabular-nums`}
           >
             <option value={1}>1 luồng</option>
             <option value={2}>2 luồng</option>
@@ -217,48 +219,34 @@ export const GlobalConfigBar: React.FC<GlobalConfigBarProps> = ({
           </select>
         </div>
 
-        {/* Custom Logo Control */}
-        <div className="space-y-1.5">
-          <span className="block text-xs font-medium text-slate-500 dark:text-teal-100/80">
-            Logo thương hiệu
-          </span>
+        {/* Brand Logo */}
+        <div>
+          <span className="block text-slate-500 dark:text-slate-400 mb-1">Logo thương hiệu</span>
           {customLogo.dataUrl ? (
-            <div className="h-9 flex items-center justify-between gap-2 px-2.5 rounded-lg border border-[#003B3E]/45 dark:border-[#1BA8AD]/35 bg-[#003B3E]/8 dark:bg-[#000A10]">
+            <div className="flex items-center justify-between rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 px-3 py-1.5 min-h-[38px]">
               <div className="flex items-center gap-2 min-w-0">
-                <input
-                  type="checkbox"
-                  id="toggle-custom-logo"
-                  checked={customLogo.enabled}
-                  onChange={onToggleCustomLogo}
-                  className="w-3.5 h-3.5 rounded border-[#003B3E]/50 accent-[#003B3E] cursor-pointer shrink-0"
-                  title="Bật / Tắt chèn logo riêng"
-                />
-                <button
-                  type="button"
-                  onClick={onOpenLogoModal}
-                  className="flex items-center gap-1.5 min-w-0 cursor-pointer hover:opacity-85 transition-opacity"
-                  title="Nhấn để xem hoặc đổi logo, chỉnh vị trí / kích thước"
-                >
-                  <img
-                    src={customLogo.dataUrl}
-                    alt="Logo preview"
-                    className="w-4 h-4 object-contain rounded bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] shrink-0"
+                <label className="ios-switch" title="Bật / Tắt chèn logo thương hiệu">
+                  <input
+                    type="checkbox"
+                    checked={customLogo.enabled}
+                    onChange={onToggleCustomLogo}
                   />
-                  <span
-                    className={`text-xs font-semibold truncate ${
-                      customLogo.enabled
-                        ? 'text-[#003B3E] dark:text-[#1BA8AD]'
-                        : 'text-slate-400 line-through'
-                    }`}
-                  >
-                    {customLogo.enabled ? 'Đang bật' : 'Đang tắt'}
-                  </span>
-                </button>
+                  <span className="ios-slider" />
+                </label>
+                <span
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-semibold truncate ${
+                    customLogo.enabled
+                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-slate-200 dark:bg-slate-700/60 text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {customLogo.enabled ? 'Đang bật' : 'Đang tắt'}
+                </span>
               </div>
               <button
                 type="button"
                 onClick={onOpenLogoModal}
-                className="text-[11px] font-medium text-slate-600 dark:text-teal-100 hover:text-[#003B3E] dark:hover:text-white underline shrink-0 cursor-pointer"
+                className="text-cyan-700 dark:text-cyan-300 hover:underline font-semibold shrink-0 cursor-pointer"
               >
                 Sửa
               </button>
@@ -267,123 +255,121 @@ export const GlobalConfigBar: React.FC<GlobalConfigBarProps> = ({
             <button
               type="button"
               onClick={onOpenLogoModal}
-              className="w-full h-9 inline-flex items-center justify-center gap-1.5 px-3 text-xs font-medium rounded-lg border border-slate-200/90 dark:border-[#00464A] bg-[#F8FAFB] dark:bg-[#000A10] text-slate-700 dark:text-teal-50 hover:border-[#003B3E]/60 hover:text-[#003B3E] dark:hover:text-[#1BA8AD] transition-colors cursor-pointer whitespace-nowrap"
+              className="w-full min-h-[38px] inline-flex items-center justify-center gap-1.5 rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 px-3 py-2 text-slate-700 dark:text-slate-200 hover:border-violet-400/50 transition cursor-pointer whitespace-nowrap"
             >
-              <ImageIcon className="w-3.5 h-3.5 text-[#003B3E] dark:text-[#1BA8AD] shrink-0" />
+              <ImageIcon className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300 shrink-0" />
               <span>Chèn logo riêng</span>
             </button>
           )}
         </div>
 
-        {/* Video Transform Button (Speed / Mirror / Zoom) */}
-        <div className="space-y-1.5">
-          <span className="block text-xs font-medium text-slate-500 dark:text-teal-100/80">
-            Biến đổi khung hình
-          </span>
-          {isTransformActive ? (
-            <div className="h-9 flex items-center justify-between gap-1.5 px-2.5 rounded-lg border border-[#003B3E]/45 dark:border-[#1BA8AD]/35 bg-[#003B3E]/8 dark:bg-[#000A10]">
-              <button
-                type="button"
-                onClick={onOpenTransformModal}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#003B3E] dark:text-[#1BA8AD] hover:opacity-85 transition-opacity cursor-pointer truncate min-w-0"
-                title="Chỉnh sửa tốc độ, lật gương, thu phóng khung hình"
-              >
-                <Sliders className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">{transformParts.join(' · ')}</span>
-              </button>
-              <button
-                type="button"
-                onClick={onResetTransform}
-                title="Đặt lại tốc độ / lật / thu phóng về mặc định"
-                className="p-0.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-300 rounded transition-colors cursor-pointer shrink-0"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ) : (
+        {/* Frame Transform */}
+        <div>
+          <span className="block text-slate-500 dark:text-slate-400 mb-1">Biến đổi khung hình</span>
+          <div className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 px-3 py-1.5 min-h-[38px]">
             <button
               type="button"
               onClick={onOpenTransformModal}
-              className="w-full h-9 inline-flex items-center justify-center gap-1.5 px-3 text-xs font-medium rounded-lg border border-slate-200/90 dark:border-[#00464A] bg-[#F8FAFB] dark:bg-[#000A10] text-slate-700 dark:text-teal-50 hover:border-[#003B3E]/60 hover:text-[#003B3E] dark:hover:text-[#1BA8AD] transition-colors cursor-pointer whitespace-nowrap"
+              className="inline-flex items-center gap-1.5 text-slate-900 dark:text-slate-100 font-medium truncate cursor-pointer hover:text-cyan-600 dark:hover:text-cyan-300 transition min-w-0"
+              title="Chỉnh sửa tốc độ, lật gương, thu phóng"
             >
-              <Sliders className="w-3.5 h-3.5 text-[#003B3E] dark:text-[#1BA8AD] shrink-0" />
-              <span>Tốc độ · Lật · Zoom</span>
+              <Sliders className="w-3.5 h-3.5 text-violet-600 dark:text-violet-300 shrink-0" />
+              <span className="truncate font-mono tabular-nums text-[11px]">{transformSummary}</span>
             </button>
-          )}
+            <div className="flex items-center gap-1 shrink-0">
+              {isTransformActive && (
+                <button
+                  type="button"
+                  onClick={onResetTransform}
+                  title="Đặt lại mặc định"
+                  className="p-0.5 text-slate-400 hover:text-rose-500 cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onOpenTransformModal}
+                className="text-xs px-2 py-0.5 rounded bg-slate-200/80 dark:bg-white/5 hover:bg-slate-300/80 dark:hover:bg-white/10 text-violet-700 dark:text-violet-300 font-semibold cursor-pointer"
+              >
+                Đổi
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Auto-save & custom destination folder row */}
-      <div className="pt-4 border-t border-slate-200/70 dark:border-[#00464A]/80 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-4">
-          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-teal-50 cursor-pointer select-none">
+      {/* Auto-save & Storage Folder */}
+      <div className="rounded-xl bg-slate-50 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/20 p-3.5 space-y-2.5 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-900 dark:text-white select-none">
             <input
               type="checkbox"
               checked={autoSave}
               onChange={(e) => onToggleAutoSave(e.target.checked)}
-              className="w-4 h-4 rounded border-slate-300 dark:border-teal-700 accent-[#003B3E] cursor-pointer"
+              className="w-4 h-4 rounded accent-emerald-500 cursor-pointer"
             />
             <span>Tự động lưu về máy</span>
           </label>
+          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+            Lưu tự động vào Downloads • Xuất ZIP theo thư mục
+          </span>
+        </div>
 
-          <div className="flex items-center gap-2">
-            <label
-              htmlFor="storage-subfolder"
-              className="text-xs font-medium text-slate-500 dark:text-teal-100/80 whitespace-nowrap"
-            >
-              Thư mục lưu trữ
-            </label>
-            <input
-              id="storage-subfolder"
-              type="text"
-              value={subfolderName}
-              onChange={(e) => onChangeSubfolderName(e.target.value)}
-              placeholder="GaConPro_Downloads"
-              className="w-44 h-8 px-2.5 text-xs font-mono bg-[#F8FAFB] dark:bg-[#000A10] border border-slate-200/90 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-[#003B3E] dark:focus:border-[#1BA8AD] focus:ring-2 focus:ring-[#003B3E]/15 transition-all"
-            />
-          </div>
-
-          <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+          <label htmlFor="storage-subfolder" className="text-slate-500 dark:text-slate-400 shrink-0">
+            Thư mục lưu trữ
+          </label>
+          <input
+            id="storage-subfolder"
+            type="text"
+            value={subfolderName}
+            onChange={(e) => onChangeSubfolderName(e.target.value)}
+            placeholder="GaConPro_Downloads"
+            className="flex-1 min-w-0 rounded-xl bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 px-3 py-1.5 text-slate-900 dark:text-white font-medium font-mono focus:border-emerald-400 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={onPickFolder}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-white/10 hover:bg-slate-100 dark:hover:bg-white/15 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-100 font-medium shrink-0 cursor-pointer whitespace-nowrap"
+          >
+            <FolderOpen className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300" />
+            <span>{folderName ? `Ổ đĩa: ${folderName}` : 'Chọn thư mục'}</span>
+          </button>
+          {folderName && (
             <button
               type="button"
-              onClick={onPickFolder}
-              className="h-8 inline-flex items-center gap-1.5 px-3 text-xs font-medium text-slate-700 dark:text-teal-50 bg-slate-100/90 dark:bg-[#000A10] hover:bg-[#003B3E]/10 hover:text-[#003B3E] dark:hover:bg-[#000E16] dark:hover:text-white rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+              onClick={onClearFolder}
+              title="Bỏ chọn thư mục trên máy"
+              className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer"
             >
-              <FolderOpen className="w-3.5 h-3.5 text-[#003B3E] dark:text-[#1BA8AD]" />
-              <span>{folderName ? `Ổ đĩa: ${folderName}` : 'Chọn thư mục trên máy'}</span>
+              <X className="w-3.5 h-3.5" />
             </button>
-
-            {folderName && (
-              <button
-                type="button"
-                onClick={onClearFolder}
-                title="Bỏ chọn thư mục trên máy"
-                className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-300 rounded-md transition-colors cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-teal-100/80">
-          {folderNotice ? (
-            <span className="text-amber-600 dark:text-amber-300">{folderNotice}</span>
-          ) : folderName ? (
-            <span>
-              Đang lưu vào:{' '}
-              <code className="font-mono text-[#003B3E] dark:text-[#1BA8AD]">
-                {folderName}
-                {subfolderName ? `/${subfolderName}` : ''}
-              </code>
-            </span>
-          ) : (
-            <span>
-              Lưu tự động vào Downloads · Xuất ZIP theo thư mục &ldquo;{subfolderName || 'GaConPro_Downloads'}&rdquo;
-            </span>
           )}
         </div>
+
+        {folderNotice ? (
+          <p className="text-[11px] text-amber-600 dark:text-amber-300">{folderNotice}</p>
+        ) : (
+          <p className="text-[11px] text-emerald-700 dark:text-emerald-300/90">
+            {folderName ? (
+              <>
+                Đang lưu vào:{' '}
+                <code className="font-mono font-bold">
+                  {folderName}
+                  {subfolderName ? `/${subfolderName}` : ''}
+                </code>
+              </>
+            ) : (
+              <>
+                Xuất ZIP theo thư mục &ldquo;
+                <span className="font-bold underline">{subfolderName || 'GaConPro_Downloads'}</span>
+                &rdquo;
+              </>
+            )}
+          </p>
+        )}
       </div>
-    </section>
+    </aside>
   );
 };

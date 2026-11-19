@@ -1,133 +1,123 @@
-import React from 'react';
-import { Download, RefreshCw, Flame, Layers, Search, Settings, Clapperboard } from 'lucide-react';
-
-export type AppTab = 'batch' | 'search' | 'trending' | 'studio' | 'settings';
+import React, { useEffect, useRef, useState } from 'react';
+import { Search, Zap, ShieldCheck, Moon, Sun, Loader2 } from 'lucide-react';
 
 interface TopBarProps {
-  activeTab: AppTab;
-  totalCount: number;
+  darkMode: boolean;
+  onToggleDark: () => void;
+  onQuickSearch: (query: string) => void;
+  onOpenHealth: () => void;
+  onDownloadAll: () => void;
+  pendingDownloadCount: number;
   isDownloading: boolean;
-  hasCookie?: boolean;
-  hasUpdate?: boolean;
-  onChangeTab: (tab: AppTab) => void;
-  onStartAll: () => void;
-  onOpenUpdateModal: () => void;
+  configuredCookiesCount: number;
+  ffmpegReady: boolean;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
-  activeTab,
-  totalCount,
+  darkMode,
+  onToggleDark,
+  onQuickSearch,
+  onOpenHealth,
+  onDownloadAll,
+  pendingDownloadCount,
   isDownloading,
-  hasCookie,
-  hasUpdate,
-  onChangeTab,
-  onStartAll,
-  onOpenUpdateModal,
+  configuredCookiesCount,
+  ffmpegReady,
 }) => {
-  const navItemClass = (isActive: boolean) =>
-    `group relative py-2 text-sm font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#003B3E] rounded-sm ${
-      isActive
-        ? 'text-[#003B3E] dark:text-[#1BA8AD] font-semibold'
-        : 'text-slate-600 dark:text-teal-100/85 hover:text-[#003B3E] dark:hover:text-white'
-    }`;
+  const [quickQuery, setQuickQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
-  const underlineClass = (isActive: boolean) =>
-    `pointer-events-none absolute inset-x-0 -bottom-[1px] h-[2px] rounded-full bg-[#003B3E] dark:bg-[#1BA8AD] origin-center transition-transform duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-      isActive ? 'scale-x-100' : 'scale-x-0 group-hover:scale-x-100'
-    }`;
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = quickQuery.trim();
+    if (!q) return;
+    onQuickSearch(q);
+  };
 
   return (
-    <header className="sticky top-0 z-30 h-15 bg-white/92 dark:bg-[#000A10]/95 backdrop-blur-md border-b border-slate-200/90 dark:border-[#00464A]/80">
-      <div className="max-w-[1320px] mx-auto h-full px-4 sm:px-6 flex items-center justify-between gap-4 sm:gap-8">
-        {/* Zone 1: Single-element Brand wordmark */}
+    <header className="sticky top-0 z-20 glass-card border-b border-slate-200/80 dark:border-slate-400/15 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
+      {/* Global Quick Search */}
+      <form
+        onSubmit={handleSubmit}
+        className="flex items-center gap-2 flex-1 min-w-[210px] max-w-md rounded-xl bg-slate-100/90 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/20 focus-within:border-violet-500/70 dark:focus-within:border-violet-400/60 px-3 py-1.5"
+      >
+        <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+        <input
+          ref={searchInputRef}
+          type="text"
+          value={quickQuery}
+          onChange={(e) => setQuickQuery(e.target.value)}
+          placeholder="Tìm nhanh từ khóa, dán link hoặc Enter..."
+          aria-label="Tìm nhanh toàn cục"
+          className="w-full bg-transparent text-xs sm:text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none"
+        />
+        <span className="hidden sm:inline-block text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/80 dark:bg-white/5 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10 shrink-0">
+          ⌘K
+        </span>
+      </form>
+
+      {/* Right System Pills & Actions */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-[#0c1021]/85 border border-slate-200 dark:border-slate-400/20 text-slate-700 dark:text-slate-300 whitespace-nowrap">
+          <span
+            className={`w-2 h-2 rounded-full ${
+              ffmpegReady ? 'bg-cyan-500 dark:bg-cyan-400 animate-pulse' : 'bg-amber-400'
+            }`}
+          />
+          <span>FFmpeg &amp; Queue Live</span>
+        </div>
+
         <button
           type="button"
-          onClick={() => onChangeTab('batch')}
-          className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white hover:text-[#003B3E] dark:hover:text-[#1BA8AD] transition-colors duration-150 whitespace-nowrap shrink-0 cursor-pointer"
+          onClick={onOpenHealth}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-medium transition cursor-pointer whitespace-nowrap"
         >
-          GaConPro V1.0
+          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+          <span className="tabular-nums">
+            Cookie &amp; AI Health ({configuredCookiesCount}/11)
+          </span>
         </button>
 
-        {/* Zone 2: Clean single-line navigation links with animated underline */}
-        <nav className="flex items-center gap-4 sm:gap-6 overflow-x-auto no-scrollbar">
-          <button
-            type="button"
-            onClick={() => onChangeTab('batch')}
-            className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'batch')}`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>
-              Tải hàng loạt{totalCount > 0 ? ` (${totalCount})` : ''}
-            </span>
-            <span aria-hidden="true" className={underlineClass(activeTab === 'batch')} />
-          </button>
+        <button
+          type="button"
+          onClick={onToggleDark}
+          title={darkMode ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'}
+          aria-label={darkMode ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'}
+          className="p-2 rounded-xl bg-slate-100 dark:bg-[#0c1021]/85 hover:bg-slate-200/80 dark:hover:bg-white/10 border border-slate-200 dark:border-slate-400/20 text-slate-700 dark:text-slate-200 transition cursor-pointer shrink-0"
+        >
+          {darkMode ? <Sun className="w-3.5 h-3.5 text-amber-300" /> : <Moon className="w-3.5 h-3.5 text-violet-600" />}
+        </button>
 
-          <button
-            type="button"
-            onClick={() => onChangeTab('search')}
-            className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'search')}`}
-          >
-            <Search className="w-3.5 h-3.5" />
-            <span>Tìm kiếm</span>
-            <span aria-hidden="true" className={underlineClass(activeTab === 'search')} />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onChangeTab('trending')}
-            className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'trending')}`}
-          >
-            <Flame className="w-3.5 h-3.5 text-amber-500" />
-            <span>Xu hướng</span>
-            <span aria-hidden="true" className={underlineClass(activeTab === 'trending')} />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onChangeTab('studio')}
-            className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'studio')}`}
-          >
-            <Clapperboard className="w-3.5 h-3.5 text-[#003B3E] dark:text-[#1BA8AD]" />
-            <span>Studio</span>
-            <span aria-hidden="true" className={underlineClass(activeTab === 'studio')} />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onChangeTab('settings')}
-            className={`inline-flex items-center gap-1.5 ${navItemClass(activeTab === 'settings')}`}
-          >
-            <Settings className="w-3.5 h-3.5" />
-            <span>Cấu hình{hasCookie ? ' · Đã lưu' : ''}</span>
-            <span aria-hidden="true" className={underlineClass(activeTab === 'settings')} />
-          </button>
-
-          <button
-            type="button"
-            onClick={onOpenUpdateModal}
-            className={`hidden sm:inline-flex items-center gap-1.5 ${navItemClass(false)}`}
-          >
-            <RefreshCw className="w-3.5 h-3.5 transition-transform duration-300 group-hover:rotate-90" />
-            <span>{hasUpdate ? 'Cập nhật (Mới)' : 'Cập nhật'}</span>
-            <span aria-hidden="true" className={underlineClass(false)} />
-          </button>
-        </nav>
-
-        {/* Zone 3: Single Primary Action */}
-        <div className="flex items-center shrink-0">
-          <button
-            type="button"
-            disabled={totalCount === 0 || isDownloading}
-            onClick={() => {
-              onChangeTab('batch');
-              onStartAll();
-            }}
-            className="inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] active:scale-[0.98] disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-400 dark:disabled:text-slate-500 disabled:cursor-not-allowed rounded-lg shadow-xs transition-all duration-150 whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#003B3E]"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>{isDownloading ? 'Đang tải...' : 'Tải tất cả'}</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onDownloadAll}
+          disabled={pendingDownloadCount === 0 && !isDownloading}
+          className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:brightness-110 disabled:opacity-50 text-slate-950 font-bold shadow-md shadow-emerald-500/20 transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 tabular-nums"
+        >
+          {isDownloading ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Zap className="w-3.5 h-3.5" />
+          )}
+          <span>
+            {isDownloading
+              ? 'Đang tải...'
+              : pendingDownloadCount > 0
+              ? `Tải tất cả (${pendingDownloadCount})`
+              : 'Tải tất cả'}
+          </span>
+        </button>
       </div>
     </header>
   );

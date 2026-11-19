@@ -55,7 +55,7 @@ export const ThumbnailImg: React.FC<{ src: string; alt: string; platformLabel: s
 
   if (!src || failed) {
     return (
-      <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#002430] to-[#001018] text-teal-200/70 select-none p-3">
+      <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#171d3b] to-[#0c1021] text-cyan-200/75 select-none p-3">
         <Film className="w-7 h-7 mb-1.5 opacity-75" />
         <span className="text-[11px] font-medium tracking-wide uppercase opacity-80">{platformLabel}</span>
       </div>
@@ -103,157 +103,157 @@ export const VideoDiscoveryCard: React.FC<VideoDiscoveryCardProps> = ({
 
   return (
     <article
-      className={`group flex flex-col bg-white dark:bg-[#001722] border rounded-xl overflow-hidden transition-all duration-150 ${
+      className={`group glass-card rounded-2xl p-3 flex flex-col justify-between gap-2.5 transition-all duration-150 ${
         isSelected
-          ? 'border-[#003B3E] dark:border-[#1BA8AD] ring-2 ring-[#003B3E]/25'
-          : 'border-slate-200/85 dark:border-[#00464A] hover:border-[#003B3E]/60 dark:hover:border-[#1BA8AD]/60'
+          ? 'border-cyan-500/80 dark:border-cyan-400/70 ring-2 ring-cyan-400/20'
+          : 'hover:border-violet-400/45'
       }`}
     >
-      <div className="relative aspect-video bg-slate-900 overflow-hidden">
-        <ThumbnailImg src={video.pic} alt={video.title} platformLabel={video.platformLabel} />
+      <div className="space-y-2">
+        <div className="relative rounded-xl overflow-hidden bg-slate-900 dark:bg-[#0c1021] aspect-video">
+          <ThumbnailImg src={video.pic} alt={video.title} platformLabel={video.platformLabel} />
 
-        <button
-          type="button"
-          onClick={() => onToggleSelect(video.id)}
-          aria-label={`Chọn ${video.title}`}
-          className="absolute top-2 left-2 w-6 h-6 rounded-md bg-slate-950/65 hover:bg-slate-950/90 text-white flex items-center justify-center backdrop-blur-xs cursor-pointer transition-colors"
-        >
-          {isSelected ? (
-            <CheckSquare className="w-4 h-4 text-[#1BA8AD]" />
-          ) : (
-            <Square className="w-4 h-4 text-white/80" />
-          )}
-        </button>
+          <button
+            type="button"
+            onClick={() => onToggleSelect(video.id)}
+            aria-label={`Chọn ${video.title}`}
+            className="absolute top-2 left-2 w-6 h-6 rounded-md bg-slate-950/75 hover:bg-slate-950 text-white flex items-center justify-center backdrop-blur-xs cursor-pointer transition-colors"
+          >
+            {isSelected ? (
+              <CheckSquare className="w-4 h-4 text-cyan-400" />
+            ) : (
+              <Square className="w-4 h-4 text-white/85" />
+            )}
+          </button>
 
-        <span
-          title="Chỉ số xu hướng tổng hợp"
-          className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-amber-400 text-slate-950 text-[11px] font-bold font-mono tabular-nums shadow-xs"
-        >
-          {video.score}
-        </span>
+          <span
+            title="Chỉ số xu hướng tổng hợp"
+            className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-amber-400 text-slate-950 text-[11px] font-extrabold font-mono tabular-nums shadow-xs"
+          >
+            {video.score}
+          </span>
 
-        <span className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded bg-slate-950/75 text-white text-[10px] font-semibold tracking-wide backdrop-blur-xs">
-          {video.platformLabel}
-        </span>
+          <span className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded bg-slate-950/85 text-cyan-300 text-[10px] font-semibold tracking-wide">
+            {video.platformLabel}
+          </span>
 
-        <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-slate-950/80 text-white text-[11px] font-mono tabular-nums backdrop-blur-xs">
-          {video.duration > 0
-            ? formatDuration(video.duration)
-            : video.orientation === 'vertical'
-            ? 'Ngắn'
-            : 'HD'}
-        </span>
-      </div>
+          <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-slate-950/85 text-white text-[10px] font-semibold font-mono tabular-nums">
+            {video.duration > 0
+              ? formatDuration(video.duration)
+              : video.orientation === 'vertical'
+              ? 'Ngắn'
+              : 'HD'}
+          </span>
+        </div>
 
-      <div className="flex-1 flex flex-col p-3.5 gap-2">
-        <div className="space-y-1">
+        <div className="space-y-0.5">
           <h3
             title={displayTitle}
-            className="text-[13px] font-semibold leading-snug text-slate-900 dark:text-white line-clamp-2"
+            className="text-xs font-semibold leading-snug text-slate-900 dark:text-white line-clamp-2"
           >
             {displayTitle}
           </h3>
           {translated && translated !== video.title && (
             <p
               title={video.title}
-              className="text-[11px] text-[#003B3E] dark:text-[#1BA8AD] line-clamp-1"
+              className="text-[11px] text-cyan-700 dark:text-cyan-300 line-clamp-1"
             >
               {video.title}
             </p>
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono tabular-nums text-slate-600 dark:text-teal-100/85">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300">
           <span className="inline-flex items-center gap-1">
-            <Eye className="w-3 h-3 text-slate-400 dark:text-teal-200/60" />
+            <Eye className="w-3 h-3 text-slate-400" />
             {formatCompactCount(video.views)}
           </span>
           {video.likes && video.likes > 0 ? (
             <span className="inline-flex items-center gap-1">
-              <Heart className="w-3 h-3 text-slate-400 dark:text-teal-200/60" />
+              <Heart className="w-3 h-3 text-rose-400" />
               {formatCompactCount(video.likes)}
             </span>
           ) : null}
-          {video.velocityPerHour && video.velocityPerHour > 0 ? (
-            <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
-              <TrendingUp className="w-3 h-3" />
-              {formatCompactCount(video.velocityPerHour)}/giờ
-            </span>
-          ) : null}
         </div>
 
-        <p className="text-[11px] text-slate-500 dark:text-teal-200/65 truncate mt-auto">
-          {video.categoryLabel} · {video.author} ·{' '}
-          {video.orientation === 'vertical' ? 'Dọc' : 'Ngang'}
+        {video.velocityPerHour && video.velocityPerHour > 0 ? (
+          <div className="text-[10px] text-emerald-600 dark:text-emerald-300 font-medium inline-flex items-center gap-1 font-mono tabular-nums">
+            <TrendingUp className="w-3 h-3 shrink-0" />
+            <span>{formatCompactCount(video.velocityPerHour)}/giờ</span>
+          </div>
+        ) : null}
+
+        <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+          {video.categoryLabel} · {video.author} · {video.orientation === 'vertical' ? 'Dọc' : 'Ngang'}
           {ageText ? ` · ${ageText}` : ''}
         </p>
+      </div>
 
-        <div className="flex items-center gap-1.5 pt-1">
+      <div className="flex items-center gap-1.5 pt-1 text-xs">
+        <button
+          type="button"
+          onClick={() => onAddSingle(video, true)}
+          className={`flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-xl font-semibold transition whitespace-nowrap cursor-pointer ${
+            isQueued
+              ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-400/35'
+              : 'bg-slate-100 dark:bg-white/5 hover:bg-emerald-500 hover:text-slate-950 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white'
+          }`}
+        >
+          {isQueued ? (
+            <>
+              <Check className="w-3.5 h-3.5" />
+              <span>Đã thêm</span>
+            </>
+          ) : (
+            <>
+              <Download className="w-3.5 h-3.5" />
+              <span>Tải ngay</span>
+            </>
+          )}
+        </button>
+
+        {onCreateDerivative ? (
           <button
             type="button"
-            onClick={() => onAddSingle(video, true)}
-            className={`flex-1 inline-flex items-center justify-center gap-1.5 h-8 px-2.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-              isQueued
-                ? 'bg-[#003B3E]/15 dark:bg-[#003B3E]/60 text-[#003B3E] dark:text-[#1BA8AD] border border-[#003B3E]/30 dark:border-[#1BA8AD]/40'
-                : 'bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] text-white'
-            }`}
+            onClick={() => onCreateDerivative(video)}
+            title="Đưa vào Studio phái sinh"
+            className="px-2.5 py-1.5 rounded-xl bg-violet-500/15 hover:bg-violet-500/30 border border-violet-400/35 text-violet-700 dark:text-violet-200 font-bold transition cursor-pointer shrink-0"
           >
-            {isQueued ? (
-              <>
-                <Check className="w-3.5 h-3.5" />
-                <span>Đã thêm</span>
-              </>
-            ) : (
-              <>
-                <Download className="w-3.5 h-3.5" />
-                <span>Tải ngay</span>
-              </>
-            )}
+            <Sparkles className="w-3.5 h-3.5" />
           </button>
-
+        ) : (
           <button
             type="button"
             onClick={() => onAddSingle(video, false)}
-            title="Thêm vào hàng đợi (chưa tải ngay)"
-            className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-[#00464A] text-slate-600 dark:text-teal-100 hover:bg-slate-100 dark:hover:bg-[#000A10] hover:text-[#003B3E] dark:hover:text-white transition-colors cursor-pointer shrink-0"
+            title="Thêm vào hàng đợi"
+            className="px-2.5 py-1.5 rounded-xl bg-violet-500/15 hover:bg-violet-500/30 border border-violet-400/35 text-violet-700 dark:text-violet-200 font-bold transition cursor-pointer shrink-0"
           >
             <Plus className="w-3.5 h-3.5" />
           </button>
+        )}
 
-          <button
-            type="button"
-            onClick={() => onToggleBookmark(video)}
-            title={isSaved ? 'Bỏ lưu' : 'Lưu video này'}
-            className={`w-8 h-8 inline-flex items-center justify-center rounded-lg border transition-colors cursor-pointer shrink-0 ${
-              isSaved
-                ? 'border-amber-400/60 bg-amber-400/10 text-amber-500'
-                : 'border-slate-200 dark:border-[#00464A] text-slate-500 dark:text-teal-200/70 hover:text-amber-500'
-            }`}
-          >
-            <Star className={`w-3.5 h-3.5 ${isSaved ? 'fill-current' : ''}`} />
-          </button>
+        <button
+          type="button"
+          onClick={() => onToggleBookmark(video)}
+          title={isSaved ? 'Bỏ lưu' : 'Lưu video này'}
+          className={`px-2.5 py-1.5 rounded-xl border transition cursor-pointer shrink-0 ${
+            isSaved
+              ? 'bg-amber-400/25 text-amber-600 dark:text-amber-300 border-amber-400/40'
+              : 'bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-300 border-slate-200 dark:border-white/10 hover:text-amber-500'
+          }`}
+        >
+          <Star className={`w-3.5 h-3.5 ${isSaved ? 'fill-current' : ''}`} />
+        </button>
 
-          {onCreateDerivative && (
-            <button
-              type="button"
-              onClick={() => onCreateDerivative(video)}
-              title="AI học nội dung & tạo video phái sinh từ video này"
-              className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-[#00464A] text-[#003B3E] dark:text-[#1BA8AD] hover:bg-[#003B3E]/10 dark:hover:bg-[#003B3E]/60 transition-colors cursor-pointer shrink-0"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-            </button>
-          )}
-
-          <a
-            href={video.sourceUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Mở video gốc"
-            className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-[#00464A] text-slate-500 dark:text-teal-200/70 hover:text-[#003B3E] dark:hover:text-white transition-colors shrink-0"
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
-          </a>
-        </div>
+        <a
+          href={video.sourceUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Mở video gốc"
+          className="px-2 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-300 hover:text-cyan-600 dark:hover:text-cyan-300 transition shrink-0"
+        >
+          <ExternalLink className="w-3.5 h-3.5" />
+        </a>
       </div>
     </article>
   );

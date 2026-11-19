@@ -22,6 +22,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
   const [scalePercent, setScalePercent] = useState<number>(config.scalePercent || 15);
   const [opacity, setOpacity] = useState<number>(config.opacity ?? 0.85);
   const [margin, setMargin] = useState<number>(config.margin || 24);
+  const [uploadErr, setUploadErr] = useState<string>('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -34,6 +35,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
       setScalePercent(config.scalePercent || 15);
       setOpacity(config.opacity ?? 0.85);
       setMargin(config.margin || 24);
+      setUploadErr('');
     }
   }, [isOpen, config]);
 
@@ -44,9 +46,10 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
     if (!file) return;
 
     if (!file.type.startsWith('image/')) {
-      alert('Vui lòng chọn tệp hình ảnh (PNG, JPG, WEBP, SVG).');
+      setUploadErr('Vui lòng chọn tệp hình ảnh (PNG, JPG, WEBP, SVG).');
       return;
     }
+    setUploadErr('');
 
     const reader = new FileReader();
     reader.onload = () => {
@@ -54,7 +57,6 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
       setDataUrl(result);
       setFileName(file.name);
       setEnabled(true);
-      // Auto-save so closing the modal will keep the uploaded logo active
       onSave({
         enabled: true,
         dataUrl: result,
@@ -72,6 +74,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
     setDataUrl(undefined);
     setFileName(undefined);
     setEnabled(false);
+    setUploadErr('');
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -91,7 +94,7 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
   };
 
   const getPositionStyles = () => {
-    const pad = 12; // visual preview padding
+    const pad = 12;
     switch (position) {
       case 'top-left':
         return { top: `${pad}px`, left: `${pad}px` };
@@ -111,18 +114,17 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
     <div
       role="dialog"
       aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
     >
-      <div className="bg-white dark:bg-[#001722] border border-slate-200 dark:border-[#00464A] rounded-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 space-y-5">
-        {/* Header */}
+      <div className="glass-card-accent rounded-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 space-y-5">
         <div className="flex items-start justify-between">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="p-1.5 rounded-lg bg-[#003B3E]/10 dark:bg-[#003B3E]/65 text-[#003B3E] dark:text-[#1BA8AD]">
+              <span className="p-1.5 rounded-lg bg-violet-500/20 text-violet-600 dark:text-violet-300">
                 <ImageIcon className="w-5 h-5" />
               </span>
-              <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
-                Chèn logo thương hiệu của bạn vào video
+              <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
+                Chèn logo thương hiệu vào video
               </h2>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -132,13 +134,12 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-white/10 transition cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Upload & preview area */}
         <div className="space-y-4">
           <input
             ref={fileInputRef}
@@ -148,33 +149,39 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
             className="hidden"
           />
 
+          {uploadErr && (
+            <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
+              {uploadErr}
+            </div>
+          )}
+
           {!dataUrl ? (
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-[#003B3E] dark:hover:border-[#003B3E] rounded-xl p-6 text-center cursor-pointer transition-colors bg-slate-50/50 dark:bg-[#000A10]/60 hover:bg-[#003B3E]/[0.08]"
+              className="border-2 border-dashed border-slate-300 dark:border-slate-500/40 hover:border-violet-500 dark:hover:border-violet-400 rounded-xl p-6 text-center cursor-pointer transition bg-slate-50/70 dark:bg-[#0c1021]/70"
             >
-              <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-2 text-slate-500 dark:text-slate-400">
+              <div className="w-10 h-10 rounded-full bg-violet-500/15 flex items-center justify-center mx-auto mb-2 text-violet-600 dark:text-violet-300">
                 <ImageIcon className="w-5 h-5" />
               </div>
-              <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+              <p className="text-xs font-semibold text-slate-800 dark:text-slate-100">
                 Nhấn để tải ảnh logo lên
               </p>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                Khuyên dùng tệp PNG nền trong suốt để có thẩm mỹ tốt nhất (hỗ trợ JPG, WEBP)
+                Khuyên dùng tệp PNG nền trong suốt (hỗ trợ PNG, JPG, WEBP, SVG)
               </p>
             </div>
           ) : (
             <div className="space-y-3">
-              <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-xl">
+              <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/20 rounded-xl">
                 <div className="flex items-center gap-3 min-w-0">
                   <div className="w-10 h-10 rounded-lg bg-slate-200 dark:bg-slate-800 p-1 flex items-center justify-center shrink-0 overflow-hidden">
                     <img src={dataUrl} alt="Logo preview" className="max-w-full max-h-full object-contain" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+                    <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                       {fileName || 'Logo tùy chỉnh'}
                     </p>
-                    <p className="text-[11px] text-emerald-600 dark:text-emerald-400">
+                    <p className="text-[11px] text-emerald-600 dark:text-emerald-300">
                       Đã sẵn sàng chèn vào video
                     </p>
                   </div>
@@ -184,14 +191,14 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200 dark:border-[#00464A] rounded-lg transition-colors cursor-pointer"
+                    className="px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-white/10 border border-slate-200 dark:border-white/10 rounded-lg transition cursor-pointer"
                   >
                     Đổi ảnh
                   </button>
                   <button
                     type="button"
                     onClick={handleRemoveLogo}
-                    className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
+                    className="p-1.5 text-rose-500 hover:bg-rose-500/15 rounded-lg transition cursor-pointer"
                     title="Xóa logo này"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -199,9 +206,8 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                 </div>
               </div>
 
-              {/* Real-time Video Mockup Preview */}
-              <div className="relative w-full aspect-video bg-gradient-to-br from-slate-900 to-slate-800 rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center select-none">
-                <div className="text-center text-slate-600 dark:text-slate-500 text-xs">
+              <div className="relative w-full aspect-video bg-gradient-to-br from-slate-900 to-[#0c1021] rounded-xl overflow-hidden border border-slate-700/60 flex items-center justify-center select-none">
+                <div className="text-center text-slate-500 text-xs">
                   <p className="font-semibold">Mô phỏng khung hình video 16:9</p>
                   <p className="text-[10px]">Vị trí và độ mờ hiển thị trực tiếp bên dưới</p>
                 </div>
@@ -225,10 +231,8 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
             </div>
           )}
 
-          {/* Options */}
           {dataUrl && (
             <div className="space-y-3.5 pt-2">
-              {/* Position selector */}
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                   Vị trí hiển thị logo
@@ -245,10 +249,10 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                       key={pos.id}
                       type="button"
                       onClick={() => setPosition(pos.id as LogoPosition)}
-                      className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+                      className={`px-2.5 py-1.5 text-xs font-medium rounded-xl border transition cursor-pointer ${
                         position === pos.id
-                          ? 'bg-[#003B3E] text-white border-[#003B3E]'
-                          : 'bg-slate-50 dark:bg-[#000A10] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#00464A] hover:bg-slate-100 dark:hover:bg-slate-800'
+                          ? 'bg-violet-600 text-white border-violet-500'
+                          : 'bg-slate-50 dark:bg-[#0c1021] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-400/20 hover:bg-slate-100 dark:hover:bg-white/5'
                       }`}
                     >
                       {pos.label}
@@ -257,21 +261,16 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                 </div>
               </div>
 
-              {/* Scale & Opacity controls */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {/* Scale */}
                 <div>
-                  <label
-                    htmlFor="logo-scale-select"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                  >
+                  <label htmlFor="logo-scale-select" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Kích thước (% video)
                   </label>
                   <select
                     id="logo-scale-select"
                     value={scalePercent}
                     onChange={(e) => setScalePercent(Number(e.target.value))}
-                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#003B3E] cursor-pointer"
+                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white focus:outline-none cursor-pointer"
                   >
                     <option value={10}>10% (Nhỏ gọn)</option>
                     <option value={15}>15% (Chuẩn đẹp)</option>
@@ -280,19 +279,15 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                   </select>
                 </div>
 
-                {/* Opacity */}
                 <div>
-                  <label
-                    htmlFor="logo-opacity-select"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    Độ mờ đục (Opacity)
+                  <label htmlFor="logo-opacity-select" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Độ mờ đục
                   </label>
                   <select
                     id="logo-opacity-select"
                     value={opacity}
                     onChange={(e) => setOpacity(Number(e.target.value))}
-                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#003B3E] cursor-pointer"
+                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white focus:outline-none cursor-pointer"
                   >
                     <option value={1.0}>100% (Đậm nét)</option>
                     <option value={0.85}>85% (Chuẩn đẹp)</option>
@@ -301,19 +296,15 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                   </select>
                 </div>
 
-                {/* Margin */}
                 <div>
-                  <label
-                    htmlFor="logo-margin-select"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                  >
+                  <label htmlFor="logo-margin-select" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Khoảng cách lề
                   </label>
                   <select
                     id="logo-margin-select"
                     value={margin}
                     onChange={(e) => setMargin(Number(e.target.value))}
-                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#003B3E] cursor-pointer"
+                    className="w-full px-2.5 py-1.5 text-xs font-medium bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white focus:outline-none cursor-pointer"
                   >
                     <option value={16}>16 px (Sát mép)</option>
                     <option value={24}>24 px (Tiêu chuẩn)</option>
@@ -322,45 +313,43 @@ export const CustomLogoModal: React.FC<CustomLogoModalProps> = ({
                 </div>
               </div>
 
-              {/* Enable / Disable toggle */}
               <label className="flex items-center gap-2.5 pt-1 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={enabled}
                   onChange={(e) => setEnabled(e.target.checked)}
-                  className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 accent-[#003B3E] cursor-pointer"
+                  className="w-4 h-4 rounded accent-emerald-500 cursor-pointer"
                 />
                 <span className="text-xs font-medium text-slate-800 dark:text-slate-200">
                   Kích hoạt chèn logo này vào các video tải về
                 </span>
               </label>
 
-              <div className="flex items-start gap-2 p-2.5 bg-[#003B3E]/10 border border-[#003B3E]/35 rounded-xl text-xs text-slate-700 dark:text-slate-300">
-                <Sparkles className="w-4 h-4 shrink-0 text-[#003B3E] dark:text-[#1BA8AD] mt-0.5" />
+              <div className="flex items-start gap-2 p-2.5 bg-cyan-500/10 border border-cyan-400/25 rounded-xl text-xs text-slate-700 dark:text-slate-300">
+                <Sparkles className="w-4 h-4 shrink-0 text-cyan-600 dark:text-cyan-300 mt-0.5" />
                 <span>
-                  <strong>Mẹo kết hợp:</strong> Bạn có thể bật đồng thời mục <em>&quot;Tự động phát hiện & xóa&quot;</em> ở ngoài thanh cấu hình — hệ thống sẽ dùng FFmpeg xóa logo Bilibili gốc trước, sau đó chèn logo của bạn lên video!
+                  <strong>Mẹo kết hợp:</strong> Bật đồng thời <em>&ldquo;Tự động phát hiện &amp; xóa&rdquo;</em> ở cấu hình — hệ thống sẽ xóa logo gốc bằng FFmpeg trước khi chèn logo thương hiệu.
                 </span>
               </div>
             </div>
           )}
         </div>
 
-        {/* Footer actions */}
-        <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-200 dark:border-[#00464A]">
+        <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-200/80 dark:border-slate-400/20">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+            className="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 rounded-xl transition cursor-pointer"
           >
             Đóng
           </button>
           <button
             type="button"
             onClick={handleSave}
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#003B3E] hover:bg-[#002729] dark:hover:bg-[#004E52] rounded-lg transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:brightness-110 rounded-xl transition cursor-pointer"
           >
             <Check className="w-4 h-4" />
-            <span>Lưu & Áp dụng</span>
+            <span>Lưu &amp; Áp dụng</span>
           </button>
         </div>
       </div>

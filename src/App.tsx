@@ -7,28 +7,32 @@ import {
   PerSiteCookies,
   QueueVideoItem,
   RESOLUTION_PRESETS,
+  ServerCapabilitiesStatus,
   StudioDefaultConfig,
   TrendingVideoItem,
   VideoTransformConfig,
   WatermarkMode,
 } from './types/bilibili';
-import { TopBar, AppTab } from './components/TopBar';
+import { Sidebar, AppNavTab } from './components/Sidebar';
+import { TopBar } from './components/TopBar';
 import { BatchInputPanel } from './components/BatchInputPanel';
 import { GlobalConfigBar } from './components/GlobalConfigBar';
 import { QueueTable } from './components/QueueTable';
-import { TrendingPanel } from './components/TrendingPanel';
-import { SearchPanel } from './components/SearchPanel';
+import { DiscoveryPanel } from './components/DiscoveryPanel';
 import { SettingsPanel } from './components/SettingsPanel';
+import { UpdatePanel } from './components/UpdatePanel';
 import { CustomLogoModal } from './components/CustomLogoModal';
 import { VideoTransformModal } from './components/VideoTransformModal';
-import { UpdateModal, SystemUpdateStatus } from './components/UpdateModal';
+import { UpdateModal, UpdateStatusInfo } from './components/UpdateModal';
 import { StudioPanel } from './components/StudioPanel';
 import {
+  COOKIE_SITES,
   buildCombinedCookiesString,
   DEFAULT_STUDIO_CONFIG,
   EMPTY_PER_SITE_COOKIES,
   migrateLegacyCookies,
 } from './utils/cookies';
+import { formatSpeed } from './utils/formatters';
 
 async function parseJsonSafe<T = any>(res: Response): Promise<T> {
   const text = await res.text();
@@ -52,10 +56,11 @@ async function parseJsonSafe<T = any>(res: Response): Promise<T> {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<AppTab>('batch');
-  const [mountedSearch, setMountedSearch] = useState(false);
-  const [mountedTrending, setMountedTrending] = useState(false);
+  const [activeTab, setActiveTab] = useState<Exclude<AppNavTab, 'search'>>('download');
+  const [mountedDiscovery, setMountedDiscovery] = useState(false);
   const [mountedStudio, setMountedStudio] = useState(false);
+  const [trendingCount, setTrendingCount] = useState<number>(0);
+  const [capabilities, setCapabilities] = useState<ServerCapabilitiesStatus | null>(null);
   const [searchQueryRequest, setSearchQueryRequest] = useState<{ query: string; nonce: number } | null>(null);
   const [items, setItems] = useState<QueueVideoItem[]>([]);
   const [globalQn, setGlobalQn] = useState<number>(0); // Default: Tốt nhất (Auto)
@@ -76,7 +81,7 @@ export default function App() {
   const [isLogoModalOpen, setIsLogoModalOpen] = useState(false);
   const [isTransformModalOpen, setIsTransformModalOpen] = useState(false);
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<SystemUpdateStatus | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatusInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
   const [isServerRestarting, setIsServerRestarting] = useState(false);
@@ -265,7 +270,7 @@ export default function App() {
   const ytCookies = useMemo(() => buildCombinedCookiesString(perSiteCookies), [perSiteCookies]);
 
   const [darkMode, setDarkMode] = useState<boolean>(() => {
-    return localStorage.getItem('bilibatch_theme') === 'dark';
+    return localStorage.getItem('bilibatch_theme') !== 'light';
   });
 
   useEffect(() => {
@@ -282,12 +287,27 @@ export default function App() {
     }
   }, []);
 
+  const fetchCapabilities = useCallback(async () => {
+    try {
+      const res = await fetch('/api/config/capabilities');
+      if (!res.ok) return;
+      const data = await parseJsonSafe<ServerCapabilitiesStatus>(res);
+      setCapabilities(data);
+    } catch {
+      // ignore transient startup failure
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchCapabilities();
+  }, [fetchCapabilities]);
+
   const checkSystemUpdate = useCallback(async () => {
     setIsCheckingUpdate(true);
     setUpdateError('');
     try {
       const res = await fetch('/api/system/update-status');
-      const data = await parseJsonSafe<SystemUpdateStatus>(res);
+      const data = await parseJsonSafe<UpdateStatusInfo>(res);
       setUpdateStatus(data);
     } catch (err: any) {
       setUpdateError(err?.message || 'Không thể kiểm tra cập nhật từ máy chủ');
@@ -1048,18 +1068,56 @@ export default function App() {
     });
   }, []);
 
-  const handleChangeTab = useCallback((tab: AppTab) => {
-    setActiveTab(tab);
-    if (tab === 'search') setMountedSearch(true);
-    if (tab === 'trending') setMountedTrending(true);
-    if (tab === 'studio') setMountedStudio(true);
-  }, []);
+  const handleChangeTab = useCallback(
+    (tab: Exclude<AppNavTab, 'search'>) => {
+      setActiveTab(tab);
+      if (tab === 'trending') setMountedDiscovery(true);
+      if (tab === 'studio') setMountedStudio(true);
+      if (tab === 'settings') fetchCapabilities();
+      if (tab === 'update') checkSystemUpdate();
+    },
+    [fetchCapabilities, checkSystemUpdate]
+  );
 
-  const handleSearchFromTopic = useCallback((topic: string) => {
-    setMountedSearch(true);
-    setActiveTab('search');
-    setSearchQueryRequest({ query: topic, nonce: Date.now() });
-  }, []);
+  const handleApplyPreset = useCallback(
+    (preset: 'default' | 'bilibili_series' | 'shorts_clean') => {
+      if (preset === 'default') {
+        setGlobalQn(0);
+        setGlobalFormat('mp4');
+        setGlobalWatermark('auto');
+      } else if (preset === 'bilibili_series') {
+        setGlobalQn(80);
+        setGlobalFormat('mp4');
+        setGlobalWatermark('none');
+      } else if (preset === 'shorts_clean') {
+        setGlobalQn(0);
+        setGlobalFormat('mp4');
+        setGlobalWatermark('auto');
+        handleSaveVideoTransform({ speed: 1.05, mirror: 'horizontal', zoomPercent: 108 });
+      }
+    },
+    []
+  );
+
+  const handleQuickSearch = useCallback(
+    (rawQuery: string) => {
+      const q = rawQuery.trim();
+      if (!q) return;
+      const isDirectVideoLink =
+        /https?:\/\//i.test(q) ||
+        /^(BV[1-9A-HJ-NP-Za-km-z]{10}|av\d+)$/i.test(q) ||
+        /\.(com|tv|be|watch|cn)\//i.test(q);
+      if (isDirectVideoLink) {
+        setActiveTab('download');
+        handleInspect([q], true);
+      } else {
+        setMountedDiscovery(true);
+        setActiveTab('trending');
+        setSearchQueryRequest({ query: q, nonce: Date.now() });
+      }
+    },
+    [globalQn, globalFormat, globalWatermark, sessdata, ytCookies]
+  );
 
   const handleOpenDerivativeStudio = useCallback((videos: TrendingVideoItem[], query = '') => {
     if (!videos || videos.length === 0) return;
@@ -1068,6 +1126,18 @@ export default function App() {
     setActiveTab('studio');
   }, []);
 
+  const handleSidebarBatchAction = useCallback(() => {
+    if (activeTab === 'studio') {
+      const studioBtn = document.getElementById('btn-studio-render-primary') as HTMLButtonElement | null;
+      if (studioBtn && !studioBtn.disabled) {
+        studioBtn.click();
+        return;
+      }
+    }
+    setActiveTab('download');
+    handleStartAll();
+  }, [activeTab]);
+
   const isAnyDownloading = items.some(
     (it) =>
       it.status === 'queued' ||
@@ -1075,139 +1145,301 @@ export default function App() {
       it.status === 'processing'
   );
 
+  const configuredCookiesCount = useMemo(
+    () => COOKIE_SITES.filter((site) => Boolean(perSiteCookies[site.id]?.trim())).length,
+    [perSiteCookies]
+  );
+
+  const completedCount = useMemo(
+    () => items.filter((it) => it.status === 'completed').length,
+    [items]
+  );
+
+  const pendingDownloadCount = useMemo(
+    () => items.filter((it) => it.status === 'idle' || it.status === 'error').length,
+    [items]
+  );
+
+  const activeThreadsCount = useMemo(
+    () =>
+      items.filter(
+        (it) => it.status === 'downloading' || it.status === 'processing' || it.status === 'queued'
+      ).length,
+    [items]
+  );
+
+  const activeSpeedBytes = useMemo(
+    () =>
+      items
+        .filter((it) => it.status === 'downloading')
+        .reduce((sum, it) => sum + (it.speedBytesPerSec || 0), 0),
+    [items]
+  );
+
+  const successRateLabel = useMemo(() => {
+    if (items.length === 0) return '100%';
+    const finishedOrErr = items.filter(
+      (it) => it.status === 'completed' || it.status === 'error'
+    ).length;
+    if (finishedOrErr === 0) return '100%';
+    const pct = Math.round((completedCount / finishedOrErr) * 1000) / 10;
+    return `${pct}%`;
+  }, [items, completedCount]);
+
+  const ffmpegReady = capabilities?.localTools?.ffmpeg?.available ?? true;
+  const speedDisplay = activeSpeedBytes > 0 ? formatSpeed(activeSpeedBytes) : isAnyDownloading ? 'Đang kết nối...' : '0 B/s';
+  const transformActive =
+    videoTransform.speed !== 1 ||
+    videoTransform.mirror !== 'none' ||
+    videoTransform.zoomPercent !== 100;
+
   return (
-    <div id="top" className="min-h-screen flex flex-col">
-      <TopBar
+    <div id="top" className="min-h-screen flex flex-col lg:flex-row">
+      <Sidebar
         activeTab={activeTab}
-        totalCount={items.length}
-        isDownloading={isAnyDownloading}
-        hasCookie={Boolean(sessdata.trim() || ytCookies.trim())}
-        hasUpdate={Boolean(updateStatus?.supported && updateStatus?.hasUpdate)}
-        onChangeTab={handleChangeTab}
-        onStartAll={handleStartAll}
-        onOpenUpdateModal={handleOpenUpdateModal}
+        onSelectTab={handleChangeTab}
+        queueCount={items.length}
+        trendingCount={trendingCount}
+        configuredCookiesCount={configuredCookiesCount}
+        updateAvailable={Boolean(updateStatus?.supported && updateStatus?.hasUpdate)}
+        subfolderName={subfolderName}
+        capabilities={capabilities}
+        onRunBatchAction={handleSidebarBatchAction}
       />
 
-      <main className="flex-1 w-full max-w-[1320px] mx-auto px-6 py-7 space-y-5">
-        <div className={activeTab === 'batch' ? 'space-y-5' : 'hidden'}>
-          <BatchInputPanel
-            isInspecting={isInspecting}
-            inspectErrors={inspectErrors}
-            onInspect={handleInspect}
-            onClearErrors={() => setInspectErrors([])}
-          />
+      <div className="flex-1 flex flex-col min-w-0">
+        <TopBar
+          darkMode={darkMode}
+          onToggleDark={() => setDarkMode((d) => !d)}
+          onQuickSearch={handleQuickSearch}
+          onOpenHealth={() => handleChangeTab('settings')}
+          onDownloadAll={() => {
+            setActiveTab('download');
+            handleStartAll();
+          }}
+          pendingDownloadCount={pendingDownloadCount}
+          isDownloading={isAnyDownloading}
+          configuredCookiesCount={configuredCookiesCount}
+          ffmpegReady={ffmpegReady}
+        />
 
-          <GlobalConfigBar
-            globalQn={globalQn}
-            globalFormat={globalFormat}
-            globalWatermark={globalWatermark}
-            concurrency={concurrency}
-            autoSave={autoSave}
-            folderName={folderName}
-            subfolderName={subfolderName}
-            folderNotice={folderNotice}
-            darkMode={darkMode}
-            hasItems={items.length > 0}
-            customLogo={customLogo}
-            videoTransform={videoTransform}
-            onOpenLogoModal={() => setIsLogoModalOpen(true)}
-            onToggleCustomLogo={handleToggleCustomLogo}
-            onOpenTransformModal={() => setIsTransformModalOpen(true)}
-            onResetTransform={handleResetTransform}
-            onChangeGlobalQn={setGlobalQn}
-            onChangeGlobalFormat={setGlobalFormat}
-            onChangeGlobalWatermark={setGlobalWatermark}
-            onChangeConcurrency={setConcurrency}
-            onToggleAutoSave={handleToggleAutoSave}
-            onChangeSubfolderName={handleChangeSubfolderName}
-            onPickFolder={handlePickFolder}
-            onClearFolder={handleClearFolder}
-            onApplyToAll={handleApplyToAll}
-            onToggleDarkMode={() => setDarkMode((d) => !d)}
-          />
+        <main className="flex-1 w-full max-w-[1680px] mx-auto p-3 sm:p-5 space-y-5">
+          {/* VIEW 1: TẢI HÀNG LOẠT */}
+          <div className={activeTab === 'download' ? 'space-y-5' : 'hidden'}>
+            {/* 4 Live KPI Cards + Sparklines */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
+              <div className="glass-card rounded-2xl p-4 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Tốc độ tải hiện tại
+                  </div>
+                  <div className="text-xl sm:text-2xl font-extrabold font-display text-slate-900 dark:text-white mt-1 truncate">
+                    {speedDisplay}
+                  </div>
+                  <div className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-0.5 truncate">
+                    ● {activeThreadsCount} luồng hoạt động (tối đa {concurrency})
+                  </div>
+                </div>
+                <svg className="w-20 h-10 text-emerald-500 dark:text-emerald-400 shrink-0" viewBox="0 0 80 40" fill="none">
+                  <path d="M2 32 L18 24 L32 28 L48 14 L62 18 L78 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </div>
 
-          <QueueTable
-            items={items}
-            onToggleSelectVisible={handleToggleSelectVisible}
-            onToggleSelect={handleToggleSelect}
-            onUpdateItemConfig={handleUpdateItemConfig}
-            onStartSingle={handleStartSingle}
-            onRemoveItem={handleRemoveItem}
-            onRemoveSelected={handleRemoveSelected}
-            onStartSelected={handleStartSelected}
-            onRetryErrors={handleRetryErrors}
-            onClearAll={handleClearAll}
-            onSaveSingle={handleSaveSingle}
-            onDownloadZip={handleDownloadZip}
-            customLogo={customLogo}
-            videoTransform={videoTransform}
-          />
-        </div>
+              <div className="glass-card rounded-2xl p-4 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Tỷ lệ hoàn tất &amp; Cookie
+                  </div>
+                  <div className="text-xl sm:text-2xl font-extrabold font-display text-slate-900 dark:text-white mt-1">
+                    {successRateLabel}
+                  </div>
+                  <div className="text-[11px] text-cyan-600 dark:text-cyan-300 mt-0.5 truncate">
+                    ● Cookie {configuredCookiesCount}/{COOKIE_SITES.length} nền tảng sẵn sàng
+                  </div>
+                </div>
+                <svg className="w-20 h-10 text-cyan-500 dark:text-cyan-400 shrink-0" viewBox="0 0 80 40" fill="none">
+                  <path d="M2 28 L16 26 L30 18 L45 21 L60 11 L78 9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </div>
 
-        {mountedSearch && (
-          <div className={activeTab === 'search' ? 'block' : 'hidden'}>
-            <SearchPanel
-              sessdata={sessdata}
-              ytCookies={ytCookies}
-              externalQueryRequest={searchQueryRequest}
-              queuedSourceUrls={queuedSourceUrls}
-              bookmarkIds={bookmarkIds}
-              onToggleBookmark={handleToggleBookmark}
-              onAddVideosToQueue={handleAddTrendingVideosToQueue}
-              onOpenCookieModal={() => handleChangeTab('settings')}
-              onOpenDerivativeStudio={handleOpenDerivativeStudio}
-            />
+              <div className="glass-card rounded-2xl p-4 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Tổng lô hiện tại
+                  </div>
+                  <div className="text-xl sm:text-2xl font-extrabold font-display text-slate-900 dark:text-white mt-1">
+                    {items.length} mục
+                  </div>
+                  <div className="text-[11px] text-violet-600 dark:text-violet-300 mt-0.5 truncate">
+                    Đã xong {completedCount}/{items.length} • Chờ {pendingDownloadCount}
+                  </div>
+                </div>
+                <svg className="w-20 h-10 text-violet-500 dark:text-violet-400 shrink-0" viewBox="0 0 80 40" fill="none">
+                  <path d="M2 34 L20 29 L36 22 L52 25 L66 13 L78 8" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </div>
+
+              <div className="glass-card rounded-2xl p-4 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Xử lý FFmpeg &amp; Logo
+                  </div>
+                  <div className="text-xl sm:text-2xl font-extrabold font-display text-slate-900 dark:text-white mt-1">
+                    {customLogo.enabled && customLogo.dataUrl
+                      ? 'Logo + Stream'
+                      : transformActive
+                      ? 'Biến đổi bật'
+                      : 'Auto Clean'}
+                  </div>
+                  <div className="text-[11px] text-amber-600 dark:text-amber-300 mt-0.5 truncate">
+                    {globalFormat.toUpperCase()} · {videoTransform.speed}x · Zoom {videoTransform.zoomPercent}%
+                  </div>
+                </div>
+                <svg className="w-20 h-10 text-amber-500 dark:text-amber-300 shrink-0" viewBox="0 0 80 40" fill="none">
+                  <path d="M2 24 L18 30 L34 16 L50 19 L64 12 L78 14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </div>
+            </div>
+
+            {/* 2-Column Main Grid: Left 7 (Input + Queue) | Right 5 Sticky (GlobalConfigBar) */}
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+              <div className="xl:col-span-7 space-y-4">
+                <BatchInputPanel
+                  isInspecting={isInspecting}
+                  inspectErrors={inspectErrors}
+                  onInspect={handleInspect}
+                  onClearErrors={() => setInspectErrors([])}
+                />
+
+                <QueueTable
+                  items={items}
+                  onToggleSelectVisible={handleToggleSelectVisible}
+                  onToggleSelect={handleToggleSelect}
+                  onUpdateItemConfig={handleUpdateItemConfig}
+                  onStartSingle={handleStartSingle}
+                  onRemoveItem={handleRemoveItem}
+                  onRemoveSelected={handleRemoveSelected}
+                  onStartSelected={handleStartSelected}
+                  onRetryErrors={handleRetryErrors}
+                  onClearAll={handleClearAll}
+                  onSaveSingle={handleSaveSingle}
+                  onDownloadZip={handleDownloadZip}
+                  onPushToStudio={handleOpenDerivativeStudio}
+                  customLogo={customLogo}
+                  videoTransform={videoTransform}
+                />
+              </div>
+
+              <div className="xl:col-span-5 xl:sticky xl:top-20">
+                <GlobalConfigBar
+                  globalQn={globalQn}
+                  globalFormat={globalFormat}
+                  globalWatermark={globalWatermark}
+                  concurrency={concurrency}
+                  autoSave={autoSave}
+                  folderName={folderName}
+                  subfolderName={subfolderName}
+                  folderNotice={folderNotice}
+                  hasItems={items.length > 0}
+                  customLogo={customLogo}
+                  videoTransform={videoTransform}
+                  onOpenLogoModal={() => setIsLogoModalOpen(true)}
+                  onToggleCustomLogo={handleToggleCustomLogo}
+                  onOpenTransformModal={() => setIsTransformModalOpen(true)}
+                  onResetTransform={handleResetTransform}
+                  onApplyPreset={handleApplyPreset}
+                  onChangeGlobalQn={setGlobalQn}
+                  onChangeGlobalFormat={setGlobalFormat}
+                  onChangeGlobalWatermark={setGlobalWatermark}
+                  onChangeConcurrency={setConcurrency}
+                  onToggleAutoSave={handleToggleAutoSave}
+                  onChangeSubfolderName={handleChangeSubfolderName}
+                  onPickFolder={handlePickFolder}
+                  onClearFolder={handleClearFolder}
+                  onApplyToAll={handleApplyToAll}
+                />
+              </div>
+            </div>
           </div>
-        )}
 
-        {mountedTrending && (
-          <div className={activeTab === 'trending' ? 'block' : 'hidden'}>
-            <TrendingPanel
-              sessdata={sessdata}
-              ytCookies={ytCookies}
-              queuedSourceUrls={queuedSourceUrls}
-              bookmarks={bookmarks}
-              bookmarkIds={bookmarkIds}
-              onToggleBookmark={handleToggleBookmark}
-              onAddVideosToQueue={handleAddTrendingVideosToQueue}
-              onOpenCookieModal={() => handleChangeTab('settings')}
-              onSearchTopic={handleSearchFromTopic}
-              onOpenDerivativeStudio={handleOpenDerivativeStudio}
-            />
-          </div>
-        )}
+          {/* VIEW 2: XU HƯỚNG & TÌM VIDEO GỘP */}
+          {mountedDiscovery && (
+            <div className={activeTab === 'trending' ? 'block' : 'hidden'}>
+              <DiscoveryPanel
+                sessdata={sessdata}
+                ytCookies={ytCookies}
+                externalQueryRequest={searchQueryRequest}
+                queuedSourceUrls={queuedSourceUrls}
+                bookmarks={bookmarks}
+                bookmarkIds={bookmarkIds}
+                onToggleBookmark={handleToggleBookmark}
+                onAddVideosToQueue={handleAddTrendingVideosToQueue}
+                onOpenCookieModal={() => handleChangeTab('settings')}
+                onOpenDerivativeStudio={handleOpenDerivativeStudio}
+                onTrendingCountChange={setTrendingCount}
+              />
+            </div>
+          )}
 
-        {mountedStudio && (
-          <div className={activeTab === 'studio' ? 'block' : 'hidden'}>
-            <StudioPanel
-              incomingVideos={studioIncoming.videos}
-              incomingQuery={studioIncoming.query}
-              incomingNonce={studioIncoming.nonce}
-              sessdata={sessdata}
-              ytCookies={ytCookies}
+          {/* VIEW 3: STUDIO AI PHÁI SINH */}
+          {mountedStudio && (
+            <div className={activeTab === 'studio' ? 'block' : 'hidden'}>
+              <StudioPanel
+                incomingVideos={studioIncoming.videos}
+                incomingQuery={studioIncoming.query}
+                incomingNonce={studioIncoming.nonce}
+                sessdata={sessdata}
+                ytCookies={ytCookies}
+                studioDefaults={studioDefaults}
+                onOpenSettings={() => handleChangeTab('settings')}
+              />
+            </div>
+          )}
+
+          {/* VIEW 4: CẤU HÌNH HỆ THỐNG */}
+          {activeTab === 'settings' && (
+            <SettingsPanel
+              perSiteCookies={perSiteCookies}
               studioDefaults={studioDefaults}
-              onOpenSettings={() => handleChangeTab('settings')}
+              onSaveSiteCookie={handleSaveSiteCookie}
+              onSaveAllCookies={persistPerSiteCookies}
+              onUpdateStudioDefaults={handleUpdateStudioDefaults}
             />
+          )}
+
+          {/* VIEW 5: CẬP NHẬT HỆ THỐNG */}
+          {activeTab === 'update' && (
+            <UpdatePanel
+              status={updateStatus}
+              isChecking={isCheckingUpdate}
+              isUpdating={isApplyingUpdate}
+              isRestarting={isServerRestarting}
+              updateError={updateError}
+              canForceReset={updateCanForceReset}
+              updateSuccessMsg={updateSuccessMsg}
+              onCheckNow={checkSystemUpdate}
+              onApplyUpdate={() => handleApplyUpdate(false)}
+              onForceUpdate={() => handleApplyUpdate(true)}
+            />
+          )}
+        </main>
+
+        <footer className="border-t border-slate-200/80 dark:border-slate-400/15 py-5 px-6 text-xs text-slate-500 dark:text-slate-400">
+          <div className="max-w-[1680px] mx-auto flex flex-wrap items-center justify-between gap-4">
+            <span>GaConPro V1.0 · Hỗ Trợ Phần Mềm : Zalo Đỗ Oanh 08.2626.8282</span>
+            <div className="flex items-center gap-3">
+              <span>Hỗ trợ MP4, MKV, WEBM, MP3, M4A · Xử lý ghép luồng bằng FFmpeg</span>
+              <button
+                type="button"
+                onClick={handleOpenUpdateModal}
+                className="text-violet-600 dark:text-violet-300 hover:underline font-medium cursor-pointer"
+              >
+                Kiểm tra bản cập nhật
+              </button>
+            </div>
           </div>
-        )}
-
-        {activeTab === 'settings' && (
-          <SettingsPanel
-            perSiteCookies={perSiteCookies}
-            studioDefaults={studioDefaults}
-            onSaveSiteCookie={handleSaveSiteCookie}
-            onSaveAllCookies={persistPerSiteCookies}
-            onUpdateStudioDefaults={handleUpdateStudioDefaults}
-          />
-        )}
-      </main>
-
-      <footer className="border-t border-slate-200/80 dark:border-[#00464A]/80 py-5 px-6 text-xs text-slate-500 dark:text-teal-100/80">
-        <div className="max-w-[1320px] mx-auto flex flex-wrap items-center justify-between gap-4">
-          <span>GaConPro V1.0 · Hỗ Trợ Phần Mềm : Zalo Đỗ Oanh 08.2626.8282</span>
-          <span>Hỗ trợ MP4, MKV, WEBM, MP3, M4A · Xử lý ghép luồng bằng FFmpeg</span>
-        </div>
-      </footer>
+        </footer>
+      </div>
 
       <CustomLogoModal
         isOpen={isLogoModalOpen}
