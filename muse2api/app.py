@@ -419,6 +419,7 @@ class ImageRequest(BaseModel):
     image: Any = None
     images: list | None = None
     reference_image: str | None = None
+    reference_images: list[str] | None = None
     async_: bool = Field(False, alias="async")
 
 
@@ -434,6 +435,7 @@ class VideoRequest(BaseModel):
     image: Any = None
     image_url: Any = None
     reference_image: str | None = None
+    reference_images: list[str] | None = None
 
 
 class ChatMessage(BaseModel):
@@ -489,10 +491,32 @@ class AccountPatch(BaseModel):
     enabled: bool | None = None
 
 
+def _collect_request_ref_images(r) -> list[str]:
+    refs: list[str] = []
+    def _push(val):
+        if isinstance(val, dict):
+            val = val.get("image_url") or val.get("url") or val.get("b64_json")
+        if isinstance(val, str):
+            v = val.strip()
+            if v and v not in refs:
+                refs.append(v)
+    for item in (getattr(r, "reference_images", None) or []):
+        _push(item)
+    for item in (getattr(r, "images", None) or []):
+        _push(item)
+    _push(getattr(r, "reference_image", None))
+    _push(getattr(r, "image_url", None))
+    _push(getattr(r, "image", None))
+    return refs
+
+
 # ------------------------- 提示词构造 -------------------------
 def build_image_prompt(r: ImageRequest) -> str:
-    has_ref = bool(r.reference_image or r.image or r.images)
-    if has_ref:
+    refs = _collect_request_ref_images(r)
+    has_ref = len(refs) > 0
+    if len(refs) > 1:
+        parts = [f"基于我本次上传附带的 {len(refs)} 张人物/角色参考图片（请严格按顺序和提示词中的编号将每张参考图精确对应到各个出场角色，完整保留每位角色的五官、发型、体型、服饰与显著特征，禁止只参考第一张图而自行捏造其余角色）：{r.prompt.strip()}"]
+    elif has_ref:
         parts = [f"基于我本次上传附带的参考图片进行生图/编辑：{r.prompt.strip()}"]
     else:
         parts = [f"全新文生图创作（当前未提供任何参考图，请勿查找历史相册或向用户索要原图，直接根据文字描述从零绘制生成一张全新图片）：{r.prompt.strip()}"]
@@ -721,24 +745,26 @@ def build_video_prompt(r: VideoRequest) -> str:
     ar = (r.aspect_ratio or "").strip().lower()
     sz = (r.size or "").strip().lower()
     dur = r.duration or 6
-    has_ref = bool(r.reference_image or r.image or r.image_url)
+    refs = _collect_request_ref_images(r)
+    has_ref = len(refs) > 0
+    multi_ref_note = f"（共附带 {len(refs)} 张参考图，请严格保持所有对应角色的五官与服饰一致）" if len(refs) > 1 else ""
 
     is_vertical = any(k in ar or k in sz for k in ("9:16", "9/16", "portrait", "竖屏", "720x1280", "1080x1920"))
 
     parts = []
     if is_vertical:
         if has_ref:
-            parts.append(f"基于我本次上传的参考图片附件作为第一帧参考图（严禁使用历史图片或任何其他图像，必须严格以我当前刚刚上传并附带在此处的这张图片为起始帧）：生成一个严格9:16竖屏手机满屏的动态图生视频（9:16 vertical portrait video，720x1280，高大于宽的手机全屏竖版画面，严格以附带的参考图为起始第一帧延续动作，严禁生成横屏或黑边，时长严格为 {dur} 秒）：{user_prompt}")
+            parts.append(f"基于我本次上传的参考图片附件作为起始与角色参考图{multi_ref_note}（严禁使用历史图片或任何其他图像，必须严格以我当前刚刚上传并附带在此处的参考图为准）：生成一个严格9:16竖屏手机满屏的动态图生视频（9:16 vertical portrait video，720x1280，高大于宽的手机全屏竖版画面，延续自然连贯动作，严禁生成横屏或黑边，时长严格为 {dur} 秒）：{user_prompt}")
         else:
             parts.append(f"全新文生视频创作（纯文本全新生成，严禁参考任何历史图片或上下文）：生成一个严格9:16竖屏手机满屏视频（9:16 vertical portrait video，720x1280，高大于宽的手机全屏竖版画面，严禁生成横屏或带有左右黑边，保持垂直构图，时长严格为 {dur} 秒）：{user_prompt}")
     elif any(k in ar or k in sz for k in ("16:9", "16/9", "landscape", "横屏", "1280x720", "1920x1080")):
         if has_ref:
-            parts.append(f"基于我本次上传的参考图片附件作为第一帧参考图（严禁使用历史图片或任何其他图像，必须严格以我当前刚刚上传并附带在此处的这张图片为起始帧）：生成一个16:9宽屏横屏图生视频（16:9 widescreen landscape video，严格以附带的参考图为起始第一帧延续动作，时长严格为 {dur} 秒）：{user_prompt}")
+            parts.append(f"基于我本次上传的参考图片附件作为起始与角色参考图{multi_ref_note}（严禁使用历史图片或任何其他图像，必须严格以我当前刚刚上传并附带在此处的参考图为准）：生成一个16:9宽屏横屏图生视频（16:9 widescreen landscape video，延续自然连贯动作，时长严格为 {dur} 秒）：{user_prompt}")
         else:
             parts.append(f"全新文生视频创作（纯文本全新生成，严禁参考任何历史图片或上下文）：生成一个16:9横屏宽屏视频（16:9 widescreen landscape video，时长严格为 {dur} 秒）：{user_prompt}")
     else:
         if has_ref:
-            parts.append(f"基于我本次上传的参考图片附件作为第一帧参考图（严禁使用历史图片或任何其他图像，必须严格以我当前刚刚上传并附带在此处的这张图片为起始帧）：生成动态图生视频（严格以附带的参考图为起始第一帧延续动作，时长严格为 {dur} 秒）：{user_prompt}")
+            parts.append(f"基于我本次上传的参考图片附件作为起始与角色参考图{multi_ref_note}（严禁使用历史图片或任何其他图像，必须严格以我当前刚刚上传并附带在此处的参考图为准）：生成动态图生视频（延续自然连贯动作，时长严格为 {dur} 秒）：{user_prompt}")
         else:
             parts.append(f"全新文生视频创作（纯文本全新生成，严禁参考任何历史图片或上下文）：生成一个视频（时长严格为 {dur} 秒）：{user_prompt}")
 
@@ -851,6 +877,7 @@ def _pos(v) -> bool:
 def _run_generation(prompt: str, kind: str, timeout: int,
                     account_id: str | None = None, on_progress=None,
                     reference_image: str | None = None,
+                    reference_images: list[str] | None = None,
                     on_acquired=None) -> tuple[dict, str | None]:
     # Browser ownership covers account selection, retry and cleanup, not just generate().
     deadline = time.monotonic() + max(1, timeout)
@@ -863,14 +890,18 @@ def _run_generation(prompt: str, kind: str, timeout: int,
             except Exception:
                 pass
         return _run_generation_locked(prompt, kind, timeout, account_id,
-                                      on_progress, reference_image, deadline=deadline)
+                                      on_progress, reference_image,
+                                      reference_images=reference_images,
+                                      deadline=deadline)
     finally:
         GEN_LOCK.release()
 
 
 def _run_generation_locked(prompt: str, kind: str, timeout: int,
                     account_id: str | None = None, on_progress=None,
-                    reference_image: str | None = None, deadline=None) -> tuple[dict, str | None]:
+                    reference_image: str | None = None,
+                    reference_images: list[str] | None = None,
+                    deadline=None) -> tuple[dict, str | None]:
     remaining_wait = int(deadline - time.monotonic()) if deadline is not None else timeout
     acc = ACCOUNT_POOL.acquire(account_id=account_id,
                                preferred_id=getattr(engine, "current_acc_id", None),
@@ -915,7 +946,8 @@ def _run_generation_locked(prompt: str, kind: str, timeout: int,
                 res = engine.generate(cur_acc["cookies"], prompt, expect=kind,
                                       timeout=remaining, expires=cur_acc.get("cookies_exp"),
                                       account_id=cur_acc["id"], on_progress=on_progress,
-                                      reference_image=reference_image)
+                                      reference_image=reference_image,
+                                      reference_images=reference_images)
                 store.mark(cur_acc["id"], True, "")
                 _sync_cookies(cur_acc["id"])
                 return res, cur_acc["id"]
@@ -969,13 +1001,14 @@ def _image_response(req: ImageRequest, res: dict) -> dict:
 
 
 def _queue_image(req: ImageRequest, prompt: str, reference_image: str | None,
-                 idempotency_key: str | None = None):
+                 idempotency_key: str | None = None,
+                 reference_images: list[str] | None = None):
     """Opt-in polling avoids reverse-proxy timeouts; no generation is repeated by polling."""
     if idempotency_key and len(idempotency_key) > 256:
         raise HTTPException(400, "Idempotency-Key too long")
     key_hash = hashlib.sha256(idempotency_key.encode()).hexdigest() if idempotency_key else None
     request_hash = hashlib.sha256(json.dumps(
-        {"request": req.model_dump(by_alias=True), "reference": reference_image},
+        {"request": req.model_dump(by_alias=True), "reference": reference_image, "references": reference_images},
         sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     with IMAGE_TASK_LOCK:
         tasks = list(store.tasks.values())
@@ -1008,6 +1041,7 @@ def _queue_image(req: ImageRequest, prompt: str, reference_image: str | None,
             res, acc_id = _run_generation(
                 prompt, "image", req.timeout or CFG.image_timeout,
                 reference_image=reference_image,
+                reference_images=reference_images,
                 on_progress=lambda p: store.update_task(tid, progress=p),
                 on_acquired=_on_acquired)
             # Store only media metadata, not large base64 payloads or reference credentials.
@@ -1029,13 +1063,9 @@ def _queue_image(req: ImageRequest, prompt: str, reference_image: str | None,
 @app.post("/v1/images/tasks")
 def create_image_task(req: ImageRequest,
                       idempotency_key: str | None = Header(default=None), _=Depends(auth)):
-    ref_img = req.reference_image or req.image
-    if isinstance(ref_img, dict):
-        ref_img = ref_img.get("url") or ref_img.get("b64_json")
-    if not ref_img and req.images:
-        first = req.images[0]
-        ref_img = first.get("image_url") or first.get("url") if isinstance(first, dict) else first
-    return _queue_image(req, build_image_prompt(req), ref_img, idempotency_key)
+    refs = _collect_request_ref_images(req)
+    ref_img = refs[0] if refs else None
+    return _queue_image(req, build_image_prompt(req), ref_img, idempotency_key, reference_images=refs)
 
 
 @app.get("/v1/images/tasks/{task_id}")
@@ -1053,19 +1083,18 @@ def get_image_task(task_id: str, _=Depends(auth)):
 
 @app.post("/v1/images/generations")
 async def images_generations(req: ImageRequest, _=Depends(auth)):
-    ref_img = req.reference_image or req.image
-    if isinstance(ref_img, dict):
-        ref_img = ref_img.get("url") or ref_img.get("b64_json")
-    if not ref_img and req.images and isinstance(req.images, list):
-        first = req.images[0]
-        ref_img = first.get("image_url") or first.get("url") if isinstance(first, dict) else first
+    refs = _collect_request_ref_images(req)
+    ref_img = refs[0] if refs else None
 
     prompt = build_image_prompt(req)
     timeout = req.timeout or CFG.image_timeout
     if req.async_:
-        return _queue_image(req, prompt, ref_img)
+        return _queue_image(req, prompt, ref_img, reference_images=refs)
     try:
-        res, _acc = await asyncio.to_thread(_run_generation, prompt, "image", timeout, reference_image=ref_img)
+        res, _acc = await asyncio.to_thread(
+            _run_generation, prompt, "image", timeout,
+            reference_image=ref_img, reference_images=refs
+        )
     except MuseAuthError as exc:
         raise HTTPException(401, str(exc)) from exc
     except MuseGenerationError as exc:
@@ -1161,13 +1190,8 @@ async def images_edits(request: Request, _=Depends(auth)):
 @app.post("/v1/videos")
 @app.post("/v1/videos/generations")
 async def create_video(req: VideoRequest, _=Depends(auth)):
-    ref_img = None
-    if req.reference_image:
-        ref_img = req.reference_image
-    elif req.image_url:
-        ref_img = req.image_url if isinstance(req.image_url, str) else (req.image_url.get("url") if isinstance(req.image_url, dict) else None)
-    elif req.image:
-        ref_img = req.image.get("url") if isinstance(req.image, dict) else req.image
+    refs = _collect_request_ref_images(req)
+    ref_img = refs[0] if refs else None
 
     prompt = build_video_prompt(req)
     timeout = req.timeout or CFG.video_timeout
@@ -1185,7 +1209,8 @@ async def create_video(req: VideoRequest, _=Depends(auth)):
             def prog_cb(p):
                 store.update_task(task["id"], progress=p)
             res, acc_id = _run_generation(prompt, "video", timeout, on_progress=prog_cb,
-                                          reference_image=ref_img, on_acquired=_on_acquired)
+                                          reference_image=ref_img, reference_images=refs,
+                                          on_acquired=_on_acquired)
             vurl = media_url(res["filename"])
             store.update_task(task["id"], status="completed", progress=100, account=acc_id,
                               elapsed=round(time.time() - timing["t0"], 1),

@@ -237,9 +237,12 @@ export default function App() {
     try {
       const saved = localStorage.getItem('bilibatch_studio_defaults');
       if (saved) {
-        const parsed = JSON.parse(saved) as Partial<StudioDefaultConfig> & { targetDuration?: string };
+        const parsed = JSON.parse(saved) as Partial<StudioDefaultConfig> & {
+          targetDuration?: string;
+          schemaVersion?: number;
+        };
         const migratedSec =
-          typeof parsed.targetDurationSec === 'number' && parsed.targetDurationSec >= 20
+          typeof parsed.targetDurationSec === 'number' && parsed.targetDurationSec >= 10
             ? parsed.targetDurationSec
             : parsed.targetDuration === 'medium'
             ? 45
@@ -248,17 +251,26 @@ export default function App() {
           (parsed.aiProvider as string) === 'muse'
             ? 'gemini'
             : parsed.aiProvider || DEFAULT_STUDIO_CONFIG.aiProvider;
-        const migratedVisualMode =
-          (parsed.visualMode as string) === 'muse_edison'
-            ? 'remix'
-            : parsed.visualMode || DEFAULT_STUDIO_CONFIG.visualMode;
-        return {
+        const isLegacySchema = !parsed.schemaVersion || parsed.schemaVersion < 2;
+        const migratedVisualMode = isLegacySchema
+          ? 'muse2api_video'
+          : (parsed.visualMode as string) === 'muse_edison'
+          ? 'muse2api_video'
+          : parsed.visualMode || DEFAULT_STUDIO_CONFIG.visualMode;
+        const nextConfig: StudioDefaultConfig = {
           ...DEFAULT_STUDIO_CONFIG,
           ...parsed,
           aiProvider: migratedAiProvider,
           visualMode: migratedVisualMode,
           targetDurationSec: migratedSec,
         };
+        if (isLegacySchema) {
+          localStorage.setItem(
+            'bilibatch_studio_defaults',
+            JSON.stringify({ ...nextConfig, schemaVersion: 2 })
+          );
+        }
+        return nextConfig;
       }
     } catch {
       // ignore
@@ -413,7 +425,7 @@ export default function App() {
 
   const handleUpdateStudioDefaults = useCallback((next: StudioDefaultConfig) => {
     setStudioDefaults(next);
-    localStorage.setItem('bilibatch_studio_defaults', JSON.stringify(next));
+    localStorage.setItem('bilibatch_studio_defaults', JSON.stringify({ ...next, schemaVersion: 2 }));
   }, []);
 
   const fetchChunkWithRetry = async (url: string): Promise<ArrayBuffer> => {

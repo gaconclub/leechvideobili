@@ -80,6 +80,7 @@ export interface DerivativeScene {
   lighting?: string;
   costume?: string;
   cameraMovement?: string;
+  cameraEquipment?: string;
   shotStyle?: string;
   dialogue?: string;
   narration: string;
@@ -1300,6 +1301,9 @@ export function compileConsistentScenePrompt(params: {
   if (sc.cameraMovement?.trim()) {
     parts.push(`Camera Movement: ${sc.cameraMovement.trim()}.`);
   }
+  if (sc.cameraEquipment?.trim()) {
+    parts.push(`Camera Equipment & Lens: ${sc.cameraEquipment.trim()}.`);
+  }
   if (sc.lighting?.trim()) {
     parts.push(`Lighting: ${sc.lighting.trim()}.`);
   }
@@ -1313,14 +1317,30 @@ export function compileConsistentScenePrompt(params: {
       : sc.imagePrompt?.trim() || sc.visualNote?.trim() || sc.videoPrompt?.trim();
 
   if (primaryPrompt) {
-    parts.push(`${mediaType === 'video' ? 'Detailed Video Prompt' : 'Detailed Image Prompt'}: ${primaryPrompt}.`);
+    parts.push(`${mediaType === 'video' ? 'Detailed Real-Time Video Prompt' : 'Detailed Image Prompt'}: ${primaryPrompt}.`);
   } else if (sc.sceneSummary?.trim() || sc.onScreenText?.trim()) {
     parts.push(`Core Subject: ${(sc.sceneSummary || sc.onScreenText || '').trim()}.`);
   }
-  if (mediaType === 'video' && sc.sceneEndState?.trim()) {
-    parts.push(`Ending State: ${sc.sceneEndState.trim()}.`);
+  if (mediaType === 'video') {
+    const durNote = sc.durationSec ? `${Math.round(sc.durationSec)}s continuous real-time action` : 'continuous real-time action';
+    parts.push(`Motion & Continuity (${durNote}): smooth natural motion without jarring cuts, coherent physical continuity.`);
+    if (sc.sceneEndState?.trim()) {
+      parts.push(`Ending State: ${sc.sceneEndState.trim()}.`);
+    }
   }
   return parts.join(' ');
+}
+
+export interface StudioCharacterRefInput {
+  id?: string;
+  name?: string;
+  dataUrl: string;
+  description?: string;
+  source?: 'uploaded' | 'ai_generated';
+  voiceMode?: 'default' | 'ai_online' | 'offline_system';
+  voiceId?: Exclude<DerivativeVoiceId, 'none'>;
+  offlineVoice?: string;
+  voiceStyle?: string;
 }
 
 export interface IndependentConceptOverride {
@@ -1342,21 +1362,19 @@ export interface IndependentConceptOverride {
 function resolveDesiredSceneCount(
   desiredTotalSec: number,
   explicitSceneCount?: number,
-  scriptMode: StudioScriptMode = 'series'
+  _scriptMode: StudioScriptMode = 'series'
 ): number {
-  if (typeof explicitSceneCount === 'number' && Number.isFinite(explicitSceneCount) && explicitSceneCount >= 2) {
-    return Math.max(2, Math.min(24, Math.round(explicitSceneCount)));
+  if (typeof explicitSceneCount === 'number' && Number.isFinite(explicitSceneCount) && explicitSceneCount >= 1) {
+    return Math.max(1, Math.min(24, Math.round(explicitSceneCount)));
   }
-  if (scriptMode === 'series') {
-    return 10;
-  }
-  if (desiredTotalSec <= 15) return 3;
-  if (desiredTotalSec <= 25) return 4;
-  if (desiredTotalSec <= 35) return 5;
-  if (desiredTotalSec <= 50) return 6;
-  if (desiredTotalSec <= 90) return 8;
-  if (desiredTotalSec <= 150) return 10;
-  if (desiredTotalSec <= 240) return 12;
+  // 1 setting = configured duration naturally (e.g. 10s -> 1 single 10s scene, not fragmented 3-4s clips)
+  if (desiredTotalSec <= 15) return 1;
+  if (desiredTotalSec <= 25) return 2;
+  if (desiredTotalSec <= 35) return 3;
+  if (desiredTotalSec <= 45) return 4;
+  if (desiredTotalSec <= 75) return 6;
+  if (desiredTotalSec <= 135) return 10;
+  if (desiredTotalSec <= 210) return 12;
   if (desiredTotalSec <= 360) return 16;
   return 20;
 }
@@ -1433,9 +1451,9 @@ export async function learnVideosAndCreateBlueprint(params: {
     params.conceptOverride ? 'independent_batch' : scriptMode
   );
 
-  const avgSceneDur = Math.max(2, Math.min(45, Math.round(desiredTotalSec / desiredScenes)));
-  const wordsMin = Math.max(6, Math.min(90, Math.round(avgSceneDur * 1.9)));
-  const wordsMax = Math.max(wordsMin + 5, Math.min(115, Math.round(avgSceneDur * 2.55)));
+  const avgSceneDur = Math.max(4, Math.min(120, Math.round(desiredTotalSec / desiredScenes)));
+  const wordsMin = Math.max(6, Math.min(160, Math.round(avgSceneDur * 1.8)));
+  const wordsMax = Math.max(wordsMin + 5, Math.min(210, Math.round(avgSceneDur * 2.5)));
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
   const enableVoiceover = params.enableVoiceover !== false;
 
@@ -1556,35 +1574,40 @@ Tùy chọn Lồng tiếng (Voiceover): ${
       : 'TẮT LỒNG TIẾNG — BẮT BUỘC đặt "narration": "" (chuỗi rỗng) cho TẤT CẢ mọi phân cảnh, KHÔNG tạo dữ liệu giọng thuyết minh thừa; tập trung diễn đạt qua hình ảnh, hành động, lời thoại nhân vật (nếu có) và phụ đề ngắn.'
   }
 Tổng thời lượng mục tiêu BẮT BUỘC: khoảng ${targetMinutesLabel} chia thành ĐÚNG ${desiredScenes} phân cảnh đánh số lần lượt 1..${desiredScenes} (trung bình ~${avgSceneDur}s/cảnh).
-${params.characterSummary?.trim() ? `Ảnh/Ghi chú nhân vật người dùng đính kèm: ${params.characterSummary.trim()}` : ''}
+QUY TẮC THỜI LƯỢNG & BỐI CẢNH:
+- Mỗi bối cảnh / phân cảnh PHẢI tương ứng trọn vẹn với thời lượng được thiết lập (~${avgSceneDur}s/cảnh). Ví dụ nếu thiết lập 10 giây và tạo 1 phân cảnh thì viết 1 phân cảnh duy nhất dài 10 giây với hành động liên tục theo thời gian thực, TUYỆT ĐỐI KHÔNG tự ý xé lẻ thành nhiều đoạn vụn 3-4 giây.
+- Tổng "durationSec" của tất cả các cảnh cộng lại phải xấp xỉ ${desiredTotalSec} giây.
+${params.characterSummary?.trim() ? `DANH SÁCH NHÂN VẬT THAM CHIẾU ĐÃ KHÓA (BẮT BUỘC dùng ĐÚNG tên nhân vật dưới đây trong "charactersInScene", "dialogue", "imagePrompt" và "videoPrompt" để hệ thống ánh xạ đúng ảnh & giọng nói):\n${params.characterSummary.trim()}` : ''}
 ${lockedProjectAnchors ? `\nHỒ SƠ DỰ ÁN ĐÃ KHÓA (BẮT BUỘC GIỮ NGUYÊN ĐỒNG BỘ):\n${lockedProjectAnchors}` : ''}
 ${params.customInstruction?.trim() ? `Yêu cầu bổ sung từ đạo diễn: ${params.customInstruction.trim()}` : ''}
 
 TIÊU CHUẨN CHẤT LƯỢNG BẮT BUỘC (KHÔNG ĐƯỢC VIẾT SƠ SÀI):
 1. Xây dựng BỘ DỮ LIỆU ĐỒNG BỘ 5 THÀNH PHẦN (Mục 2.6):
-   - \`characterBible\` (Character Reference): Mô tả cực chi tiết nhân dạng cố định từng nhân vật (độ tuổi, gương mặt, màu/kiểu tóc, vóc dáng, đặc điểm nhận diện).
+   - \`characterBible\` (Character Reference): Mô tả cực chi tiết nhân dạng cố định từng nhân vật (tên, độ tuổi, gương mặt, màu/kiểu tóc, vóc dáng, đặc điểm nhận diện).
    - \`settingBible\` (Environment Reference): Mô tả chi tiết không gian, kiến trúc, thời gian, bối cảnh chủ đạo.
    - \`visualStyleBible\` (Visual Style Reference): Phong cách hình ảnh, chất liệu kết xuất, bảng màu & ngôn ngữ ánh sáng xuyên suốt.
    - \`costumeBible\` (Costume Reference): Trang phục, màu sắc vải & phụ kiện cố định từng nhân vật.
-   - \`continuityBible\` (Story Continuity): Mạch cốt truyện liên tục & quy tắc nối tiếp hành động giữa các cảnh.
-2. Đánh số thứ tự ĐÚNG ${desiredScenes} phân cảnh (\`sceneIndex\`: 1..${desiredScenes}) với ĐẦY ĐỦ 15 TRƯỜNG DỮ LIỆU CHUYÊN SÂU:
+   - \`continuityBible\` (Story Continuity): Mạch cốt truyện liên tục, giọng nói nhất quán & quy tắc nối tiếp hành động giữa các cảnh.
+2. Đánh số thứ tự ĐÚNG ${desiredScenes} phân cảnh (\`sceneIndex\`: 1..${desiredScenes}) với ĐẦY ĐỦ 16 TRƯỜNG DỮ LIỆU CHUYÊN SÂU:
    - \`sceneTitle\`: Tên phân cảnh ngắn gọn (3-8 chữ).
    - \`sceneSummary\`: Mô tả nội dung diễn biến chính của phân cảnh.
-   - \`charactersInScene\`: Tên các nhân vật xuất hiện trong cảnh.
-   - \`settingDetail\`: Không gian, địa điểm, thời gian cụ thể đồng bộ \`settingBible\`.
-   - \`actionDetail\`: Hành vi và diễn biến cụ thể của nhân vật.
-   - \`costume\`: Trang phục cụ thể đồng bộ \`costumeBible\`.
-   - \`cameraAngle\`: Góc máy cụ thể (Cận cảnh, Trung cảnh, Toàn cảnh, Góc thấp, Góc cao, Qua vai...).
-   - \`cameraMovement\`: Kiểu quay / chuyển động máy cụ thể (Tracking shot, Slow dolly-in, Handheld, Crane, Pan, Static...).
-   - \`lighting\`: Ánh sáng cụ thể (Ánh sáng tự nhiên, Điện ảnh ngược sáng rim light, Studio key light, Neon...).
-   - \`shotStyle\`: Phong cách quay (Điện ảnh 35mm, Tài liệu, Anime, Hoạt hình 3D, Quảng cáo, Người que...).
-   - \`dialogue\`: Nội dung nhân vật trực tiếp nói (nếu có nhân vật đối thoại/độc thoại; để "" nếu cảnh câm).
+   - \`durationSec\`: Thời lượng phân cảnh bằng số giây (~${avgSceneDur}s; tổng bằng ~${desiredTotalSec}s).
+   - \`charactersInScene\`: Liệt kê CHÍNH XÁC tên từng nhân vật xuất hiện trong cảnh (phải trùng khớp tên trong danh sách nhân vật tham chiếu nếu có).
+   - \`settingDetail\`: Bối cảnh chi tiết — không gian, địa điểm, vật thể môi trường, thời gian đồng bộ \`settingBible\`.
+   - \`actionDetail\`: Hành động nhân vật diễn ra liên tục theo thời gian thực suốt thời lượng cảnh (mô tả chuyển động tự nhiên, liền mạch).
+   - \`costume\`: Trang phục & phụ kiện cụ thể của từng nhân vật đồng bộ \`costumeBible\`.
+   - \`cameraAngle\`: Góc quay cụ thể (Cận cảnh, Trung cảnh, Toàn cảnh, Góc thấp, Góc cao, Qua vai...).
+   - \`cameraMovement\`: Kiểu quay / chuyển động máy mượt mà (Tracking shot, Slow dolly-in, Steadicam orbit, Crane, Pan...).
+   - \`cameraEquipment\`: Thiết bị quay & ống kính (VD: ARRI Alexa Mini LF + ống kính 35mm anamorphic + gimbal DJI Ronin RS4, hoặc Sony FX3 50mm f/1.4 Steadicam).
+   - \`lighting\`: Ánh sáng & sắc độ màu chi tiết (Ánh sáng tự nhiên, Điện ảnh rim light, Studio key light, Golden hour, Neon...).
+   - \`shotStyle\`: Phong cách quay (Điện ảnh 35mm, Tài liệu, Anime 2D, Hoạt hình 3D, Vlog, Thương mại...).
+   - \`dialogue\`: Lời thoại nhân vật trực tiếp nói theo mẫu "Tên nhân vật: Câu thoại" (để "" nếu cảnh không thoại).
    - \`narration\`: ${enableVoiceover ? `Nội dung thuyết minh / lồng tiếng giọng dẫn (${wordsMin}-${wordsMax} chữ)` : 'BẮT BUỘC để chuỗi rỗng "" vì đã tắt lồng tiếng'}.
    - \`onScreenText\`: Chữ phụ đề hiển thị ngắn gọn (<= 12 chữ).
    - \`continuityNote\`: Nối tiếp trực tiếp từ trạng thái cuối của phân cảnh trước (\`sceneEndState\` của Scene trước).
    - \`sceneEndState\`: Trạng thái cuối cùng khi kết thúc cảnh này (vị trí nhân vật, biểu cảm, đạo cụ, thời điểm) để Scene tiếp theo nối vào hợp lý.
-   - \`imagePrompt\`: Prompt hình ảnh CỰC KỲ CHI TIẾT (tối thiểu 2-3 câu giàu dữ liệu thị giác: nêu rõ ngoại hình + trang phục cố định từ Character/Costume Reference, tư thế/hành động đóng khung, bối cảnh, vật thể xung quanh, góc máy, ánh sáng, chất liệu & phong cách hình ảnh) để AI tạo ảnh ra đúng một bộ phim thống nhất.
-   - \`videoPrompt\`: Prompt video CỰC KỲ CHI TIẾT (tối thiểu 2-3 câu mô tả hành động chuyển động mượt mà của nhân vật, biểu cảm thay đổi, chuyển động vật lý xung quanh, kiểu quay/camera movement, góc máy, ánh sáng và trang phục ĐỒNG NHẤT 100% với \`imagePrompt\`).
+   - \`imagePrompt\`: Prompt hình ảnh CỰC KỲ CHI TIẾT (tối thiểu 3 câu giàu dữ liệu thị giác: nêu rõ tên + ngoại hình + trang phục cố định của TỪNG nhân vật trong cảnh, bối cảnh, góc quay, phong cách quay, ánh sáng, thiết bị quay & ống kính, tư thế hành động mở đầu cảnh) để AI tạo ảnh đồng bộ đa nhân vật chuẩn xác.
+   - \`videoPrompt\`: Prompt video CỰC KỲ CHI TIẾT (tối thiểu 3 câu mô tả hành động nhân vật diễn ra liên tục theo thời gian thực trong suốt ${avgSceneDur}s, chuyển động tự nhiên liền mạch, góc quay, bối cảnh, phong cách quay, ánh sáng, thiết bị quay & quỹ đạo máy quay ĐỒNG NHẤT 100% với \`imagePrompt\`).
    - \`brollKeywordEn\`: 2-4 từ khóa tiếng Anh tìm tư liệu minh họa.
 ${contexts.length > 0 ? `\nDỮ LIỆU CÁC VIDEO THAM CHIẾU:\n${dossierLines.join('\n\n')}` : ''}`;
 
@@ -1646,18 +1669,19 @@ TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU
       "charactersInScene": "Nhân vật xuất hiện",
       "settingDetail": "Bối cảnh, địa điểm, thời gian",
       "actionDetail": "Hành vi và diễn biến cụ thể",
-      "cameraAngle": "Góc máy cụ thể",
+      "cameraAngle": "Góc quay cụ thể",
       "cameraMovement": "Kiểu quay cụ thể",
+      "cameraEquipment": "Thiết bị quay & ống kính (VD: ARRI Alexa Mini LF 35mm + gimbal)",
       "lighting": "Ánh sáng cụ thể",
       "costume": "Trang phục cụ thể đồng bộ",
       "shotStyle": "Phong cách quay",
-      "dialogue": "Lời thoại nhân vật",
+      "dialogue": "Lời thoại nhân vật (Tên: Câu nói)",
       "narration": "${enableVoiceover ? `Lồng tiếng ${wordsMin}-${wordsMax} chữ` : ''}",
       "onScreenText": "Chữ phụ đề ngắn <= 12 chữ",
       "continuityNote": "Liên kết từ trạng thái cuối cảnh trước",
       "sceneEndState": "Trạng thái cuối cảnh này",
-      "imagePrompt": "Prompt hình ảnh cực chi tiết đồng bộ 100% nhân vật, trang phục, bối cảnh, ánh sáng, góc máy, phong cách",
-      "videoPrompt": "Prompt video cực chi tiết hành động, chuyển động camera & đồng bộ với imagePrompt",
+      "imagePrompt": "Prompt hình ảnh cực chi tiết: nhân vật, trang phục, bối cảnh, góc quay, phong cách quay, ánh sáng, thiết bị quay",
+      "videoPrompt": "Prompt video cực chi tiết: hành động liên tục theo thời gian thực, chuyển động tự nhiên liền mạch, camera & thiết bị quay đồng bộ imagePrompt",
       "brollKeywordEn": "2-4 English keywords"
     }
   ]
@@ -1762,6 +1786,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
               'actionDetail',
               'cameraAngle',
               'cameraMovement',
+              'cameraEquipment',
               'lighting',
               'costume',
               'shotStyle',
@@ -1781,6 +1806,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
               actionDetail: { type: Type.STRING },
               cameraAngle: { type: Type.STRING },
               cameraMovement: { type: Type.STRING },
+              cameraEquipment: { type: Type.STRING },
               lighting: { type: Type.STRING },
               costume: { type: Type.STRING },
               shotStyle: { type: Type.STRING },
@@ -1926,7 +1952,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         contexts.length > 0
           ? Math.max(0, Math.min(contexts.length - 1, Math.round(Number(sc?.sourceVideoIndex ?? i % contexts.length))))
           : 0;
-      const dur = Math.max(2, Math.min(45, Number(sc?.durationSec || avgSceneDur)));
+      const dur = Math.max(2, Math.min(120, Number(sc?.durationSec || avgSceneDur)));
       const startPct = Math.max(0, Math.min(80, Math.round(Number(sc?.sourceStartPercent ?? (i * 18) % 70))));
       const sceneTitle = String(sc?.sceneTitle || sc?.onScreenText || `Phân cảnh ${i + 1}`).trim();
       const sceneSummary = String(sc?.sceneSummary || sc?.actionDetail || '').trim();
@@ -1935,6 +1961,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
       const settingDetail = String(sc?.settingDetail || '').trim();
       const cameraAngle = String(sc?.cameraAngle || '').trim();
       const cameraMovement = String(sc?.cameraMovement || '').trim();
+      const cameraEquipment = String(sc?.cameraEquipment || '').trim();
       const lighting = String(sc?.lighting || '').trim();
       const costume = String(sc?.costume || '').trim();
       const shotStyle = String(sc?.shotStyle || videoStyleMeta.labelVi).trim();
@@ -1947,6 +1974,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         actionDetail,
         settingDetail,
         cameraAngle,
+        cameraEquipment ? `Thiết bị quay: ${cameraEquipment}` : '',
         lighting,
         shotStyle,
       ]
@@ -1954,7 +1982,15 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         .join('. ');
       const imagePrompt = String(sc?.imagePrompt || sc?.visualNote || fallbackCombined).trim();
       const videoPrompt = String(
-        sc?.videoPrompt || [imagePrompt, cameraMovement ? `Kiểu quay: ${cameraMovement}` : '', actionDetail].filter(Boolean).join('. ')
+        sc?.videoPrompt ||
+          [
+            imagePrompt,
+            cameraMovement ? `Kiểu quay: ${cameraMovement}` : '',
+            cameraEquipment ? `Thiết bị quay: ${cameraEquipment}` : '',
+            actionDetail,
+          ]
+            .filter(Boolean)
+            .join('. ')
       ).trim();
 
       return {
@@ -1971,6 +2007,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         actionDetail,
         cameraAngle,
         cameraMovement,
+        cameraEquipment,
         lighting,
         costume,
         shotStyle,
@@ -2475,7 +2512,7 @@ export interface StudioProjectProfileRecord {
   visualStyleBible: string;
   costumeBible: string;
   continuityBible: string;
-  characterRefs: { id: string; name: string; dataUrl: string; description?: string; source: 'uploaded' | 'ai_generated' }[];
+  characterRefs: StudioCharacterRefInput[];
   updatedAt: number;
 }
 
@@ -2522,7 +2559,7 @@ export function saveStudioProjectProfile(input: Partial<StudioProjectProfileReco
     visualStyleBible: String(input.visualStyleBible || '').trim(),
     costumeBible: String(input.costumeBible || '').trim(),
     continuityBible: String(input.continuityBible || '').trim(),
-    characterRefs: Array.isArray(input.characterRefs) ? input.characterRefs.slice(0, 3) : [],
+    characterRefs: Array.isArray(input.characterRefs) ? input.characterRefs.slice(0, 8) : [],
     updatedAt: Date.now(),
   };
 
@@ -2606,6 +2643,204 @@ export async function importRenderedJobAsLibraryAsset(jobId: string) {
 // STUDIO AI MEDIA (CHARACTER/SCENE IMAGE, OMNI FLASH VIDEO, LYRIA MUSIC, OFFLINE TTS)
 // ==========================================
 
+function normalizeCharacterMatchText(raw: string): string {
+  return String(raw || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s:_-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractCharacterAliases(name: string): string[] {
+  const raw = String(name || '').trim();
+  if (!raw) return [];
+  const aliases = new Set<string>();
+  const normFull = normalizeCharacterMatchText(raw);
+  if (normFull.length >= 2) aliases.add(normFull);
+  const beforeParen = normalizeCharacterMatchText(raw.split('(')[0].split('-')[0].split(':')[0]);
+  if (beforeParen.length >= 2) aliases.add(beforeParen);
+
+  const stopTokens = new Set([
+    'nhan',
+    'vat',
+    'chinh',
+    'phu',
+    'mau',
+    'anh',
+    'character',
+    'ref',
+    'image',
+    'img',
+    'photo',
+    'nguoi',
+    'ban',
+  ]);
+  for (const tok of beforeParen.split(/\s+/)) {
+    if (tok.length >= 2 && !stopTokens.has(tok) && !/^\d+$/.test(tok)) {
+      aliases.add(tok);
+    }
+  }
+  return Array.from(aliases);
+}
+
+function escapeRegexLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export async function selectAndMapCharacterRefsForScene(params: {
+  characterRefs?: StudioCharacterRefInput[];
+  prompt: string;
+  charactersInScene?: string;
+  actionDetail?: string;
+  dialogue?: string;
+  sceneSummary?: string;
+  costume?: string;
+}): Promise<{
+  selectedRefs: StudioCharacterRefInput[];
+  mappingDirective: string;
+}> {
+  const validRefs = (params.characterRefs || [])
+    .filter((r) => Boolean(r && r.dataUrl && String(r.dataUrl).trim()))
+    .slice(0, 8);
+
+  if (validRefs.length === 0) {
+    return { selectedRefs: [], mappingDirective: '' };
+  }
+
+  const buildMappingDirective = (refs: StudioCharacterRefInput[]) => {
+    if (refs.length === 0) return '';
+    if (refs.length === 1) {
+      const r = refs[0];
+      const name = (r.name || 'Nhân vật chính').trim();
+      const desc = r.description?.trim() ? ` (${r.description.trim()})` : '';
+      return `[QUY TẮC ĐỒNG BỘ NHÂN VẬT THAM CHIẾU]: Ảnh tham chiếu #1 tương ứng với nhân vật "${name}"${desc}. Phải giữ chính xác 100% khuôn mặt, kiểu tóc, vóc dáng, trang phục và đặc điểm nhận dạng từ Ảnh tham chiếu #1.`;
+    }
+    const lines = refs.map((r, idx) => {
+      const name = (r.name || `Nhân vật #${idx + 1}`).trim();
+      const desc = r.description?.trim() ? ` — Đặc điểm: ${r.description.trim()}` : '';
+      return `- Ảnh tham chiếu #${idx + 1} tương ứng CHÍNH XÁC với nhân vật "${name}"${desc}: BẮT BUỘC giữ nguyên khuôn mặt, ngoại hình, kiểu tóc, trang phục và đặc điểm nhận dạng từ Ảnh #${idx + 1}.`;
+    });
+    return `[QUY TẮC ĐỒNG BỘ ĐA NHÂN VẬT (${refs.length} ẢNH THAM CHIẾU) — TUYỆT ĐỐI KHÔNG CHỈ DÙNG ẢNH #1]:
+Trong phân cảnh này có ${refs.length} nhân vật cần đồng bộ và ĐẦY ĐỦ ${refs.length} ảnh tham chiếu của từng nhân vật đã được đính kèm theo đúng thứ tự:
+${lines.join('\n')}
+KHÔNG ĐƯỢC phép tự sáng tạo khuôn mặt/trang phục khác cho các nhân vật còn lại. Phải hiển thị đúng nhận dạng từng nhân vật theo đúng số thứ tự ảnh tham chiếu tương ứng.`;
+  };
+
+  if (validRefs.length === 1) {
+    return { selectedRefs: validRefs, mappingDirective: buildMappingDirective(validRefs) };
+  }
+
+  const sceneCorpus = normalizeCharacterMatchText(
+    [
+      params.charactersInScene || '',
+      params.dialogue || '',
+      params.actionDetail || '',
+      params.sceneSummary || '',
+      params.costume || '',
+      params.prompt || '',
+    ].join(' | ')
+  );
+
+  // Check if text explicitly indicates "all characters" or multiple people together
+  const allMentionedHint =
+    /(?:tat ca|ca hai|ca 2|ca 3|ca nhom|hai nguoi|ba nguoi|cung nhau|both characters|all characters|everyone|together)/i.test(
+      sceneCorpus
+    );
+
+  const deterministicMatches: number[] = [];
+  validRefs.forEach((ref, idx) => {
+    const aliases = extractCharacterAliases(ref.name || '');
+    const matched = aliases.some((al) => {
+      if (al.length <= 2) {
+        return new RegExp(`(?:^|\\s)${escapeRegexLiteral(al)}(?:$|\\s|:)`, 'i').test(sceneCorpus);
+      }
+      return sceneCorpus.includes(al);
+    });
+    if (matched) deterministicMatches.push(idx);
+  });
+
+  // Use Gemini semantic matcher when 2+ character refs exist and text matching might miss aliases/pronouns
+  let selectedIndices: number[] = deterministicMatches;
+  const shouldAskSemanticMapper =
+    Boolean(process.env.GEMINI_API_KEY?.trim()) &&
+    (deterministicMatches.length === 0 ||
+      (deterministicMatches.length < validRefs.length &&
+        (allMentionedHint ||
+          Boolean(params.charactersInScene && params.charactersInScene.split(/[,;&+/]|\bvà\b|\bwith\b|\band\b/i).length > deterministicMatches.length))));
+
+  if (shouldAskSemanticMapper) {
+    try {
+      const ai = getGeminiClient();
+      const charListText = validRefs
+        .map(
+          (r, idx) =>
+            `${idx}: Tên="${r.name || `Nhân vật ${idx + 1}`}"${r.description ? ` | Mô tả ngoại hình/vai trò="${r.description}"` : ''}`
+        )
+        .join('\n');
+      const analyzePrompt = `Phân tích danh sách nhân vật xuất hiện trong phân cảnh dưới đây để ánh xạ với ảnh tham chiếu đã tải lên.
+
+DANH SÁCH ẢNH NHÂN VẬT THAM CHIẾU:
+${charListText}
+
+THÔNG TIN PHÂN CẢNH:
+- Trường Nhân vật trong cảnh: ${params.charactersInScene || '(không ghi rõ)'}
+- Lời thoại: ${params.dialogue || '(không có)'}
+- Hành động / Diễn biến: ${params.actionDetail || params.sceneSummary || ''}
+- Prompt phân cảnh: ${params.prompt}
+
+YÊU CẦU: Trả về JSON dạng {"matchedIndices": [0, ...]} liệt kê CHỈ SỐ (index 0..${validRefs.length - 1}) của TẤT CẢ nhân vật có xuất hiện trong phân cảnh này. Nếu phân cảnh mô tả nhiều nhân vật (hoặc không loại trừ ai rõ ràng), phải liệt kê ĐẦY ĐỦ tất cả nhân vật xuất hiện.`;
+
+      const resp = await retryWithGeminiBackoff(
+        () =>
+          ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: analyzePrompt,
+            config: {
+              httpOptions: { timeout: 12_000 },
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                required: ['matchedIndices'],
+                properties: {
+                  matchedIndices: {
+                    type: Type.ARRAY,
+                    items: { type: Type.INTEGER },
+                  },
+                },
+              },
+            },
+          }),
+        [800]
+      );
+      const parsed = parseAiBlueprintJsonSafe((resp.text || '{}').trim());
+      if (Array.isArray(parsed?.matchedIndices)) {
+        const aiIndices = parsed.matchedIndices
+          .map((n: any) => Number(n))
+          .filter((n: number) => Number.isInteger(n) && n >= 0 && n < validRefs.length);
+        selectedIndices = Array.from(new Set([...deterministicMatches, ...aiIndices])).sort((a, b) => a - b);
+      }
+    } catch {
+      // Fall back gracefully below
+    }
+  }
+
+  // Fail-safe for multi-ref consistency: if 0 matched (e.g. scene prompt used pronouns or file-name refs),
+  // include ALL uploaded character references so multi-character scenes never drop references!
+  const finalRefs =
+    selectedIndices.length > 0
+      ? selectedIndices.map((idx) => validRefs[idx])
+      : validRefs;
+
+  return {
+    selectedRefs: finalRefs,
+    mappingDirective: buildMappingDirective(finalRefs),
+  };
+}
+
 export async function generateStudioImage(params: {
   mode: 'character' | 'scene';
   prompt: string;
@@ -2620,7 +2855,12 @@ export async function generateStudioImage(params: {
   continuityBible?: string;
   sceneIndex?: number;
   totalScenes?: number;
-  characterRefs?: { dataUrl: string; name?: string }[];
+  charactersInScene?: string;
+  actionDetail?: string;
+  dialogue?: string;
+  sceneSummary?: string;
+  costume?: string;
+  characterRefs?: StudioCharacterRefInput[];
 }): Promise<{ dataUrl: string; model: string }> {
   const aspectRatio = params.aspectRatio || (params.mode === 'character' ? '1:1' : '16:9');
   const styleMeta =
@@ -2646,47 +2886,61 @@ export async function generateStudioImage(params: {
     .filter(Boolean)
     .join(' ');
 
-  const buildScenePrompt = (hasRefs: boolean) => {
+  const { selectedRefs, mappingDirective } =
+    params.mode === 'character'
+      ? { selectedRefs: [] as StudioCharacterRefInput[], mappingDirective: '' }
+      : await selectAndMapCharacterRefsForScene({
+          characterRefs: params.characterRefs,
+          prompt: params.prompt,
+          charactersInScene: params.charactersInScene,
+          actionDetail: params.actionDetail,
+          dialogue: params.dialogue,
+          sceneSummary: params.sceneSummary,
+          costume: params.costume,
+        });
+
+  const buildScenePrompt = (refs: StudioCharacterRefInput[], mapping: string) => {
     if (params.mode === 'character') {
       return `${consistencyBlock} Create a clean, consistent studio character turnaround / portrait reference sheet suitable for reusing identically across all video scenes. Character description: ${params.prompt}. Crisp framing, balanced lighting, no overlaid watermarks, subtitles, or UI text.`;
     }
-    if (hasRefs) {
-      const refNames = (params.characterRefs || [])
-        .map((r) => r.name)
-        .filter(Boolean)
-        .join(', ');
-      return `${consistencyBlock} Create a cohesive storyboard scene strictly preserving the exact character identity, face, hair, and outfit from the attached reference image(s)${refNames ? ` (${refNames})` : ''}. Scene prompt: ${params.prompt}. No overlaid subtitles, speech bubbles, or watermarks.`;
+    if (refs.length > 0) {
+      const refNames = refs.map((r, i) => `#${i + 1}: ${r.name || `Nhân vật ${i + 1}`}`).join(', ');
+      return `${consistencyBlock} ${mapping} Create a cohesive storyboard scene strictly preserving the exact character identities, faces, hairstyles, proportions, and outfits of ALL attached character reference photos (${refNames}). Scene prompt: ${params.prompt}. No overlaid subtitles, speech bubbles, or watermarks.`;
     }
     return `${consistencyBlock} Create a crisp, cohesive storyboard scene: ${params.prompt}. No overlaid subtitles, text, or watermarks.`;
   };
 
   if (params.engine === 'muse2api') {
-    const finalMusePrompt = buildScenePrompt(Boolean(params.characterRefs && params.characterRefs.length > 0));
+    const finalMusePrompt = buildScenePrompt(selectedRefs, mappingDirective);
     const res = await generateImageViaMuse2Api({
       prompt: finalMusePrompt,
       aspectRatio,
-      referenceImageDataUrl: params.characterRefs?.[0]?.dataUrl,
+      referenceImageDataUrl: selectedRefs[0]?.dataUrl,
+      referenceImages: selectedRefs.map((r) => r.dataUrl),
     });
     return { dataUrl: res.dataUrl, model: 'muse-image (Muse2API)' };
   }
 
   const ai = getGeminiClient();
   const parts: any[] = [];
-  if (Array.isArray(params.characterRefs)) {
-    for (const ref of params.characterRefs.slice(0, 3)) {
-      const parsed = parseDataUrlToBuffer(ref.dataUrl);
-      if (parsed) {
-        parts.push({
-          inlineData: {
-            mimeType: parsed.mimeType,
-            data: parsed.buffer.toString('base64'),
-          },
-        });
-      }
+  selectedRefs.forEach((ref, idx) => {
+    const parsed = parseDataUrlToBuffer(ref.dataUrl);
+    if (parsed) {
+      const charName = (ref.name || `Nhân vật #${idx + 1}`).trim();
+      const charDesc = ref.description?.trim() ? ` (${ref.description.trim()})` : '';
+      parts.push({
+        text: `[Ảnh tham chiếu #${idx + 1} -> Nhân vật "${charName}"${charDesc}]`,
+      });
+      parts.push({
+        inlineData: {
+          mimeType: parsed.mimeType,
+          data: parsed.buffer.toString('base64'),
+        },
+      });
     }
-  }
+  });
 
-  const finalPrompt = buildScenePrompt(Boolean(params.characterRefs && params.characterRefs.length > 0));
+  const finalPrompt = buildScenePrompt(selectedRefs, mappingDirective);
   parts.push({ text: finalPrompt });
 
   const candidateModels =
@@ -2742,14 +2996,29 @@ export async function generateSceneVideoWithOmniFlash(params: {
   continuityBible?: string;
   sceneIndex?: number;
   totalScenes?: number;
+  charactersInScene?: string;
+  actionDetail?: string;
+  dialogue?: string;
+  sceneSummary?: string;
+  costume?: string;
   sceneImageDataUrl?: string;
-  characterRefs?: { dataUrl: string; name?: string }[];
+  characterRefs?: StudioCharacterRefInput[];
 }): Promise<{ assetId: string; previewUrl: string; durationSec: number; model: string }> {
   const clampedDur = Math.max(3, Math.min(15, Math.round(params.durationSec || 8)));
   const styleMeta =
     params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META
       ? STUDIO_VIDEO_STYLE_META[params.videoStyle]
       : STUDIO_VIDEO_STYLE_META.cinematic;
+
+  const { selectedRefs, mappingDirective } = await selectAndMapCharacterRefsForScene({
+    characterRefs: params.characterRefs,
+    prompt: params.prompt,
+    charactersInScene: params.charactersInScene,
+    actionDetail: params.actionDetail,
+    dialogue: params.dialogue,
+    sceneSummary: params.sceneSummary,
+    costume: params.costume,
+  });
 
   const anchorLines = [
     `Visual Style: ${styleMeta.promptDirective}.`,
@@ -2761,21 +3030,28 @@ export async function generateSceneVideoWithOmniFlash(params: {
     params.sceneIndex
       ? `Scene ${String(params.sceneIndex).padStart(2, '0')}${params.totalScenes ? `/${String(params.totalScenes).padStart(2, '0')}` : ''}.`
       : '',
+    mappingDirective,
   ]
     .filter(Boolean)
     .join(' ');
 
   const promptText = params.sceneImageDataUrl
-    ? `${anchorLines} Animate this exact keyframe scene smoothly with natural camera motion, keeping character & setting identical: ${params.prompt}. No overlaid text or watermarks.`
-    : `${anchorLines} High-definition cohesive video scene: ${params.prompt}. Smooth camera movement, cohesive lighting, no overlaid text or watermarks.`;
+    ? `${anchorLines} Animate this exact keyframe scene smoothly with natural continuous real-time motion, keeping every character identity, face, hair, costume & setting identical: ${params.prompt}. No overlaid text or watermarks.`
+    : `${anchorLines} High-definition cohesive video scene with continuous real-time action and smooth camera motion: ${params.prompt}. Cohesive lighting, no overlaid text or watermarks.`;
 
   if (params.engine === 'muse2api') {
-    const refDataUrl = params.sceneImageDataUrl || params.characterRefs?.[0]?.dataUrl;
+    const museRefList = Array.from(
+      new Set([
+        ...(params.sceneImageDataUrl ? [params.sceneImageDataUrl] : []),
+        ...selectedRefs.map((r) => r.dataUrl),
+      ])
+    );
     const { buffer, mimeType, ext } = await generateVideoBufferViaMuse2Api({
       prompt: promptText,
       aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
       durationSec: Math.min(12, clampedDur),
-      referenceImageDataUrl: refDataUrl,
+      referenceImageDataUrl: museRefList[0],
+      referenceImages: museRefList,
     });
 
     const assetId = `musevid_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
@@ -2812,16 +3088,15 @@ export async function generateSceneVideoWithOmniFlash(params: {
         data: parsed.buffer.toString('base64'),
       });
     }
-  } else if (Array.isArray(params.characterRefs)) {
-    for (const ref of params.characterRefs.slice(0, 2)) {
-      const parsed = parseDataUrlToBuffer(ref.dataUrl);
-      if (parsed) {
-        inputParts.push({
-          type: 'image',
-          mime_type: parsed.mimeType,
-          data: parsed.buffer.toString('base64'),
-        });
-      }
+  }
+  for (const ref of selectedRefs.slice(0, params.sceneImageDataUrl ? 3 : 4)) {
+    const parsed = parseDataUrlToBuffer(ref.dataUrl);
+    if (parsed) {
+      inputParts.push({
+        type: 'image',
+        mime_type: parsed.mimeType,
+        data: parsed.buffer.toString('base64'),
+      });
     }
   }
 
@@ -3876,7 +4151,7 @@ export interface StartDerivativeJobParams {
   publicMusicUrl?: string;
   musicPrompt?: string;
   musicVolume?: number;
-  characterRefs?: { dataUrl: string; name?: string }[];
+  characterRefs?: StudioCharacterRefInput[];
   downloadSourceVideo?: DownloadSourceClipFn;
 }
 
@@ -4113,117 +4388,238 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       ? 'none'
       : params.voiceMode || (voice === 'none' ? 'none' : 'ai_online');
 
-  // 1. Voiceover generation (Online AI TTS or Offline System TTS)
+  interface VoiceSegmentSpec {
+    text: string;
+    mode: 'ai_online' | 'offline_system';
+    voiceId: Exclude<DerivativeVoiceId, 'none'>;
+    offlineVoice?: string;
+    voiceStyle: string;
+  }
+
+  const findCharacterBySpeakerName = (speakerRaw: string): StudioCharacterRefInput | undefined => {
+    const refs = Array.isArray(params.characterRefs) ? params.characterRefs : [];
+    const normSpeaker = normalizeCharacterMatchText(speakerRaw);
+    if (!normSpeaker) return undefined;
+    return refs.find((r) => {
+      const aliases = extractCharacterAliases(r.name || '');
+      return aliases.some((al) => normSpeaker === al || normSpeaker.includes(al) || al.includes(normSpeaker));
+    });
+  };
+
+  const resolveCharacterVoiceSegment = (
+    text: string,
+    charRef: StudioCharacterRefInput | undefined,
+    fallbackMode: 'ai_online' | 'offline_system'
+  ): VoiceSegmentSpec => {
+    const defaultVoiceId: Exclude<DerivativeVoiceId, 'none'> = voice === 'none' ? 'Kore' : voice;
+    const defaultStyle = params.voiceStyle?.trim() || 'Clear, engaging video narrator with natural pacing';
+    if (!charRef || !charRef.voiceMode || charRef.voiceMode === 'default') {
+      return {
+        text,
+        mode: fallbackMode,
+        voiceId: defaultVoiceId,
+        offlineVoice: params.offlineVoice,
+        voiceStyle: defaultStyle,
+      };
+    }
+    return {
+      text,
+      mode: charRef.voiceMode === 'offline_system' ? 'offline_system' : 'ai_online',
+      voiceId: charRef.voiceId || defaultVoiceId,
+      offlineVoice: charRef.offlineVoice || params.offlineVoice,
+      voiceStyle: charRef.voiceStyle?.trim() || defaultStyle,
+    };
+  };
+
+  const buildSceneVoiceSegments = (
+    sc: DerivativeScene,
+    fallbackMode: 'ai_online' | 'offline_system'
+  ): VoiceSegmentSpec[] => {
+    const segs: VoiceSegmentSpec[] = [];
+    const dialogueRaw = String(sc.dialogue || '').trim();
+    const narrationRaw = String(sc.narration || '').trim();
+    const refs = Array.isArray(params.characterRefs) ? params.characterRefs : [];
+
+    // Identify sole character in scene if charactersInScene matches exactly one custom-voiced character
+    const sceneMatchedChars = refs.filter((r) => {
+      const sceneCharsNorm = normalizeCharacterMatchText(sc.charactersInScene || '');
+      return extractCharacterAliases(r.name || '').some((al) => sceneCharsNorm.includes(al));
+    });
+    const soleSceneChar = sceneMatchedChars.length === 1 ? sceneMatchedChars[0] : undefined;
+
+    if (dialogueRaw) {
+      const lines = dialogueRaw
+        .split(/\n+/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      for (const line of lines) {
+        const colonMatch = line.match(/^([^:：]{1,36})[:：]\s*(.+)$/);
+        if (colonMatch) {
+          const matchedChar = findCharacterBySpeakerName(colonMatch[1]);
+          const speech = colonMatch[2].trim();
+          if (speech) {
+            segs.push(resolveCharacterVoiceSegment(speech, matchedChar || soleSceneChar, fallbackMode));
+          }
+        } else {
+          segs.push(resolveCharacterVoiceSegment(line, soleSceneChar, fallbackMode));
+        }
+      }
+    }
+
+    if (narrationRaw) {
+      const normNarr = normalizeCharacterMatchText(narrationRaw);
+      const normDial = normalizeCharacterMatchText(dialogueRaw);
+      if (!normDial || (normNarr !== normDial && !normDial.includes(normNarr))) {
+        const colonMatch = narrationRaw.match(/^([^:：]{1,36})[:：]\s*(.+)$/);
+        if (colonMatch) {
+          const matchedChar = findCharacterBySpeakerName(colonMatch[1]);
+          const speech = colonMatch[2].trim();
+          if (speech && matchedChar) {
+            segs.push(resolveCharacterVoiceSegment(speech, matchedChar, fallbackMode));
+          } else {
+            segs.push(resolveCharacterVoiceSegment(narrationRaw, undefined, fallbackMode));
+          }
+        } else {
+          // If no separate dialogue exists and only 1 custom-voiced character is in this scene, keep consistent narrator unless dialogue absent
+          segs.push(resolveCharacterVoiceSegment(narrationRaw, undefined, fallbackMode));
+        }
+      }
+    }
+    return segs;
+  };
+
+  // 1. Voiceover generation (Online AI TTS + Offline VieNeu TTS with Per-Character Voice Routing)
   const sceneAudioPaths: (string | null)[] = new Array(scenes.length).fill(null);
   const sceneTargetDurations: number[] = scenes.map((s) => Math.max(2.0, Number(s.durationSec || 6)));
   const totalPlannedSec = sceneTargetDurations.reduce((a, b) => a + b, 0);
 
-  if (effectiveVoiceMode === 'offline_system') {
+  const hasPerCharAudio =
+    effectiveVoiceMode !== 'none' &&
+    Array.isArray(params.characterRefs) &&
+    params.characterRefs.some((c) => c.voiceMode && c.voiceMode !== 'default');
+
+  if (effectiveVoiceMode !== 'none' && (effectiveVoiceMode === 'ai_online' || effectiveVoiceMode === 'offline_system')) {
     job.status = 'tts';
     job.progress = 10;
     const offlineEngine = await detectOfflineTtsEngine();
-    job.stepLabel =
-      offlineEngine.engineId === 'vieneu'
-        ? `Đang tổng hợp giọng tiếng Việt VieNeu-TTS (0/${scenes.length} cảnh)...`
-        : `Đang tổng hợp giọng đọc Offline (0/${scenes.length} cảnh)...`;
+    const defaultMode: 'ai_online' | 'offline_system' =
+      effectiveVoiceMode === 'offline_system' ? 'offline_system' : 'ai_online';
+    const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY?.trim());
+    const aiClient = hasGeminiKey ? getGeminiClient() : null;
 
+    job.stepLabel = hasPerCharAudio
+      ? `Đang tổng hợp giọng đọc đồng bộ từng nhân vật (0/${scenes.length} cảnh)...`
+      : defaultMode === 'offline_system' && offlineEngine.engineId === 'vieneu'
+      ? `Đang tổng hợp giọng tiếng Việt VieNeu-TTS (0/${scenes.length} cảnh)...`
+      : `Đang tạo giọng đọc (0/${scenes.length} cảnh)...`;
+
+    // Pre-build segments per scene
+    const sceneSegments = scenes.map((sc) => buildSceneVoiceSegments(sc, defaultMode));
+
+    // Batch VieNeu segments cleanly when no Gemini mixing needed or for all offline_system segments
+    const offlineBatchList: { key: string; sceneIdx: number; segIdx: number; text: string; out: string; voice?: string }[] = [];
     if (offlineEngine.engineId === 'vieneu') {
-      const batchItems = scenes
-        .map((sc, idx) => ({
-          index: idx,
-          text: sc.narration.trim(),
-          out: path.join(job.workDir, `voice_${idx}.wav`),
-          voice: params.offlineVoice,
-        }))
-        .filter((it) => it.text.length > 0);
-
-      job.stepLabel = `Đang nạp mô hình VieNeu-TTS và đọc ${batchItems.length} phân cảnh...`;
-      job.progress = 16;
-
-      let batchResults = new Map<number, boolean>();
-      try {
-        batchResults = await synthesizeOfflineVoiceBatchVieNeu(batchItems, params.offlineVoice);
-      } catch (batchErr: any) {
-        job.warnings.push(`VieNeu batch cảnh báo (${batchErr?.message || 'lỗi'}), thử đọc từng cảnh...`);
-      }
-
-      for (let i = 0; i < scenes.length; i += 1) {
-        const sc = scenes[i];
-        const wavPath = path.join(job.workDir, `voice_${i}.wav`);
-        let ok = Boolean(batchResults.get(i));
-        if (!ok && sc.narration.trim()) {
-          ok = await synthesizeOfflineVoiceWav(sc.narration, wavPath, params.offlineVoice);
-        }
-        if (ok && fs.existsSync(wavPath)) {
-          sceneAudioPaths[i] = wavPath;
-          const audioDur = await probeDurationSeconds(wavPath, job.workDir);
-          if (audioDur > 0.5) {
-            sceneTargetDurations[i] = Math.max(3.0, audioDur + 0.45);
+      sceneSegments.forEach((segs, sIdx) => {
+        segs.forEach((seg, gIdx) => {
+          if (seg.mode === 'offline_system' && seg.text.trim()) {
+            offlineBatchList.push({
+              key: `${sIdx}:${gIdx}`,
+              sceneIdx: sIdx,
+              segIdx: gIdx,
+              text: seg.text,
+              out: path.join(job.workDir, `voice_${sIdx}_seg_${gIdx}.wav`),
+              voice: seg.offlineVoice,
+            });
           }
-        } else if (sc.narration.trim()) {
-          job.warnings.push(`Cảnh ${i + 1}: VieNeu-TTS không tạo được lời thoại, giữ nhạc/nền cho cảnh này.`);
-        }
-        job.stepLabel = `Đã xử lý giọng đọc VieNeu-TTS (${i + 1}/${scenes.length})...`;
-        job.progress = 16 + Math.round(((i + 1) / scenes.length) * 18);
+        });
+      });
+    }
+
+    const offlineBatchDone = new Set<string>();
+    if (offlineBatchList.length > 0 && offlineEngine.engineId === 'vieneu') {
+      // Group by voice ID so each character gets their exact VieNeu voice
+      const byVoice = new Map<string, typeof offlineBatchList>();
+      for (const item of offlineBatchList) {
+        const vk = item.voice || params.offlineVoice || '';
+        const list = byVoice.get(vk) || [];
+        list.push(item);
+        byVoice.set(vk, list);
       }
-    } else {
-      for (let i = 0; i < scenes.length; i += 1) {
-        const sc = scenes[i];
-        const wavPath = path.join(job.workDir, `voice_${i}.wav`);
-        if (sc.narration.trim()) {
-          const ok = await synthesizeOfflineVoiceWav(sc.narration, wavPath, params.offlineVoice);
-          if (ok) {
-            sceneAudioPaths[i] = wavPath;
-            const audioDur = await probeDurationSeconds(wavPath, job.workDir);
-            if (audioDur > 0.5) {
-              sceneTargetDurations[i] = Math.max(3.0, audioDur + 0.45);
+      for (const [voiceKey, groupItems] of byVoice.entries()) {
+        try {
+          const resMap = await synthesizeOfflineVoiceBatchVieNeu(
+            groupItems.map((it, idx) => ({ index: idx, text: it.text, out: it.out, voice: it.voice })),
+            voiceKey
+          );
+          groupItems.forEach((it, idx) => {
+            if (resMap.get(idx) && fs.existsSync(it.out)) {
+              offlineBatchDone.add(it.key);
             }
-          }
+          });
+        } catch {
+          // fallback per segment below
         }
-        job.stepLabel = `Đang tổng hợp giọng đọc Offline (${i + 1}/${scenes.length})...`;
-        job.progress = 10 + Math.round(((i + 1) / scenes.length) * 24);
       }
     }
-  } else if (effectiveVoiceMode === 'ai_online' && voice !== 'none') {
-    job.status = 'tts';
-    job.progress = 10;
-    job.stepLabel = `Đang tạo giọng đọc AI trực tuyến (0/${scenes.length} cảnh)...`;
-    const ai = getGeminiClient();
-    const stylePrompt =
-      params.voiceStyle?.trim() || 'Clear, engaging video narrator with natural pacing';
 
-    let nextIdx = 0;
-    let completedTts = 0;
-    const workers = Array.from({ length: Math.min(2, scenes.length) }, async () => {
-      while (nextIdx < scenes.length) {
-        const i = nextIdx++;
-        const sc = scenes[i];
-        const wavPath = path.join(job.workDir, `voice_${i}.wav`);
-        let ok = await synthesizeSceneVoiceWav(ai, sc.narration, voice, stylePrompt, wavPath);
-        if (!ok && sc.narration.trim()) {
-          const offlineEngine = await detectOfflineTtsEngine();
-          if (offlineEngine.available) {
-            ok = await synthesizeOfflineVoiceWav(sc.narration, wavPath, params.offlineVoice || voice);
-            if (ok) {
-              job.warnings.push(`Cảnh ${i + 1}: Gemini TTS tạm bận (503), đã tự chuyển sang giọng đọc Offline (${offlineEngine.engine}).`);
-            }
+    for (let i = 0; i < scenes.length; i += 1) {
+      const segs = sceneSegments[i];
+      if (segs.length === 0) continue;
+
+      const producedSegFiles: string[] = [];
+      for (let g = 0; g < segs.length; g += 1) {
+        const seg = segs[g];
+        const segWav = path.join(job.workDir, `voice_${i}_seg_${g}.wav`);
+        let ok = offlineBatchDone.has(`${i}:${g}`) && fs.existsSync(segWav);
+
+        if (!ok && seg.mode === 'ai_online' && aiClient && voice !== 'none') {
+          ok = await synthesizeSceneVoiceWav(aiClient, seg.text, seg.voiceId, seg.voiceStyle, segWav);
+        }
+        if (!ok && offlineEngine.available) {
+          ok = await synthesizeOfflineVoiceWav(seg.text, segWav, seg.offlineVoice || params.offlineVoice || seg.voiceId);
+          if (ok && seg.mode === 'ai_online') {
+            job.warnings.push(`Cảnh ${i + 1}: Gemini TTS tạm bận, đã tự chuyển sang giọng Offline (${offlineEngine.engine}).`);
           }
         }
-        if (ok) {
-          sceneAudioPaths[i] = wavPath;
-          const audioDur = await probeDurationSeconds(wavPath, job.workDir);
-          if (audioDur > 0.5) {
-            sceneTargetDurations[i] = Math.max(3.0, audioDur + 0.45);
-          }
-        } else if (sc.narration.trim()) {
-          job.warnings.push(`Cảnh ${i + 1}: Không tạo được giọng đọc AI, giữ nhạc/nền tĩnh cho cảnh này.`);
+        if (ok && fs.existsSync(segWav)) {
+          producedSegFiles.push(segWav);
         }
-        completedTts += 1;
-        job.stepLabel = `Đang tổng hợp giọng đọc AI (${completedTts}/${scenes.length})...`;
-        job.progress = 10 + Math.round((completedTts / scenes.length) * 24);
       }
-    });
-    await Promise.all(workers);
+
+      const finalSceneWav = path.join(job.workDir, `voice_${i}.wav`);
+      if (producedSegFiles.length === 1) {
+        fs.copyFileSync(producedSegFiles[0], finalSceneWav);
+      } else if (producedSegFiles.length > 1) {
+        const segConcatTxt = path.join(job.workDir, `voice_${i}_concat.txt`);
+        fs.writeFileSync(
+          segConcatTxt,
+          producedSegFiles.map((f) => `file '${path.basename(f).replace(/'/g, "'\\''")}'`).join('\n') + '\n',
+          'utf8'
+        );
+        const concatRes = await spawnPromise(
+          'ffmpeg',
+          ['-y', '-f', 'concat', '-safe', '0', '-i', path.basename(segConcatTxt), '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', path.basename(finalSceneWav)],
+          job.workDir,
+          45_000
+        );
+        if (concatRes.code !== 0 || !fs.existsSync(finalSceneWav)) {
+          fs.copyFileSync(producedSegFiles[0], finalSceneWav);
+        }
+      }
+
+      if (fs.existsSync(finalSceneWav)) {
+        sceneAudioPaths[i] = finalSceneWav;
+        const audioDur = await probeDurationSeconds(finalSceneWav, job.workDir);
+        if (audioDur > 0.5) {
+          sceneTargetDurations[i] = Math.max(sceneTargetDurations[i], audioDur + 0.45);
+        }
+      } else {
+        job.warnings.push(`Cảnh ${i + 1}: Không tạo được giọng đọc, giữ nhạc/nền tĩnh cho cảnh này.`);
+      }
+
+      job.stepLabel = `Đã xử lý giọng đọc (${i + 1}/${scenes.length} cảnh)...`;
+      job.progress = 10 + Math.round(((i + 1) / scenes.length) * 24);
+    }
   } else {
     job.progress = 32;
   }
@@ -4314,6 +4710,11 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
             continuityBible: blueprint.continuityBible,
             sceneIndex: sc.sceneIndex || i + 1,
             totalScenes: scenes.length,
+            charactersInScene: sc.charactersInScene,
+            actionDetail: sc.actionDetail,
+            dialogue: sc.dialogue,
+            sceneSummary: sc.sceneSummary,
+            costume: sc.costume,
             sceneImageDataUrl: sc.sceneImageDataUrl,
             characterRefs: params.characterRefs,
           });

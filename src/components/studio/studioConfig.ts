@@ -127,6 +127,15 @@ export const LIGHTING_SUGGESTIONS = [
   'Ánh sáng phẳng sáng rõ kiểu hoạt hình / minh họa 2D',
 ];
 
+export const CAMERA_EQUIPMENT_SUGGESTIONS = [
+  'ARRI Alexa Mini LF · Ống kính 35mm Prime (Điện ảnh)',
+  'Sony FX3 + Ống kính 50mm f/1.4 trên Gimbal DJI Ronin RS4',
+  'RED V-Raptor 8K · Ống kính Anamorphic 40mm (Màn ảnh rộng)',
+  'Canon EOS R5 · Ống kính 24-70mm f/2.8 (Vlog / Phóng sự)',
+  'Drone DJI Mavic 3 Cine · Góc quay không trung 4K',
+  'Máy quay ảo 2D/3D (Virtual Cinema Camera) mượt mà 60fps',
+];
+
 export function compileScenePromptClient(params: {
   scene: Partial<DerivativeScene>;
   videoStyle?: StudioVideoStyle;
@@ -169,13 +178,16 @@ export function compileScenePromptClient(params: {
     segments.push(`Bối cảnh cảnh: ${sc.settingDetail.trim()}`);
   }
   if (sc.actionDetail?.trim()) {
-    segments.push(`Hành động: ${sc.actionDetail.trim()}`);
+    segments.push(`Hành động liên tục: ${sc.actionDetail.trim()}`);
   }
   if (sc.cameraAngle?.trim()) {
     segments.push(`Góc máy: ${sc.cameraAngle.trim()}`);
   }
   if (sc.cameraMovement?.trim()) {
     segments.push(`Kiểu quay: ${sc.cameraMovement.trim()}`);
+  }
+  if (sc.cameraEquipment?.trim()) {
+    segments.push(`Thiết bị quay & ống kính: ${sc.cameraEquipment.trim()}`);
   }
   if (sc.lighting?.trim()) {
     segments.push(`Ánh sáng: ${sc.lighting.trim()}`);
@@ -192,6 +204,12 @@ export function compileScenePromptClient(params: {
       : sc.imagePrompt?.trim() || sc.visualNote?.trim() || sc.videoPrompt?.trim();
   if (primary) {
     segments.push(`${mediaType === 'video' ? 'Prompt video' : 'Prompt hình ảnh'}: ${primary}`);
+  }
+  if (mediaType === 'video') {
+    const dur = Math.max(3, Math.round(Number(sc.durationSec || 8)));
+    segments.push(
+      `Chuyển động thời gian thực (${dur}s): Toàn bộ diễn biến diễn ra liên tục trong 1 cú máy liền mạch, không cắt vụn, ưu tiên chuyển động tự nhiên và nhất quán câu chuyện`
+    );
   }
   if (mediaType === 'video' && sc.sceneEndState?.trim()) {
     segments.push(`Trạng thái cuối cảnh: ${sc.sceneEndState.trim()}`);

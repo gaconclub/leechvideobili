@@ -762,10 +762,18 @@ export async function generateImageViaMuse2Api(params: {
   prompt: string;
   aspectRatio?: '1:1' | '9:16' | '16:9';
   referenceImageDataUrl?: string;
+  referenceImages?: string[];
   timeoutSec?: number;
 }): Promise<{ dataUrl: string; model: string }> {
   const cfg = resolveMuse2ApiConfig();
   const effectiveTimeout = Math.max(90, params.timeoutSec || cfg.imageTimeoutSec);
+  const combinedRefs = Array.from(
+    new Set(
+      [...(params.referenceImages || []), ...(params.referenceImageDataUrl ? [params.referenceImageDataUrl] : [])]
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+    )
+  );
 
   const created = await createMuseTaskWithQueueWait<{ id: string; status: string }>(
     '/v1/images/tasks',
@@ -775,7 +783,8 @@ export async function generateImageViaMuse2Api(params: {
       aspect_ratio: params.aspectRatio || '16:9',
       response_format: 'url',
       timeout: effectiveTimeout,
-      ...(params.referenceImageDataUrl ? { reference_image: params.referenceImageDataUrl } : {}),
+      ...(combinedRefs[0] ? { reference_image: combinedRefs[0] } : {}),
+      ...(combinedRefs.length > 0 ? { reference_images: combinedRefs } : {}),
     }
   );
   if (!created?.id) {
@@ -833,11 +842,19 @@ export async function generateVideoBufferViaMuse2Api(params: {
   aspectRatio: '9:16' | '16:9';
   durationSec?: number;
   referenceImageDataUrl?: string;
+  referenceImages?: string[];
   timeoutSec?: number;
 }): Promise<{ buffer: Buffer; mimeType: string; ext: string }> {
   const cfg = resolveMuse2ApiConfig();
   const effectiveTimeout = Math.max(90, params.timeoutSec || cfg.videoTimeoutSec);
   const clampedDur = Math.max(3, Math.min(12, Math.round(params.durationSec || 6)));
+  const combinedRefs = Array.from(
+    new Set(
+      [...(params.referenceImages || []), ...(params.referenceImageDataUrl ? [params.referenceImageDataUrl] : [])]
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+    )
+  );
 
   const created = await createMuseTaskWithQueueWait<{ id: string; status: string }>(
     '/v1/videos',
@@ -848,7 +865,8 @@ export async function generateVideoBufferViaMuse2Api(params: {
       aspect_ratio: params.aspectRatio,
       size: params.aspectRatio,
       timeout: effectiveTimeout,
-      ...(params.referenceImageDataUrl ? { reference_image: params.referenceImageDataUrl } : {}),
+      ...(combinedRefs[0] ? { reference_image: combinedRefs[0] } : {}),
+      ...(combinedRefs.length > 0 ? { reference_images: combinedRefs } : {}),
     }
   );
   if (!created?.id) {

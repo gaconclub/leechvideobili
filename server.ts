@@ -4722,6 +4722,11 @@ async function startServer() {
         continuityBible = '',
         sceneIndex,
         totalScenes,
+        charactersInScene = '',
+        actionDetail = '',
+        dialogue = '',
+        sceneSummary = '',
+        costume = '',
         characterRefs = [],
       } = (req.body || {}) as {
         mode?: 'character' | 'scene';
@@ -4737,7 +4742,12 @@ async function startServer() {
         continuityBible?: string;
         sceneIndex?: number;
         totalScenes?: number;
-        characterRefs?: { dataUrl: string; name?: string }[];
+        charactersInScene?: string;
+        actionDetail?: string;
+        dialogue?: string;
+        sceneSummary?: string;
+        costume?: string;
+        characterRefs?: { dataUrl: string; name?: string; description?: string }[];
       };
       if (!String(prompt).trim()) {
         return res.status(400).json({ error: 'Vui lòng nhập mô tả để AI tạo hình ảnh.' });
@@ -4756,6 +4766,11 @@ async function startServer() {
         continuityBible: String(continuityBible || ''),
         sceneIndex: typeof sceneIndex === 'number' ? sceneIndex : undefined,
         totalScenes: typeof totalScenes === 'number' ? totalScenes : undefined,
+        charactersInScene: String(charactersInScene || ''),
+        actionDetail: String(actionDetail || ''),
+        dialogue: String(dialogue || ''),
+        sceneSummary: String(sceneSummary || ''),
+        costume: String(costume || ''),
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
       });
       res.json(result);
@@ -4780,6 +4795,11 @@ async function startServer() {
         continuityBible = '',
         sceneIndex,
         totalScenes,
+        charactersInScene = '',
+        actionDetail = '',
+        dialogue = '',
+        sceneSummary = '',
+        costume = '',
         sceneImageDataUrl,
         characterRefs = [],
       } = (req.body || {}) as {
@@ -4795,8 +4815,13 @@ async function startServer() {
         continuityBible?: string;
         sceneIndex?: number;
         totalScenes?: number;
+        charactersInScene?: string;
+        actionDetail?: string;
+        dialogue?: string;
+        sceneSummary?: string;
+        costume?: string;
         sceneImageDataUrl?: string;
-        characterRefs?: { dataUrl: string; name?: string }[];
+        characterRefs?: { dataUrl: string; name?: string; description?: string }[];
       };
       if (!String(prompt).trim()) {
         return res.status(400).json({ error: 'Thiếu mô tả phân cảnh để dựng clip AI.' });
@@ -4814,6 +4839,11 @@ async function startServer() {
         continuityBible: String(continuityBible || ''),
         sceneIndex: typeof sceneIndex === 'number' ? sceneIndex : undefined,
         totalScenes: typeof totalScenes === 'number' ? totalScenes : undefined,
+        charactersInScene: String(charactersInScene || ''),
+        actionDetail: String(actionDetail || ''),
+        dialogue: String(dialogue || ''),
+        sceneSummary: String(sceneSummary || ''),
+        costume: String(costume || ''),
         sceneImageDataUrl,
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
       });
@@ -5057,7 +5087,15 @@ async function startServer() {
         publicMusicUrl?: string;
         musicPrompt?: string;
         musicVolume?: number;
-        characterRefs?: { dataUrl: string; name?: string }[];
+        characterRefs?: {
+          dataUrl: string;
+          name?: string;
+          description?: string;
+          voiceMode?: 'default' | 'ai_online' | 'offline_system';
+          voiceId?: Exclude<DerivativeVoiceId, 'none'>;
+          offlineVoice?: string;
+          voiceStyle?: string;
+        }[];
         sessdata?: string;
         ytCookies?: string;
       };

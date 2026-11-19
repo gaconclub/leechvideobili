@@ -318,6 +318,10 @@ export interface StudioCharacterRef {
   dataUrl: string;
   description?: string;
   source: 'uploaded' | 'ai_generated';
+  voiceMode?: 'default' | 'ai_online' | 'offline_system';
+  voiceId?: Exclude<DerivativeVoiceId, 'none'>;
+  offlineVoice?: string;
+  voiceStyle?: string;
 }
 
 export interface StudioMusicTrack {
@@ -430,6 +434,7 @@ export interface DerivativeScene {
   lighting?: string; // Ánh sáng: tự nhiên, điện ảnh, ngược sáng...
   costume?: string; // Trang phục cụ thể của nhân vật
   cameraMovement?: string; // Kiểu quay: Tracking shot, dolly, handheld, crane...
+  cameraEquipment?: string; // Thiết bị quay & ống kính: ARRI Alexa Mini LF 35mm, Sony FX3 + Ronin gimbal...
   shotStyle?: string; // Phong cách quay: Điện ảnh, tài liệu, anime, quảng cáo...
   dialogue?: string; // Lời thoại nhân vật nói
   narration: string; // Lồng tiếng / thuyết minh hoặc giọng dẫn (rỗng khi tắt lồng tiếng)

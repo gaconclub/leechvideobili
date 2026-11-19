@@ -1198,32 +1198,69 @@ class MuseEngine:
         return '';
     })()"""
 
-    def _wait_attached_confirmed(self, timeout: float = 14.0) -> str:
+    _COMPOSER_ATTACH_COUNT_JS = """(function(){
+        var ta = document.querySelector('textarea');
+        var ov = document.querySelector('[data-testid="hatch-composer-placeholder-overlay"]');
+        var composer = (ta && ta.closest('form')) || (ov && (ov.closest('form') || (ov.parentElement && ov.parentElement.parentElement && ov.parentElement.parentElement.parentElement))) || null;
+        var scope = composer || document;
+        var chips = scope.querySelectorAll('[data-testid*="attachment" i], [data-testid*="preview" i], [data-testid*="thumbnail" i]');
+        if (chips.length > 0) return chips.length;
+        var rmBtns = Array.from(scope.querySelectorAll('button[aria-label], [role="button"][aria-label], button[title]')).filter(function(b){
+            var lbl = ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).trim();
+            if (/send|stop|attach|upload|settings|mic|voice|发送|停止|附加|设置/i.test(lbl)) return false;
+            return /remove\\s*attachment|移除附件|删除附件|remove\\s*file|delete\\s*attachment|取消附件|移除图片|remove|delete|clear/i.test(lbl);
+        });
+        if (rmBtns.length > 0) return rmBtns.length;
+        if (composer) {
+            var media = Array.from(composer.querySelectorAll('img, video')).filter(function(m){
+                if (m.closest('[class*="chat-user-bubble"], [class*="hatch-agent-bubble"], [class*="group/msg"]')) return false;
+                var s = m.currentSrc || m.src || '';
+                if (!s || s.indexOf('avatar') !== -1 || s.indexOf('emoji') !== -1) return false;
+                var r = m.getBoundingClientRect ? m.getBoundingClientRect() : {width: 0, height: 0};
+                var w = m.videoWidth || m.naturalWidth || r.width || 0;
+                var h = m.videoHeight || m.naturalHeight || r.height || 0;
+                return s.indexOf('blob:') === 0 || s.indexOf('data:image/') === 0 || (w >= 20 && h >= 20);
+            });
+            if (media.length > 0) return media.length;
+        }
+        return 0;
+    })()"""
+
+    def _composer_attachment_count(self) -> int:
+        try:
+            return int(self.page.js(self._COMPOSER_ATTACH_COUNT_JS) or 0)
+        except Exception:
+            return 0
+
+    def _wait_attached_confirmed(self, timeout: float = 14.0, min_count: int = 1) -> str:
         deadline = time.time() + timeout
+        last_state = ""
         while time.time() < deadline:
             try:
                 state = self.page.js(self._CHECK_ATTACHED_JS)
                 if state:
-                    # 若页面同时出现上传进度条，多等最多 5 秒让上传完成
-                    upload_wait_end = time.time() + 5.0
-                    while time.time() < upload_wait_end:
-                        uploading = self.page.js("""(function(){
-                            var ta = document.querySelector('textarea');
-                            var c = (ta && ta.closest('form')) || null;
-                            if (!c) return false;
-                            return !!(c.querySelector('[role="progressbar"]') || c.querySelector('[data-testid*="uploading" i]'));
-                        })()""")
-                        if not uploading:
-                            break
-                        time.sleep(0.25)
-                    return str(state)
+                    last_state = str(state)
+                    cnt = self._composer_attachment_count()
+                    if min_count <= 1 or cnt >= min_count:
+                        upload_wait_end = time.time() + 5.0
+                        while time.time() < upload_wait_end:
+                            uploading = self.page.js("""(function(){
+                                var ta = document.querySelector('textarea');
+                                var c = (ta && ta.closest('form')) || null;
+                                if (!c) return false;
+                                return !!(c.querySelector('[role="progressbar"]') || c.querySelector('[data-testid*="uploading" i]'));
+                            })()""")
+                            if not uploading:
+                                break
+                            time.sleep(0.25)
+                        return str(state)
             except Exception:
                 pass
             time.sleep(0.3)
-        return ""
+        return last_state
 
-    def _mark_composer_file_input(self) -> bool:
-        return bool(self.page.js("""(function(){
+    def _mark_composer_file_input(self, allow_multiple: bool = False) -> bool:
+        return bool(self.page.js("""(function(allowMulti){
             document.querySelectorAll('input[data-muse2api-upload]').forEach(function(x){
                 x.removeAttribute('data-muse2api-upload');
             });
@@ -1244,13 +1281,15 @@ class MuseEngine:
                 }) || inputs[0];
             }
             if (!input.getAttribute('accept')) input.setAttribute('accept', 'image/*');
+            if (allowMulti) input.setAttribute('multiple', 'multiple');
             input.setAttribute('data-muse2api-upload', '1');
             return true;
-        })()"""))
+        })(%s)""" % ("true" if allow_multiple else "false")))
 
-    def _inject_image_js(self, b64: str, mime: str, also_paste: bool = False) -> dict:
+    def _inject_image_js(self, b64: str, mime: str, also_paste: bool = False,
+                         filename: str = "reference_image") -> dict:
         _INJECT_JS = """
-        (function(b64, mime, alsoPaste) {
+        (function(b64, mime, alsoPaste, fname) {
             try {
                 var byteChars = atob(b64);
                 var byteNumbers = new Array(byteChars.length);
@@ -1261,7 +1300,7 @@ class MuseEngine:
                 var blob = new Blob([byteArray], {type: mime});
                 var ext = mime.split('/')[1] || 'png';
                 if (ext === 'jpeg') ext = 'jpg';
-                var file = new File([blob], 'reference_image.' + ext, {type: mime});
+                var file = new File([blob], fname + '.' + ext, {type: mime});
 
                 var input = document.querySelector('input[type="file"][data-muse2api-upload="1"]');
                 if (!input) {
@@ -1306,15 +1345,49 @@ class MuseEngine:
             } catch(e) {
                 return JSON.stringify({ok: false, err: String(e)});
             }
-        })(%s, %s, %s)
+        })(%s, %s, %s, %s)
         """
-        raw_res = self.page.js(_INJECT_JS % (json.dumps(b64), json.dumps(mime), "true" if also_paste else "false"))
+        raw_res = self.page.js(_INJECT_JS % (
+            json.dumps(b64), json.dumps(mime),
+            "true" if also_paste else "false", json.dumps(filename)
+        ))
         return json.loads(raw_res) if isinstance(raw_res, str) else (raw_res or {})
 
-    def _attach_via_cdp(self, tmp_path: str) -> bool:
+    def _paste_image_js(self, b64: str, mime: str, filename: str = "reference_image") -> bool:
+        _PASTE_JS = """
+        (function(b64, mime, fname) {
+            try {
+                var taEl = document.querySelector('textarea');
+                if (!taEl || typeof ClipboardEvent !== 'function') return false;
+                var byteChars = atob(b64);
+                var byteNumbers = new Array(byteChars.length);
+                for (var i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+                var blob = new Blob([new Uint8Array(byteNumbers)], {type: mime});
+                var ext = (mime.split('/')[1] || 'png').replace('jpeg', 'jpg');
+                var file = new File([blob], fname + '.' + ext, {type: mime});
+                taEl.focus();
+                var pasteDt = new DataTransfer();
+                pasteDt.items.add(file);
+                taEl.dispatchEvent(new ClipboardEvent('paste', {
+                    clipboardData: pasteDt,
+                    bubbles: true,
+                    cancelable: true
+                }));
+                return true;
+            } catch (e) {
+                return false;
+            }
+        })(%s, %s, %s)
+        """
+        try:
+            return bool(self.page.js(_PASTE_JS % (json.dumps(b64), json.dumps(mime), json.dumps(filename))))
+        except Exception:
+            return False
+
+    def _attach_via_cdp(self, tmp_paths: list[str]) -> bool:
         try:
             self.page.send("DOM.enable")
-            if not self._mark_composer_file_input():
+            if not self._mark_composer_file_input(allow_multiple=(len(tmp_paths) > 1)):
                 return False
             doc = self.page.send("DOM.getDocument", {"depth": -1})
             root_id = doc.get("result", {}).get("root", {}).get("nodeId")
@@ -1327,7 +1400,7 @@ class MuseEngine:
             node_id = q.get("result", {}).get("nodeId")
             if not node_id:
                 return False
-            self.page.send("DOM.setFileInputFiles", {"nodeId": node_id, "files": [tmp_path]})
+            self.page.send("DOM.setFileInputFiles", {"nodeId": node_id, "files": tmp_paths})
             return True
         except Exception as exc:
             log.warning("CDP DOM.setFileInputFiles 附加参考图失败（将回退 JS DataTransfer）: %s", exc)
@@ -1342,77 +1415,128 @@ class MuseEngine:
                 pass
 
     def _attach_image(self, image_data: str):
-        """将参考图附加到输入框：优先原生 CDP DOM.setFileInputFiles（isTrusted=true），失败时回退 DataTransfer + Paste + 重载重试。"""
-        if not image_data:
-            return
-        b64, mime = self._normalize_image(image_data)
-        if not b64:
-            raise MuseGenerationError("参考图读取失败，已停止生成")
+        self._attach_images([image_data])
 
-        ext = mime.split("/")[-1].split(";")[0].strip().lower() or "png"
-        if ext == "jpeg":
-            ext = "jpg"
-        if ext not in ("png", "jpg", "webp", "gif"):
-            ext = "png"
+    def _attach_images(self, image_datas: list[str]):
+        """将 1..N 张参考图附加到输入框：优先批量 CDP，若站内仅接收单文件则逐张追加并回退 Paste。"""
+        clean_list = [str(x).strip() for x in (image_datas or []) if x and str(x).strip()]
+        if not clean_list:
+            return
 
         os.makedirs(self.cfg.data_dir, exist_ok=True)
-        tmp_path = os.path.join(self.cfg.data_dir, f"ref_{uuid.uuid4().hex}.{ext}")
+        prepared: list[tuple[str, str, str]] = []  # (tmp_path, b64, mime)
         try:
-            with open(tmp_path, "wb") as f:
-                f.write(base64.b64decode(b64))
-        except Exception as exc:
-            raise MuseGenerationError("参考图解码失败，已停止生成") from exc
+            for idx, img_data in enumerate(clean_list):
+                b64, mime = self._normalize_image(img_data)
+                if not b64:
+                    raise MuseGenerationError(f"第 {idx + 1} 张参考图读取失败，已停止生成")
+                ext = mime.split("/")[-1].split(";")[0].strip().lower() or "png"
+                if ext == "jpeg":
+                    ext = "jpg"
+                if ext not in ("png", "jpg", "webp", "gif"):
+                    ext = "png"
+                tmp_path = os.path.join(self.cfg.data_dir, f"ref_{idx + 1}_{uuid.uuid4().hex}.{ext}")
+                with open(tmp_path, "wb") as f:
+                    f.write(base64.b64decode(b64))
+                prepared.append((tmp_path, b64, mime))
 
-        try:
+            tmp_paths = [p[0] for p in prepared]
+            target_cnt = len(tmp_paths)
             self._wait_composer_ready(self.page, timeout=10.0)
             self._clear_attachments()
 
-            # 1) 首选 CDP 原生文件注入（isTrusted=true，React 18 稳定触发）
-            if self._attach_via_cdp(tmp_path):
-                if self._wait_attached_confirmed(timeout=14.0):
+            # 1) 尝试一次性 CDP 多文件注入
+            if self._attach_via_cdp(tmp_paths):
+                state = self._wait_attached_confirmed(timeout=14.0, min_count=target_cnt)
+                cur_cnt = self._composer_attachment_count()
+                if state and (target_cnt == 1 or cur_cnt >= target_cnt):
                     time.sleep(0.5)
                     return
 
-            # 2) 回退：JS DataTransfer + ClipboardEvent paste
-            log.warning("CDP 原生附加参考图未在 14s 内确认，回退 JS DataTransfer/Paste 重试...")
+                # 若站内 input 只收了第1张，逐张追加剩余图片（不清空前图）
+                if target_cnt > 1 and cur_cnt >= 1 and cur_cnt < target_cnt:
+                    log.info("批量注入仅确认 %s/%s 张参考图，正在逐张追加剩余参考图...", cur_cnt, target_cnt)
+                    for idx in range(cur_cnt, target_cnt):
+                        before_c = self._composer_attachment_count()
+                        p_path, p_b64, p_mime = prepared[idx]
+                        self._attach_via_cdp([p_path])
+                        self._wait_attached_confirmed(timeout=8.0, min_count=before_c + 1)
+                        if self._composer_attachment_count() <= before_c:
+                            self._paste_image_js(p_b64, p_mime, filename=f"character_ref_{idx + 1}")
+                            self._wait_attached_confirmed(timeout=8.0, min_count=before_c + 1)
+                    time.sleep(0.5)
+                    return
+
+            # 2) 回退：逐张 JS DataTransfer + ClipboardEvent paste
+            log.warning("CDP 原生附加参考图未完全确认，回退 JS DataTransfer/Paste 重试...")
             self._clear_attachments()
             try:
-                self._mark_composer_file_input()
-                res_obj = self._inject_image_js(b64, mime, also_paste=True)
-                if res_obj.get("ok") and self._wait_attached_confirmed(timeout=12.0):
+                attached_ok = 0
+                for idx, (_, p_b64, p_mime) in enumerate(prepared):
+                    self._mark_composer_file_input(allow_multiple=(target_cnt > 1))
+                    if idx == 0:
+                        res_obj = self._inject_image_js(p_b64, p_mime, also_paste=True, filename=f"character_ref_{idx + 1}")
+                        if res_obj.get("ok") and self._wait_attached_confirmed(timeout=10.0, min_count=1):
+                            attached_ok = max(1, self._composer_attachment_count())
+                    else:
+                        before_c = self._composer_attachment_count()
+                        if self._paste_image_js(p_b64, p_mime, filename=f"character_ref_{idx + 1}"):
+                            self._wait_attached_confirmed(timeout=8.0, min_count=before_c + 1)
+                        if self._composer_attachment_count() <= before_c:
+                            self._inject_image_js(p_b64, p_mime, also_paste=True, filename=f"character_ref_{idx + 1}")
+                            self._wait_attached_confirmed(timeout=8.0, min_count=before_c + 1)
+                        attached_ok = self._composer_attachment_count()
+                if attached_ok >= 1:
                     time.sleep(0.5)
                     return
             except Exception as exc:
                 log.warning("JS DataTransfer 附加异常: %s", exc)
 
-            # 3) 最终兜底：强制刷新 /thread/new 并等待水合后用原生 CDP 再试一次
+            # 3) 最终兜底：强制刷新 /thread/new 并用 CDP 逐张挂载
             log.warning("参考图二次确认失败，正在强制刷新 /thread/new 重试一次...")
             self.reset_thread(for_chat=False, force=True)
             self._wait_composer_ready(self.page, timeout=12.0)
             self._clear_attachments()
-            if self._attach_via_cdp(tmp_path) and self._wait_attached_confirmed(timeout=16.0):
+            if self._attach_via_cdp(tmp_paths) and self._wait_attached_confirmed(timeout=16.0, min_count=1):
+                cur_cnt = self._composer_attachment_count()
+                if target_cnt > 1 and cur_cnt < target_cnt:
+                    for idx in range(cur_cnt, target_cnt):
+                        before_c = self._composer_attachment_count()
+                        p_path, p_b64, p_mime = prepared[idx]
+                        self._attach_via_cdp([p_path])
+                        self._wait_attached_confirmed(timeout=8.0, min_count=before_c + 1)
+                        if self._composer_attachment_count() <= before_c:
+                            self._paste_image_js(p_b64, p_mime, filename=f"character_ref_{idx + 1}")
+                            self._wait_attached_confirmed(timeout=8.0, min_count=before_c + 1)
                 time.sleep(0.5)
                 return
 
             self._debug_dump("attach-fail")
             raise MuseGenerationError("参考图上传未确认，已停止生成")
         finally:
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except Exception:
-                pass
+            for p_path, _, _ in prepared:
+                try:
+                    if os.path.exists(p_path):
+                        os.remove(p_path)
+                except Exception:
+                    pass
 
     # ---------------- 主流程 ----------------
     def generate(self, cookies: dict, prompt: str, expect: str = "image",
                  timeout: int = 240, expires: dict | None = None, account_id: str | None = None,
                  on_progress=None, reference_image: str | None = None,
+                 reference_images: list[str] | None = None,
                  stop_event=None) -> dict:
         self.ensure_page(cookies, expires, account_id=account_id, wait_timeout=timeout)
         self.reset_thread(for_chat=False)
         self._scroll_bottom()
-        if reference_image:
-            self._attach_image(reference_image)
+        all_refs: list[str] = []
+        for candidate in ([*(reference_images or []), *( [reference_image] if reference_image else [] )]):
+            c = str(candidate or "").strip()
+            if c and c not in all_refs:
+                all_refs.append(c)
+        if all_refs:
+            self._attach_images(all_refs)
         else:
             self._clear_attachments()
         atts_before = self.attachments()

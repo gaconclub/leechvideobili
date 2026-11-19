@@ -20,6 +20,7 @@ import {
 } from '../../types/bilibili';
 import {
   CAMERA_ANGLE_SUGGESTIONS,
+  CAMERA_EQUIPMENT_SUGGESTIONS,
   CAMERA_MOVEMENT_SUGGESTIONS,
   LIGHTING_SUGGESTIONS,
   VIDEO_STYLE_OPTIONS,
@@ -91,7 +92,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   onGenerateOmniClip,
   onSpeakPreview,
 }) => {
-  const [showCinematographyDetails, setShowCinematographyDetails] = useState(true);
+  const [showCinematographyDetails, setShowCinematographyDetails] = useState(false);
   const styleMeta = VIDEO_STYLE_OPTIONS.find((s) => s.value === videoStyle) || VIDEO_STYLE_OPTIONS[1];
   const paddedNumber = String(index + 1).padStart(2, '0');
   const totalPadded = String(totalScenes).padStart(2, '0');
@@ -145,6 +146,11 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
           <option key={item} value={item} />
         ))}
       </datalist>
+      <datalist id={`camera-equipment-${scene.id}`}>
+        {CAMERA_EQUIPMENT_SUGGESTIONS.map((item) => (
+          <option key={item} value={item} />
+        ))}
+      </datalist>
 
       {/* Left Column: Visual Preview + Media Generation + Duration Controls (4 cols) */}
       <div className="lg:col-span-4 space-y-2.5">
@@ -156,11 +162,11 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
             <input
               type="number"
               min={2}
-              max={45}
+              max={120}
               value={Math.round(scene.durationSec || 6)}
               onChange={(e) =>
                 onUpdateScene(scene.id, {
-                  durationSec: Math.max(2, Math.min(45, Number(e.target.value) || 6)),
+                  durationSec: Math.max(2, Math.min(120, Number(e.target.value) || 6)),
                 })
               }
               aria-label="Thời lượng cảnh"
@@ -293,35 +299,6 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
           </button>
         </div>
 
-        {/* Continuity Hand-off Fields directly under media preview */}
-        <div className="pt-2 border-t border-slate-200/80 dark:border-slate-400/15 space-y-2">
-          <label className="block space-y-1">
-            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-              Tiếp nối từ cảnh trước
-            </span>
-            <input
-              type="text"
-              value={scene.continuityNote || ''}
-              onChange={(e) => onUpdateScene(scene.id, { continuityNote: e.target.value })}
-              placeholder={`VD: Nối tiếp trạng thái cuối của Scene ${String(Math.max(1, index)).padStart(2, '0')}...`}
-              className={fieldInputCls}
-            />
-          </label>
-
-          <label className="block space-y-1">
-            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-              Trạng thái cuối cảnh (truyền sang cảnh sau)
-            </span>
-            <input
-              type="text"
-              value={scene.sceneEndState || ''}
-              onChange={(e) => onUpdateScene(scene.id, { sceneEndState: e.target.value })}
-              placeholder="VD: Nhân vật đứng quay mặt về phía cánh cửa sáng..."
-              className={fieldInputCls}
-            />
-          </label>
-        </div>
-
         {sceneErr && (
           <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-700 dark:text-rose-300 leading-snug">
             {sceneErr}
@@ -429,13 +406,13 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
           </div>
         </div>
 
-        {/* Cinematography Breakdown Fields */}
+        {/* Collapsible Advanced Cinematography, Continuity & Prompts */}
         <div className="pt-2 border-t border-slate-200/80 dark:border-slate-400/15 space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <button
               type="button"
               onClick={() => setShowCinematographyDetails((v) => !v)}
-              className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:text-cyan-600 dark:hover:text-cyan-300 cursor-pointer"
+              className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:text-cyan-600 dark:hover:text-cyan-300 cursor-pointer"
             >
               {showCinematographyDetails ? (
                 <ChevronUp className="w-3.5 h-3.5" />
@@ -443,7 +420,10 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
                 <ChevronDown className="w-3.5 h-3.5" />
               )}
               <span>
-                Thông số đạo diễn phân cảnh (Nhân vật · Bối cảnh · Hành động · Góc máy · Ánh sáng · Trang phục · Kiểu quay · Phong cách quay)
+                Chi tiết đạo diễn, Prompt Ảnh/Video &amp; Nối cảnh
+              </span>
+              <span className="text-[10px] font-normal text-slate-400">
+                {showCinematographyDetails ? '(Thu gọn)' : '(Bấm để chỉnh sâu)'}
               </span>
             </button>
             <button
@@ -458,175 +438,221 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
           </div>
 
           {showCinematographyDetails && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <label className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Nhân vật (Xuất hiện trong cảnh)
-                </span>
-                <input
-                  type="text"
-                  value={scene.charactersInScene || ''}
-                  onChange={(e) => onUpdateScene(scene.id, { charactersInScene: e.target.value })}
-                  placeholder="VD: Minh (nam chính 25t), Linh (nữ đồng hành)..."
-                  className={fieldInputCls}
-                />
-              </label>
+            <div className="space-y-3 pt-1">
+              {/* Continuity hand-off */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Tiếp nối từ cảnh trước
+                  </span>
+                  <input
+                    type="text"
+                    value={scene.continuityNote || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { continuityNote: e.target.value })}
+                    placeholder={`VD: Nối tiếp trạng thái cuối của Scene ${String(Math.max(1, index)).padStart(2, '0')}...`}
+                    className={fieldInputCls}
+                  />
+                </label>
 
-              <label className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Trang phục (Đồng bộ phụ kiện)
-                </span>
-                <input
-                  type="text"
-                  value={scene.costume || ''}
-                  onChange={(e) => onUpdateScene(scene.id, { costume: e.target.value })}
-                  placeholder="VD: Áo choàng trắng viền vàng, đai lưng bạc..."
-                  className={fieldInputCls}
-                />
-              </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Trạng thái cuối cảnh (truyền sang cảnh sau)
+                  </span>
+                  <input
+                    type="text"
+                    value={scene.sceneEndState || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { sceneEndState: e.target.value })}
+                    placeholder="VD: Nhân vật đứng quay mặt về phía cánh cửa sáng..."
+                    className={fieldInputCls}
+                  />
+                </label>
+              </div>
 
-              <label className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Bối cảnh (Không gian, địa điểm, thời gian)
-                </span>
-                <input
-                  type="text"
-                  value={scene.settingDetail || ''}
-                  onChange={(e) => onUpdateScene(scene.id, { settingDetail: e.target.value })}
-                  placeholder="VD: Cổng thiên cung bằng đá ngọc giữa tầng mây lúc rạng đông..."
-                  className={fieldInputCls}
-                />
-              </label>
+              {/* 8 Cinematography Fields */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Nhân vật (Xuất hiện trong cảnh)
+                  </span>
+                  <input
+                    type="text"
+                    value={scene.charactersInScene || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { charactersInScene: e.target.value })}
+                    placeholder="VD: Minh (nam chính 25t), Linh (nữ đồng hành)..."
+                    className={fieldInputCls}
+                  />
+                </label>
 
-              <label className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Hành động (Hành vi &amp; diễn biến cụ thể)
-                </span>
-                <input
-                  type="text"
-                  value={scene.actionDetail || ''}
-                  onChange={(e) => onUpdateScene(scene.id, { actionDetail: e.target.value })}
-                  placeholder="VD: Minh bước chậm về phía trước, tay nâng ấn tín phát sáng..."
-                  className={fieldInputCls}
-                />
-              </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Trang phục (Đồng bộ phụ kiện)
+                  </span>
+                  <input
+                    type="text"
+                    value={scene.costume || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { costume: e.target.value })}
+                    placeholder="VD: Áo choàng trắng viền vàng, đai lưng bạc..."
+                    className={fieldInputCls}
+                  />
+                </label>
 
-              <label className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">Góc máy</span>
-                <input
-                  type="text"
-                  list={`camera-angles-${scene.id}`}
-                  value={scene.cameraAngle || ''}
-                  onChange={(e) => onUpdateScene(scene.id, { cameraAngle: e.target.value })}
-                  placeholder="VD: Góc thấp trung cảnh (Low angle medium shot)..."
-                  className={fieldInputCls}
-                />
-              </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Bối cảnh (Không gian, địa điểm, thời gian)
+                  </span>
+                  <input
+                    type="text"
+                    value={scene.settingDetail || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { settingDetail: e.target.value })}
+                    placeholder="VD: Cổng thiên cung bằng đá ngọc giữa tầng mây lúc rạng đông..."
+                    className={fieldInputCls}
+                  />
+                </label>
 
-              <label className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Kiểu quay (Chuyển động camera)
-                </span>
-                <input
-                  type="text"
-                  list={`camera-movements-${scene.id}`}
-                  value={scene.cameraMovement || ''}
-                  onChange={(e) => onUpdateScene(scene.id, { cameraMovement: e.target.value })}
-                  placeholder="VD: Tracking shot, Slow dolly-in, Handheld..."
-                  className={fieldInputCls}
-                />
-              </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Hành động (Hành vi &amp; diễn biến cụ thể)
+                  </span>
+                  <input
+                    type="text"
+                    value={scene.actionDetail || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { actionDetail: e.target.value })}
+                    placeholder="VD: Minh bước chậm về phía trước, tay nâng ấn tín phát sáng..."
+                    className={fieldInputCls}
+                  />
+                </label>
 
-              <label className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">Ánh sáng &amp; Màu sắc</span>
-                <input
-                  type="text"
-                  list={`lighting-presets-${scene.id}`}
-                  value={scene.lighting || ''}
-                  onChange={(e) => onUpdateScene(scene.id, { lighting: e.target.value })}
-                  placeholder="VD: Ánh sáng ngược chiều (Cinematic rim light) ấm áp..."
-                  className={fieldInputCls}
-                />
-              </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">Góc máy</span>
+                  <input
+                    type="text"
+                    list={`camera-angles-${scene.id}`}
+                    value={scene.cameraAngle || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { cameraAngle: e.target.value })}
+                    placeholder="VD: Góc thấp trung cảnh (Low angle medium shot)..."
+                    className={fieldInputCls}
+                  />
+                </label>
 
-              <label className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">Phong cách quay</span>
-                <input
-                  type="text"
-                  value={scene.shotStyle || ''}
-                  onChange={(e) => onUpdateScene(scene.id, { shotStyle: e.target.value })}
-                  placeholder={styleMeta.shotDefault}
-                  className={fieldInputCls}
-                />
-              </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Kiểu quay (Chuyển động camera)
+                  </span>
+                  <input
+                    type="text"
+                    list={`camera-movements-${scene.id}`}
+                    value={scene.cameraMovement || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { cameraMovement: e.target.value })}
+                    placeholder="VD: Tracking shot, Slow dolly-in, Handheld..."
+                    className={fieldInputCls}
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">Ánh sáng &amp; Màu sắc</span>
+                  <input
+                    type="text"
+                    list={`lighting-presets-${scene.id}`}
+                    value={scene.lighting || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { lighting: e.target.value })}
+                    placeholder="VD: Ánh sáng ngược chiều (Cinematic rim light) ấm áp..."
+                    className={fieldInputCls}
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">Phong cách quay</span>
+                  <input
+                    type="text"
+                    value={scene.shotStyle || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { shotStyle: e.target.value })}
+                    placeholder={styleMeta.shotDefault}
+                    className={fieldInputCls}
+                  />
+                </label>
+
+                <label className="sm:col-span-2 space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Thiết bị quay &amp; Ống kính (Máy quay, gimbal, tiêu cự)
+                  </span>
+                  <input
+                    type="text"
+                    list={`camera-equipment-${scene.id}`}
+                    value={scene.cameraEquipment || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { cameraEquipment: e.target.value })}
+                    placeholder="VD: Sony FX3 + 35mm f/1.4 trên gimbal DJI Ronin..."
+                    className={fieldInputCls}
+                  />
+                </label>
+              </div>
+
+              {/* Dedicated Image Prompt + Video Prompt */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                <label className="block space-y-1">
+                  <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                    Prompt hình ảnh ({sceneCode} — bố cục tĩnh, tạo hình, ánh sáng)
+                  </span>
+                  <textarea
+                    rows={3}
+                    value={scene.imagePrompt || scene.visualNote || ''}
+                    onChange={(e) =>
+                      onUpdateScene(scene.id, {
+                        imagePrompt: e.target.value,
+                        visualNote: e.target.value,
+                      })
+                    }
+                    placeholder="Mô tả chi tiết khung hình tĩnh: chủ thể, trang phục, biểu cảm, không gian, góc máy, ánh sáng..."
+                    className={fieldTextareaCls}
+                  />
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                    Prompt video ({sceneCode} — chuyển động, hành động &amp; quỹ đạo máy quay)
+                  </span>
+                  <textarea
+                    rows={3}
+                    value={scene.videoPrompt || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { videoPrompt: e.target.value })}
+                    placeholder="Mô tả chi tiết chuyển động liên tục trong cảnh, nhịp diễn xuất, chuyển động máy quay & hiệu ứng môi trường..."
+                    className={fieldTextareaCls}
+                  />
+                </label>
+              </div>
+
+              {/* Source video slice & B-roll keyword */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {mode === 'derivative' && sources.length > 0 && (
+                  <label className="space-y-1">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">Video tham chiếu cắt ghép</span>
+                    <select
+                      value={scene.sourceVideoIndex}
+                      onChange={(e) => onUpdateScene(scene.id, { sourceVideoIndex: Number(e.target.value) })}
+                      className={fieldInputCls}
+                    >
+                      {sources.map((s, sIdx) => (
+                        <option key={s.id} value={sIdx}>
+                          #{sIdx + 1} · {(s.translatedTitle || s.title).slice(0, 42)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label className={mode === 'derivative' && sources.length > 0 ? 'space-y-1' : 'sm:col-span-2 space-y-1'}>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Từ khóa tìm B-roll dự phòng (Wikimedia Commons · EN)
+                  </span>
+                  <input
+                    type="text"
+                    value={scene.brollKeywordEn || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { brollKeywordEn: e.target.value })}
+                    placeholder="VD: modern office workspace, city night timelapse..."
+                    className={`${fieldInputCls} font-mono`}
+                  />
+                </label>
+              </div>
             </div>
           )}
-
-          {/* Dedicated Image Prompt + Video Prompt */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-            <label className="block space-y-1">
-              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                Prompt hình ảnh ({sceneCode} — bố cục tĩnh, tạo hình, ánh sáng)
-              </span>
-              <textarea
-                rows={3}
-                value={scene.imagePrompt || scene.visualNote || ''}
-                onChange={(e) =>
-                  onUpdateScene(scene.id, {
-                    imagePrompt: e.target.value,
-                    visualNote: e.target.value,
-                  })
-                }
-                placeholder="Mô tả chi tiết khung hình tĩnh: chủ thể, trang phục, biểu cảm, không gian, góc máy, ánh sáng..."
-                className={fieldTextareaCls}
-              />
-            </label>
-
-            <label className="block space-y-1">
-              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                Prompt video ({sceneCode} — chuyển động, hành động &amp; quỹ đạo máy quay)
-              </span>
-              <textarea
-                rows={3}
-                value={scene.videoPrompt || ''}
-                onChange={(e) => onUpdateScene(scene.id, { videoPrompt: e.target.value })}
-                placeholder="Mô tả chi tiết chuyển động liên tục trong cảnh, nhịp diễn xuất, chuyển động máy quay & hiệu ứng môi trường..."
-                className={fieldTextareaCls}
-              />
-            </label>
-          </div>
-        </div>
-
-        {/* Source video slice (derivative mode) & B-roll keyword */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-          {mode === 'derivative' && sources.length > 0 && (
-            <label className="space-y-1">
-              <span className="text-[11px] text-slate-500 dark:text-slate-400">Video tham chiếu cắt ghép</span>
-              <select
-                value={scene.sourceVideoIndex}
-                onChange={(e) => onUpdateScene(scene.id, { sourceVideoIndex: Number(e.target.value) })}
-                className={fieldInputCls}
-              >
-                {sources.map((s, sIdx) => (
-                  <option key={s.id} value={sIdx}>
-                    #{sIdx + 1} · {(s.translatedTitle || s.title).slice(0, 42)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <label className={mode === 'derivative' && sources.length > 0 ? 'space-y-1' : 'sm:col-span-2 space-y-1'}>
-            <span className="text-[11px] text-slate-500 dark:text-slate-400">
-              Từ khóa tìm B-roll dự phòng (Wikimedia Commons · EN)
-            </span>
-            <input
-              type="text"
-              value={scene.brollKeywordEn || ''}
-              onChange={(e) => onUpdateScene(scene.id, { brollKeywordEn: e.target.value })}
-              placeholder="VD: modern office workspace, city night timelapse..."
-              className={`${fieldInputCls} font-mono`}
-            />
-          </label>
         </div>
       </div>
     </div>

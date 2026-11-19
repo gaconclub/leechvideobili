@@ -1337,15 +1337,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     }}
                     className="flex-1 h-9 px-2.5 text-xs font-medium bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-violet-400"
                   >
-                    <option value="10">10 giây</option>
-                    <option value="20">20 giây</option>
-                    <option value="30">30 giây</option>
-                    <option value="40">40 giây</option>
-                    <option value="60">1 phút (60s)</option>
-                    <option value="120">2 phút (120s)</option>
-                    <option value="180">3 phút (180s)</option>
-                    <option value="300">5 phút (300s)</option>
-                    <option value="600">10 phút (600s)</option>
+                    <option value="10">10s</option>
+                    <option value="20">20s</option>
+                    <option value="30">30s</option>
+                    <option value="40">40s</option>
+                    <option value="60">60s</option>
+                    <option value="120">2 phút</option>
+                    <option value="180">3 phút</option>
+                    <option value="300">5 phút</option>
+                    <option value="600">10 phút</option>
                     {![10, 20, 30, 40, 60, 120, 180, 300, 600].includes(studioDefaults.targetDurationSec) && (
                       <option value="custom">Tùy chỉnh ({studioDefaults.targetDurationSec}s)</option>
                     )}
