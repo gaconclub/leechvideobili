@@ -9,6 +9,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { UpdateStatusInfo } from './UpdateModal';
+import { APP_VERSION } from '../version';
 
 interface UpdatePanelProps {
   status: UpdateStatusInfo | null;
@@ -35,11 +36,11 @@ export const UpdatePanel: React.FC<UpdatePanelProps> = ({
   onApplyUpdate,
   onForceUpdate,
 }) => {
+  const currentVersion = status?.localVersion || APP_VERSION;
   const versionLabel = status?.currentCommit
-    ? `V1.0 (${status.currentCommit})`
-    : status?.localVersion
-    ? `V${status.localVersion}`
-    : 'V1.0';
+    ? `V${currentVersion} (${status.currentCommit})`
+    : `V${currentVersion}`;
+  const remoteRef = status?.remoteCommit || status?.latestCommit;
 
   return (
     <section className="space-y-4">
@@ -48,7 +49,7 @@ export const UpdatePanel: React.FC<UpdatePanelProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 dark:border-slate-400/15 pb-4">
           <div>
             <h1 className="font-display text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white">
-              Cập nhật GaConPro V1.0
+              Cập nhật GaConPro V{currentVersion}
             </h1>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Phiên bản hiện tại:{' '}
@@ -75,9 +76,9 @@ export const UpdatePanel: React.FC<UpdatePanelProps> = ({
               <div className="inline-flex items-center gap-2 font-semibold text-slate-900 dark:text-white">
                 <GitBranch className="w-4 h-4 text-violet-500 dark:text-violet-300" />
                 <span>
-                  {status.branch} ({status.currentCommit || '—'})
-                  {status.remoteCommit && status.remoteCommit !== status.currentCommit
-                    ? ` → ${status.remoteCommit}`
+                  {status.branch} ({status.currentCommit || `V${currentVersion}`})
+                  {remoteRef && remoteRef !== status.currentCommit
+                    ? ` → ${status.remoteVersion ? `V${status.remoteVersion} · ` : ''}${remoteRef}`
                     : ''}
                 </span>
               </div>

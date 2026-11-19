@@ -33,6 +33,7 @@ import {
   migrateLegacyCookies,
 } from './utils/cookies';
 import { formatSpeed } from './utils/formatters';
+import { APP_VERSION } from './version';
 
 async function parseJsonSafe<T = any>(res: Response): Promise<T> {
   const text = await res.text();
@@ -674,7 +675,15 @@ export default function App() {
 
           if (jobData.status === 'completed') {
             if (autoSaveRef.current) {
-              const targetName = jobData.fileName || item.fileName || `${item.bvid}.${item.selectedFormat}`;
+              const fallbackTitle = (item.partTitle ? `${item.title} - ${item.partTitle}` : item.title)
+                .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+                .trim();
+              const cleanBvid = item.bvid?.replace(/^(?:bili_|yt_|fb_)/i, '') || '';
+              const fallbackBase = cleanBvid
+                ? `[${cleanBvid}]${fallbackTitle || 'video'}`
+                : fallbackTitle || 'video';
+              const targetName =
+                jobData.fileName || item.fileName || `${fallbackBase}.${item.selectedFormat}`;
               const fileUrl = `/api/bilibili/jobs/${jobId}/file`;
 
               if (dirHandleRef.current) {
@@ -952,7 +961,14 @@ export default function App() {
 
   const handleSaveSingle = async (item: QueueVideoItem) => {
     if (!item.jobId) return;
-    const targetName = item.fileName || `${item.bvid}.${item.selectedFormat}`;
+    const fallbackTitle = (item.partTitle ? `${item.title} - ${item.partTitle}` : item.title)
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+      .trim();
+    const cleanBvid = item.bvid?.replace(/^(?:bili_|yt_|fb_)/i, '') || '';
+    const fallbackBase = cleanBvid
+      ? `[${cleanBvid}]${fallbackTitle || 'video'}`
+      : fallbackTitle || 'video';
+    const targetName = item.fileName || `${fallbackBase}.${item.selectedFormat}`;
     await triggerBrowserFileDownload(item.id, item.jobId, targetName);
   };
 
@@ -1205,6 +1221,8 @@ export default function App() {
     videoTransform.mirror !== 'none' ||
     videoTransform.zoomPercent !== 100;
 
+  const appVersion = updateStatus?.localVersion || APP_VERSION;
+
   return (
     <div id="top" className="min-h-screen flex flex-col lg:flex-row">
       <Sidebar
@@ -1216,6 +1234,7 @@ export default function App() {
         updateAvailable={Boolean(updateStatus?.supported && updateStatus?.hasUpdate)}
         subfolderName={subfolderName}
         capabilities={capabilities}
+        appVersion={appVersion}
         onRunBatchAction={handleSidebarBatchAction}
       />
 
@@ -1438,7 +1457,7 @@ export default function App() {
 
         <footer className="border-t border-slate-200/80 dark:border-slate-400/15 py-5 px-6 text-xs text-slate-500 dark:text-slate-400">
           <div className="max-w-[1680px] mx-auto flex flex-wrap items-center justify-between gap-4">
-            <span>GaConPro V1.0 · Hỗ Trợ Phần Mềm : Zalo Đỗ Oanh 08.2626.8282</span>
+            <span>GaConPro V{appVersion} · Hỗ Trợ Phần Mềm : Zalo Đỗ Oanh 08.2626.8282</span>
             <div className="flex items-center gap-3">
               <span>Hỗ trợ MP4, MKV, WEBM, MP3, M4A · Xử lý ghép luồng bằng FFmpeg</span>
               <button

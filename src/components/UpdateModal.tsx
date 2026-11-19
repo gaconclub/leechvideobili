@@ -10,6 +10,8 @@ import {
   RotateCcw,
 } from 'lucide-react';
 
+import { APP_VERSION } from '../version';
+
 export interface UpdateStatusInfo {
   supported: boolean;
   reason?: string;
@@ -17,12 +19,14 @@ export interface UpdateStatusInfo {
   branch?: string;
   currentCommit?: string;
   remoteCommit?: string;
+  latestCommit?: string;
   behindCount?: number;
   hasUpdate?: boolean;
   latestMessage?: string;
   latestDate?: string;
   hasLocalChanges?: boolean;
   localVersion?: string;
+  remoteVersion?: string;
   checkedAt?: number;
   error?: string;
 }
@@ -75,7 +79,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             </div>
             <div>
               <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">
-                Cập nhật GaConPro V1.0
+                Cập nhật GaConPro V{status?.localVersion || APP_VERSION}
               </h2>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 Đồng bộ phiên bản mới nhất từ GitHub và tự khởi động lại server
@@ -112,7 +116,8 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   <span className="text-slate-500 dark:text-slate-400">Phiên bản đang chạy</span>
                   <span className="font-mono font-semibold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
                     <GitBranch className="w-3.5 h-3.5 text-violet-500 dark:text-violet-300" />
-                    {status?.branch || 'main'} · {status?.currentCommit || `v${status?.localVersion || '1.0'}`}
+                    {status?.branch || 'main'} · V{status?.localVersion || APP_VERSION}
+                    {status?.currentCommit ? ` (${status.currentCommit})` : ''}
                   </span>
                 </div>
 
@@ -120,7 +125,9 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-slate-500 dark:text-slate-400">Bản mới nhất trên GitHub</span>
                     <span className="font-mono font-semibold text-slate-900 dark:text-white">
-                      {status.remoteCommit || '—'}
+                      {status.remoteVersion ? `V${status.remoteVersion}` : ''}
+                      {status.remoteVersion && (status.remoteCommit || status.latestCommit) ? ' · ' : ''}
+                      {status.remoteCommit || status.latestCommit || (status.remoteVersion ? '' : '—')}
                       {status.behindCount ? (
                         <span className="ml-1.5 text-amber-600 dark:text-amber-300">
                           (+{status.behindCount} commit)

@@ -415,12 +415,94 @@ function writeRawCacheMeta(
   fs.renameSync(tmpMeta, path.join(cacheDir, 'meta.json'));
 }
 
-function sanitizeFilename(name: string): string {
+function sanitizeFilename(name: string, maxLen = 140): string {
   return name
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 140);
+    .slice(0, maxLen);
+}
+
+function resolveDownloadVideoId(
+  bvid?: string,
+  sourceUrl?: string,
+  platform?: VideoPlatform
+): string {
+  const rawBvid = String(bvid || '').trim();
+  const cleanFromUrl = (() => {
+    const u = String(sourceUrl || '').trim();
+    if (!u) return '';
+    if (platform === 'bilibili' || /bilibili\.com|b23\.tv/i.test(u)) {
+      const bili = extractBiliIdentifier(u);
+      if (bili.bvid) return bili.bvid;
+      if (bili.aid) return `av${bili.aid}`;
+    }
+    if (platform === 'facebook' || isFacebookUrl(u)) {
+      const fbMatch =
+        u.match(/\/(?:reel|reels|videos)\/(\d{5,})/i) ||
+        u.match(/[?&](?:v|story_fbid)=(\d{5,})/i) ||
+        u.match(/fb\.watch\/([A-Za-z0-9_-]+)/i);
+      if (fbMatch?.[1]) return fbMatch[1];
+    }
+    if (platform === 'youtube' || /youtube\.com|youtu\.be/i.test(u)) {
+      const ytId = extractYouTubeVideoId(u);
+      if (ytId) return ytId;
+    }
+    return '';
+  })();
+
+  let candidate = rawBvid;
+  if (/^bili_(BV[1-9A-HJ-NP-Za-km-z]{10}|av\d+)$/i.test(candidate)) {
+    candidate = candidate.replace(/^bili_/i, '');
+  } else if (/^yt_([A-Za-z0-9_-]{6,})$/i.test(candidate)) {
+    candidate = candidate.replace(/^yt_/i, '');
+  } else if (/^fb_(\d{5,})$/i.test(candidate)) {
+    candidate = candidate.replace(/^fb_/i, '');
+  }
+
+  if (!candidate) {
+    candidate = cleanFromUrl;
+  } else if (
+    cleanFromUrl &&
+    (platform === 'facebook' || isFacebookUrl(sourceUrl || '')) &&
+    /^[a-f0-9]{10}$/i.test(candidate)
+  ) {
+    candidate = cleanFromUrl;
+  } else if (
+    cleanFromUrl &&
+    (platform === 'bilibili' || /bilibili\.com|b23\.tv/i.test(sourceUrl || '')) &&
+    !/^(BV[1-9A-HJ-NP-Za-km-z]{10}|av\d+)$/i.test(candidate)
+  ) {
+    candidate = cleanFromUrl;
+  }
+
+  return sanitizeFilename(candidate, 48).replace(/\s+/g, '');
+}
+
+function buildFormattedDownloadBaseName(opts: {
+  bvid?: string;
+  sourceUrl?: string;
+  platform?: VideoPlatform;
+  title?: string;
+  partTitle?: string;
+}): string {
+  const cleanId = resolveDownloadVideoId(opts.bvid, opts.sourceUrl, opts.platform);
+  const rawJoinedTitle = opts.partTitle ? `${opts.title || ''} - ${opts.partTitle}` : opts.title || '';
+
+  let cleanedTitle = sanitizeFilename(rawJoinedTitle, 200);
+  if (cleanId) {
+    const escapedId = cleanId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    cleanedTitle = cleanedTitle.replace(new RegExp(`^\\[${escapedId}\\]\\s*`), '').trim();
+  }
+
+  if (!cleanId) {
+    return cleanedTitle.slice(0, 140) || 'video';
+  }
+
+  const prefix = `[${cleanId}]`;
+  const maxTitleLen = Math.max(20, 140 - prefix.length);
+  const finalTitle = cleanedTitle ? sanitizeFilename(cleanedTitle, maxTitleLen) : 'video';
+  return `${prefix}${finalTitle}`;
 }
 
 async function resolveShortUrl(rawUrl: string): Promise<string> {
@@ -5673,8 +5755,17 @@ async function startServer() {
       return res.status(400).json({ error: 'Thiếu thông tin video' });
     }
 
+    const detectedFromUrl = sourceUrl ? detectPlatformFromUrl(sourceUrl) : 'bilibili';
+    const effectivePlatform = platform || detectedFromUrl;
+
     const jobId = crypto.randomUUID();
-    const baseName = sanitizeFilename(partTitle ? `${title} - ${partTitle}` : title) || bvid || 'video';
+    const baseName = buildFormattedDownloadBaseName({
+      bvid,
+      sourceUrl,
+      platform: effectivePlatform,
+      title,
+      partTitle,
+    });
     const fileName = `${baseName}.${format}`;
 
     jobs.set(jobId, {
@@ -5687,9 +5778,6 @@ async function startServer() {
       fileName,
       createdAt: Date.now(),
     });
-
-    const detectedFromUrl = sourceUrl ? detectPlatformFromUrl(sourceUrl) : 'bilibili';
-    const effectivePlatform = platform || detectedFromUrl;
 
     // Run asynchronously: Bilibili uses native DASH downloader; YouTube, Facebook & other global platforms use yt-dlp + FFmpeg
     if (effectivePlatform !== 'bilibili' && (sourceUrl || effectivePlatform === 'youtube')) {
@@ -6089,13 +6177,30 @@ async function startServer() {
     });
   };
 
+  const readLocalAppVersion = (cwd: string): string => {
+    try {
+      const pkgPath = path.join(cwd, 'package.json');
+      if (fs.existsSync(pkgPath)) {
+        const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        if (typeof parsed?.version === 'string' && parsed.version.trim()) {
+          return parsed.version.trim();
+        }
+      }
+    } catch {
+      // ignore package.json read error
+    }
+    return '1.0.1';
+  };
+
   app.get('/api/system/update-status', async (_req, res) => {
     const supervisorActive = process.env.BILIBATCH_SUPERVISOR === '1';
+    const cwd = process.cwd();
+    const localVersion = readLocalAppVersion(cwd);
     try {
-      const cwd = process.cwd();
       if (!fs.existsSync(path.join(cwd, '.git'))) {
         return res.json({
           supported: false,
+          localVersion,
           supervisorActive,
           reason: 'Thư mục hiện tại chưa được kết nối GitHub (.git).',
         });
@@ -6105,6 +6210,7 @@ async function startServer() {
       if (!remoteRes || remoteRes.code !== 0 || !remoteRes.stdout) {
         return res.json({
           supported: false,
+          localVersion,
           supervisorActive,
           reason: 'Chưa gắn địa chỉ GitHub (remote origin) cho thư mục dự án.',
         });
@@ -6126,6 +6232,7 @@ async function startServer() {
         return res.json({
           supported: true,
           hasUpdate: false,
+          localVersion,
           currentCommit,
           branch,
           remoteUrl: remoteRes.stdout,
@@ -6146,19 +6253,45 @@ async function startServer() {
         ['log', '-1', '--pretty=%s', `origin/${branch}`],
         8000
       );
+      const latestDateRes = await runExec(
+        'git',
+        ['log', '-1', '--pretty=%ci', `origin/${branch}`],
+        8000
+      );
       const latestHashRes = await runExec(
         'git',
         ['rev-parse', '--short', `origin/${branch}`],
         8000
       );
+      const remotePkgRes = await runExec(
+        'git',
+        ['show', `origin/${branch}:package.json`],
+        8000
+      ).catch(() => null);
+      let remoteVersion = '';
+      if (remotePkgRes && remotePkgRes.code === 0 && remotePkgRes.stdout) {
+        try {
+          const remotePkg = JSON.parse(remotePkgRes.stdout);
+          if (typeof remotePkg?.version === 'string' && remotePkg.version.trim()) {
+            remoteVersion = remotePkg.version.trim();
+          }
+        } catch {
+          // ignore
+        }
+      }
 
+      const latestCommit = latestHashRes.code === 0 ? latestHashRes.stdout : '';
       res.json({
         supported: true,
         hasUpdate: behindCount > 0,
         behindCount,
+        localVersion,
+        remoteVersion: remoteVersion || undefined,
         currentCommit,
-        latestCommit: latestHashRes.code === 0 ? latestHashRes.stdout : '',
+        remoteCommit: latestCommit,
+        latestCommit,
         latestMessage: latestMsgRes.code === 0 ? latestMsgRes.stdout : '',
+        latestDate: latestDateRes.code === 0 ? latestDateRes.stdout : '',
         branch,
         remoteUrl: remoteRes.stdout,
         supervisorActive,
@@ -6166,6 +6299,7 @@ async function startServer() {
     } catch (err: any) {
       res.json({
         supported: false,
+        localVersion,
         supervisorActive,
         reason: err?.message || 'Không thể kiểm tra trạng thái Git',
       });

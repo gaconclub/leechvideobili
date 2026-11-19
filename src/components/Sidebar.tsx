@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { ServerCapabilitiesStatus } from '../types/bilibili';
+import { APP_VERSION } from '../version';
 
 export type AppNavTab = 'download' | 'trending' | 'search' | 'studio' | 'settings' | 'update';
 
@@ -22,6 +23,7 @@ interface SidebarProps {
   updateAvailable: boolean;
   subfolderName: string;
   capabilities: ServerCapabilitiesStatus | null;
+  appVersion?: string;
   onRunBatchAction: () => void;
 }
 
@@ -34,6 +36,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   updateAvailable,
   subfolderName,
   capabilities,
+  appVersion = APP_VERSION,
   onRunBatchAction,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -67,7 +70,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   GaConPro
                 </span>
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-violet-500/15 dark:bg-violet-500/20 text-violet-700 dark:text-violet-300 border border-violet-400/30 tabular-nums">
-                  V1.0
+                  V{appVersion}
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">Batch &amp; Derivative AI Suite</p>
@@ -203,7 +206,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </span>
                   ) : (
                     <span className="text-[10px] text-emerald-600 dark:text-emerald-300 font-mono font-medium">
-                      V1.0
+                      V{appVersion}
                     </span>
                   )}
                 </button>
