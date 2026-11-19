@@ -1045,6 +1045,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               }
               className="w-full h-9 px-3 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white focus:outline-none focus:border-[#003B3E]"
             >
+              <option value="none">Tắt kiểu dẫn chuyện (AI tự do theo ý tưởng)</option>
               <option value="summary_fast">Tóm tắt & Điểm tin nhanh</option>
               <option value="storytelling_review">Kể chuyện / Review cuốn hút</option>
               <option value="top_list">Top điểm nổi bật / So sánh</option>
@@ -1067,6 +1068,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <option value="auto">Tự động theo video nguồn</option>
               <option value="9:16">9:16 Dọc (Shorts / TikTok / Reels)</option>
               <option value="16:9">16:9 Ngang (YouTube / Bilibili)</option>
+              <option value="1:1">1:1 Vuông (Feed / Social)</option>
             </select>
           </label>
 
@@ -1076,7 +1078,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             </span>
             <div className="flex items-center gap-2">
               <select
-                value={[30, 60, 180, 300, 360, 480, 600].includes(studioDefaults.targetDurationSec) ? String(studioDefaults.targetDurationSec) : 'custom'}
+                value={[10, 20, 30, 40, 60, 120, 180, 300, 600].includes(studioDefaults.targetDurationSec) ? String(studioDefaults.targetDurationSec) : 'custom'}
                 onChange={(e) => {
                   if (e.target.value !== 'custom') {
                     onUpdateStudioDefaults({
@@ -1087,31 +1089,33 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 }}
                 className="flex-1 h-9 px-2.5 text-xs font-medium bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-800 dark:text-white focus:outline-none focus:border-[#003B3E]"
               >
-                <option value="30">30 giây (Ngắn · 4 cảnh)</option>
-                <option value="60">1 phút (60s · 6 cảnh)</option>
-                <option value="180">3 phút (180s · 10 cảnh)</option>
-                <option value="300">5 phút (300s · 14 cảnh)</option>
-                <option value="360">6 phút (360s · 16 cảnh)</option>
-                <option value="480">8 phút (480s · 16 cảnh)</option>
-                <option value="600">10 phút (600s · 20 cảnh)</option>
-                {![30, 60, 180, 300, 360, 480, 600].includes(studioDefaults.targetDurationSec) && (
+                <option value="10">10 giây</option>
+                <option value="20">20 giây</option>
+                <option value="30">30 giây</option>
+                <option value="40">40 giây</option>
+                <option value="60">1 phút (60s)</option>
+                <option value="120">2 phút (120s)</option>
+                <option value="180">3 phút (180s)</option>
+                <option value="300">5 phút (300s)</option>
+                <option value="600">10 phút (600s)</option>
+                {![10, 20, 30, 40, 60, 120, 180, 300, 600].includes(studioDefaults.targetDurationSec) && (
                   <option value="custom">Tùy chỉnh ({studioDefaults.targetDurationSec}s)</option>
                 )}
               </select>
               <input
                 type="number"
-                min={20}
+                min={10}
                 max={900}
-                step={15}
+                step={5}
                 value={studioDefaults.targetDurationSec}
                 onChange={(e) =>
                   onUpdateStudioDefaults({
                     ...studioDefaults,
-                    targetDurationSec: Math.max(20, Math.min(900, Number(e.target.value) || 30)),
+                    targetDurationSec: Math.max(10, Math.min(900, Number(e.target.value) || 30)),
                   })
                 }
                 aria-label="Số giây mục tiêu"
-                title="Nhập tùy ý từ 20 đến 900 giây (15 phút)"
+                title="Nhập tùy ý từ 10 đến 900 giây (15 phút)"
                 className="w-20 h-9 px-2 text-xs font-mono bg-slate-50 dark:bg-[#000A10] border border-slate-200 dark:border-[#00464A] rounded-lg text-slate-900 dark:text-white text-center focus:outline-none focus:border-[#003B3E]"
               />
             </div>

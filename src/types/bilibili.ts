@@ -246,12 +246,24 @@ export const OUTPUT_FORMATS: { value: OutputFormat; label: string; desc: string 
   { value: 'm4a', label: 'M4A', desc: 'Chỉ âm thanh · AAC gốc' },
 ];
 
+export type StudioCreationMode = 'creative' | 'derivative';
+export type StudioScriptMode = 'series' | 'independent_batch';
+export type StudioVideoStyle =
+  | 'professional'
+  | 'cinematic'
+  | 'anime'
+  | 'stickman'
+  | '3d_animation'
+  | 'documentary'
+  | 'comic'
+  | 'vlog';
+
 export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video';
-export type DerivativeStylePreset = 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
+export type DerivativeStylePreset = 'none' | 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
 export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
 export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploaded';
-export type DerivativeAspectRatio = '9:16' | '16:9';
+export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
 
 export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api';
@@ -282,7 +294,7 @@ export interface StudioDefaultConfig {
   brollSource: BrollSourceId;
   stylePreset: DerivativeStylePreset;
   aspectRatioMode: 'auto' | DerivativeAspectRatio;
-  targetDurationSec: number; // 30 to 900 seconds (supports >5 min)
+  targetDurationSec: number; // 10 to 900 seconds (supports 10s up to 15 min)
   visualMode: DerivativeVisualMode;
   voice: DerivativeVoiceId;
   offlineVoice?: string;
@@ -317,6 +329,34 @@ export interface StudioMusicTrack {
   durationSec?: number;
   mimeType?: string;
   lyrics?: string;
+}
+
+export interface StudioProjectProfile {
+  id: string;
+  name: string;
+  description?: string;
+  videoStyle: StudioVideoStyle;
+  characterBible: string;
+  settingBible: string;
+  visualStyleBible: string;
+  costumeBible: string;
+  continuityBible: string;
+  characterRefs: StudioCharacterRef[];
+  updatedAt: number;
+}
+
+export interface StudioLibraryVideoItem {
+  id: string;
+  kind: 'uploaded' | 'rendered';
+  title: string;
+  durationSec: number;
+  resolution: string;
+  previewUrl: string;
+  localAssetId?: string;
+  jobId?: string;
+  keyframes?: string[];
+  hasAudio?: boolean;
+  createdAt: number;
 }
 
 export interface ServerCapabilitiesStatus {
@@ -362,15 +402,42 @@ export interface ServerCapabilitiesStatus {
   };
 }
 
+export interface ReferenceVideoAnalysis {
+  mainTheme: string;
+  plotProgression: string;
+  characterTraits: string;
+  settingAndSpace: string;
+  visualStyle: string;
+  cameraAndMovement: string;
+  lightingAndColor: string;
+  editingPacing: string;
+  dialogueAndAudio: string;
+}
+
 export interface DerivativeScene {
   id: string;
-  sceneIndex: number;
+  sceneIndex: number; // Scene 01, Scene 02...
+  sceneTitle?: string; // Tên phân cảnh ngắn gọn
+  sceneSummary?: string; // Mô tả nội dung / diễn biến chính
   durationSec: number;
   sourceVideoIndex: number;
   sourceStartPercent: number;
-  onScreenText: string;
-  narration: string;
-  visualNote?: string;
+  onScreenText: string; // Chữ phụ đề trên khung hình
+  charactersInScene?: string; // Nhân vật xuất hiện trong cảnh
+  settingDetail?: string; // Bối cảnh: không gian, địa điểm, thời gian
+  actionDetail?: string; // Hành động và diễn biến cụ thể
+  cameraAngle?: string; // Góc máy: Cận cảnh, trung cảnh, toàn cảnh, góc thấp, góc cao...
+  lighting?: string; // Ánh sáng: tự nhiên, điện ảnh, ngược sáng...
+  costume?: string; // Trang phục cụ thể của nhân vật
+  cameraMovement?: string; // Kiểu quay: Tracking shot, dolly, handheld, crane...
+  shotStyle?: string; // Phong cách quay: Điện ảnh, tài liệu, anime, quảng cáo...
+  dialogue?: string; // Lời thoại nhân vật nói
+  narration: string; // Lồng tiếng / thuyết minh hoặc giọng dẫn (rỗng khi tắt lồng tiếng)
+  imagePrompt?: string; // Prompt hình ảnh chi tiết đồng bộ
+  videoPrompt?: string; // Prompt video chi tiết hành động & chuyển động đồng bộ
+  continuityNote?: string; // Mạch liên kết từ trạng thái cuối cảnh trước
+  sceneEndState?: string; // Trạng thái cuối cảnh này để nối tiếp sang cảnh sau
+  visualNote?: string; // Alias tương thích ngược cho imagePrompt
   brollKeywordEn?: string;
   sceneImageDataUrl?: string;
   omniClipAssetId?: string;
@@ -389,6 +456,22 @@ export interface DerivativeSourceInsight {
 }
 
 export interface DerivativeBlueprint {
+  mode?: StudioCreationMode;
+  scriptMode?: StudioScriptMode;
+  batchIndex?: number;
+  batchTotal?: number;
+  sharedSpiritNote?: string;
+  targetDurationSec?: number;
+  ideaPrompt?: string;
+  videoStyle?: StudioVideoStyle;
+  // 5-part Synchronization Bible (Section 2.6)
+  characterBible?: string; // Character Reference
+  settingBible?: string; // Environment Reference
+  visualStyleBible?: string; // Visual Style Reference
+  costumeBible?: string; // Costume Reference
+  continuityBible?: string; // Story Continuity
+  enableVoiceover?: boolean;
+  referenceAnalysis?: ReferenceVideoAnalysis;
   learnedSummary: string;
   keyTakeaways: string[];
   hookFormula: string;
