@@ -139,8 +139,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   // Separate Studio Mode: 'creative' (Studio Sáng Tạo) vs 'derivative' (Tạo Video Phái Sinh)
   const [studioMode, setStudioMode] = useState<StudioCreationMode>('creative');
 
-  // Mode 1: Creative Idea Inputs
+  // Mode 1: Creative Idea Inputs (Seed Summary -> AI Expanded Concept -> Step 2 Script)
   const [ideaPrompt, setIdeaPrompt] = useState('');
+  const [expandedIdeaPrompt, setExpandedIdeaPrompt] = useState('');
+  const [isExpandingIdea, setIsExpandingIdea] = useState(false);
+  const [expandIdeaError, setExpandIdeaError] = useState('');
 
   // Mode 2: Derivative Reference Video Sources (uploaded local + searched/pushed online)
   const [sources, setSources] = useState<
@@ -816,11 +819,64 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
+  const handleExpandIdeaWithAi = async () => {
+    const seed = ideaPrompt.trim();
+    if (!seed) {
+      setExpandIdeaError('Vui lòng nhập tóm tắt ý tưởng ban đầu trước khi bấm triển khai.');
+      return;
+    }
+
+    setIsExpandingIdea(true);
+    setExpandIdeaError('');
+    setLearnError('');
+
+    const charSummary = characters
+      .map((c) => [c.name, c.description].filter(Boolean).join(' - '))
+      .filter(Boolean)
+      .join('; ');
+
+    try {
+      const { res, data } = await fetchStudioJsonWithAutoRetry<{
+        expandedIdea?: string;
+        suggestedSetting?: string;
+        error?: string;
+      }>('/api/studio/expand-idea', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          seedIdea: seed,
+          settingHint: settingBibleDraft.trim(),
+          videoStyle,
+          scriptMode,
+          targetDurationSec,
+          outputLanguage,
+          characterSummary: charSummary,
+          aiProvider,
+          useProModel: aiProvider === 'gemini' && useProModel,
+        }),
+      });
+
+      if (!res.ok || !data.expandedIdea) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      setExpandedIdeaPrompt(data.expandedIdea.trim());
+      if (!settingBibleDraft.trim() && data.suggestedSetting?.trim()) {
+        setSettingBibleDraft(data.suggestedSetting.trim());
+      }
+    } catch (err: any) {
+      setExpandIdeaError(err?.message || 'AI không thể triển khai ý tưởng lúc này.');
+    } finally {
+      setIsExpandingIdea(false);
+    }
+  };
+
   // AI Learn & Create Script (supports Series mode & Independent Multi-Video Batch mode)
   const handleLearnAndCreateScript = async () => {
+    const effectiveCreativeIdea = expandedIdeaPrompt.trim() || ideaPrompt.trim();
     if (studioMode === 'creative') {
-      if (!ideaPrompt.trim() && !customInstruction.trim()) {
-        setLearnError('Vui lòng nhập ý tưởng hoặc mô tả nội dung ở Bước 1 để Studio Sáng Tạo lên kịch bản.');
+      if (!effectiveCreativeIdea && !customInstruction.trim()) {
+        setLearnError('Vui lòng nhập tóm tắt ý tưởng (hoặc dùng AI triển khai ý tưởng) ở Bước 1 để lên kịch bản.');
         return;
       }
     } else if (sources.length === 0) {
@@ -881,8 +937,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           scriptMode,
           videoCount: scriptMode === 'independent_batch' ? batchVideoCount : 1,
           perVideoDurations: effectiveBatchDurations,
-          ideaPrompt: ideaPrompt.trim(),
-          query: studioMode === 'creative' ? ideaPrompt.trim() : searchQueryInput.trim() || incomingQuery,
+          ideaPrompt: studioMode === 'creative' ? effectiveCreativeIdea : ideaPrompt.trim(),
+          query: studioMode === 'creative' ? effectiveCreativeIdea : searchQueryInput.trim() || incomingQuery,
           videos: studioMode === 'derivative' ? sources : [],
           stylePreset: effectiveStylePreset,
           videoStyle,
@@ -1581,9 +1637,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const totalSceneSec = blueprint
     ? Math.round(blueprint.scenes.reduce((sum, s) => sum + Number(s.durationSec || 0), 0))
     : 0;
+  const hasExpandedCreativeIdea = Boolean(expandedIdeaPrompt.trim());
   const canSubmitLearn =
     studioMode === 'creative'
-      ? Boolean(ideaPrompt.trim() || customInstruction.trim())
+      ? Boolean(expandedIdeaPrompt.trim() || ideaPrompt.trim() || customInstruction.trim())
       : sources.length > 0;
 
   const inputCls =
@@ -1724,7 +1781,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               <span className="font-bold truncate">Nguồn &amp; Thiết lập</span>
             </div>
             <span className="text-[11px] font-medium text-violet-600 dark:text-violet-300 shrink-0">
-              {studioMode === 'derivative' ? `${sources.length} nguồn` : ideaPrompt.trim() ? 'Đã có ý tưởng' : 'Chưa nhập'}
+              {studioMode === 'derivative'
+                ? `${sources.length} nguồn`
+                : expandedIdeaPrompt.trim()
+                ? 'Đã triển khai AI'
+                : ideaPrompt.trim()
+                ? 'Đã có ý tưởng'
+                : 'Chưa nhập'}
             </span>
           </button>
 
@@ -1809,13 +1872,35 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </div>
                 </div>
 
-                <textarea
-                  rows={5}
-                  value={ideaPrompt}
-                  onChange={(e) => setIdeaPrompt(e.target.value)}
-                  placeholder="VD: Kể câu chuyện về một chàng kỹ sư trẻ phát hiện căn hầm bí mật dưới thư viện cũ..."
-                  className="w-full p-3 text-xs sm:text-sm bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400 resize-y leading-relaxed"
-                />
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                      Tóm tắt ý tưởng ban đầu
+                    </span>
+                    {ideaPrompt.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIdeaPrompt('');
+                          setExpandIdeaError('');
+                        }}
+                        className="text-[11px] text-slate-400 hover:text-rose-500 cursor-pointer"
+                      >
+                        Xóa nháp
+                      </button>
+                    )}
+                  </div>
+                  <textarea
+                    rows={3}
+                    value={ideaPrompt}
+                    onChange={(e) => {
+                      setIdeaPrompt(e.target.value);
+                      if (expandIdeaError) setExpandIdeaError('');
+                    }}
+                    placeholder="Nhập tóm tắt ý tưởng đơn ban đầu (VD: Chàng trai lạnh lùng gặp lại cô gái cũ dưới mưa đêm bên chiếc siêu xe đen...)"
+                    className="w-full p-3 text-xs sm:text-sm bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400 resize-y leading-relaxed"
+                  />
+                </div>
 
                 <div className="flex flex-wrap gap-1.5">
                   {CREATIVE_IDEA_STARTERS.map((starter) => (
@@ -1824,6 +1909,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       type="button"
                       onClick={() => {
                         setIdeaPrompt(starter.idea);
+                        setExpandedIdeaPrompt('');
+                        setExpandIdeaError('');
                         setVideoStyle(starter.style);
                         setDesiredSceneCount(starter.scenes);
                         setTargetDurationSec(starter.dur);
@@ -1842,6 +1929,83 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   placeholder="Bối cảnh chủ đạo mong muốn (tùy chọn — VD: Thành phố mưa đêm neon)..."
                   className={inputCls}
                 />
+
+                {/* Button: Dùng AI triển khai ý tưởng của bạn */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={isExpandingIdea || !ideaPrompt.trim()}
+                    onClick={() => void handleExpandIdeaWithAi()}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 via-indigo-500 to-violet-600 hover:brightness-110 disabled:opacity-45 text-white font-bold text-xs shadow-md shadow-indigo-500/20 transition cursor-pointer"
+                  >
+                    {isExpandingIdea ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>AI đang triển khai ý tưởng...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Wand2 className="w-3.5 h-3.5" />
+                        <span>
+                          {expandedIdeaPrompt.trim()
+                            ? 'Dùng AI triển khai lại ý tưởng'
+                            : 'Dùng AI triển khai ý tưởng của bạn'}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Kết quả trả về bên dưới sẽ truyền thẳng sang Bước 2
+                  </span>
+                </div>
+
+                {expandIdeaError && (
+                  <div className="flex items-start gap-2 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{expandIdeaError}</span>
+                  </div>
+                )}
+
+                {/* Result returned directly below & passed to Step 2 AI Lên Kịch Bản */}
+                {(expandedIdeaPrompt || isExpandingIdea) && (
+                  <div className="rounded-xl border border-cyan-400/40 bg-cyan-500/5 dark:bg-cyan-500/10 p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Sparkles className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300 shrink-0" />
+                        <span className="text-xs font-bold text-slate-900 dark:text-white">
+                          Ý tưởng đã triển khai
+                        </span>
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-400/30">
+                          Truyền sang Bước 2 · AI Lên Kịch Bản
+                        </span>
+                      </div>
+                      {expandedIdeaPrompt && (
+                        <button
+                          type="button"
+                          onClick={() => setExpandedIdeaPrompt('')}
+                          className="text-[11px] text-slate-500 hover:text-rose-500 cursor-pointer"
+                        >
+                          Xóa kết quả
+                        </button>
+                      )}
+                    </div>
+
+                    {isExpandingIdea && !expandedIdeaPrompt ? (
+                      <div className="flex items-center gap-2 py-4 justify-center text-xs text-cyan-700 dark:text-cyan-200">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Đang phân tích tóm tắt và triển khai nội dung chi tiết...</span>
+                      </div>
+                    ) : (
+                      <textarea
+                        rows={6}
+                        value={expandedIdeaPrompt}
+                        onChange={(e) => setExpandedIdeaPrompt(e.target.value)}
+                        aria-label="Kết quả ý tưởng đã triển khai"
+                        className="w-full p-2.5 text-xs bg-white dark:bg-[#0c1021] border border-cyan-400/35 rounded-xl text-slate-900 dark:text-slate-100 focus:outline-none focus:border-cyan-400 resize-y leading-relaxed"
+                      />
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
@@ -3158,10 +3322,18 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         )}
 
         <div className="glass-card-accent rounded-2xl p-3.5 sm:px-5 flex flex-wrap items-center justify-between gap-3">
-          <div className="text-xs text-slate-600 dark:text-slate-300">
-            <span className="font-semibold text-slate-900 dark:text-white">Tóm tắt Bước 1:</span>{' '}
-            {scriptMode === 'independent_batch' ? `${batchVideoCount} video độc lập` : '1 Series'} · {aspectRatio} ·{' '}
-            {targetDurationSec}s · {voiceMode === 'none' ? 'Không lồng tiếng' : voiceMode === 'offline_system' ? 'VieNeu Offline' : 'AI Voice'}
+          <div className="text-xs text-slate-600 dark:text-slate-300 flex flex-wrap items-center gap-2">
+            <span>
+              <span className="font-semibold text-slate-900 dark:text-white">Tóm tắt Bước 1:</span>{' '}
+              {scriptMode === 'independent_batch' ? `${batchVideoCount} video độc lập` : '1 Series'} · {aspectRatio} ·{' '}
+              {targetDurationSec}s · {voiceMode === 'none' ? 'Không lồng tiếng' : voiceMode === 'offline_system' ? 'VieNeu Offline' : 'AI Voice'}
+            </span>
+            {studioMode === 'creative' && hasExpandedCreativeIdea && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-700 dark:text-cyan-200 border border-cyan-400/30 text-[10px] font-semibold">
+                <Sparkles className="w-3 h-3" />
+                Truyền ý tưởng AI đã triển khai
+              </span>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {blueprint && (

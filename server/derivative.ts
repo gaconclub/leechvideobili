@@ -1400,6 +1400,182 @@ function resolveDesiredSceneCount(
   return 20;
 }
 
+export async function expandStudioIdeaWithAi(params: {
+  seedIdea: string;
+  settingHint?: string;
+  videoStyle?: StudioVideoStyle;
+  scriptMode?: StudioScriptMode;
+  targetDurationSec?: number;
+  outputLanguage?: DerivativeOutputLanguage;
+  characterSummary?: string;
+  aiProvider?: AiProviderId;
+  useProModel?: boolean;
+}): Promise<{
+  expandedIdea: string;
+  suggestedSetting?: string;
+  usedProvider: AiProviderId;
+  usedModel: string;
+}> {
+  const seed = String(params.seedIdea || '').trim();
+  if (!seed) {
+    throw new Error('Vui lòng nhập tóm tắt ý tưởng ban đầu trước khi nhờ AI triển khai.');
+  }
+
+  const provider: AiProviderId =
+    params.aiProvider === 'openai' || params.aiProvider === 'meta' || params.aiProvider === 'muse2api'
+      ? params.aiProvider
+      : 'gemini';
+
+  const videoStyle: StudioVideoStyle =
+    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META ? params.videoStyle : 'cinematic';
+  const styleMeta = STUDIO_VIDEO_STYLE_META[videoStyle];
+  const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
+  const durationSec = Math.max(10, Math.min(900, Math.round(Number(params.targetDurationSec || 60))));
+  const modeLabel =
+    params.scriptMode === 'independent_batch'
+      ? 'Nhiều video độc lập cùng tinh thần/chủ đề'
+      : '1 câu chuyện Series liền mạch';
+
+  const expandPrompt = `Bạn là Giám đốc Sáng tạo & Biên kịch Video AI chuyên nghiệp.
+NHIỆM VỤ: Từ "Tóm tắt ý tưởng ban đầu" rất ngắn gọn của người dùng, hãy triển khai thành một BẢN PHÁC THẢO Ý TƯỞNG CHI TIẾT, HẤP DẪN VÀ SẴN SÀNG CHUYỂN THÀNH KỊCH BẢN PHÂN CẢNH.
+
+DỮ LIỆU ĐẦU VÀO:
+- Tóm tắt ý tưởng ban đầu: "${seed}"
+${params.settingHint?.trim() ? `- Gợi ý bối cảnh từ người dùng: "${params.settingHint.trim()}"` : ''}
+${params.characterSummary?.trim() ? `- Nhân vật tham chiếu đã chọn: ${params.characterSummary.trim()}` : ''}
+- Phong cách quay & hình ảnh: ${styleMeta.labelVi} (${styleMeta.visualToneVi})
+- Hình thức triển khai: ${modeLabel}
+- Thời lượng dự kiến: khoảng ${durationSec} giây
+- Ngôn ngữ đầu ra: ${OUTPUT_LANG_LABELS[outputLang]}
+
+YÊU CẦU NỘI DUNG TRIỂN KHAI:
+1. Mở rộng trọn vẹn ý tưởng gốc (giữ đúng tinh thần ban đầu, KHÔNG lạc đề) thành một bản mô tả cốt truyện mạch lạc:
+   - Mở đầu gây tò mò (Hook thị giác / tình huống mở màn).
+   - Diễn biến cao trào, xung đột hoặc bước ngoặt cảm xúc chính.
+   - Kết thúc đọng lại thông điệp hoặc cảm xúc rõ nét.
+2. Mô tả cụ thể nhân vật trung tâm (ngoại hình/trang phục/thần thái nếu chưa có, hoặc phát huy đúng danh sách nhân vật đã chọn), bối cảnh không gian, không khí ánh sáng & nhịp quay phù hợp phong cách "${styleMeta.labelVi}".
+3. Viết tự nhiên, súc tích, giàu hình ảnh điện ảnh (khoảng 120–240 chữ), chia đoạn rõ ràng để người dùng đọc xong có thể bấm thẳng sang "AI Lên Kịch Bản" ở Bước 2.
+
+TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không giải thích thừa):
+{
+  "expandedIdea": "Toàn bộ nội dung ý tưởng đã được AI triển khai chi tiết sẵn sàng dùng để lên kịch bản...",
+  "suggestedSetting": "Mô tả ngắn 1 câu về bối cảnh & tông ánh sáng chủ đạo (để điền vào ô bối cảnh nếu cần)"
+}`;
+
+  let parsed: any = {};
+  let usedModel = 'gemini-4-hydrogen';
+
+  try {
+    if (provider === 'muse2api') {
+      const st = await getMuse2ApiStatus();
+      if (!st.reachable || !st.ready) {
+        throw new Error(
+          st.error ||
+            'Muse2API chưa sẵn sàng hoặc chưa có tài khoản muse.ai hợp lệ. Hãy kiểm tra phần Quản lý Muse2API trong Cấu hình.'
+        );
+      }
+      usedModel = 'muse-spark (Muse2API)';
+      const raw = await chatWithMuse2ApiSpark([
+        {
+          role: 'system',
+          content: 'Chỉ trả về 1 đối tượng JSON thuần túy gồm key "expandedIdea" và "suggestedSetting", không giải thích ngoài JSON.',
+        },
+        { role: 'user', content: expandPrompt },
+      ]);
+      parsed = parseAiBlueprintJsonSafe(raw);
+    } else if (provider === 'openai' || provider === 'meta') {
+      const cfg = resolveOpenAiCompatibleConfig(provider);
+      if (!cfg.apiKey) {
+        throw new Error(`Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env.`);
+      }
+      usedModel = cfg.model;
+      const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+        body: JSON.stringify({
+          model: cfg.model,
+          messages: [
+            { role: 'system', content: 'Chỉ trả về JSON hợp lệ theo schema.' },
+            { role: 'user', content: expandPrompt },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.75,
+        }),
+        signal: AbortSignal.timeout(45_000),
+      });
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        throw new Error(`${cfg.label} lỗi HTTP ${res.status}: ${errBody.slice(0, 180) || res.statusText}`);
+      }
+      const data = (await res.json()) as any;
+      parsed = parseAiBlueprintJsonSafe(String(data?.choices?.[0]?.message?.content || '{}'));
+    } else {
+      const ai = getGeminiClient();
+      const candidateModels = params.useProModel
+        ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
+        : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+      let lastErr: any;
+      for (const candidateModel of candidateModels) {
+        try {
+          const response = await retryWithGeminiBackoff(
+            () =>
+              ai.models.generateContent({
+                model: candidateModel,
+                contents: [{ text: expandPrompt }],
+                config: {
+                  maxOutputTokens: 2048,
+                  ...(candidateModel.startsWith('gemini-4-')
+                    ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                    : {}),
+                  responseMimeType: 'application/json',
+                  responseSchema: {
+                    type: Type.OBJECT,
+                    required: ['expandedIdea'],
+                    properties: {
+                      expandedIdea: { type: Type.STRING },
+                      suggestedSetting: { type: Type.STRING },
+                    },
+                  },
+                },
+              }),
+            [1000]
+          );
+          parsed = parseAiBlueprintJsonSafe((response?.text ?? '{}').trim());
+          if (String(parsed?.expandedIdea || '').trim()) {
+            usedModel = candidateModel;
+            break;
+          }
+        } catch (err: any) {
+          lastErr = err;
+          if (!shouldFallbackGeminiModel(err) && !(err instanceof SyntaxError)) {
+            throw err;
+          }
+        }
+      }
+      if (!String(parsed?.expandedIdea || '').trim() && lastErr) {
+        throw lastErr;
+      }
+    }
+  } catch (err: any) {
+    if (provider === 'gemini') {
+      throw new Error(formatGeminiError(err));
+    }
+    throw new Error(String(err?.message || err || 'AI không thể triển khai ý tưởng lúc này.'));
+  }
+
+  const expandedIdea = String(parsed?.expandedIdea || '').trim();
+  if (!expandedIdea) {
+    throw new Error('AI chưa trả về nội dung triển khai hợp lệ. Vui lòng thử lại.');
+  }
+
+  return {
+    expandedIdea,
+    suggestedSetting: String(parsed?.suggestedSetting || '').trim() || undefined,
+    usedProvider: provider,
+    usedModel,
+  };
+}
+
 export async function learnVideosAndCreateBlueprint(params: {
   mode?: StudioCreationMode;
   scriptMode?: StudioScriptMode;

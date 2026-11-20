@@ -42,6 +42,7 @@ import {
   getStudioAsset,
   importRenderedJobAsLibraryAsset,
   initStudioChunkedUpload,
+  expandStudioIdeaWithAi,
   installAndWarmupVieNeu,
   learnAndCreateIndependentBatch,
   learnVideosAndCreateBlueprint,
@@ -4960,6 +4961,54 @@ async function startServer() {
     }
   });
 
+  app.post('/api/studio/expand-idea', async (req, res) => {
+    try {
+      const {
+        seedIdea = '',
+        settingHint = '',
+        videoStyle = 'cinematic',
+        scriptMode = 'series',
+        targetDurationSec = 60,
+        outputLanguage = 'vi',
+        characterSummary = '',
+        aiProvider = 'gemini',
+        useProModel = false,
+      } = (req.body || {}) as {
+        seedIdea?: string;
+        settingHint?: string;
+        videoStyle?: StudioVideoStyle;
+        scriptMode?: StudioScriptMode;
+        targetDurationSec?: number;
+        outputLanguage?: DerivativeOutputLanguage;
+        characterSummary?: string;
+        aiProvider?: AiProviderId;
+        useProModel?: boolean;
+      };
+
+      const validProvider: AiProviderId =
+        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse2api'
+          ? aiProvider
+          : 'gemini';
+
+      const result = await expandStudioIdeaWithAi({
+        seedIdea: String(seedIdea || ''),
+        settingHint: String(settingHint || ''),
+        videoStyle,
+        scriptMode: scriptMode === 'independent_batch' ? 'independent_batch' : 'series',
+        targetDurationSec: Number(targetDurationSec || 60),
+        outputLanguage,
+        characterSummary: String(characterSummary || ''),
+        aiProvider: validProvider,
+        useProModel: Boolean(useProModel),
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      const msg = String(err?.message || 'Không thể triển khai ý tưởng lúc này.');
+      res.status(msg.includes('Vui lòng') ? 400 : msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500).json({ error: msg });
+    }
+  });
+
   app.post('/api/derivative/learn', async (req, res) => {
     try {
       const {
@@ -6189,7 +6238,7 @@ async function startServer() {
     } catch {
       // ignore package.json read error
     }
-    return '1.0.3';
+    return '1.0.4';
   };
 
   app.get('/api/system/update-status', async (_req, res) => {
