@@ -23,9 +23,9 @@ if errorlevel 1 (
 
 if not exist "node_modules" (
   echo Dang cai dat thu vien lan dau...
-  call npm install --legacy-peer-deps
+  call npm install --legacy-peer-deps --no-audit --no-fund
   if errorlevel 1 (
-    echo [LOI] Khong the cai dat thu vien npm.
+    echo [LOI] Khong the cai dat thu vien npm. Neu thay loi "nospc", hay don o dia C hoac xoa cache bang lenh: npm cache clean --force
     pause
     exit /b 1
   )

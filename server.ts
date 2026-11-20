@@ -6280,7 +6280,7 @@ async function startServer() {
     } catch {
       // ignore package.json read error
     }
-    return '1.0.5';
+    return '1.0.6';
   };
 
   app.get('/api/system/update-status', async (_req, res) => {
@@ -6537,12 +6537,38 @@ async function startServer() {
       }
 
       const nextPkg = fs.existsSync(pkgPath) ? fs.readFileSync(pkgPath, 'utf8') : '';
+      const extractPkgDepsFingerprint = (raw: string): string => {
+        try {
+          const parsed = JSON.parse(raw || '{}');
+          return JSON.stringify({
+            dependencies: parsed.dependencies || {},
+            devDependencies: parsed.devDependencies || {},
+            optionalDependencies: parsed.optionalDependencies || {},
+            overrides: parsed.overrides || {},
+          });
+        } catch {
+          return raw;
+        }
+      };
+
       let npmInstalled = false;
-      if (prevPkg !== nextPkg) {
-        const npmRes = await runExec('npm', ['install', '--legacy-peer-deps'], 180_000);
+      if (extractPkgDepsFingerprint(prevPkg) !== extractPkgDepsFingerprint(nextPkg)) {
+        const npmArgs = ['install', '--legacy-peer-deps', '--no-audit', '--no-fund', '--prefer-offline'];
+        let npmRes = await runExec('npm', npmArgs, 180_000);
+        if (npmRes.code !== 0 && /nospc|enospc|no space left/i.test(`${npmRes.stderr}\n${npmRes.stdout}`)) {
+          await runExec('npm', ['cache', 'clean', '--force'], 30_000).catch(() => {});
+          npmRes = await runExec('npm', npmArgs, 180_000);
+        }
         if (npmRes.code !== 0) {
+          const combinedErr = `${npmRes.stderr}\n${npmRes.stdout}`;
+          if (/nospc|enospc|no space left/i.test(combinedErr)) {
+            return res.status(500).json({
+              error:
+                'Ổ đĩa máy tính (thường là ổ C) đã hết dung lượng trống (npm nospc). Hãy dọn ổ C / xóa C:\\Users\\...\\AppData\\Local\\npm-cache hoặc thư mục %TEMP%, chừa trống tối thiểu 2-3 GB rồi bấm cập nhật lại.',
+            });
+          }
           return res.status(500).json({
-            error: `Đã tải code mới nhưng cài thư viện npm lỗi: ${npmRes.stderr.slice(-200)}`,
+            error: `Đã tải code mới nhưng cài thư viện npm lỗi: ${npmRes.stderr.slice(-240)}`,
           });
         }
         npmInstalled = true;
