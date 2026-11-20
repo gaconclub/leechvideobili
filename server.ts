@@ -58,6 +58,7 @@ import {
   StudioCreationMode,
   StudioScriptMode,
   StudioVideoStyle,
+  synthesizeGeminiVoicePreview,
   synthesizeOfflineVoicePreview,
   testAiProviderConnection,
 } from './server/derivative';
@@ -83,7 +84,11 @@ const { ZipArchive } = require('archiver') as {
   ZipArchive: new (options?: { zlib?: { level?: number } }) => import('archiver').Archiver;
 };
 
-const PORT = 3000;
+const appUrlEnv = String(process.env.APP_URL || '').trim();
+const isHostedAiStudio =
+  Boolean(process.env.K_SERVICE) ||
+  (Boolean(appUrlEnv) && appUrlEnv !== 'MY_APP_URL' && appUrlEnv.startsWith('http'));
+const PORT = isHostedAiStudio ? 3000 : Number(process.env.PORT) || 6868;
 const DOWNLOAD_DIR = path.join(os.tmpdir(), 'bili-downloads');
 const RAW_CACHE_DIR = path.join(DOWNLOAD_DIR, 'raw_cache');
 
@@ -5183,6 +5188,43 @@ async function startServer() {
     }
   });
 
+  app.post('/api/tts/gemini/preview', async (req, res) => {
+    try {
+      const {
+        text = '',
+        voice = 'Kore',
+        voiceStyle = '',
+        characterName = '',
+      } = (req.body || {}) as {
+        text?: string;
+        voice?: string;
+        voiceStyle?: string;
+        characterName?: string;
+      };
+      const wavBuf = await synthesizeGeminiVoicePreview({
+        text: String(text || ''),
+        voice: String(voice || 'Kore'),
+        voiceStyle: String(voiceStyle || ''),
+        characterName: String(characterName || ''),
+      });
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Length', String(wavBuf.byteLength));
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(wavBuf);
+    } catch (err: any) {
+      const msg = String(err?.message || 'Không thể tổng hợp giọng đọc thử Gemini.');
+      const status =
+        msg.includes('trống') || msg.includes('Chưa cấu hình') || msg.includes('403') || msg.includes('API')
+          ? 400
+          : msg.includes('429')
+          ? 429
+          : msg.includes('503')
+          ? 503
+          : 500;
+      res.status(status).json({ error: msg });
+    }
+  });
+
   app.post('/api/derivative/generate', async (req, res) => {
     try {
       const {
@@ -6238,7 +6280,7 @@ async function startServer() {
     } catch {
       // ignore package.json read error
     }
-    return '1.0.4';
+    return '1.0.5';
   };
 
   app.get('/api/system/update-status', async (_req, res) => {

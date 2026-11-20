@@ -87,13 +87,50 @@ export const DURATION_PRESETS: { sec: number; label: string }[] = [
   { sec: 600, label: '10 phút' },
 ];
 
-export const VOICE_OPTIONS: { value: DerivativeVoiceId; label: string; style: string }[] = [
-  { value: 'Kore', label: 'Kore · Nữ rõ ràng, truyền cảm', style: 'Clear, engaging female narrator' },
-  { value: 'Puck', label: 'Puck · Nam năng động, nhịp nhanh', style: 'Energetic, upbeat young male creator' },
-  { value: 'Zephyr', label: 'Zephyr · Tự nhiên, nhẹ nhàng', style: 'Warm, conversational natural voice' },
-  { value: 'Charon', label: 'Charon · Nam trầm ấm, chuyên sâu', style: 'Deep, authoritative storytelling narrator' },
-  { value: 'Fenrir', label: 'Fenrir · Mạnh mẽ, dứt khoát', style: 'Punchy, confident high-retention narrator' },
+export interface GeminiVoiceLibraryItem {
+  value: Exclude<DerivativeVoiceId, 'none'>;
+  label: string;
+  gender: 'female' | 'male';
+  timbre: string;
+  style: string;
+}
+
+export const NORTHERN_VN_ACCENT_BADGE = 'Khóa cố định: Giọng miền Bắc Việt Nam (Hà Nội)';
+
+export const GEMINI_VOICE_LIBRARY: GeminiVoiceLibraryItem[] = [
+  { value: 'Kore', label: 'Kore · Nữ · Rõ ràng, truyền cảm', gender: 'female', timbre: 'Chuẩn mực, sáng rõ', style: 'Clear, engaging, expressive female voice' },
+  { value: 'Zephyr', label: 'Zephyr · Nữ · Tự nhiên, nhẹ nhàng', gender: 'female', timbre: 'Sáng nhẹ, tự nhiên', style: 'Warm, conversational natural bright voice' },
+  { value: 'Aoede', label: 'Aoede · Nữ · Êm ái, thanh thoát', gender: 'female', timbre: 'Ngọt ngào, giàu cảm xúc', style: 'Smooth, melodic, emotionally expressive female voice' },
+  { value: 'Leda', label: 'Leda · Nữ · Trẻ trung, tươi sáng', gender: 'female', timbre: 'Trẻ trung, gần gũi', style: 'Youthful, friendly, lively female voice' },
+  { value: 'Callirrhoe', label: 'Callirrhoe · Nữ · Thoải mái, đời thường', gender: 'female', timbre: 'Dễ chịu, tự nhiên', style: 'Relaxed, effortless everyday female voice' },
+  { value: 'Autonoe', label: 'Autonoe · Nữ · Sáng rõ, tích cực', gender: 'female', timbre: 'Rành mạch, tươi tắn', style: 'Bright, articulate, upbeat female voice' },
+  { value: 'Despina', label: 'Despina · Nữ · Mượt mà, duyên dáng', gender: 'female', timbre: 'Mềm mại, cuốn hút', style: 'Smooth, graceful, pleasant female voice' },
+  { value: 'Erinome', label: 'Erinome · Nữ · Trong trẻo, phát thanh', gender: 'female', timbre: 'Trong trẻo, chính xác', style: 'Crisp, clear broadcast female anchor voice' },
+  { value: 'Laomedeia', label: 'Laomedeia · Nữ · Vui tươi, hoạt bát', gender: 'female', timbre: 'Năng lượng, lôi cuốn', style: 'Cheerful, lively, spirited female voice' },
+  { value: 'Achernar', label: 'Achernar · Nữ · Dịu dàng, tình cảm', gender: 'female', timbre: 'Nhẹ nhàng, sâu lắng', style: 'Soft, gentle, affectionate female voice' },
+  { value: 'Gacrux', label: 'Gacrux · Nữ · Chín chắn, đĩnh đạc', gender: 'female', timbre: 'Điềm đạm, sâu sắc', style: 'Mature, poised, composed female voice' },
+  { value: 'Pulcherrima', label: 'Pulcherrima · Nữ · Nổi bật, giàu biểu cảm', gender: 'female', timbre: 'Sắc nét, ấn tượng', style: 'Expressive, vibrant, forward-facing female voice' },
+  { value: 'Vindemiatrix', label: 'Vindemiatrix · Nữ · Hiền hòa, kể chuyện', gender: 'female', timbre: 'Ấm áp, dịu mắt', style: 'Gentle, warm storytelling female voice' },
+  { value: 'Sadachbia', label: 'Sadachbia · Nữ · Sinh động, hiện đại', gender: 'female', timbre: 'Nhanh nhạy, trẻ trung', style: 'Lively, spirited modern female voice' },
+  { value: 'Sulafat', label: 'Sulafat · Nữ · Ấm áp, chân thành', gender: 'female', timbre: 'Chân thành, truyền cảm', style: 'Warm, sincere, heartfelt female voice' },
+  { value: 'Puck', label: 'Puck · Nam · Năng động, nhịp nhanh', gender: 'male', timbre: 'Trẻ trung, hoạt bát', style: 'Energetic, upbeat young male voice' },
+  { value: 'Charon', label: 'Charon · Nam · Trầm ấm, chuyên sâu', gender: 'male', timbre: 'Trầm ổn, thuyết minh', style: 'Deep, authoritative storytelling male voice' },
+  { value: 'Fenrir', label: 'Fenrir · Nam · Mạnh mẽ, dứt khoát', gender: 'male', timbre: 'Sôi nổi, quyết đoán', style: 'Punchy, confident, dynamic male voice' },
+  { value: 'Orus', label: 'Orus · Nam · Vững chãi, điềm đạm', gender: 'male', timbre: 'Chững chạc, tin cậy', style: 'Firm, steady, grounded male voice' },
+  { value: 'Enceladus', label: 'Enceladus · Nam · Mềm mại, tự sự sâu', gender: 'male', timbre: 'Nhẹ, giàu nội tâm', style: 'Breathy, soft, intimate narrative male voice' },
+  { value: 'Iapetus', label: 'Iapetus · Nam · Rõ nét, điềm tĩnh', gender: 'male', timbre: 'Mạch lạc, bình tĩnh', style: 'Clear, calm, articulate male voice' },
+  { value: 'Umbriel', label: 'Umbriel · Nam · Thư thái, tự nhiên', gender: 'male', timbre: 'Thoải mái, đời thường', style: 'Easy-going, relaxed natural male voice' },
+  { value: 'Algieba', label: 'Algieba · Nam · Mượt mà, sang trọng', gender: 'male', timbre: 'Tròn vành, lịch lãm', style: 'Smooth, refined, polished male voice' },
+  { value: 'Algenib', label: 'Algenib · Nam · Khàn nhẹ, từng trải', gender: 'male', timbre: 'Cá tính, bụi bặm', style: 'Slightly gravelly, seasoned character male voice' },
+  { value: 'Rasalgethi', label: 'Rasalgethi · Nam · Giàu thông tin, phân tích', gender: 'male', timbre: 'Rõ ý, thuyết trình', style: 'Informative, analytical presenter male voice' },
+  { value: 'Alnilam', label: 'Alnilam · Nam · Chắc chắn, quyết đoán', gender: 'male', timbre: 'Đanh gọn, mạnh mẽ', style: 'Firm, decisive, commanding male voice' },
+  { value: 'Schedar', label: 'Schedar · Nam · Đều đặn, chuyên nghiệp', gender: 'male', timbre: 'Cân bằng, tin tức', style: 'Even, balanced, professional male voice' },
+  { value: 'Achird', label: 'Achird · Nam · Thân thiện, cởi mở', gender: 'male', timbre: 'Gần gũi, dễ mến', style: 'Friendly, approachable conversational male voice' },
+  { value: 'Zubenelgenubi', label: 'Zubenelgenubi · Nam · Tự nhiên, trò chuyện', gender: 'male', timbre: 'Đời thường, mộc mạc', style: 'Casual, candid conversational male voice' },
+  { value: 'Sadaltager', label: 'Sadaltager · Nam · Thông thái, điềm đạm', gender: 'male', timbre: 'Tri thức, bình thản', style: 'Knowledgeable, calm, thoughtful male voice' },
 ];
+
+export const VOICE_OPTIONS: GeminiVoiceLibraryItem[] = GEMINI_VOICE_LIBRARY;
 
 export const LANGUAGE_OPTIONS: { value: DerivativeOutputLanguage; label: string }[] = [
   { value: 'vi', label: 'Tiếng Việt' },

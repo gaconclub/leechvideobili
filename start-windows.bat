@@ -67,14 +67,15 @@ if exist "muse2api\.venv\Scripts\python.exe" (
 
 :after_muse2api_setup
 
+if "%PORT%"=="" set "PORT=6868"
 set "BILIBATCH_SUPERVISOR=1"
 set "OPENED_BROWSER="
 
 :run_server
-echo Dang khoi dong may chu tai http://localhost:3000 ^(va tu dong bat Muse2API 127.0.0.1:18610^)...
+echo Dang khoi dong may chu tai http://localhost:%PORT% ^(va tu dong bat Muse2API 127.0.0.1:18610^)...
 if "%OPENED_BROWSER%"=="" (
   set "OPENED_BROWSER=1"
-  start "" http://localhost:3000
+  start "" http://localhost:%PORT%
 )
 call npm run dev
 if errorlevel 42 if not errorlevel 43 (

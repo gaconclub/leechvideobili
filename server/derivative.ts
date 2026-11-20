@@ -33,7 +33,38 @@ export type StudioVideoStyle =
 
 export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video';
 export type DerivativeStylePreset = 'none' | 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
-export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
+export type GeminiTtsVoiceId =
+  | 'Kore'
+  | 'Puck'
+  | 'Zephyr'
+  | 'Charon'
+  | 'Fenrir'
+  | 'Aoede'
+  | 'Leda'
+  | 'Orus'
+  | 'Callirrhoe'
+  | 'Autonoe'
+  | 'Enceladus'
+  | 'Iapetus'
+  | 'Umbriel'
+  | 'Algieba'
+  | 'Despina'
+  | 'Erinome'
+  | 'Algenib'
+  | 'Rasalgethi'
+  | 'Laomedeia'
+  | 'Achernar'
+  | 'Alnilam'
+  | 'Schedar'
+  | 'Gacrux'
+  | 'Pulcherrima'
+  | 'Achird'
+  | 'Zubenelgenubi'
+  | 'Vindemiatrix'
+  | 'Sadachbia'
+  | 'Sadaltager'
+  | 'Sulafat';
+export type DerivativeVoiceId = 'none' | GeminiTtsVoiceId;
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
 export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploaded';
 export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
@@ -1362,6 +1393,7 @@ export interface StudioCharacterRefInput {
   voiceId?: Exclude<DerivativeVoiceId, 'none'>;
   offlineVoice?: string;
   voiceStyle?: string;
+  accentLock?: 'vn_north';
 }
 
 export interface IndependentConceptOverride {
@@ -1774,7 +1806,7 @@ Tổng thời lượng mục tiêu BẮT BUỘC: khoảng ${targetMinutesLabel} 
 QUY TẮC THỜI LƯỢNG & BỐI CẢNH:
 - Mỗi bối cảnh / phân cảnh PHẢI tương ứng trọn vẹn với thời lượng được thiết lập (~${avgSceneDur}s/cảnh). Ví dụ nếu thiết lập 10 giây và tạo 1 phân cảnh thì viết 1 phân cảnh duy nhất dài 10 giây với hành động liên tục theo thời gian thực, TUYỆT ĐỐI KHÔNG tự ý xé lẻ thành nhiều đoạn vụn 3-4 giây.
 - Tổng "durationSec" của tất cả các cảnh cộng lại phải xấp xỉ ${desiredTotalSec} giây.
-${params.characterSummary?.trim() ? `DANH SÁCH NHÂN VẬT THAM CHIẾU ĐÃ KHÓA (BẮT BUỘC dùng ĐÚNG tên nhân vật dưới đây trong "charactersInScene", "dialogue", "imagePrompt" và "videoPrompt" để hệ thống ánh xạ đúng ảnh & giọng nói):\n${params.characterSummary.trim()}` : ''}
+${params.characterSummary?.trim() ? `DANH SÁCH NHÂN VẬT THAM CHIẾU ĐÃ KHÓA (BẮT BUỘC dùng ĐÚNG tên nhân vật dưới đây trong "charactersInScene", "dialogue", "imagePrompt" và "videoPrompt" để hệ thống ánh xạ đúng ảnh & giọng nói):\n${params.characterSummary.trim()}\nQUY TẮC GIỌNG NÓI NHÂN VẬT: Tất cả nhân vật dùng giọng đọc tiếng Việt chuẩn miền Bắc Việt Nam (Hà Nội) — lời thoại tiếng Việt giữ văn phong, khẩu âm tự nhiên miền Bắc.` : ''}
 ${lockedProjectAnchors ? `\nHỒ SƠ DỰ ÁN ĐÃ KHÓA (BẮT BUỘC GIỮ NGUYÊN ĐỒNG BỘ):\n${lockedProjectAnchors}` : ''}
 ${videoStyle === 'cinematic_filmmaking' ? buildCinematicFilmmakingScriptDirective(desiredScenes, avgSceneDur) : ''}
 ${params.customInstruction?.trim() ? `Yêu cầu bổ sung từ đạo diễn: ${params.customInstruction.trim()}` : ''}
@@ -4237,6 +4269,68 @@ async function probeDurationSeconds(filePath: string, cwd: string): Promise<numb
   }
 }
 
+export const NORTHERN_VIETNAMESE_ACCENT_DIRECTIVE =
+  'MANDATORY ACCENT LOCK: Speak strictly in authentic Northern Vietnamese (Hà Nội / miền Bắc Việt Nam) accent and pronunciation, with crisp Standard Hanoi vowels, clear differentiation of hỏi and ngã tones, natural Northern cadence, and zero Southern or Central dialect inflection.';
+
+const GEMINI_VOICE_IDS_SET = new Set<string>([
+  'Kore', 'Puck', 'Zephyr', 'Charon', 'Fenrir', 'Aoede', 'Leda', 'Orus',
+  'Callirrhoe', 'Autonoe', 'Enceladus', 'Iapetus', 'Umbriel', 'Algieba',
+  'Despina', 'Erinome', 'Algenib', 'Rasalgethi', 'Laomedeia', 'Achernar',
+  'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird', 'Zubenelgenubi',
+  'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat',
+]);
+
+export function sanitizeGeminiVoiceId(raw?: string): Exclude<DerivativeVoiceId, 'none'> {
+  const cleaned = String(raw || '').trim();
+  if (cleaned && GEMINI_VOICE_IDS_SET.has(cleaned)) {
+    return cleaned as Exclude<DerivativeVoiceId, 'none'>;
+  }
+  return 'Kore';
+}
+
+export function buildNorthernVietnameseTtsStyle(baseStyle?: string, characterName?: string): string {
+  const parts = [NORTHERN_VIETNAMESE_ACCENT_DIRECTIVE];
+  if (characterName?.trim()) {
+    parts.push(`Character speaker identity: ${characterName.trim()}.`);
+  }
+  const cleanStyle = String(baseStyle || '').trim();
+  if (cleanStyle) {
+    parts.push(cleanStyle);
+  }
+  return parts.join(' ');
+}
+
+export async function synthesizeGeminiVoicePreview(params: {
+  text: string;
+  voice?: string;
+  voiceStyle?: string;
+  characterName?: string;
+}): Promise<Buffer> {
+  const cleanText = String(params.text || '').trim().slice(0, 450);
+  if (!cleanText) {
+    throw new Error('Nội dung đọc thử trống.');
+  }
+  if (!process.env.GEMINI_API_KEY?.trim()) {
+    throw new Error('Chưa cấu hình GEMINI_API_KEY để tổng hợp giọng đọc thử Gemini.');
+  }
+  const ai = getGeminiClient();
+  const voiceId = sanitizeGeminiVoiceId(params.voice);
+  const lockedStyle = buildNorthernVietnameseTtsStyle(
+    params.voiceStyle || 'Clear, expressive Northern Vietnamese voice',
+    params.characterName
+  );
+  const tmpWav = path.join(os.tmpdir(), `gemini_tts_preview_${Date.now()}_${crypto.randomBytes(3).toString('hex')}.wav`);
+  try {
+    const result = await synthesizeSceneVoiceWavWithDetail(ai, cleanText, voiceId, lockedStyle, tmpWav);
+    if (!result.ok || !fs.existsSync(tmpWav)) {
+      throw new Error(result.error || `Gemini TTS không trả về âm thanh cho giọng ${voiceId}.`);
+    }
+    return fs.readFileSync(tmpWav);
+  } finally {
+    fs.rmSync(tmpWav, { force: true });
+  }
+}
+
 async function synthesizeSceneVoiceWav(
   ai: GoogleGenAI,
   text: string,
@@ -4244,52 +4338,183 @@ async function synthesizeSceneVoiceWav(
   stylePrompt: string,
   outWavPath: string
 ): Promise<boolean> {
-  const cleanText = text.trim();
-  if (!cleanText) return false;
+  const res = await synthesizeSceneVoiceWavWithDetail(ai, text, voice, stylePrompt, outWavPath);
+  return res.ok;
+}
 
+function ensureWavBuffer(rawBuf: Buffer, mimeType?: string): Buffer {
+  if (rawBuf.length >= 12 && rawBuf.subarray(0, 4).toString('ascii') === 'RIFF') {
+    return rawBuf;
+  }
+  const rateMatch = String(mimeType || '').match(/rate=(\d+)/i);
+  const sampleRate = rateMatch ? Math.max(8000, Math.min(48000, Number(rateMatch[1]) || 24000)) : 24000;
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + rawBuf.length, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(rawBuf.length, 40);
+  return Buffer.concat([header, rawBuf]);
+}
+
+async function synthesizeSceneVoiceWavWithDetail(
+  ai: GoogleGenAI,
+  text: string,
+  voice: Exclude<DerivativeVoiceId, 'none'>,
+  stylePrompt: string,
+  outWavPath: string
+): Promise<{ ok: boolean; error?: string }> {
+  const cleanText = text.trim();
+  if (!cleanText) return { ok: false, error: 'Nội dung đọc trống.' };
+
+  const resolvedVoice = sanitizeGeminiVoiceId(voice);
+  const lockedStyle = stylePrompt.includes('Northern Vietnamese')
+    ? stylePrompt
+    : buildNorthernVietnameseTtsStyle(stylePrompt);
   const ttsModels = ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'];
-  for (const ttsModel of ttsModels) {
-    try {
-      const interaction = await retryWithGeminiBackoff(
-        () =>
-          ai.interactions.create({
-            model: ttsModel,
-            input: [
-              {
-                type: 'text',
-                text: cleanText,
-                annotations: [
+  const voicesToTry: Exclude<DerivativeVoiceId, 'none'>[] =
+    resolvedVoice === 'Kore' ? ['Kore'] : [resolvedVoice, 'Kore'];
+
+  let lastError = '';
+  let sawModelNotFound = false;
+
+  for (const tryVoice of voicesToTry) {
+    for (const ttsModel of ttsModels) {
+      try {
+        const interaction = await retryWithGeminiBackoff(
+          () =>
+            ai.interactions.create({
+              model: ttsModel,
+              input: [
+                {
+                  type: 'text',
+                  text: cleanText,
+                  annotations: [
+                    {
+                      type: 'speech_metadata',
+                      style: lockedStyle,
+                    },
+                  ],
+                },
+              ],
+              response_format: { type: 'audio' },
+              generation_config: {
+                speech_config: [{ voice: tryVoice }],
+              },
+            }),
+          [1200, 2600]
+        );
+
+        const audio = interaction.output_audio;
+        if (audio?.data) {
+          const wav = ensureWavBuffer(Buffer.from(audio.data, 'base64'), audio.mime_type);
+          fs.writeFileSync(outWavPath, wav);
+          return { ok: true };
+        }
+      } catch (err: any) {
+        const msg = String(err?.message || err || '');
+        lastError = formatGeminiError(err);
+        if (msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID') || msg.includes('403')) {
+          throw new Error(lastError);
+        }
+        if (msg.includes('404') || /not found/i.test(msg)) {
+          sawModelNotFound = true;
+          continue;
+        }
+        const isVoiceRejection = /voice|speech_config|invalid/i.test(msg) && msg.includes('400');
+        if (isVoiceRejection) {
+          break;
+        }
+        if (!isTransientGemini503Error(err)) {
+          break;
+        }
+      }
+    }
+    if (sawModelNotFound) break;
+  }
+
+  // Fallback via v1beta generateContent (supports gemini-3.8-*-tts and public gemini-2.5-flash-preview-tts)
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (apiKey) {
+    const aiBeta = new GoogleGenAI({
+      apiKey,
+      apiVersion: 'v1beta',
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    });
+    const betaModels = ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'gemini-2.5-flash-preview-tts'];
+    for (const tryVoice of voicesToTry) {
+      for (const betaModel of betaModels) {
+        try {
+          const directivePrompt =
+            betaModel.startsWith('gemini-2.5')
+              ? `Read the following text aloud strictly with an authentic Northern Vietnamese (Hà Nội / miền Bắc Việt Nam) accent, standard Hanoi pronunciation and tones, natural cadence (${lockedStyle}):\n"${cleanText}"`
+              : cleanText;
+          const response = await retryWithGeminiBackoff(
+            () =>
+              aiBeta.models.generateContent({
+                model: betaModel,
+                contents: [
                   {
-                    type: 'speech_metadata',
-                    style: stylePrompt,
+                    role: 'user',
+                    parts: [
+                      betaModel.startsWith('gemini-3.8')
+                        ? ({
+                            text: cleanText,
+                            speechMetadata: { style: lockedStyle },
+                          } as any)
+                        : { text: directivePrompt },
+                    ],
                   },
                 ],
-              },
-            ],
-            response_format: { type: 'audio' },
-            generation_config: {
-              speech_config: [{ voice }],
-            },
-          }),
-        [1200, 2600]
-      );
-
-      const audio = interaction.output_audio;
-      if (audio?.data) {
-        fs.writeFileSync(outWavPath, Buffer.from(audio.data, 'base64'));
-        return true;
-      }
-    } catch (err: any) {
-      const msg = String(err?.message || err || '');
-      if (msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID') || msg.includes('403')) {
-        throw new Error(formatGeminiError(err));
-      }
-      if (!isTransientGemini503Error(err)) {
-        return false;
+                config: {
+                  responseModalities: ['AUDIO'],
+                  speechConfig: {
+                    voiceConfig: {
+                      prebuiltVoiceConfig: { voiceName: tryVoice },
+                    },
+                  },
+                },
+              }),
+            [1200, 2600]
+          );
+          const part = response.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData?.data);
+          const b64 = part?.inlineData?.data;
+          if (b64) {
+            const wav = ensureWavBuffer(Buffer.from(b64, 'base64'), part?.inlineData?.mimeType);
+            fs.writeFileSync(outWavPath, wav);
+            return { ok: true };
+          }
+        } catch (err: any) {
+          const msg = String(err?.message || err || '');
+          lastError = formatGeminiError(err);
+          if (msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID') || msg.includes('403')) {
+            throw new Error(lastError);
+          }
+          if (msg.includes('404') || /not found/i.test(msg)) {
+            continue;
+          }
+          const isVoiceRejection = /voice|speech_config|prebuiltVoiceConfig|invalid/i.test(msg) && msg.includes('400');
+          if (isVoiceRejection) {
+            break;
+          }
+        }
       }
     }
   }
-  return false;
+
+  return { ok: false, error: lastError };
 }
 
 function formatAssTime(sec: number): string {
@@ -4632,23 +4857,27 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     charRef: StudioCharacterRefInput | undefined,
     fallbackMode: 'ai_online' | 'offline_system'
   ): VoiceSegmentSpec => {
-    const defaultVoiceId: Exclude<DerivativeVoiceId, 'none'> = voice === 'none' ? 'Kore' : voice;
-    const defaultStyle = params.voiceStyle?.trim() || 'Clear, engaging video narrator with natural pacing';
+    const defaultVoiceId: Exclude<DerivativeVoiceId, 'none'> = voice === 'none' ? 'Kore' : sanitizeGeminiVoiceId(voice);
+    const defaultStyle = buildNorthernVietnameseTtsStyle(
+      params.voiceStyle?.trim() || 'Clear, engaging video narrator with natural pacing',
+      charRef?.name
+    );
     if (!charRef || !charRef.voiceMode || charRef.voiceMode === 'default') {
       return {
         text,
         mode: fallbackMode,
         voiceId: defaultVoiceId,
-        offlineVoice: params.offlineVoice,
+        offlineVoice: params.offlineVoice || `${defaultVoiceId} Bắc Hà Nội`,
         voiceStyle: defaultStyle,
       };
     }
+    const charVoiceId = sanitizeGeminiVoiceId(charRef.voiceId || defaultVoiceId);
     return {
       text,
       mode: charRef.voiceMode === 'offline_system' ? 'offline_system' : 'ai_online',
-      voiceId: charRef.voiceId || defaultVoiceId,
-      offlineVoice: charRef.offlineVoice || params.offlineVoice,
-      voiceStyle: charRef.voiceStyle?.trim() || defaultStyle,
+      voiceId: charVoiceId,
+      offlineVoice: charRef.offlineVoice || params.offlineVoice || `${charVoiceId} Bắc Hà Nội`,
+      voiceStyle: buildNorthernVietnameseTtsStyle(charRef.voiceStyle?.trim() || params.voiceStyle?.trim(), charRef.name),
     };
   };
 

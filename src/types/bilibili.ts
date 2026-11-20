@@ -261,7 +261,38 @@ export type StudioVideoStyle =
 
 export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video';
 export type DerivativeStylePreset = 'none' | 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
-export type DerivativeVoiceId = 'none' | 'Kore' | 'Puck' | 'Zephyr' | 'Charon' | 'Fenrir';
+export type GeminiTtsVoiceId =
+  | 'Kore'
+  | 'Puck'
+  | 'Zephyr'
+  | 'Charon'
+  | 'Fenrir'
+  | 'Aoede'
+  | 'Leda'
+  | 'Orus'
+  | 'Callirrhoe'
+  | 'Autonoe'
+  | 'Enceladus'
+  | 'Iapetus'
+  | 'Umbriel'
+  | 'Algieba'
+  | 'Despina'
+  | 'Erinome'
+  | 'Algenib'
+  | 'Rasalgethi'
+  | 'Laomedeia'
+  | 'Achernar'
+  | 'Alnilam'
+  | 'Schedar'
+  | 'Gacrux'
+  | 'Pulcherrima'
+  | 'Achird'
+  | 'Zubenelgenubi'
+  | 'Vindemiatrix'
+  | 'Sadachbia'
+  | 'Sadaltager'
+  | 'Sulafat';
+export type DerivativeVoiceId = 'none' | GeminiTtsVoiceId;
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
 export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploaded';
 export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
@@ -323,6 +354,7 @@ export interface StudioCharacterRef {
   voiceId?: Exclude<DerivativeVoiceId, 'none'>;
   offlineVoice?: string;
   voiceStyle?: string;
+  accentLock?: 'vn_north';
 }
 
 export interface StudioMusicTrack {

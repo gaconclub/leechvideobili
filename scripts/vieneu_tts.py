@@ -35,17 +35,38 @@ def _select_voice(tts, requested_voice: str | None) -> str | None:
                 return vid
 
         # Map Studio AI voice personas to matching gender / style presets when available
-        female_hints = ("kore", "zephyr", "nữ", "nu", "female", "chị", "cô")
-        male_hints = ("puck", "charon", "fenrir", "nam", "male", "anh", "chú", "bác")
+        # and prioritize Northern Vietnamese (Bắc / Hà Nội) voices first
+        female_hints = (
+            "kore", "zephyr", "aoede", "leda", "callirrhoe", "autonoe", "despina",
+            "erinome", "laomedeia", "achernar", "gacrux", "pulcherrima", "vindemiatrix",
+            "sadachbia", "sulafat", "nữ", "nu", "female", "chị", "cô",
+        )
+        male_hints = (
+            "puck", "charon", "fenrir", "orus", "enceladus", "iapetus", "umbriel",
+            "algieba", "algenib", "rasalgethi", "alnilam", "schedar", "achird",
+            "zubenelgenubi", "sadaltager", "nam", "male", "anh", "chú", "bác",
+        )
         want_female = any(h in req_lower for h in female_hints)
         want_male = any(h in req_lower for h in male_hints)
 
-        for desc, vid in voices:
-            meta = f"{vid} {desc}".lower()
-            if want_female and ("nữ" in meta or "female" in meta or "nu " in meta):
-                return vid
-            if want_male and ("nam" in meta or "male" in meta):
-                return vid
+        def is_northern(meta_text: str) -> bool:
+            return any(k in meta_text for k in ("bắc", "bac", "hanoi", "hà nội", "ha noi", "north"))
+
+        if want_female or want_male:
+            for prefer_north in (True, False):
+                for desc, vid in voices:
+                    meta = f"{vid} {desc}".lower()
+                    if prefer_north and not is_northern(meta):
+                        continue
+                    if want_female and ("nữ" in meta or "female" in meta or "nu " in meta):
+                        return vid
+                    if want_male and ("nam" in meta or "male" in meta):
+                        return vid
+
+        if any(k in req_lower for k in ("bắc", "bac", "hanoi", "hà nội", "north")):
+            for desc, vid in voices:
+                if is_northern(f"{vid} {desc}".lower()):
+                    return vid
 
     default_v = getattr(tts, "_default_voice", None)
     if default_v and default_v in ids:

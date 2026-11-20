@@ -31,6 +31,8 @@ import {
   ArrowLeft,
   ArrowRight,
   HelpCircle,
+  Lock,
+  Volume2,
 } from 'lucide-react';
 import {
   AiProviderId,
@@ -66,7 +68,9 @@ import {
   compressImageFileToDataUrl,
   DURATION_PRESETS,
   fetchStudioJsonWithAutoRetry,
+  GEMINI_VOICE_LIBRARY,
   LANGUAGE_OPTIONS,
+  NORTHERN_VN_ACCENT_BADGE,
   parseJsonSafe,
   STYLE_OPTIONS,
   uploadMediaFileToStudio,
@@ -176,7 +180,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [characters, setCharacters] = useState<StudioCharacterRef[]>([]);
   const [charNameInput, setCharNameInput] = useState('');
   const [charPromptInput, setCharPromptInput] = useState('');
-  const [charVoiceModeInput, setCharVoiceModeInput] = useState<'default' | 'ai_online' | 'offline_system'>('default');
+  const [charVoiceModeInput, setCharVoiceModeInput] = useState<'default' | 'ai_online' | 'offline_system'>('ai_online');
   const [charVoiceIdInput, setCharVoiceIdInput] = useState<Exclude<DerivativeVoiceId, 'none'>>('Kore');
   const [charOfflineVoiceInput, setCharOfflineVoiceInput] = useState<string>('');
   const [isGeneratingChar, setIsGeneratingChar] = useState(false);
@@ -715,15 +719,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setSources((prev) => prev.filter((s) => s.id !== id));
   };
 
-  // Character uploads & AI generation (always adheres to active videoStyle for visual consistency!)
+  // Character uploads & AI generation (always adheres to active videoStyle + locked Northern Vietnamese accent)
   const buildNewCharacterVoiceConfig = () => {
-    const voiceObj = VOICE_OPTIONS.find((v) => v.value === charVoiceIdInput);
+    const voiceObj = GEMINI_VOICE_LIBRARY.find((v) => v.value === charVoiceIdInput);
     const resolvedOfflineVoice = charOfflineVoiceInput || offlineVoice || offlineVoices[0]?.id || undefined;
     return {
       voiceMode: charVoiceModeInput,
       voiceId: charVoiceModeInput === 'ai_online' ? charVoiceIdInput : undefined,
       offlineVoice: charVoiceModeInput === 'offline_system' ? resolvedOfflineVoice : undefined,
       voiceStyle: charVoiceModeInput === 'ai_online' ? voiceObj?.style : undefined,
+      accentLock: 'vn_north' as const,
     };
   };
 
@@ -902,10 +907,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       .map((c) => {
         const voiceNote =
           c.voiceMode === 'offline_system'
-            ? `Giọng VieNeu: ${c.offlineVoice || 'Mặc định'}`
-            : c.voiceMode === 'ai_online'
-            ? `Giọng AI: ${c.voiceId || voice}`
-            : '';
+            ? `Giọng VieNeu miền Bắc VN: ${c.offlineVoice || 'Mặc định'}`
+            : `Giọng Gemini miền Bắc VN (Hà Nội): ${c.voiceId || voice}`;
         return [c.name, c.description, voiceNote].filter(Boolean).join(' - ');
       })
       .join('; ');
@@ -1324,14 +1327,66 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     text: string,
     sceneKey = 'sample',
     overrideVoiceMode?: 'default' | 'ai_online' | 'offline_system',
-    overrideOfflineVoice?: string
+    overrideOfflineVoice?: string,
+    overrideGeminiVoiceId?: Exclude<DerivativeVoiceId, 'none'>,
+    overrideCharacterName?: string
   ) => {
     const cleanText = text.trim();
     if (!cleanText) return;
 
     const effectiveMode =
-      overrideVoiceMode && overrideVoiceMode !== 'default' ? overrideVoiceMode : voiceMode;
+      overrideVoiceMode && overrideVoiceMode !== 'default'
+        ? overrideVoiceMode
+        : voiceMode === 'none'
+        ? 'ai_online'
+        : voiceMode;
     const effectiveOfflineVoice = overrideOfflineVoice || offlineVoice;
+    const effectiveGeminiVoice = overrideGeminiVoiceId || voice;
+
+    if (effectiveMode === 'ai_online') {
+      const voiceMeta = GEMINI_VOICE_LIBRARY.find((v) => v.value === effectiveGeminiVoice);
+      setPreviewingSceneId(sceneKey);
+      setOfflineTtsNotice('');
+      setCharError('');
+      try {
+        const res = await fetch('/api/tts/gemini/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: cleanText.slice(0, 420),
+            voice: effectiveGeminiVoice,
+            voiceStyle: voiceMeta?.style || '',
+            characterName: overrideCharacterName || '',
+          }),
+        });
+        if (!res.ok) {
+          const errData = await parseJsonSafe<{ error?: string }>(res).catch(() => ({} as { error?: string }));
+          throw new Error(errData.error || `HTTP ${res.status}`);
+        }
+        const wavBlob = await res.blob();
+        if (previewAudioRef.current) {
+          previewAudioRef.current.pause();
+        }
+        if (previewObjectUrlRef.current) {
+          URL.revokeObjectURL(previewObjectUrlRef.current);
+        }
+        const blobUrl = URL.createObjectURL(wavBlob);
+        previewObjectUrlRef.current = blobUrl;
+        const audio = new Audio(blobUrl);
+        previewAudioRef.current = audio;
+        await audio.play();
+        return;
+      } catch (err: any) {
+        const errText = err?.message || 'Không phát được giọng Gemini, chuyển sang đọc nháp trình duyệt.';
+        if (sceneKey.startsWith('char')) {
+          setCharError(errText);
+        } else {
+          setOfflineTtsNotice(errText);
+        }
+      } finally {
+        setPreviewingSceneId(null);
+      }
+    }
 
     if (effectiveMode === 'offline_system' && capabilities?.localTools.offlineTts.engineId === 'vieneu') {
       setPreviewingSceneId(sceneKey);
@@ -1526,10 +1581,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           dataUrl: c.dataUrl,
           name: c.name,
           description: c.description,
-          voiceMode: c.voiceMode || 'default',
-          voiceId: c.voiceId,
+          voiceMode: c.voiceMode || 'ai_online',
+          voiceId: c.voiceId || voice,
           offlineVoice: c.offlineVoice,
           voiceStyle: c.voiceStyle,
+          accentLock: c.accentLock || 'vn_north',
         })),
         sessdata,
         ytCookies,
@@ -2283,12 +2339,17 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
             {/* Box B: Character Synchronization (Name + Custom Voice + Up to 8 Characters) */}
             <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
+              {/* Box B header */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <UserCheck className="w-4 h-4 text-violet-600 dark:text-violet-300" />
                   <h2 className="font-display text-sm sm:text-base font-bold text-slate-900 dark:text-white">
                     Nhân vật đồng bộ ({characters.length}/8)
                   </h2>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-md">
+                    <Lock className="w-3 h-3" />
+                    <span>{NORTHERN_VN_ACCENT_BADGE}</span>
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-slate-500 dark:text-slate-400 hidden sm:inline">
@@ -2340,7 +2401,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 </button>
               </div>
 
-              {/* Pre-assign dedicated voice when uploading or creating a character */}
+              {/* Pre-assign Gemini Voice Reference Library (Locked Northern Vietnamese Accent) */}
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 text-xs">
                 <select
                   value={charVoiceModeInput}
@@ -2348,36 +2409,61 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     setCharVoiceModeInput(e.target.value as 'default' | 'ai_online' | 'offline_system')
                   }
                   aria-label="Chế độ giọng nhân vật mới"
-                  className={`sm:col-span-5 ${inputCls}`}
+                  className={`sm:col-span-4 ${inputCls}`}
                 >
-                  <option value="default">Giọng mặc định theo video</option>
-                  <option value="ai_online">Đặt giọng riêng (AI Online)</option>
+                  <option value="ai_online">Thư viện giọng Gemini (Miền Bắc VN)</option>
+                  <option value="default">Theo giọng mặc định của video</option>
                   {offlineVoices.length > 0 && (
-                    <option value="offline_system">Đặt giọng riêng (VieNeu Offline)</option>
+                    <option value="offline_system">Giọng VieNeu Offline</option>
                   )}
                 </select>
                 {charVoiceModeInput === 'ai_online' && (
-                  <select
-                    value={charVoiceIdInput}
-                    onChange={(e) =>
-                      setCharVoiceIdInput(e.target.value as Exclude<DerivativeVoiceId, 'none'>)
-                    }
-                    aria-label="Chọn giọng AI cho nhân vật mới"
-                    className={`sm:col-span-7 ${inputCls}`}
-                  >
-                    {VOICE_OPTIONS.map((v) => (
-                      <option key={v.value} value={v.value}>
-                        {v.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="sm:col-span-8 flex items-center gap-1.5">
+                    <select
+                      value={charVoiceIdInput}
+                      onChange={(e) =>
+                        setCharVoiceIdInput(e.target.value as Exclude<DerivativeVoiceId, 'none'>)
+                      }
+                      aria-label="Chọn giọng tham chiếu Gemini cho nhân vật mới"
+                      className={`flex-1 min-w-0 ${inputCls}`}
+                    >
+                      {GEMINI_VOICE_LIBRARY.map((v) => (
+                        <option key={v.value} value={v.value}>
+                          {v.label} · {v.timbre}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={previewingSceneId === 'char_new_preview'}
+                      onClick={() =>
+                        void handleSpeakOfflineBrowserPreview(
+                          `Xin chào, tôi là ${charNameInput.trim() || 'nhân vật mới'}, giọng đọc chuẩn Hà Nội miền Bắc Việt Nam.`,
+                          'char_new_preview',
+                          'ai_online',
+                          undefined,
+                          charVoiceIdInput,
+                          charNameInput.trim()
+                        )
+                      }
+                      title="Nghe thử giọng tham chiếu Gemini (miền Bắc VN)"
+                      className="inline-flex items-center gap-1 h-9 px-2.5 text-xs font-semibold text-cyan-700 dark:text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded-xl cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+                    >
+                      {previewingSceneId === 'char_new_preview' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Volume2 className="w-3.5 h-3.5" />
+                      )}
+                      <span>{previewingSceneId === 'char_new_preview' ? '...' : 'Thử'}</span>
+                    </button>
+                  </div>
                 )}
                 {charVoiceModeInput === 'offline_system' && (
                   <select
                     value={charOfflineVoiceInput || offlineVoice || offlineVoices[0]?.id || ''}
                     onChange={(e) => setCharOfflineVoiceInput(e.target.value)}
                     aria-label="Chọn giọng VieNeu cho nhân vật mới"
-                    className={`sm:col-span-7 ${inputCls}`}
+                    className={`sm:col-span-8 ${inputCls}`}
                   >
                     {offlineVoices.map((v) => (
                       <option key={v.id} value={v.id}>
@@ -2387,8 +2473,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </select>
                 )}
                 {charVoiceModeInput === 'default' && (
-                  <div className="sm:col-span-7 h-9 px-3 flex items-center text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50/70 dark:bg-[#0c1021]/60 border border-dashed border-slate-200 dark:border-slate-400/20 rounded-xl truncate">
-                    Đặt tên &amp; giọng riêng ngay khi tạo hoặc chỉnh trực tiếp bên dưới
+                  <div className="sm:col-span-8 h-9 px-3 flex items-center text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50/70 dark:bg-[#0c1021]/60 border border-dashed border-slate-200 dark:border-slate-400/20 rounded-xl truncate">
+                    Dùng giọng mặc định của video (đã khóa ngữ âm miền Bắc Việt Nam)
                   </div>
                 )}
               </div>
@@ -2438,42 +2524,46 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
                         <div className="flex items-center gap-1">
                           <select
-                            value={ch.voiceMode || 'default'}
+                            value={ch.voiceMode || 'ai_online'}
                             onChange={(e) => {
                               const nextMode = e.target.value as 'default' | 'ai_online' | 'offline_system';
+                              const fallbackVid = ch.voiceId || charVoiceIdInput || 'Kore';
+                              const meta = GEMINI_VOICE_LIBRARY.find((v) => v.value === fallbackVid);
                               updateCharacterRef(ch.id, {
                                 voiceMode: nextMode,
-                                voiceId:
-                                  nextMode === 'ai_online' ? ch.voiceId || charVoiceIdInput || 'Kore' : ch.voiceId,
+                                voiceId: nextMode === 'ai_online' ? fallbackVid : ch.voiceId,
+                                voiceStyle: nextMode === 'ai_online' ? ch.voiceStyle || meta?.style : ch.voiceStyle,
                                 offlineVoice:
                                   nextMode === 'offline_system'
                                     ? ch.offlineVoice || offlineVoice || offlineVoices[0]?.id
                                     : ch.offlineVoice,
+                                accentLock: 'vn_north',
                               });
                             }}
                             aria-label="Loại giọng nhân vật"
                             className="h-6 px-1.5 text-[10px] bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-md text-slate-800 dark:text-slate-100 focus:outline-none"
                           >
+                            <option value="ai_online">Gemini Voice</option>
                             <option value="default">Mặc định</option>
-                            <option value="ai_online">AI Online</option>
                             {offlineVoices.length > 0 && <option value="offline_system">VieNeu</option>}
                           </select>
 
-                          {(ch.voiceMode || 'default') === 'ai_online' && (
+                          {(ch.voiceMode || 'ai_online') === 'ai_online' && (
                             <select
                               value={ch.voiceId || 'Kore'}
                               onChange={(e) => {
                                 const vid = e.target.value as Exclude<DerivativeVoiceId, 'none'>;
-                                const meta = VOICE_OPTIONS.find((v) => v.value === vid);
+                                const meta = GEMINI_VOICE_LIBRARY.find((v) => v.value === vid);
                                 updateCharacterRef(ch.id, {
                                   voiceId: vid,
                                   voiceStyle: meta?.style,
+                                  accentLock: 'vn_north',
                                 });
                               }}
-                              aria-label="Giọng AI riêng của nhân vật"
+                              aria-label="Thư viện giọng tham chiếu Gemini của nhân vật"
                               className="flex-1 min-w-0 h-6 px-1.5 text-[10px] bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-md text-slate-800 dark:text-slate-100 focus:outline-none"
                             >
-                              {VOICE_OPTIONS.map((v) => (
+                              {GEMINI_VOICE_LIBRARY.map((v) => (
                                 <option key={v.value} value={v.value}>
                                   {v.label}
                                 </option>
@@ -2485,7 +2575,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                             <select
                               value={ch.offlineVoice || offlineVoice || offlineVoices[0]?.id || ''}
                               onChange={(e) =>
-                                updateCharacterRef(ch.id, { offlineVoice: e.target.value })
+                                updateCharacterRef(ch.id, { offlineVoice: e.target.value, accentLock: 'vn_north' })
                               }
                               aria-label="Giọng VieNeu riêng của nhân vật"
                               className="flex-1 min-w-0 h-6 px-1.5 text-[10px] bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-md text-slate-800 dark:text-slate-100 focus:outline-none"
@@ -2498,18 +2588,34 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                             </select>
                           )}
 
+                          {ch.voiceMode === 'default' && (
+                            <span className="flex-1 min-w-0 h-6 px-1.5 flex items-center text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                              Theo video ({voice})
+                            </span>
+                          )}
+
+                          <span
+                            title="Đã khóa cố định giọng đọc miền Bắc Việt Nam (Hà Nội)"
+                            className="inline-flex items-center gap-0.5 px-1.5 h-6 text-[9px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25 rounded-md whitespace-nowrap shrink-0"
+                          >
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>Bắc VN</span>
+                          </span>
+
                           <button
                             type="button"
                             disabled={previewingSceneId === `char_${ch.id}`}
                             onClick={() =>
                               void handleSpeakOfflineBrowserPreview(
-                                `Xin chào, tôi là ${ch.name || 'nhân vật chính'}.`,
+                                `Xin chào, tôi là ${ch.name || 'nhân vật chính'}, nói giọng miền Bắc Việt Nam.`,
                                 `char_${ch.id}`,
-                                ch.voiceMode,
-                                ch.offlineVoice
+                                ch.voiceMode || 'ai_online',
+                                ch.offlineVoice,
+                                ch.voiceId || voice,
+                                ch.name
                               )
                             }
-                            title="Nghe thử giọng nhân vật này"
+                            title="Nghe thử giọng Gemini miền Bắc VN của nhân vật này"
                             className="px-1.5 h-6 text-[10px] font-medium bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30 rounded-md cursor-pointer shrink-0 disabled:opacity-50"
                           >
                             {previewingSceneId === `char_${ch.id}` ? '...' : 'Thử'}
@@ -3109,16 +3215,42 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </div>
 
                   {voiceMode === 'ai_online' && (
-                    <select
-                      value={voice}
-                      onChange={(e) => setVoice(e.target.value as Exclude<DerivativeVoiceId, 'none'>)}
-                      aria-label="Chọn chất giọng AI"
-                      className={inputCls}
-                    >
-                      {VOICE_OPTIONS.map((v) => (
-                        <option key={v.value} value={v.value}>{v.label}</option>
-                      ))}
-                    </select>
+                    <div className="space-y-1.5">
+                      <div className="flex gap-2">
+                        <select
+                          value={voice}
+                          onChange={(e) => setVoice(e.target.value as Exclude<DerivativeVoiceId, 'none'>)}
+                          aria-label="Chọn chất giọng Gemini"
+                          className={`flex-1 min-w-0 ${inputCls}`}
+                        >
+                          {GEMINI_VOICE_LIBRARY.map((v) => (
+                            <option key={v.value} value={v.value}>
+                              {v.label} · {v.timbre}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={previewingSceneId === 'sample_gemini'}
+                          onClick={() =>
+                            void handleSpeakOfflineBrowserPreview(
+                              'Xin chào, đây là giọng đọc tham chiếu Gemini chuẩn miền Bắc Việt Nam.',
+                              'sample_gemini',
+                              'ai_online',
+                              undefined,
+                              voice
+                            )
+                          }
+                          className="h-9 px-3 text-xs font-medium bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl cursor-pointer whitespace-nowrap disabled:opacity-50"
+                        >
+                          {previewingSceneId === 'sample_gemini' ? 'Đang đọc...' : 'Nghe thử'}
+                        </button>
+                      </div>
+                      <p className="inline-flex items-center gap-1 text-[10px] text-emerald-700 dark:text-emerald-300">
+                        <Lock className="w-3 h-3" />
+                        <span>{NORTHERN_VN_ACCENT_BADGE}</span>
+                      </p>
+                    </div>
                   )}
 
                   {voiceMode === 'offline_system' && (

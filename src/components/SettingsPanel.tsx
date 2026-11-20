@@ -36,6 +36,7 @@ import {
   StudioDefaultConfig,
 } from '../types/bilibili';
 import { COOKIE_SITES, DEFAULT_STUDIO_CONFIG } from '../utils/cookies';
+import { VOICE_OPTIONS } from './studio/studioConfig';
 
 interface SettingsPanelProps {
   perSiteCookies: PerSiteCookies;
@@ -1296,7 +1297,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </label>
 
               <label className="space-y-1">
-                <span className="block text-[11px] text-slate-500 dark:text-slate-400">Giọng đọc AI tiếng Việt</span>
+                <span className="block text-[11px] text-slate-500 dark:text-slate-400">Giọng đọc Gemini (Khóa miền Bắc Việt Nam)</span>
                 <select
                   value={studioDefaults.voice}
                   onChange={(e) =>
@@ -1307,11 +1308,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                   }
                   className="w-full h-9 px-2.5 text-xs font-medium bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-violet-400"
                 >
-                  <option value="Kore">Kore · Nữ rõ ràng, truyền cảm</option>
-                  <option value="Puck">Puck · Nam năng động, nhịp nhanh</option>
-                  <option value="Zephyr">Zephyr · Tự nhiên, nhẹ nhàng</option>
-                  <option value="Charon">Charon · Nam trầm ấm, chuyên sâu</option>
-                  <option value="Fenrir">Fenrir · Mạnh mẽ, dứt khoát</option>
+                  {VOICE_OPTIONS.map((v) => (
+                    <option key={v.value} value={v.value}>
+                      {v.label}
+                    </option>
+                  ))}
                   <option value="none">Không lồng tiếng (chỉ hình + chữ)</option>
                 </select>
               </label>
