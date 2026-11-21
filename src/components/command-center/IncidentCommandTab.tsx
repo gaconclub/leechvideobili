@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertOctagon,
   AlertTriangle,
+  ArrowRight,
   CheckCircle2,
   Loader2,
   MessageSquareWarning,
@@ -9,6 +10,7 @@ import {
   RefreshCw,
   Send,
   ShieldAlert,
+  Shirt,
   Siren,
 } from 'lucide-react';
 import type {
@@ -676,6 +678,132 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Structured Costume Mismatch Dossier (when allowFreeCostumeChange is OFF) */}
+              {selectedIncident.costumeMismatch && (
+                <div className="rounded-xl border border-amber-400/55 bg-amber-50/75 dark:bg-amber-950/25 p-3.5 text-xs space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-bold text-amber-900 dark:text-amber-200 inline-flex items-center gap-1.5">
+                      <Shirt className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                      <span>Hồ sơ sai lệch trang phục nhân vật (Khóa tham chiếu gốc)</span>
+                    </div>
+                    <span className="font-mono text-[11px] text-amber-800 dark:text-amber-300">
+                      {selectedIncident.costumeMismatch.characterName} · ID: {selectedIncident.costumeMismatch.characterId} ·{' '}
+                      {selectedIncident.costumeMismatch.targetMediaKind === 'scene_video'
+                        ? 'Video phân cảnh'
+                        : selectedIncident.costumeMismatch.targetMediaKind === 'scene_image'
+                        ? 'Ảnh keyframe cảnh'
+                        : 'Ảnh tham chiếu nhân vật'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-[11px]">
+                    <div className="rounded-lg border border-amber-300/60 dark:border-amber-800/60 bg-white/80 dark:bg-[#0c1021]/80 p-2.5 space-y-1">
+                      <div className="font-semibold text-emerald-700 dark:text-emerald-300">Trang phục chuẩn gốc (Bắt buộc)</div>
+                      <div className="text-slate-700 dark:text-slate-200">{selectedIncident.costumeMismatch.expectedCostume}</div>
+                      <div className="text-slate-500 dark:text-slate-400 pt-1">
+                        AI tạo lỗi:{' '}
+                        <strong className="text-slate-800 dark:text-slate-100">
+                          {findAgent(selectedIncident.costumeMismatch.responsibleAgentId)?.name ||
+                            selectedIncident.costumeMismatch.responsibleAgentId}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-rose-300/60 dark:border-rose-800/60 bg-white/80 dark:bg-[#0c1021]/80 p-2.5 space-y-1">
+                      <div className="font-semibold text-rose-700 dark:text-rose-300">Điểm sai lệch được Muse AI 05 phát hiện</div>
+                      <div className="text-slate-700 dark:text-slate-200">{selectedIncident.costumeMismatch.mismatchDetails}</div>
+                      {selectedIncident.costumeMismatch.observedCostume && (
+                        <div className="text-slate-500 dark:text-slate-400">
+                          Thực tế xuất hiện: {selectedIncident.costumeMismatch.observedCostume}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {(selectedIncident.costumeMismatch.referenceImageUrl || selectedIncident.costumeMismatch.faultyArtifactUrl) && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="rounded-lg border border-emerald-400/50 bg-white dark:bg-[#0c1021] p-2 space-y-1">
+                        <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                          Ảnh tham chiếu gốc (Không ghi đè)
+                        </div>
+                        {selectedIncident.costumeMismatch.referenceImageUrl ? (
+                          <img
+                            src={selectedIncident.costumeMismatch.referenceImageUrl}
+                            alt="Ảnh tham chiếu trang phục chuẩn"
+                            className="h-32 w-full object-contain rounded bg-slate-100 dark:bg-black/40"
+                          />
+                        ) : (
+                          <div className="h-24 flex items-center justify-center text-[11px] text-slate-400">Theo hồ sơ chữ gốc</div>
+                        )}
+                      </div>
+                      <div className="rounded-lg border border-rose-400/50 bg-white dark:bg-[#0c1021] p-2 space-y-1">
+                        <div className="text-[11px] font-semibold text-rose-700 dark:text-rose-300">
+                          Ảnh / Khung hình bị sai trang phục
+                        </div>
+                        {selectedIncident.costumeMismatch.faultyArtifactUrl ? (
+                          <img
+                            src={selectedIncident.costumeMismatch.faultyArtifactUrl}
+                            alt="Ảnh hoặc khung hình lỗi trang phục"
+                            className="h-32 w-full object-contain rounded bg-slate-100 dark:bg-black/40"
+                          />
+                        ) : (
+                          <div className="h-24 flex items-center justify-center text-[11px] text-slate-400">Chưa trích xuất ảnh lỗi</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="text-[11px] text-amber-900 dark:text-amber-200">
+                    <span className="font-semibold">Đề xuất khôi phục: </span>
+                    {selectedIncident.costumeMismatch.restoreRecommendation}
+                  </div>
+                </div>
+              )}
+
+              {/* Before -> After Costume Restoration Version History */}
+              {selectedIncident.versionHistory && selectedIncident.versionHistory.length > 0 && (
+                <div className="rounded-xl border border-cyan-400/45 bg-cyan-50/60 dark:bg-cyan-950/20 p-3.5 text-xs space-y-2.5">
+                  <div className="font-bold text-cyan-900 dark:text-cyan-200">
+                    Lịch sử phiên bản trang phục Trước → Sau ({selectedIncident.versionHistory.length} lần sửa)
+                  </div>
+                  <div className="space-y-2">
+                    {selectedIncident.versionHistory.map((snap) => (
+                      <div
+                        key={`${snap.version}_${snap.timestamp}`}
+                        className="rounded-lg border border-cyan-200/70 dark:border-cyan-800/50 bg-white dark:bg-[#0c1021] p-2.5 space-y-2"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                          <span className="font-mono font-bold text-cyan-700 dark:text-cyan-300">
+                            Phiên bản v{snap.version} {snap.sceneIndex ? `· Cảnh ${snap.sceneIndex}` : ''}
+                          </span>
+                          <span className="font-mono text-slate-400">{fmtDateTime(snap.timestamp)}</span>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-11 gap-2 items-center text-[11px]">
+                          <div className="md:col-span-5 rounded border border-rose-200/70 dark:border-rose-800/50 p-2 bg-rose-50/40 dark:bg-rose-950/20 space-y-1">
+                            <div className="font-semibold text-rose-700 dark:text-rose-300">Trước khi sửa</div>
+                            <div className="text-slate-700 dark:text-slate-300 line-clamp-2">{snap.beforeCostume}</div>
+                            {snap.beforeImageUrl && (
+                              <img src={snap.beforeImageUrl} alt="Trước khi sửa" className="h-20 w-full object-contain rounded" />
+                            )}
+                          </div>
+                          <div className="md:col-span-1 flex justify-center text-slate-400">
+                            <ArrowRight className="w-4 h-4" />
+                          </div>
+                          <div className="md:col-span-5 rounded border border-emerald-200/70 dark:border-emerald-800/50 p-2 bg-emerald-50/40 dark:bg-emerald-950/20 space-y-1">
+                            <div className="font-semibold text-emerald-700 dark:text-emerald-300">Sau khi khôi phục chuẩn</div>
+                            <div className="text-slate-700 dark:text-slate-300 line-clamp-2">{snap.afterCostume}</div>
+                            {snap.afterImageUrl && (
+                              <img src={snap.afterImageUrl} alt="Sau khi sửa" className="h-20 w-full object-contain rounded" />
+                            )}
+                          </div>
+                        </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400">{snap.note}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Project Memory Context + Artifacts */}
               <div className="rounded-xl border border-slate-200 dark:border-slate-700/45 bg-slate-50/60 dark:bg-[#0c1021]/60 p-3 text-[11px] text-slate-600 dark:text-slate-300 space-y-2">

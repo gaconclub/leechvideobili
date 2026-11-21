@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.11",
+    "version": "1.0.12",
     "date": "21/11/2026",
-    "title": "feat(studio): add allowFreeCostumeChange option",
+    "title": "feat: implement costume consistency enforcement system",
     "changes": [
-      "feat(studio): add allowFreeCostumeChange option"
+      "feat: implement costume consistency enforcement system"
     ]
   },
   {
