@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   X,
   RefreshCw,
@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Loader2,
   GitBranch,
+  Link2,
   RotateCcw,
 } from 'lucide-react';
 
@@ -24,6 +25,7 @@ export interface UpdateStatusInfo {
   supported: boolean;
   reason?: string;
   repoUrl?: string;
+  remoteUrl?: string;
   branch?: string;
   currentCommit?: string;
   remoteCommit?: string;
@@ -45,6 +47,7 @@ interface UpdateModalProps {
   status: UpdateStatusInfo | null;
   isChecking: boolean;
   isUpdating: boolean;
+  isConnecting?: boolean;
   isRestarting: boolean;
   updateError: string;
   canForceReset?: boolean;
@@ -52,6 +55,7 @@ interface UpdateModalProps {
   onCheckNow: () => void;
   onApplyUpdate: () => void;
   onForceUpdate?: () => void;
+  onConnectGithub?: (repoUrl: string, branch?: string) => Promise<boolean>;
   onClose: () => void;
 }
 
@@ -60,6 +64,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   status,
   isChecking,
   isUpdating,
+  isConnecting = false,
   isRestarting,
   updateError,
   canForceReset = false,
@@ -67,8 +72,11 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   onCheckNow,
   onApplyUpdate,
   onForceUpdate,
+  onConnectGithub,
   onClose,
 }) => {
+  const [repoUrlInput, setRepoUrlInput] = useState('');
+  const [branchInput, setBranchInput] = useState('main');
   if (!isOpen) return null;
 
   return (
@@ -160,9 +168,53 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
               </div>
 
               {status && !status.supported && (
-                <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800/60 text-amber-800 dark:text-amber-200 flex items-start gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{status.reason || 'Không tìm thấy kho GitHub để cập nhật tự động.'}</span>
+                <div className="space-y-2.5">
+                  <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800/60 text-amber-800 dark:text-amber-200 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{status.reason || 'Không tìm thấy kho GitHub để cập nhật tự động.'}</span>
+                  </div>
+                  {onConnectGithub && (
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        if (!repoUrlInput.trim() || isConnecting) return;
+                        await onConnectGithub(repoUrlInput.trim(), branchInput.trim());
+                      }}
+                      className="p-3 rounded-xl bg-slate-50 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-500/30 space-y-2"
+                    >
+                      <div className="flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-100">
+                        <Link2 className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300" />
+                        <span>Gắn link kho GitHub để cập nhật</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <input
+                          type="url"
+                          required
+                          disabled={isConnecting || isUpdating}
+                          value={repoUrlInput}
+                          onChange={(e) => setRepoUrlInput(e.target.value)}
+                          placeholder="https://github.com/tai-khoan/ten-repo"
+                          className="flex-1 min-w-[200px] h-8 px-2.5 text-xs bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400"
+                        />
+                        <input
+                          type="text"
+                          disabled={isConnecting || isUpdating}
+                          value={branchInput}
+                          onChange={(e) => setBranchInput(e.target.value)}
+                          placeholder="main"
+                          className="w-20 h-8 px-2 text-xs bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isConnecting || isUpdating || !repoUrlInput.trim()}
+                          className="h-8 px-3 text-xs font-semibold text-white bg-violet-600 hover:bg-violet-500 rounded-lg transition disabled:opacity-50 cursor-pointer inline-flex items-center gap-1"
+                        >
+                          {isConnecting && <Loader2 className="w-3 h-3 animate-spin" />}
+                          <span>{isConnecting ? 'Đang nối...' : 'Kết nối'}</span>
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </div>
               )}
 

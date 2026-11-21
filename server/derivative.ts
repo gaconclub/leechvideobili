@@ -305,7 +305,7 @@ setInterval(() => {
   }
 }, 15 * 60 * 1000).unref();
 
-function getGeminiClient(): GoogleGenAI {
+export function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
@@ -347,19 +347,19 @@ function isGeminiRateLimit429Error(err: any): boolean {
   return status === 429 || raw.includes('429') || raw.includes('resource_exhausted');
 }
 
-function shouldFallbackGeminiModel(err: any): boolean {
+export function shouldFallbackGeminiModel(err: any): boolean {
   return isTransientGemini503Error(err) || isGeminiRateLimit429Error(err);
 }
 
 const geminiModelCooldownUntil = new Map<string, number>();
 
-function markGeminiModelOverloaded(model: string, err: any, cooldownMs = 75_000): void {
+export function markGeminiModelOverloaded(model: string, err: any, cooldownMs = 75_000): void {
   if (isTransientGemini503Error(err) || isGeminiRateLimit429Error(err)) {
     geminiModelCooldownUntil.set(model, Date.now() + cooldownMs);
   }
 }
 
-function prioritizeGeminiCandidateModels(baseCandidates: string[]): string[] {
+export function prioritizeGeminiCandidateModels(baseCandidates: string[]): string[] {
   const now = Date.now();
   const healthy: string[] = [];
   const cooled: string[] = [];
@@ -378,7 +378,7 @@ function prioritizeGeminiCandidateModels(baseCandidates: string[]): string[] {
   return cooled;
 }
 
-async function retryWithGeminiBackoff<T>(
+export async function retryWithGeminiBackoff<T>(
   fn: () => Promise<T>,
   delaysMs: number[] = [1500, 3200, 5500]
 ): Promise<T> {
@@ -399,7 +399,7 @@ async function retryWithGeminiBackoff<T>(
   throw lastErr;
 }
 
-function formatGeminiError(err: any): string {
+export function formatGeminiError(err: any): string {
   const raw = String(err?.message || err || 'Lỗi kết nối Gemini AI');
   if (raw.includes('PERMISSION_DENIED') || raw.includes('API_KEY_INVALID') || raw.includes('403') || raw.includes('API key not valid')) {
     return 'API Key Gemini không hợp lệ hoặc mô hình này yêu cầu API Key trả phí (có thanh toán). Vui lòng kiểm tra khóa trong Settings > Secrets hoặc tệp .env.';
@@ -3969,6 +3969,7 @@ export async function generateStudioImage(params: {
   vfxNotes?: string;
   selectedCharacterIds?: string[];
   characterRefs?: StudioCharacterRefInput[];
+  museAccountId?: string;
 }): Promise<{ dataUrl: string; model: string }> {
   const aspectRatio = params.aspectRatio || (params.mode === 'character' ? '1:1' : '16:9');
   const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
@@ -4068,6 +4069,7 @@ export async function generateStudioImage(params: {
       aspectRatio,
       referenceImageDataUrl: selectedRefs[0]?.dataUrl,
       referenceImages: selectedRefs.map((r) => r.dataUrl),
+      accountId: params.museAccountId,
     });
     return { dataUrl: res.dataUrl, model: 'muse-image (Muse2API)' };
   }
@@ -4459,6 +4461,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
   selectedCharacterIds?: string[];
   sceneImageDataUrl?: string;
   characterRefs?: StudioCharacterRefInput[];
+  museAccountId?: string;
 }): Promise<{ assetId: string; previewUrl: string; durationSec: number; hasAudio: boolean; model: string }> {
   const clampedDur = Math.max(3, Math.min(15, Math.round(params.durationSec || 8)));
   const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
@@ -4564,6 +4567,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
       durationSec: Math.min(12, clampedDur),
       referenceImageDataUrl: museRefList[0],
       referenceImages: museRefList,
+      accountId: params.museAccountId,
     });
 
     const assetId = `musevid_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
@@ -5523,7 +5527,7 @@ function spawnPromise(
   });
 }
 
-async function probeDurationSeconds(filePath: string, cwd: string): Promise<number> {
+export async function probeDurationSeconds(filePath: string, cwd: string): Promise<number> {
   try {
     const res = await spawnPromise(
       'ffprobe',
@@ -5538,7 +5542,7 @@ async function probeDurationSeconds(filePath: string, cwd: string): Promise<numb
   }
 }
 
-async function probeHasAudioStream(filePath: string, cwd: string): Promise<boolean> {
+export async function probeHasAudioStream(filePath: string, cwd: string): Promise<boolean> {
   try {
     const res = await spawnPromise(
       'ffprobe',

@@ -7,10 +7,28 @@ export interface Muse2ApiConfig {
   apiKey: string;
   hasKey: boolean;
   maskedKey: string;
-  source: 'env' | 'local_dotenv' | 'none';
+  source: 'cloud_override' | 'env' | 'local_dotenv' | 'none';
   imageTimeoutSec: number;
   videoTimeoutSec: number;
   chatTimeoutSec: number;
+}
+
+export interface Muse2ApiRuntimeOverride {
+  baseUrl?: string;
+  apiKey?: string;
+}
+
+let museRuntimeOverride: Muse2ApiRuntimeOverride = {};
+
+export function setMuse2ApiRuntimeOverride(override?: Muse2ApiRuntimeOverride): void {
+  museRuntimeOverride = {
+    baseUrl: override?.baseUrl?.trim() || '',
+    apiKey: override?.apiKey?.trim() || '',
+  };
+}
+
+export function getMuse2ApiRuntimeOverride(): Muse2ApiRuntimeOverride {
+  return { ...museRuntimeOverride };
 }
 
 export interface Muse2ApiStatusResult {
@@ -20,7 +38,7 @@ export interface Muse2ApiStatusResult {
   baseUrl: string;
   hasKey: boolean;
   maskedKey: string;
-  keySource: 'env' | 'local_dotenv' | 'none';
+  keySource: 'cloud_override' | 'env' | 'local_dotenv' | 'none';
   accountsCount: number;
   healthyAccounts: number;
   browserRunning: boolean;
@@ -83,14 +101,22 @@ function maskKey(k: string): string {
 
 export function resolveMuse2ApiConfig(): Muse2ApiConfig {
   const localEnv = readLocalMuse2ApiDotenv();
+  const overrideUrl = museRuntimeOverride.baseUrl?.trim();
   const envUrl = process.env.MUSE2API_BASE_URL?.trim();
   const localPort = localEnv.MUSE2API_PORT?.trim() || '18610';
-  const rawUrl = (envUrl || `http://127.0.0.1:${localPort}`).replace(/\/v1\/?$/i, '').replace(/\/+$/, '');
+  const rawUrl = (overrideUrl || envUrl || `http://127.0.0.1:${localPort}`).replace(/\/v1\/?$/i, '').replace(/\/+$/, '');
 
+  const overrideKey = museRuntimeOverride.apiKey?.trim() || '';
   const envKey = process.env.MUSE2API_KEY?.trim() || '';
   const fileKey = localEnv.MUSE2API_KEY?.trim() || '';
-  const apiKey = envKey || fileKey;
-  const source: 'env' | 'local_dotenv' | 'none' = envKey ? 'env' : fileKey ? 'local_dotenv' : 'none';
+  const apiKey = overrideKey || envKey || fileKey;
+  const source: 'cloud_override' | 'env' | 'local_dotenv' | 'none' = overrideKey
+    ? 'cloud_override'
+    : envKey
+    ? 'env'
+    : fileKey
+    ? 'local_dotenv'
+    : 'none';
 
   return {
     baseUrl: rawUrl,
@@ -692,10 +718,14 @@ function resolveMuseMediaAbsoluteUrl(mediaPathOrUrl: string): string {
 
 export async function chatWithMuse2ApiSpark(
   messages: { role: 'system' | 'user' | 'assistant'; content: string }[],
-  timeoutSec?: number
+  timeoutSec?: number,
+  attachments?: string[],
+  accountId?: string
 ): Promise<string> {
   const cfg = resolveMuse2ApiConfig();
   const effectiveTimeout = Math.max(30, timeoutSec || cfg.chatTimeoutSec);
+  const cleanAttachments = (attachments || []).map((a) => String(a || '').trim()).filter(Boolean);
+  const cleanAcc = accountId && accountId !== 'auto' ? accountId.trim() : '';
   const res = await museFetch(
     '/v1/chat/completions',
     {
@@ -705,6 +735,8 @@ export async function chatWithMuse2ApiSpark(
         messages,
         stream: false,
         timeout: effectiveTimeout,
+        ...(cleanAcc ? { account_id: cleanAcc } : {}),
+        ...(cleanAttachments.length > 0 ? { attachments: cleanAttachments } : {}),
       }),
     },
     (effectiveTimeout + 20) * 1000
@@ -763,10 +795,13 @@ export async function generateImageViaMuse2Api(params: {
   aspectRatio?: '1:1' | '9:16' | '16:9';
   referenceImageDataUrl?: string;
   referenceImages?: string[];
+  extra?: string;
+  accountId?: string;
   timeoutSec?: number;
-}): Promise<{ dataUrl: string; model: string }> {
+}): Promise<{ dataUrl: string; model: string; taskId?: string; accountUsed?: string }> {
   const cfg = resolveMuse2ApiConfig();
   const effectiveTimeout = Math.max(90, params.timeoutSec || cfg.imageTimeoutSec);
+  const cleanAcc = params.accountId && params.accountId !== 'auto' ? params.accountId.trim() : '';
   const combinedRefs = Array.from(
     new Set(
       [...(params.referenceImages || []), ...(params.referenceImageDataUrl ? [params.referenceImageDataUrl] : [])]
@@ -783,6 +818,8 @@ export async function generateImageViaMuse2Api(params: {
       aspect_ratio: params.aspectRatio || '16:9',
       response_format: 'url',
       timeout: effectiveTimeout,
+      ...(cleanAcc ? { account_id: cleanAcc } : {}),
+      ...(params.extra?.trim() ? { extra: params.extra.trim() } : {}),
       ...(combinedRefs[0] ? { reference_image: combinedRefs[0] } : {}),
       ...(combinedRefs.length > 0 ? { reference_images: combinedRefs } : {}),
     }
@@ -834,6 +871,8 @@ export async function generateImageViaMuse2Api(params: {
   return {
     dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
     model: 'muse-image',
+    taskId: created.id,
+    accountUsed: taskResult?.account || cleanAcc || undefined,
   };
 }
 
@@ -843,11 +882,14 @@ export async function generateVideoBufferViaMuse2Api(params: {
   durationSec?: number;
   referenceImageDataUrl?: string;
   referenceImages?: string[];
+  extra?: string;
+  accountId?: string;
   timeoutSec?: number;
-}): Promise<{ buffer: Buffer; mimeType: string; ext: string }> {
+}): Promise<{ buffer: Buffer; mimeType: string; ext: string; taskId?: string; accountUsed?: string }> {
   const cfg = resolveMuse2ApiConfig();
   const effectiveTimeout = Math.max(90, params.timeoutSec || cfg.videoTimeoutSec);
   const clampedDur = Math.max(3, Math.min(12, Math.round(params.durationSec || 6)));
+  const cleanAcc = params.accountId && params.accountId !== 'auto' ? params.accountId.trim() : '';
   const combinedRefs = Array.from(
     new Set(
       [...(params.referenceImages || []), ...(params.referenceImageDataUrl ? [params.referenceImageDataUrl] : [])]
@@ -865,6 +907,8 @@ export async function generateVideoBufferViaMuse2Api(params: {
       aspect_ratio: params.aspectRatio,
       size: params.aspectRatio,
       timeout: effectiveTimeout,
+      ...(cleanAcc ? { account_id: cleanAcc } : {}),
+      ...(params.extra?.trim() ? { extra: params.extra.trim() } : {}),
       ...(combinedRefs[0] ? { reference_image: combinedRefs[0] } : {}),
       ...(combinedRefs.length > 0 ? { reference_images: combinedRefs } : {}),
     }
@@ -917,5 +961,11 @@ export async function generateVideoBufferViaMuse2Api(params: {
     throw new Error('Dữ liệu video trả về từ Muse2API không hợp lệ hoặc quá nhỏ.');
   }
   const ext = mimeType.includes('webm') ? '.webm' : '.mp4';
-  return { buffer, mimeType, ext };
+  return {
+    buffer,
+    mimeType,
+    ext,
+    taskId: created.id,
+    accountUsed: taskState?.account || cleanAcc || undefined,
+  };
 }

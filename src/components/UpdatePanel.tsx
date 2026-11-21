@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   RefreshCw,
   CheckCircle2,
@@ -6,6 +6,7 @@ import {
   DownloadCloud,
   Loader2,
   GitBranch,
+  Link2,
   RotateCcw,
   History,
   Calendar,
@@ -18,6 +19,7 @@ interface UpdatePanelProps {
   status: UpdateStatusInfo | null;
   isChecking: boolean;
   isUpdating: boolean;
+  isConnecting?: boolean;
   isRestarting: boolean;
   updateError: string;
   canForceReset?: boolean;
@@ -25,12 +27,14 @@ interface UpdatePanelProps {
   onCheckNow: () => void;
   onApplyUpdate: () => void;
   onForceUpdate?: () => void;
+  onConnectGithub?: (repoUrl: string, branch?: string) => Promise<boolean>;
 }
 
 export const UpdatePanel: React.FC<UpdatePanelProps> = ({
   status,
   isChecking,
   isUpdating,
+  isConnecting = false,
   isRestarting,
   updateError,
   canForceReset = false,
@@ -38,7 +42,11 @@ export const UpdatePanel: React.FC<UpdatePanelProps> = ({
   onCheckNow,
   onApplyUpdate,
   onForceUpdate,
+  onConnectGithub,
 }) => {
+  const [showRepoForm, setShowRepoForm] = useState(false);
+  const [repoUrlInput, setRepoUrlInput] = useState('');
+  const [branchInput, setBranchInput] = useState('main');
   const currentVersion = status?.localVersion || APP_VERSION;
   const versionLabel = status?.currentCommit
     ? `V${currentVersion} (${status.currentCommit})`
@@ -121,6 +129,61 @@ export const UpdatePanel: React.FC<UpdatePanelProps> = ({
               <p className="text-[11px] text-slate-500 dark:text-slate-400">{status.reason}</p>
             )}
 
+            {onConnectGithub && (!status.supported || showRepoForm) && (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!repoUrlInput.trim() || isConnecting) return;
+                  const ok = await onConnectGithub(repoUrlInput.trim(), branchInput.trim());
+                  if (ok) setShowRepoForm(false);
+                }}
+                className="p-3 rounded-xl bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-500/30 space-y-2.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-100">
+                    <Link2 className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300" />
+                    <span>Kết nối kho GitHub để cập nhật tự động</span>
+                  </span>
+                  {status.supported && (
+                    <button
+                      type="button"
+                      onClick={() => setShowRepoForm(false)}
+                      className="text-[11px] text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+                    >
+                      Đóng
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                  <input
+                    type="url"
+                    required
+                    disabled={isConnecting || isUpdating}
+                    value={repoUrlInput}
+                    onChange={(e) => setRepoUrlInput(e.target.value)}
+                    placeholder="https://github.com/tai-khoan/ten-repo"
+                    className="sm:col-span-8 h-9 px-3 text-xs bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400"
+                  />
+                  <input
+                    type="text"
+                    disabled={isConnecting || isUpdating}
+                    value={branchInput}
+                    onChange={(e) => setBranchInput(e.target.value)}
+                    placeholder="Nhánh (vd: main)"
+                    className="sm:col-span-2 h-9 px-2.5 text-xs bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isConnecting || isUpdating || !repoUrlInput.trim()}
+                    className="sm:col-span-2 h-9 px-3 text-xs font-semibold text-white bg-violet-600 hover:bg-violet-500 rounded-lg transition disabled:opacity-50 cursor-pointer whitespace-nowrap inline-flex items-center justify-center gap-1.5"
+                  >
+                    {isConnecting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    <span>{isConnecting ? 'Đang nối...' : 'Kết nối'}</span>
+                  </button>
+                </div>
+              </form>
+            )}
+
             {status.hasLocalChanges && status.hasUpdate && (
               <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800/60 text-amber-800 dark:text-amber-200">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -144,7 +207,7 @@ export const UpdatePanel: React.FC<UpdatePanelProps> = ({
               </div>
             )}
 
-            {(status.hasUpdate || canForceReset) && (
+            {(status.hasUpdate || canForceReset || (status.supported && onConnectGithub && !showRepoForm)) && (
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 {status.hasUpdate && (
                   <button
@@ -177,6 +240,21 @@ export const UpdatePanel: React.FC<UpdatePanelProps> = ({
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                     <span>Đồng bộ cưỡng bức từ GitHub</span>
+                  </button>
+                )}
+
+                {status.supported && onConnectGithub && !showRepoForm && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRepoUrlInput((status as any).remoteUrl?.replace(/\.git$/, '') || '');
+                      setBranchInput(status.branch || 'main');
+                      setShowRepoForm(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 font-medium text-xs cursor-pointer"
+                  >
+                    <Link2 className="w-3.5 h-3.5" />
+                    <span>Đổi link GitHub</span>
                   </button>
                 )}
               </div>

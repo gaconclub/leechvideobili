@@ -83,6 +83,25 @@ import {
   stopLocalMuse2ApiProcess,
   testMuse2ApiAccount,
 } from './server/muse2api';
+import {
+  controlProductionRun,
+  controlTask,
+  createManualBackup,
+  createManualTask,
+  getBackupExportFilePath,
+  getCommandCenterState,
+  initCommandCenter,
+  resolveArtifactDiskPath,
+  resolveSceneQaManual,
+  restoreBackupById,
+  restoreProjectMemorySnapshot,
+  searchCommandCenterArchive,
+  sendCommandCenterChat,
+  startProductionOrchestration,
+  testMuseAgentConnection,
+  updateCloudConfig,
+  updateMuseAgentConfig,
+} from './server/commandCenter';
 
 const require = createRequire(import.meta.url);
 const { ZipArchive } = require('archiver') as {
@@ -5750,6 +5769,184 @@ async function startServer() {
     }
   });
 
+  // ==========================================
+  // PHÒNG ĐIỀU HÀNH AI MUSE (AI MUSE COMMAND CENTER)
+  // ==========================================
+  app.get('/api/command-center/state', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const state = await getCommandCenterState(force);
+      res.json(state);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể tải trạng thái Phòng Điều Hành AI Muse.' });
+    }
+  });
+
+  app.post('/api/command-center/agents/:id', async (req, res) => {
+    try {
+      const state = await updateMuseAgentConfig(req.params.id as any, req.body || {});
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể cập nhật cấu hình Muse AI.' });
+    }
+  });
+
+  app.post('/api/command-center/agents/:id/pause', async (req, res) => {
+    try {
+      const state = await updateMuseAgentConfig(req.params.id as any, { paused: true });
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tạm dừng Muse AI.' });
+    }
+  });
+
+  app.post('/api/command-center/agents/:id/resume', async (req, res) => {
+    try {
+      const state = await updateMuseAgentConfig(req.params.id as any, { paused: false });
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tiếp tục Muse AI.' });
+    }
+  });
+
+  app.post('/api/command-center/agents/:id/test', async (req, res) => {
+    try {
+      const result = await testMuseAgentConnection(req.params.id as any);
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'Kiểm tra kết nối Muse AI thất bại.' });
+    }
+  });
+
+  app.post('/api/command-center/productions/start', async (req, res) => {
+    try {
+      const state = await startProductionOrchestration(req.body || {});
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể khởi động dây chuyền sản xuất.' });
+    }
+  });
+
+  app.post('/api/command-center/productions/:runId/:action', async (req, res) => {
+    try {
+      const action = req.params.action;
+      if (action !== 'pause' && action !== 'resume' && action !== 'cancel') {
+        return res.status(400).json({ error: 'Thao tác không hợp lệ.' });
+      }
+      const state = await controlProductionRun(req.params.runId, action);
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể điều khiển phiên sản xuất.' });
+    }
+  });
+
+  app.post('/api/command-center/tasks', async (req, res) => {
+    try {
+      const state = await createManualTask(req.body || {});
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể giao nhiệm vụ mới.' });
+    }
+  });
+
+  app.post('/api/command-center/tasks/:taskId/:action', async (req, res) => {
+    try {
+      const action = req.params.action;
+      if (action !== 'retry' && action !== 'cancel' && action !== 'run_now') {
+        return res.status(400).json({ error: 'Thao tác tác vụ không hợp lệ.' });
+      }
+      const state = await controlTask(req.params.taskId, action);
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể xử lý tác vụ.' });
+    }
+  });
+
+  app.post('/api/command-center/qa/:sceneId/:action', async (req, res) => {
+    try {
+      const action = req.params.action;
+      if (action !== 'approve' && action !== 'reject') {
+        return res.status(400).json({ error: 'Hành động QA không hợp lệ.' });
+      }
+      const state = await resolveSceneQaManual(req.params.sceneId, action, req.body?.instruction);
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể cập nhật QA phân cảnh.' });
+    }
+  });
+
+  app.post('/api/command-center/chat', async (req, res) => {
+    try {
+      const result = await sendCommandCenterChat(req.body || {});
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể gửi tin nhắn tới đội ngũ Muse AI.' });
+    }
+  });
+
+  app.get('/api/command-center/search', (req, res) => {
+    try {
+      const results = searchCommandCenterArchive({
+        query: String(req.query.query || ''),
+        agentId: String(req.query.agentId || 'all'),
+        projectId: String(req.query.projectId || 'all'),
+        dateFrom: String(req.query.dateFrom || ''),
+        dateTo: String(req.query.dateTo || ''),
+      });
+      res.json(results);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Lỗi tìm kiếm kho lưu trữ.' });
+    }
+  });
+
+  app.post('/api/command-center/backups', async (req, res) => {
+    try {
+      const state = await createManualBackup(req.body?.summary);
+      res.json(state);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể tạo bản sao lưu.' });
+    }
+  });
+
+  app.post('/api/command-center/backups/:backupId/restore', async (req, res) => {
+    try {
+      const state = await restoreBackupById(req.params.backupId);
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể khôi phục từ bản sao lưu.' });
+    }
+  });
+
+  app.get('/api/command-center/backups/:backupId/export', (req, res) => {
+    const fp = getBackupExportFilePath(req.params.backupId);
+    if (!fp) return res.status(404).json({ error: 'Không tìm thấy file backup.' });
+    res.download(fp, `${req.params.backupId}.json`);
+  });
+
+  app.post('/api/command-center/project-memory/snapshots/:snapshotId/restore', async (req, res) => {
+    try {
+      const state = await restoreProjectMemorySnapshot(req.params.snapshotId);
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể khôi phục phiên bản Project Memory.' });
+    }
+  });
+
+  app.post('/api/command-center/cloud-config', async (req, res) => {
+    try {
+      const state = await updateCloudConfig(req.body || {});
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể lưu cấu hình Cloud.' });
+    }
+  });
+
+  app.get('/api/command-center/artifacts/:filename', (req, res) => {
+    const fp = resolveArtifactDiskPath(req.params.filename);
+    if (!fp) return res.status(404).json({ error: 'Không tìm thấy tệp artifact.' });
+    res.sendFile(fp);
+  });
+
   app.get('/api/derivative/jobs/:jobId', (req, res) => {
     const job = derivativeJobs.get(req.params.jobId);
     if (!job) {
@@ -7120,6 +7317,7 @@ async function startServer() {
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`BiliBatch server running at http://localhost:${PORT}`);
+    initCommandCenter();
     void autoStartLocalMuse2ApiOnServerBoot();
   });
 

@@ -420,6 +420,7 @@ class ImageRequest(BaseModel):
     images: list | None = None
     reference_image: str | None = None
     reference_images: list[str] | None = None
+    account_id: str | None = None
     async_: bool = Field(False, alias="async")
 
 
@@ -436,6 +437,7 @@ class VideoRequest(BaseModel):
     image_url: Any = None
     reference_image: str | None = None
     reference_images: list[str] | None = None
+    account_id: str | None = None
 
 
 class ChatMessage(BaseModel):
@@ -459,6 +461,7 @@ class ChatRequest(BaseModel):
     max_tokens: int | None = None
     timeout: int | None = None
     prompt: str | None = None       # 兼容把 prompt 直接放顶层的客户端
+    account_id: str | None = None
     # 下面这些声明出来只是为了「能读到」，muse.ai 端不做对应处理
     tools: list | None = None
     tool_choice: object | None = None
@@ -1042,6 +1045,7 @@ def _queue_image(req: ImageRequest, prompt: str, reference_image: str | None,
                 prompt, "image", req.timeout or CFG.image_timeout,
                 reference_image=reference_image,
                 reference_images=reference_images,
+                account_id=(req.account_id or None),
                 on_progress=lambda p: store.update_task(tid, progress=p),
                 on_acquired=_on_acquired)
             # Store only media metadata, not large base64 payloads or reference credentials.
@@ -1093,7 +1097,8 @@ async def images_generations(req: ImageRequest, _=Depends(auth)):
     try:
         res, _acc = await asyncio.to_thread(
             _run_generation, prompt, "image", timeout,
-            reference_image=ref_img, reference_images=refs
+            reference_image=ref_img, reference_images=refs,
+            account_id=(req.account_id or None)
         )
     except MuseAuthError as exc:
         raise HTTPException(401, str(exc)) from exc
@@ -1210,6 +1215,7 @@ async def create_video(req: VideoRequest, _=Depends(auth)):
                 store.update_task(task["id"], progress=p)
             res, acc_id = _run_generation(prompt, "video", timeout, on_progress=prog_cb,
                                           reference_image=ref_img, reference_images=refs,
+                                          account_id=(req.account_id or None),
                                           on_acquired=_on_acquired)
             vurl = media_url(res["filename"])
             store.update_task(task["id"], status="completed", progress=100, account=acc_id,
@@ -1325,7 +1331,12 @@ async def chat_completions(req: ChatRequest, _=Depends(auth)):
 
     model = resolve_model(req.model, default="muse-spark")
     timeout = int(req.timeout or CFG.chat_timeout)
-    acc = store.pick_account(rotate=True, preferred_id=getattr(engine, "current_acc_id", None))
+    if req.account_id:
+        acc = store.get_account(req.account_id)
+        if not acc or not acc.get("enabled", True):
+            raise HTTPException(400, f"Tài khoản Muse AI '{req.account_id}' không tồn tại hoặc đang bị vô hiệu hóa.")
+    else:
+        acc = store.pick_account(rotate=True, preferred_id=getattr(engine, "current_acc_id", None))
     if not acc:
         raise HTTPException(400, "没有可用账号，请先在管理页面导入 cookie")
 

@@ -25,6 +25,7 @@ import { CustomLogoModal } from './components/CustomLogoModal';
 import { VideoTransformModal } from './components/VideoTransformModal';
 import { UpdateModal, UpdateStatusInfo } from './components/UpdateModal';
 import { StudioPanel } from './components/StudioPanel';
+import { CommandCenterPanel } from './components/CommandCenterPanel';
 import {
   COOKIE_SITES,
   buildCombinedCookiesString,
@@ -60,6 +61,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Exclude<AppNavTab, 'search'>>('download');
   const [mountedDiscovery, setMountedDiscovery] = useState(false);
   const [mountedStudio, setMountedStudio] = useState(false);
+  const [mountedCommandCenter, setMountedCommandCenter] = useState(false);
   const [trendingCount, setTrendingCount] = useState<number>(0);
   const [capabilities, setCapabilities] = useState<ServerCapabilitiesStatus | null>(null);
   const [searchQueryRequest, setSearchQueryRequest] = useState<{ query: string; nonce: number } | null>(null);
@@ -85,6 +87,7 @@ export default function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
+  const [isConnectingGithub, setIsConnectingGithub] = useState(false);
   const [isServerRestarting, setIsServerRestarting] = useState(false);
   const [updateError, setUpdateError] = useState('');
   const [updateCanForceReset, setUpdateCanForceReset] = useState(false);
@@ -397,6 +400,33 @@ export default function App() {
     } catch (err: any) {
       setIsApplyingUpdate(false);
       setUpdateError(err?.message || 'Lỗi khi cập nhật từ GitHub');
+    }
+  };
+
+  const handleConnectGithub = async (repoUrl: string, branch?: string): Promise<boolean> => {
+    setIsConnectingGithub(true);
+    setUpdateError('');
+    setUpdateSuccessMsg('');
+    try {
+      const res = await fetch('/api/system/connect-github', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl: repoUrl.trim(), branch: branch?.trim() || '' }),
+      });
+      const data = await parseJsonSafe<{ ok?: boolean; remoteUrl?: string; branch?: string; error?: string }>(res);
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Không thể kết nối kho GitHub.');
+      }
+      setUpdateSuccessMsg(
+        `Đã kết nối GitHub (${data.branch || 'main'}). Bấm "Cập nhật ngay" để tải bản mới nhất.`
+      );
+      await checkSystemUpdate();
+      return true;
+    } catch (err: any) {
+      setUpdateError(err?.message || 'Không thể kết nối kho GitHub.');
+      return false;
+    } finally {
+      setIsConnectingGithub(false);
     }
   };
 
@@ -1101,6 +1131,7 @@ export default function App() {
       setActiveTab(tab);
       if (tab === 'trending') setMountedDiscovery(true);
       if (tab === 'studio') setMountedStudio(true);
+      if (tab === 'command_center') setMountedCommandCenter(true);
       if (tab === 'settings') fetchCapabilities();
       if (tab === 'update') checkSystemUpdate();
     },
@@ -1427,6 +1458,13 @@ export default function App() {
             </div>
           )}
 
+          {/* VIEW 3B: PHÒNG ĐIỀU HÀNH AI MUSE */}
+          {mountedCommandCenter && (
+            <div className={activeTab === 'command_center' ? 'block' : 'hidden'}>
+              <CommandCenterPanel onOpenSettings={() => handleChangeTab('settings')} />
+            </div>
+          )}
+
           {/* VIEW 4: CẤU HÌNH HỆ THỐNG */}
           {activeTab === 'settings' && (
             <SettingsPanel
@@ -1444,6 +1482,7 @@ export default function App() {
               status={updateStatus}
               isChecking={isCheckingUpdate}
               isUpdating={isApplyingUpdate}
+              isConnecting={isConnectingGithub}
               isRestarting={isServerRestarting}
               updateError={updateError}
               canForceReset={updateCanForceReset}
@@ -1451,6 +1490,7 @@ export default function App() {
               onCheckNow={checkSystemUpdate}
               onApplyUpdate={() => handleApplyUpdate(false)}
               onForceUpdate={() => handleApplyUpdate(true)}
+              onConnectGithub={handleConnectGithub}
             />
           )}
         </main>
@@ -1491,6 +1531,7 @@ export default function App() {
         status={updateStatus}
         isChecking={isCheckingUpdate}
         isUpdating={isApplyingUpdate}
+        isConnecting={isConnectingGithub}
         isRestarting={isServerRestarting}
         updateError={updateError}
         canForceReset={updateCanForceReset}
@@ -1498,6 +1539,7 @@ export default function App() {
         onCheckNow={checkSystemUpdate}
         onApplyUpdate={() => handleApplyUpdate(false)}
         onForceUpdate={() => handleApplyUpdate(true)}
+        onConnectGithub={handleConnectGithub}
         onClose={() => setIsUpdateModalOpen(false)}
       />
     </div>

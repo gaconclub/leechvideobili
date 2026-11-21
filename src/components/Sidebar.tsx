@@ -8,11 +8,12 @@ import {
   Rocket,
   Menu,
   X,
+  Cpu,
 } from 'lucide-react';
 import { ServerCapabilitiesStatus } from '../types/bilibili';
 import { APP_VERSION } from '../version';
 
-export type AppNavTab = 'download' | 'trending' | 'search' | 'studio' | 'settings' | 'update';
+export type AppNavTab = 'download' | 'trending' | 'search' | 'studio' | 'command_center' | 'settings' | 'update';
 
 interface SidebarProps {
   activeTab: AppNavTab;
@@ -151,6 +152,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-violet-500/15 dark:bg-violet-500/20 text-violet-700 dark:text-violet-300 border border-violet-400/30 font-semibold whitespace-nowrap">
                     3 Pha
+                  </span>
+                </button>
+              </li>
+
+              <li>
+                <button
+                  type="button"
+                  onClick={() => handleNavClick('command_center')}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition cursor-pointer ${
+                    normalizedTab === 'command_center'
+                      ? 'bg-gradient-to-r from-violet-600/15 via-violet-500/10 to-cyan-500/10 dark:from-violet-600/35 dark:to-cyan-500/15 text-slate-900 dark:text-white border border-violet-400/45 shadow-sm'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Cpu className="w-4 h-4 text-cyan-600 dark:text-cyan-300 shrink-0" />
+                    <span className="truncate">Phòng Điều Hành</span>
+                  </span>
+                  <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-400/25 font-semibold whitespace-nowrap">
+                    5 AI
                   </span>
                 </button>
               </li>

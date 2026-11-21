@@ -432,3 +432,180 @@ export function auditAndNormalizeBlueprintServer<
     },
   };
 }
+
+export interface MuseAttachmentSlot {
+  index: number;
+  role: 'keyframe' | 'character';
+  label: string;
+  description?: string;
+  dataUrl: string;
+}
+
+/**
+ * Deduplicates attachment URLs and builds exact 1-based attachment indices
+ * so Muse.ai never confuses Image 1 (Scene Keyframe) with Image 2+ (Character Refs).
+ */
+export function buildMuseAttachmentSlotsAndRefs(params: {
+  sceneImageDataUrl?: string;
+  selectedRefs: { name?: string; description?: string; dataUrl: string }[];
+}): {
+  refDataUrls: string[];
+  slots: MuseAttachmentSlot[];
+  attachmentManifestEn: string;
+} {
+  const slots: MuseAttachmentSlot[] = [];
+  const seen = new Set<string>();
+
+  const kf = String(params.sceneImageDataUrl || '').trim();
+  if (kf) {
+    seen.add(kf);
+    slots.push({
+      index: 1,
+      role: 'keyframe',
+      label: 'Starting Keyframe Scene (preserve exact composition, lighting, background & framing)',
+      dataUrl: kf,
+    });
+  }
+
+  for (let i = 0; i < params.selectedRefs.length; i += 1) {
+    const ref = params.selectedRefs[i];
+    const url = String(ref?.dataUrl || '').trim();
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const charName = String(ref?.name || `Character ${i + 1}`).trim();
+    const charDesc = String(ref?.description || '').trim();
+    slots.push({
+      index: slots.length + 1,
+      role: 'character',
+      label: `Character "${charName}" (lock exact face, hair, age & outfit)`,
+      description: charDesc || undefined,
+      dataUrl: url,
+    });
+  }
+
+  const attachmentManifestEn =
+    slots.length > 0
+      ? slots
+          .map(
+            (s) =>
+              `Image ${s.index} = ${s.label}${s.description ? ` [${s.description.slice(0, 90)}]` : ''}`
+          )
+          .join('; ')
+      : '';
+
+  return {
+    refDataUrls: slots.map((s) => s.dataUrl),
+    slots,
+    attachmentManifestEn,
+  };
+}
+
+const VI_CINEMA_GLOSSARY: [RegExp, string][] = [
+  [/Cận cảnh khuôn mặt|Cận cảnh|Close-up/gi, 'Close-up shot'],
+  [/Trung cảnh|Medium shot/gi, 'Medium shot'],
+  [/Toàn cảnh rộng|Toàn cảnh|Wide establishing shot/gi, 'Wide establishing shot'],
+  [/Góc máy thấp|Góc thấp|Low angle/gi, 'Low-angle shot'],
+  [/Góc máy cao|Góc cao|High angle/gi, 'High-angle shot'],
+  [/Qua vai|Over-the-shoulder/gi, 'Over-the-shoulder shot'],
+  [/Đẩy máy chậm vào chủ thể|Đẩy máy chậm|Slow Dolly-in/gi, 'Slow dolly-in'],
+  [/Theo sát chuyển động nhân vật|Theo sát|Tracking shot/gi, 'Smooth tracking shot'],
+  [/Lướt ngang mượt mà|Smooth Pan/gi, 'Smooth horizontal pan'],
+  [/Cầm tay chân thực|Handheld realism/gi, 'Natural handheld camera'],
+  [/Xoay vòng quanh nhân vật|Orbit 360/gi, 'Smooth Steadicam orbit'],
+  [/Cố định chân máy|Static tripod shot/gi, 'Locked tripod shot'],
+  [/Ánh sáng studio mềm|Soft key light/gi, 'Soft studio key & rim lighting'],
+  [/Ánh sáng điện ảnh ngược sáng|Cinematic rim light/gi, 'Dramatic cinematic rim lighting'],
+  [/Ánh sáng vàng hoàng hôn|Golden hour/gi, 'Warm golden-hour sunlight'],
+  [/Ánh sáng tự nhiên ban ngày/gi, 'Crisp natural daylight'],
+  [/Ánh sáng kịch tính tương phản mạnh/gi, 'Moody chiaroscuro high-contrast lighting'],
+];
+
+export function translateViDirectorTermsToEn(raw: string): string {
+  let out = String(raw || '').trim();
+  if (!out) return '';
+  for (const [re, en] of VI_CINEMA_GLOSSARY) {
+    out = out.replace(re, en);
+  }
+  return out.replace(/\s{2,}/g, ' ').trim();
+}
+
+export function buildDeterministicMuseDirectorBrief(params: {
+  mediaType: 'image' | 'video';
+  mode: 'character' | 'scene';
+  durationSec?: number;
+  styleDirectiveEn: string;
+  attachmentManifestEn: string;
+  actionOrSubject: string;
+  cameraAngle?: string;
+  cameraMovement?: string;
+  cameraEquipment?: string;
+  lighting?: string;
+  settingDetail?: string;
+  vfxNotes?: string;
+  sceneEndState?: string;
+  characterBible?: string;
+  costumeBible?: string;
+}): { prompt: string; extra: string } {
+  const isScene = params.mode === 'scene';
+  const cameraParts = [
+    translateViDirectorTermsToEn(params.cameraAngle || ''),
+    params.mediaType === 'video' ? translateViDirectorTermsToEn(params.cameraMovement || '') : '',
+    translateViDirectorTermsToEn(params.cameraEquipment || ''),
+  ]
+    .filter(Boolean)
+    .join(', ');
+
+  const isMacro = isMacroOrInsertShot(`${params.cameraAngle || ''} ${params.actionOrSubject}`);
+  const lines: string[] = [];
+
+  if (params.attachmentManifestEn) {
+    lines.push(`ATTACHMENTS: ${params.attachmentManifestEn}.`);
+  }
+  if (params.mode === 'character') {
+    lines.push(
+      `CHARACTER SHEET: Clean consistent turnaround portrait on neutral studio backdrop, soft even studio lighting. Subject: ${params.actionOrSubject}.`
+    );
+  } else {
+    if (cameraParts) {
+      lines.push(`CAMERA: ${cameraParts}.`);
+    }
+    if (params.settingDetail?.trim()) {
+      lines.push(`SETTING: ${translateViDirectorTermsToEn(params.settingDetail)}.`);
+    }
+    lines.push(
+      params.mediaType === 'video'
+        ? `TEMPORAL ACTION (${Math.max(3, Math.round(params.durationSec || 6))}s continuous): ${params.actionOrSubject}.`
+        : `SCENE FRAME: ${params.actionOrSubject}.`
+    );
+    if (params.mediaType === 'video' && params.sceneEndState?.trim()) {
+      lines.push(`END STATE: ${params.sceneEndState.trim()}.`);
+    }
+    const lightClean = translateViDirectorTermsToEn(params.lighting || '');
+    const vfxClean = sanitizeVisualPromptForModel(params.vfxNotes || '', { isSceneMode: true });
+    if (lightClean || vfxClean) {
+      lines.push(`LIGHTING & VFX: ${[lightClean, vfxClean].filter(Boolean).join('; ')}.`);
+    }
+    if (!params.attachmentManifestEn && params.characterBible?.trim()) {
+      lines.push(`CHARACTER: ${params.characterBible.trim().slice(0, 180)}.`);
+    }
+    if (!isMacro && !params.attachmentManifestEn && params.costumeBible?.trim()) {
+      lines.push(`COSTUME: ${params.costumeBible.trim().slice(0, 140)}.`);
+    }
+  }
+  lines.push(`STYLE: ${params.styleDirectiveEn.slice(0, 180)}.`);
+
+  let prompt = sanitizeVisualPromptForModel(lines.join(' '), { isSceneMode: isScene });
+  if (prompt.length > 780) {
+    const sliced = prompt.slice(0, 779);
+    const sep = Math.max(sliced.lastIndexOf('.'), sliced.lastIndexOf(','));
+    prompt = (sep > 500 ? sliced.slice(0, sep + 1) : sliced).trim();
+  }
+
+  const extra =
+    params.mediaType === 'video'
+      ? 'STRICT LOCK: Animate smoothly as ONE continuous real-time shot with zero jump cuts. Keep Image 1 composition and every attached character face, hair & outfit 100% identical. Clean frame: zero text, subtitles or watermarks.'
+      : 'STRICT LOCK: Preserve attached character faces, hair & outfits 100% identically. Clean crisp composition with zero text, speech bubbles or watermarks.';
+
+  return { prompt, extra };
+}
+
