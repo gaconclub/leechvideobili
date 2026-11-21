@@ -5,16 +5,20 @@ import {
   Film,
   Image as ImageIcon,
   Loader2,
+  Music,
   RefreshCw,
   Trash2,
   Upload,
+  UserCheck,
   Volume2,
 } from 'lucide-react';
 import {
   DerivativeScene,
   DerivativeVoiceMode,
   ServerCapabilitiesStatus,
+  StudioCharacterRef,
   StudioCreationMode,
+  StudioProductionFormat,
   StudioVideoStyle,
   TrendingVideoItem,
 } from '../../types/bilibili';
@@ -22,6 +26,7 @@ import {
   CAMERA_ANGLE_SUGGESTIONS,
   CAMERA_EQUIPMENT_SUGGESTIONS,
   CAMERA_MOVEMENT_SUGGESTIONS,
+  CHARACTER_AGE_GROUP_OPTIONS,
   LIGHTING_SUGGESTIONS,
   VIDEO_STYLE_OPTIONS,
   compileScenePromptClient,
@@ -32,6 +37,7 @@ interface StudioSceneCardProps {
   index: number;
   totalScenes: number;
   mode: StudioCreationMode;
+  productionFormat?: StudioProductionFormat;
   videoStyle: StudioVideoStyle;
   characterBible: string;
   settingBible: string;
@@ -39,6 +45,7 @@ interface StudioSceneCardProps {
   costumeBible?: string;
   continuityBible?: string;
   hasCharacterRefs: boolean;
+  characterRefs?: StudioCharacterRef[];
   sources: (TrendingVideoItem & { localAssetId?: string })[];
   busyImg: boolean;
   queuedImg: boolean;
@@ -68,6 +75,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   index,
   totalScenes,
   mode,
+  productionFormat = 'dialogue_film',
   videoStyle,
   characterBible,
   settingBible,
@@ -75,6 +83,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   costumeBible,
   continuityBible,
   hasCharacterRefs,
+  characterRefs = [],
   sources,
   busyImg,
   queuedImg,
@@ -99,6 +108,22 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   const sceneCode = `Scene ${paddedNumber}`;
   const isVoiceoverOff = voiceMode === 'none';
 
+  const selectedIds = Array.isArray(scene.selectedCharacterIds) ? scene.selectedCharacterIds : [];
+  const toggleSceneCharacterRef = (charRef: StudioCharacterRef) => {
+    const exists = selectedIds.includes(charRef.id);
+    const nextIds = exists
+      ? selectedIds.filter((id) => id !== charRef.id)
+      : [...selectedIds, charRef.id];
+    const nextNames = characterRefs
+      .filter((c) => nextIds.includes(c.id))
+      .map((c) => c.name.trim())
+      .filter(Boolean);
+    onUpdateScene(scene.id, {
+      selectedCharacterIds: nextIds,
+      ...(nextNames.length > 0 ? { charactersInScene: nextNames.join(', ') } : {}),
+    });
+  };
+
   const handleRebuildPromptsFromFields = () => {
     const compiledImage = compileScenePromptClient({
       scene: { ...scene, imagePrompt: '' },
@@ -110,6 +135,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
       continuityBible,
       totalScenes,
       mediaType: 'image',
+      hasAttachedRefs: hasCharacterRefs,
     });
     const compiledVideo = compileScenePromptClient({
       scene: { ...scene, videoPrompt: '' },
@@ -121,6 +147,8 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
       continuityBible,
       totalScenes,
       mediaType: 'video',
+      hasAttachedRefs: hasCharacterRefs,
+      targetEngine: sceneVideoEngine,
     });
     onUpdateScene(scene.id, {
       imagePrompt: compiledImage,
@@ -128,6 +156,20 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
       visualNote: compiledImage,
     });
   };
+
+  const compiledVideoPreviewLen = compileScenePromptClient({
+    scene,
+    videoStyle,
+    characterBible,
+    settingBible,
+    visualStyleBible,
+    costumeBible,
+    continuityBible,
+    totalScenes,
+    mediaType: 'video',
+    hasAttachedRefs: hasCharacterRefs,
+    targetEngine: sceneVideoEngine,
+  }).length;
 
   return (
     <div className="p-4 bg-slate-50/70 dark:bg-[#0c1021]/80 grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -349,20 +391,78 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
           />
         </label>
 
-        {/* Dialogue + Narration */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-          <label className="space-y-1">
-            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-              Lời thoại (Nội dung nhân vật nói)
+        {/* Synced Character Reference Selector for Dialogue Scenes / Adaptive Music Pill for Narration Story */}
+        {productionFormat === 'dialogue_film' && characterRefs.length > 0 && (
+          <div className="p-2.5 rounded-xl bg-white/90 dark:bg-[#131a35]/90 border border-violet-400/30 space-y-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-violet-700 dark:text-violet-300">
+                <UserCheck className="w-3.5 h-3.5" />
+                <span>Chọn nhân vật đồng bộ cho phân cảnh ({selectedIds.length}/{characterRefs.length})</span>
+              </span>
+              <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                Khóa mặt · dáng · trang phục · giọng theo Tab Nhân vật
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {characterRefs.map((ch) => {
+                const isSelected = selectedIds.includes(ch.id);
+                const ageMeta = CHARACTER_AGE_GROUP_OPTIONS.find((a) => a.value === (ch.ageGroup || 'auto'));
+                return (
+                  <button
+                    key={ch.id}
+                    type="button"
+                    onClick={() => toggleSceneCharacterRef(ch)}
+                    className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] transition cursor-pointer ${
+                      isSelected
+                        ? 'bg-violet-600/15 border-violet-500/60 text-slate-900 dark:text-white font-semibold'
+                        : 'bg-slate-50 dark:bg-[#0c1021] border-slate-200 dark:border-slate-400/20 text-slate-600 dark:text-slate-300 hover:border-violet-400/40'
+                    }`}
+                  >
+                    <img
+                      src={ch.dataUrl}
+                      alt={ch.name}
+                      className="w-5 h-5 rounded object-cover shrink-0 border border-slate-300 dark:border-white/15"
+                    />
+                    <span className="max-w-[110px] truncate">{ch.name}</span>
+                    {ageMeta && ageMeta.value !== 'auto' && (
+                      <span className="text-[9px] text-violet-600 dark:text-violet-300">· {ageMeta.label}</span>
+                    )}
+                    {ch.voiceId && (
+                      <span className="text-[9px] font-mono text-cyan-600 dark:text-cyan-300">({ch.voiceId})</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {productionFormat === 'narration_story' && scene.musicMoodEn && (
+          <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-[11px] text-emerald-800 dark:text-emerald-200">
+            <span className="inline-flex items-center gap-1.5 font-medium truncate">
+              <Music className="w-3.5 h-3.5 shrink-0" />
+              <span>Nhạc nền AI theo cảnh: <strong className="font-mono">{scene.musicMoodEn}</strong></span>
             </span>
-            <textarea
-              rows={2}
-              value={scene.dialogue || ''}
-              onChange={(e) => onUpdateScene(scene.id, { dialogue: e.target.value })}
-              placeholder="VD: Minh: Chúng ta phải mở cánh cửa này trước khi bình minh lên!"
-              className={fieldTextareaCls}
-            />
-          </label>
+            <span className="text-[10px] opacity-80 shrink-0">1 giọng dẫn chuyện</span>
+          </div>
+        )}
+
+        {/* Dialogue + Narration */}
+        <div className={`grid grid-cols-1 ${productionFormat === 'narration_story' ? '' : 'md:grid-cols-2'} gap-2.5`}>
+          {productionFormat !== 'narration_story' && (
+            <label className="space-y-1">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                Lời thoại (Nội dung nhân vật nói · Tên: Câu thoại)
+              </span>
+              <textarea
+                rows={2}
+                value={scene.dialogue || ''}
+                onChange={(e) => onUpdateScene(scene.id, { dialogue: e.target.value })}
+                placeholder="VD: Minh: Chúng ta phải mở cánh cửa này trước khi bình minh lên!"
+                className={fieldTextareaCls}
+              />
+            </label>
+          )}
 
           <div className="space-y-1">
             <div className="flex items-center justify-between gap-2">
@@ -584,6 +684,32 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
                     className={fieldInputCls}
                   />
                 </label>
+
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Kỹ xảo &amp; Vật liệu VFX (Ánh sáng thể tích, hạt bụi, phản chiếu)
+                  </span>
+                  <input
+                    type="text"
+                    value={scene.vfxNotes || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { vfxNotes: e.target.value })}
+                    placeholder="VD: volumetric light shafts, floating dust motes, metallic reflection..."
+                    className={fieldInputCls}
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Âm thanh 4 lớp (MUS / AMB / BIO / DET &amp; Silence Drop)
+                  </span>
+                  <input
+                    type="text"
+                    value={scene.soundLayersNote || ''}
+                    onChange={(e) => onUpdateScene(scene.id, { soundLayersNote: e.target.value })}
+                    placeholder="VD: AMB mưa nhẹ + DET tiếng tách trà đặt xuống + Silence Drop trước câu thoại..."
+                    className={fieldInputCls}
+                  />
+                </label>
               </div>
 
               {/* Dedicated Image Prompt + Video Prompt */}
@@ -607,9 +733,14 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
                 </label>
 
                 <label className="block space-y-1">
-                  <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                    Prompt video ({sceneCode} — chuyển động, hành động &amp; quỹ đạo máy quay)
-                  </span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                      Prompt video ({sceneCode} — chuyển động, hành động &amp; quỹ đạo máy quay)
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 tabular-nums">
+                      Biên dịch: {compiledVideoPreviewLen}/{sceneVideoEngine === 'muse2api' ? '1440' : '2400'} ký tự
+                    </span>
+                  </div>
                   <textarea
                     rows={3}
                     value={scene.videoPrompt || ''}

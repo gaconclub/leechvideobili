@@ -248,6 +248,16 @@ export const OUTPUT_FORMATS: { value: OutputFormat; label: string; desc: string 
 
 export type StudioCreationMode = 'creative' | 'derivative';
 export type StudioScriptMode = 'series' | 'independent_batch';
+export type StudioProductionFormat = 'dialogue_film' | 'narration_story';
+export type CharacterAgeGroup =
+  | 'auto'
+  | 'child'
+  | 'youth'
+  | 'adult_male'
+  | 'adult_female'
+  | 'middle_aged'
+  | 'elderly';
+export type CharacterGenderHint = 'auto' | 'male' | 'female';
 export type StudioVideoStyle =
   | 'professional'
   | 'cinematic'
@@ -294,7 +304,7 @@ export type GeminiTtsVoiceId =
   | 'Sulafat';
 export type DerivativeVoiceId = 'none' | GeminiTtsVoiceId;
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
-export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploaded';
+export type DerivativeMusicMode = 'none' | 'auto_adaptive' | 'ai_lyria' | 'public_free' | 'uploaded';
 export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
 
@@ -350,11 +360,21 @@ export interface StudioCharacterRef {
   dataUrl: string;
   description?: string;
   source: 'uploaded' | 'ai_generated';
+  ageGroup?: CharacterAgeGroup;
+  gender?: CharacterGenderHint;
   voiceMode?: 'default' | 'ai_online' | 'offline_system';
   voiceId?: Exclude<DerivativeVoiceId, 'none'>;
   offlineVoice?: string;
   voiceStyle?: string;
   accentLock?: 'vn_north';
+}
+
+export interface CharacterVoiceProfile {
+  characterName: string;
+  ageGroup: Exclude<CharacterAgeGroup, 'auto'>;
+  gender: Exclude<CharacterGenderHint, 'auto'>;
+  voiceId: Exclude<DerivativeVoiceId, 'none'>;
+  vocalToneNote: string;
 }
 
 export interface StudioMusicTrack {
@@ -451,6 +471,29 @@ export interface ReferenceVideoAnalysis {
   dialogueAndAudio: string;
 }
 
+export interface StudioQcIssue {
+  id: string;
+  rule:
+    | 'speaker_ref_sync'
+    | 'pace_duration'
+    | 'continuity_chain'
+    | 'prompt_hygiene'
+    | 'de_ai_craft'
+    | 'voice_cast_uniqueness';
+  severity: 'error' | 'warning' | 'fixed';
+  sceneIndex?: number;
+  message: string;
+  autoFixable?: boolean;
+}
+
+export interface StudioQcReport {
+  score: number; // 0-100
+  passedChecks: number;
+  totalChecks: number;
+  autoFixedCount: number;
+  issues: StudioQcIssue[];
+}
+
 export interface DerivativeScene {
   id: string;
   sceneIndex: number; // Scene 01, Scene 02...
@@ -475,8 +518,12 @@ export interface DerivativeScene {
   videoPrompt?: string; // Prompt video chi tiết hành động & chuyển động đồng bộ
   continuityNote?: string; // Mạch liên kết từ trạng thái cuối cảnh trước
   sceneEndState?: string; // Trạng thái cuối cảnh này để nối tiếp sang cảnh sau
+  vfxNotes?: string; // Ghi chú kỹ xảo, vật liệu bề mặt, hạt môi trường & chuyển cảnh
+  soundLayersNote?: string; // Ghi chú 4 lớp âm thanh (MUS/AMB/BIO/DET)
   visualNote?: string; // Alias tương thích ngược cho imagePrompt
   brollKeywordEn?: string;
+  musicMoodEn?: string; // Gợi ý cảm xúc nhạc nền cho phân cảnh
+  selectedCharacterIds?: string[]; // Danh sách ID nhân vật đồng bộ được chọn cho phân cảnh
   sceneImageDataUrl?: string;
   omniClipAssetId?: string;
   omniClipPreviewUrl?: string;
@@ -496,6 +543,7 @@ export interface DerivativeSourceInsight {
 export interface DerivativeBlueprint {
   mode?: StudioCreationMode;
   scriptMode?: StudioScriptMode;
+  productionFormat?: StudioProductionFormat;
   batchIndex?: number;
   batchTotal?: number;
   sharedSpiritNote?: string;
@@ -508,6 +556,9 @@ export interface DerivativeBlueprint {
   visualStyleBible?: string; // Visual Style Reference
   costumeBible?: string; // Costume Reference
   continuityBible?: string; // Story Continuity
+  adaptiveMusicPrompt?: string;
+  characterVoiceProfiles?: CharacterVoiceProfile[];
+  qcReport?: StudioQcReport;
   enableVoiceover?: boolean;
   referenceAnalysis?: ReferenceVideoAnalysis;
   learnedSummary: string;

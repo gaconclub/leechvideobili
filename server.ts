@@ -4815,6 +4815,9 @@ async function startServer() {
         dialogue = '',
         sceneSummary = '',
         costume = '',
+        cameraAngle = '',
+        vfxNotes = '',
+        selectedCharacterIds,
         characterRefs = [],
       } = (req.body || {}) as {
         mode?: 'character' | 'scene';
@@ -4835,7 +4838,10 @@ async function startServer() {
         dialogue?: string;
         sceneSummary?: string;
         costume?: string;
-        characterRefs?: { dataUrl: string; name?: string; description?: string }[];
+        cameraAngle?: string;
+        vfxNotes?: string;
+        selectedCharacterIds?: string[];
+        characterRefs?: { id?: string; dataUrl: string; name?: string; description?: string }[];
       };
       if (!String(prompt).trim()) {
         return res.status(400).json({ error: 'Vui lòng nhập mô tả để AI tạo hình ảnh.' });
@@ -4859,6 +4865,9 @@ async function startServer() {
         dialogue: String(dialogue || ''),
         sceneSummary: String(sceneSummary || ''),
         costume: String(costume || ''),
+        cameraAngle: String(cameraAngle || ''),
+        vfxNotes: String(vfxNotes || ''),
+        selectedCharacterIds: Array.isArray(selectedCharacterIds) ? selectedCharacterIds : undefined,
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
       });
       res.json(result);
@@ -4888,6 +4897,9 @@ async function startServer() {
         dialogue = '',
         sceneSummary = '',
         costume = '',
+        cameraAngle = '',
+        vfxNotes = '',
+        selectedCharacterIds,
         sceneImageDataUrl,
         characterRefs = [],
       } = (req.body || {}) as {
@@ -4908,8 +4920,11 @@ async function startServer() {
         dialogue?: string;
         sceneSummary?: string;
         costume?: string;
+        cameraAngle?: string;
+        vfxNotes?: string;
+        selectedCharacterIds?: string[];
         sceneImageDataUrl?: string;
-        characterRefs?: { dataUrl: string; name?: string; description?: string }[];
+        characterRefs?: { id?: string; dataUrl: string; name?: string; description?: string }[];
       };
       if (!String(prompt).trim()) {
         return res.status(400).json({ error: 'Thiếu mô tả phân cảnh để dựng clip AI.' });
@@ -4932,6 +4947,9 @@ async function startServer() {
         dialogue: String(dialogue || ''),
         sceneSummary: String(sceneSummary || ''),
         costume: String(costume || ''),
+        cameraAngle: String(cameraAngle || ''),
+        vfxNotes: String(vfxNotes || ''),
+        selectedCharacterIds: Array.isArray(selectedCharacterIds) ? selectedCharacterIds : undefined,
         sceneImageDataUrl,
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
       });
@@ -5019,6 +5037,7 @@ async function startServer() {
       const {
         mode = 'derivative',
         scriptMode = 'series',
+        productionFormat = 'dialogue_film',
         videoCount = 3,
         perVideoDurations,
         ideaPrompt = '',
@@ -5033,6 +5052,7 @@ async function startServer() {
         outputLanguage = 'vi',
         useProModel = false,
         characterSummary = '',
+        characterRefsMeta = [],
         characterBible = '',
         settingBible = '',
         visualStyleBible = '',
@@ -5044,6 +5064,7 @@ async function startServer() {
       } = (req.body || {}) as {
         mode?: StudioCreationMode;
         scriptMode?: StudioScriptMode;
+        productionFormat?: 'dialogue_film' | 'narration_story';
         videoCount?: number;
         perVideoDurations?: number[];
         ideaPrompt?: string;
@@ -5058,6 +5079,14 @@ async function startServer() {
         outputLanguage?: DerivativeOutputLanguage;
         useProModel?: boolean;
         characterSummary?: string;
+        characterRefsMeta?: {
+          id: string;
+          name: string;
+          description?: string;
+          ageGroup?: 'auto' | 'child' | 'youth' | 'adult_male' | 'adult_female' | 'middle_aged' | 'elderly';
+          gender?: 'auto' | 'male' | 'female';
+          voiceId?: Exclude<DerivativeVoiceId, 'none'>;
+        }[];
         characterBible?: string;
         settingBible?: string;
         visualStyleBible?: string;
@@ -5071,6 +5100,8 @@ async function startServer() {
       const studioMode: StudioCreationMode = mode === 'creative' ? 'creative' : 'derivative';
       const resolvedScriptMode: StudioScriptMode =
         scriptMode === 'independent_batch' ? 'independent_batch' : 'series';
+      const resolvedProductionFormat: 'dialogue_film' | 'narration_story' =
+        productionFormat === 'narration_story' ? 'narration_story' : 'dialogue_film';
       const safeVideos = Array.isArray(videos) ? videos.slice(0, 8) : [];
 
       if (studioMode === 'creative') {
@@ -5095,6 +5126,7 @@ async function startServer() {
           : undefined;
         const batchResult = await learnAndCreateIndependentBatch({
           mode: studioMode,
+          productionFormat: resolvedProductionFormat,
           ideaPrompt: String(ideaPrompt || ''),
           query: String(query || ''),
           videos: safeVideos,
@@ -5108,6 +5140,7 @@ async function startServer() {
           outputLanguage,
           useProModel: Boolean(useProModel),
           characterSummary: String(characterSummary || ''),
+          characterRefsMeta: Array.isArray(characterRefsMeta) ? characterRefsMeta : [],
           characterBible: String(characterBible || ''),
           settingBible: String(settingBible || ''),
           visualStyleBible: String(visualStyleBible || ''),
@@ -5127,6 +5160,7 @@ async function startServer() {
       const blueprint = await learnVideosAndCreateBlueprint({
         mode: studioMode,
         scriptMode: 'series',
+        productionFormat: resolvedProductionFormat,
         ideaPrompt: String(ideaPrompt || ''),
         query: String(query || ''),
         videos: safeVideos,
@@ -5139,6 +5173,7 @@ async function startServer() {
         outputLanguage,
         useProModel: Boolean(useProModel),
         characterSummary: String(characterSummary || ''),
+        characterRefsMeta: Array.isArray(characterRefsMeta) ? characterRefsMeta : [],
         characterBible: String(characterBible || ''),
         settingBible: String(settingBible || ''),
         visualStyleBible: String(visualStyleBible || ''),
@@ -5261,9 +5296,12 @@ async function startServer() {
         musicPrompt?: string;
         musicVolume?: number;
         characterRefs?: {
+          id?: string;
           dataUrl: string;
           name?: string;
           description?: string;
+          ageGroup?: 'auto' | 'child' | 'youth' | 'adult_male' | 'adult_female' | 'middle_aged' | 'elderly';
+          gender?: 'auto' | 'male' | 'female';
           voiceMode?: 'default' | 'ai_online' | 'offline_system';
           voiceId?: Exclude<DerivativeVoiceId, 'none'>;
           offlineVoice?: string;
@@ -6280,7 +6318,7 @@ async function startServer() {
     } catch {
       // ignore package.json read error
     }
-    return '1.0.6';
+    return '1.0.8';
   };
 
   app.get('/api/system/update-status', async (_req, res) => {

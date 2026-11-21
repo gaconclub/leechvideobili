@@ -1,10 +1,96 @@
 import {
+  CharacterAgeGroup,
+  DerivativeBlueprint,
   DerivativeOutputLanguage,
   DerivativeScene,
   DerivativeStylePreset,
   DerivativeVoiceId,
+  StudioCharacterRef,
+  StudioProductionFormat,
+  StudioQcIssue,
+  StudioQcReport,
   StudioVideoStyle,
 } from '../../types/bilibili';
+
+export const PRODUCTION_FORMAT_OPTIONS: {
+  value: StudioProductionFormat;
+  label: string;
+  shortDesc: string;
+  detailDesc: string;
+}[] = [
+  {
+    value: 'dialogue_film',
+    label: 'Phim có lời thoại',
+    shortDesc: 'Đồng bộ nhân vật, ngoại hình & giọng nói theo độ tuổi',
+    detailDesc:
+      'Chọn nhân vật tham chiếu cho từng phân cảnh có lời thoại; AI tự phân tích độ tuổi/giới tính để chọn cao độ giọng nói chuẩn xác và nhất quán xuyên suốt.',
+  },
+  {
+    value: 'narration_story',
+    label: 'Phim thuyết minh kể chuyện',
+    shortDesc: '1 giọng dẫn chuyện · AI tự chọn hình ảnh & nhạc nền',
+    detailDesc:
+      'Chỉ cần thiết lập giọng người dẫn chuyện; ưu tiên AI tự động dựng hình ảnh & chọn nhạc nền linh động theo bối cảnh và cảm xúc từng phân cảnh.',
+  },
+];
+
+export const CHARACTER_AGE_GROUP_OPTIONS: {
+  value: CharacterAgeGroup;
+  label: string;
+  timbreSummary: string;
+  defaultVoiceId: Exclude<DerivativeVoiceId, 'none'>;
+  pitchDirective: string;
+}[] = [
+  {
+    value: 'auto',
+    label: 'Tự động AI nhận diện tuổi',
+    timbreSummary: 'AI phân tích kịch bản & mô tả nhân vật',
+    defaultVoiceId: 'Kore',
+    pitchDirective: 'Analyze character age and gender to apply fitting natural vocal pitch',
+  },
+  {
+    value: 'child',
+    label: 'Trẻ em',
+    timbreSummary: 'Giọng trẻ, cao, trong sáng',
+    defaultVoiceId: 'Leda',
+    pitchDirective: 'Young child voice with bright, higher-pitched clear tone and innocent cheerful energy',
+  },
+  {
+    value: 'youth',
+    label: 'Thanh niên',
+    timbreSummary: 'Giọng trẻ trung, linh hoạt, tự nhiên',
+    defaultVoiceId: 'Zephyr',
+    pitchDirective: 'Youthful young-adult voice, energetic, flexible, fresh and natural modern cadence',
+  },
+  {
+    value: 'adult_male',
+    label: 'Đàn ông',
+    timbreSummary: 'Giọng nam trưởng thành, rõ nét',
+    defaultVoiceId: 'Orus',
+    pitchDirective: 'Confident adult man voice with balanced mid-low male resonance and steady articulation',
+  },
+  {
+    value: 'adult_female',
+    label: 'Đàn bà',
+    timbreSummary: 'Giọng nữ trưởng thành, truyền cảm',
+    defaultVoiceId: 'Kore',
+    pitchDirective: 'Expressive adult woman voice with warm, clear feminine resonance and natural emotional nuance',
+  },
+  {
+    value: 'middle_aged',
+    label: 'Người trung niên',
+    timbreSummary: 'Giọng chín chắn, trầm ổn',
+    defaultVoiceId: 'Charon',
+    pitchDirective: 'Mature middle-aged voice with calm, grounded lower-mid timbre, warmth and life experience',
+  },
+  {
+    value: 'elderly',
+    label: 'Người già',
+    timbreSummary: 'Giọng lớn tuổi, trầm, chậm rãi',
+    defaultVoiceId: 'Algenib',
+    pitchDirective: 'Elderly senior voice with weathered deep resonant timbre, gentle unhurried slow cadence and wisdom',
+  },
+];
 
 export const STYLE_OPTIONS: { value: DerivativeStylePreset; label: string }[] = [
   { value: 'storytelling_review', label: 'Kể chuyện / Review cuốn hút' },
@@ -179,6 +265,49 @@ export const CAMERA_EQUIPMENT_SUGGESTIONS = [
   'Máy quay ảo 2D/3D (Virtual Cinema Camera) mượt mà 60fps',
 ];
 
+const CLIENT_SAFETY_REPLACEMENTS: [RegExp, string][] = [
+  [/\bsinister\b/gi, 'moody dramatic'],
+  [/\bmenacingly\b/gi, 'leans forward intently'],
+  [/\bmenacing\b/gi, 'intense dramatic'],
+  [/\bdark\s+intent\b/gi, 'quiet focused intensity'],
+  [/\bpossessive\s+gaze\b/gi, 'focused steady gaze'],
+  [/\bcold\s+smirk\b/gi, 'subtle restrained expression'],
+  [/\bevil\s+grin\b/gi, 'knowing subtle expression'],
+  [/\bdark\s+cyan\b/gi, 'deep cyan'],
+  [/\bdark\s+teal\b/gi, 'deep teal'],
+  [/\bdark\s+particles\b/gi, 'floating dust motes'],
+  [/\bharsh\s+shadow\b/gi, 'sculpted soft shadow'],
+  [/\bbloody\b|\bgore\b|\bgory\b/gi, 'dramatic crimson impact'],
+  [/\bmurder(?:ing|ed)?\b|\bkill(?:ing|ed)?\b/gi, 'dramatic confrontation'],
+];
+
+const CLIENT_MACRO_PATTERN =
+  /(?:macro|extreme close[- ]?up|detail insert|cận cực đại|cận đặc tả|đặc tả mắt|đặc tả tay|bàn tay|đồng tử|insert shot)/i;
+
+const CLIENT_AI_CLICHE_PATTERNS = [
+  /bầu không khí nghẹt thở/i,
+  /ánh mắt sắc như dao/i,
+  /trái tim như thắt lại/i,
+  /cả không gian như đóng băng/i,
+  /nghĩ thầm trong bụng/i,
+];
+
+export function sanitizeVisualPromptClient(rawPrompt: string): string {
+  let out = String(rawPrompt || '').trim();
+  if (!out) return '';
+  out = out
+    .replace(/\[(?:SC|SHOT|SCENE|CONTINUITY|LIÊN TỤC|CHECK|NOTE)[-_:\s]*\d*[^\]]*\]/gi, ' ')
+    .replace(/\b(?:SC|SHOT)[-_]?\d{1,3}\s*[:：-]/gi, ' ')
+    .replace(/\(\s*\d{1,3}\s*(?:s|giây|sec)\s*\)/gi, ' ')
+    .replace(/\b\d+(?:[.,]\d+)?\s*(?:cm|mm|km|mét|met|m)\b(?![^"“”«»]*["”»])/gi, '')
+    .replace(/\b(?:flat\s+lighting|neutral\s+flat\s+lighting|even\s+flat\s+backdrop)\b/gi, 'cinematic sculpted lighting');
+
+  for (const [pattern, replacement] of CLIENT_SAFETY_REPLACEMENTS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out.replace(/\s{2,}/g, ' ').replace(/\s+([.,;:])/g, '$1').trim();
+}
+
 export function compileScenePromptClient(params: {
   scene: Partial<DerivativeScene>;
   videoStyle?: StudioVideoStyle;
@@ -189,20 +318,33 @@ export function compileScenePromptClient(params: {
   continuityBible?: string;
   totalScenes?: number;
   mediaType?: 'image' | 'video';
+  hasAttachedRefs?: boolean;
+  targetEngine?: 'muse2api' | 'gemini';
 }): string {
   const sc = params.scene;
   const mediaType = params.mediaType || 'image';
   const styleMeta = VIDEO_STYLE_OPTIONS.find((s) => s.value === params.videoStyle) || VIDEO_STYLE_OPTIONS[1];
   const segments: string[] = [];
 
+  const isMacroShot = CLIENT_MACRO_PATTERN.test(
+    `${sc.cameraAngle || ''} ${sc.imagePrompt || ''} ${sc.videoPrompt || ''} ${sc.actionDetail || ''}`
+  );
+
   segments.push(`Visual Style Reference: ${styleMeta.label} (${styleMeta.desc})`);
   if (params.visualStyleBible?.trim()) {
     segments.push(`Bảng màu & Phong cách chung: ${params.visualStyleBible.trim()}`);
   }
   if (params.characterBible?.trim()) {
-    segments.push(`Character Reference: ${params.characterBible.trim()}`);
+    const charText = params.characterBible.trim();
+    const compactChar =
+      params.hasAttachedRefs && charText.length > 220
+        ? charText.split(/[.;\n]/).slice(0, 2).join(', ').slice(0, 180)
+        : charText;
+    if (compactChar) {
+      segments.push(`Character Reference: ${compactChar}`);
+    }
   }
-  if (params.costumeBible?.trim()) {
+  if (!isMacroShot && params.costumeBible?.trim()) {
     segments.push(`Costume Reference: ${params.costumeBible.trim()}`);
   }
   if (params.settingBible?.trim()) {
@@ -214,7 +356,7 @@ export function compileScenePromptClient(params: {
   if (sc.charactersInScene?.trim()) {
     segments.push(`Nhân vật trong cảnh: ${sc.charactersInScene.trim()}`);
   }
-  if (sc.costume?.trim()) {
+  if (!isMacroShot && sc.costume?.trim()) {
     segments.push(`Trang phục cảnh: ${sc.costume.trim()}`);
   }
   if (sc.settingDetail?.trim()) {
@@ -248,6 +390,9 @@ export function compileScenePromptClient(params: {
   if (primary) {
     segments.push(`${mediaType === 'video' ? 'Prompt video' : 'Prompt hình ảnh'}: ${primary}`);
   }
+  if (sc.vfxNotes?.trim()) {
+    segments.push(`VFX & Vật liệu: ${sc.vfxNotes.trim()}`);
+  }
   if (mediaType === 'video') {
     const dur = Math.max(3, Math.round(Number(sc.durationSec || 8)));
     segments.push(
@@ -262,7 +407,284 @@ export function compileScenePromptClient(params: {
       'Cinematic Filmmaking Skill: Bố cục 3 lớp xuyên tiền cảnh, tương phản sáng tối điện ảnh kèm ánh sáng viền (rim light), chuyển động máy mượt mà theo nhịp dựng và vi biểu cảm chân thực'
     );
   }
-  return segments.join('. ');
+  let compiled = sanitizeVisualPromptClient(segments.join('. '));
+  const maxChars = params.targetEngine === 'muse2api' ? 1440 : 2400;
+  if (compiled.length > maxChars) {
+    const sliced = compiled.slice(0, maxChars - 1);
+    const lastSep = Math.max(sliced.lastIndexOf('.'), sliced.lastIndexOf(','));
+    compiled = (lastSep > maxChars * 0.65 ? sliced.slice(0, lastSep + 1) : sliced).trim();
+  }
+  return compiled;
+}
+
+function normalizeClientMatch(raw: string): string {
+  return String(raw || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s:_-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function clientAliasesForName(name: string): string[] {
+  const base = normalizeClientMatch(name.split('(')[0].split('-')[0].split(':')[0]);
+  if (!base) return [];
+  const out = new Set<string>([base]);
+  for (const tok of base.split(/\s+/)) {
+    if (tok.length >= 2) out.add(tok);
+  }
+  return Array.from(out);
+}
+
+export function runClientBlueprintQc(params: {
+  blueprint: DerivativeBlueprint;
+  characterRefs: StudioCharacterRef[];
+  enableVoiceover: boolean;
+  targetEngine?: 'muse2api' | 'gemini';
+}): StudioQcReport {
+  const issues: StudioQcIssue[] = [];
+  const bp = params.blueprint;
+  const format = bp.productionFormat || 'dialogue_film';
+  const scenes = bp.scenes || [];
+
+  for (let i = 0; i < scenes.length; i += 1) {
+    const sc = scenes[i];
+    const selectedIds = Array.isArray(sc.selectedCharacterIds) ? sc.selectedCharacterIds : [];
+
+    // 1. Speaker <-> Character Ref check
+    if (format === 'dialogue_film' && params.characterRefs.length > 0 && sc.dialogue?.trim()) {
+      const speakers = Array.from(String(sc.dialogue).matchAll(/^([^:：\n]{1,36})[:：]/gm)).map((m) =>
+        normalizeClientMatch(m[1])
+      );
+      for (const spk of speakers) {
+        if (!spk) continue;
+        const matchedRef = params.characterRefs.find((ref) =>
+          clientAliasesForName(ref.name).some((al) => spk === al || spk.includes(al) || al.includes(spk))
+        );
+        if (matchedRef && !selectedIds.includes(matchedRef.id)) {
+          issues.push({
+            id: `qc_spk_${sc.id}_${matchedRef.id}`,
+            rule: 'speaker_ref_sync',
+            severity: 'warning',
+            sceneIndex: sc.sceneIndex,
+            message: `Scene ${String(sc.sceneIndex).padStart(2, '0')}: Người nói "${matchedRef.name}" chưa được tích khóa ảnh nhân vật đồng bộ.`,
+            autoFixable: true,
+          });
+        }
+      }
+    }
+
+    // 2. Continuity chain
+    if (i > 0) {
+      const prevEnd = String(scenes[i - 1].sceneEndState || '').trim();
+      if (prevEnd && !String(sc.continuityNote || '').trim()) {
+        issues.push({
+          id: `qc_cont_${sc.id}`,
+          rule: 'continuity_chain',
+          severity: 'warning',
+          sceneIndex: sc.sceneIndex,
+          message: `Scene ${String(sc.sceneIndex).padStart(2, '0')}: Đang trống ghi chú nối tiếp từ trạng thái cuối Scene ${String(i).padStart(2, '0')}.`,
+          autoFixable: true,
+        });
+      }
+    }
+
+    // 3. Prompt Hygiene
+    const rawImg = String(sc.imagePrompt || sc.visualNote || '');
+    const rawVid = String(sc.videoPrompt || '');
+    if (sanitizeVisualPromptClient(rawImg) !== rawImg.trim() || sanitizeVisualPromptClient(rawVid) !== rawVid.trim()) {
+      issues.push({
+        id: `qc_hyg_${sc.id}`,
+        rule: 'prompt_hygiene',
+        severity: 'warning',
+        sceneIndex: sc.sceneIndex,
+        message: `Scene ${String(sc.sceneIndex).padStart(2, '0')}: Prompt còn chứa thẻ nội bộ / số đo / từ dễ bị bộ lọc chặn.`,
+        autoFixable: true,
+      });
+    }
+
+    // 4. Pace vs Duration
+    if (params.enableVoiceover) {
+      const spokenBody =
+        format === 'dialogue_film'
+          ? String(sc.dialogue || '').replace(/^[^:：\n]{1,36}[:：]\s*/gm, '').trim() + ' ' + String(sc.narration || '').trim()
+          : String(sc.narration || '').trim();
+      const words = spokenBody.trim().split(/\s+/).filter(Boolean).length;
+      const maxWords = Math.max(10, Math.round(Math.max(3, sc.durationSec || 6) * 3.8));
+      if (words > maxWords) {
+        issues.push({
+          id: `qc_pace_${sc.id}`,
+          rule: 'pace_duration',
+          severity: 'warning',
+          sceneIndex: sc.sceneIndex,
+          message: `Scene ${String(sc.sceneIndex).padStart(2, '0')}: Lời thoại/lồng tiếng dài (${words} từ / ${sc.durationSec}s, nên <= ${maxWords} từ).`,
+          autoFixable: true,
+        });
+      }
+    }
+
+    // 5. Anti-AI Cliché
+    const spokenAll = `${sc.dialogue || ''} ${sc.narration || ''}`;
+    if (CLIENT_AI_CLICHE_PATTERNS.some((re) => re.test(spokenAll))) {
+      issues.push({
+        id: `qc_cliche_${sc.id}`,
+        rule: 'de_ai_craft',
+        severity: 'warning',
+        sceneIndex: sc.sceneIndex,
+        message: `Scene ${String(sc.sceneIndex).padStart(2, '0')}: Có câu văn sáo rỗng kiểu AI — nên đổi sang hành động cụ thể.`,
+      });
+    }
+  }
+
+  // 6. Voice uniqueness
+  const seenVoices = new Set<string>();
+  for (const vp of bp.characterVoiceProfiles || []) {
+    if (seenVoices.has(vp.voiceId)) {
+      issues.push({
+        id: `qc_voice_${normalizeClientMatch(vp.characterName)}`,
+        rule: 'voice_cast_uniqueness',
+        severity: 'warning',
+        message: `Nhân vật "${vp.characterName}" bị trùng giọng đọc (${vp.voiceId}) với nhân vật khác.`,
+        autoFixable: true,
+      });
+    }
+    seenVoices.add(vp.voiceId);
+  }
+
+  const totalChecks = 6;
+  const failedRules = new Set(issues.filter((is) => is.severity === 'warning' || is.severity === 'error').map((is) => is.rule)).size;
+  const passedChecks = Math.max(0, totalChecks - failedRules);
+  const score = Math.max(40, Math.min(100, 100 - issues.length * 7));
+
+  return {
+    score,
+    passedChecks,
+    totalChecks,
+    autoFixedCount: bp.qcReport?.autoFixedCount || 0,
+    issues: issues.slice(0, 12),
+  };
+}
+
+export function autoFixClientBlueprint(params: {
+  blueprint: DerivativeBlueprint;
+  characterRefs: StudioCharacterRef[];
+  enableVoiceover: boolean;
+}): { blueprint: DerivativeBlueprint; fixedCount: number } {
+  const bp = params.blueprint;
+  const format = bp.productionFormat || 'dialogue_film';
+  let fixedCount = 0;
+
+  const fixedScenes = bp.scenes.map((sc, i, arr) => {
+    const next = {
+      ...sc,
+      selectedCharacterIds: Array.isArray(sc.selectedCharacterIds) ? [...sc.selectedCharacterIds] : [],
+    };
+
+    // 1. Speaker <-> Ref Sync
+    if (format === 'dialogue_film' && params.characterRefs.length > 0 && next.dialogue?.trim()) {
+      const speakers = Array.from(String(next.dialogue).matchAll(/^([^:：\n]{1,36})[:：]/gm)).map((m) =>
+        normalizeClientMatch(m[1])
+      );
+      for (const spk of speakers) {
+        if (!spk) continue;
+        const matchedRef = params.characterRefs.find((ref) =>
+          clientAliasesForName(ref.name).some((al) => spk === al || spk.includes(al) || al.includes(spk))
+        );
+        if (matchedRef && !next.selectedCharacterIds.includes(matchedRef.id)) {
+          next.selectedCharacterIds.push(matchedRef.id);
+          const curNames = String(next.charactersInScene || '').trim();
+          if (!normalizeClientMatch(curNames).includes(normalizeClientMatch(matchedRef.name))) {
+            next.charactersInScene = curNames ? `${curNames}, ${matchedRef.name}` : matchedRef.name;
+          }
+          fixedCount += 1;
+        }
+      }
+    }
+
+    // 2. Continuity chain
+    if (i > 0) {
+      const prevEnd = String(arr[i - 1].sceneEndState || '').trim();
+      if (prevEnd && !String(next.continuityNote || '').trim()) {
+        next.continuityNote = `Tiếp nối trạng thái cuối Scene ${String(i).padStart(2, '0')}: ${prevEnd}`;
+        fixedCount += 1;
+      }
+    }
+
+    // 3. Prompt hygiene
+    const cleanImg = sanitizeVisualPromptClient(next.imagePrompt || next.visualNote || '');
+    const cleanVid = sanitizeVisualPromptClient(next.videoPrompt || '');
+    if (cleanImg !== (next.imagePrompt || '').trim()) {
+      next.imagePrompt = cleanImg;
+      next.visualNote = cleanImg;
+      fixedCount += 1;
+    }
+    if (cleanVid !== (next.videoPrompt || '').trim()) {
+      next.videoPrompt = cleanVid;
+      fixedCount += 1;
+    }
+
+    // 4. Pace duration auto-relax
+    if (params.enableVoiceover) {
+      const spokenBody =
+        format === 'dialogue_film'
+          ? String(next.dialogue || '').replace(/^[^:：\n]{1,36}[:：]\s*/gm, '').trim() + ' ' + String(next.narration || '').trim()
+          : String(next.narration || '').trim();
+      const words = spokenBody.trim().split(/\s+/).filter(Boolean).length;
+      const maxWords = Math.max(10, Math.round(Math.max(3, next.durationSec || 6) * 3.8));
+      if (words > maxWords) {
+        const neededDur = Math.min(30, Math.max(next.durationSec || 6, Math.ceil(words / 3.4)));
+        if (neededDur > next.durationSec) {
+          next.durationSec = neededDur;
+          fixedCount += 1;
+        }
+      }
+    }
+
+    return next;
+  });
+
+  // 5. Deduplicate character voice profiles
+  const usedVoices = new Set<string>();
+  const fixedProfiles = (bp.characterVoiceProfiles || []).map((vp) => {
+    if (!usedVoices.has(vp.voiceId)) {
+      usedVoices.add(vp.voiceId);
+      return vp;
+    }
+    const candidates = GEMINI_VOICE_LIBRARY.filter((v) => v.gender === vp.gender).map((v) => v.value);
+    const alt = candidates.find((v) => !usedVoices.has(v)) || GEMINI_VOICE_LIBRARY.find((v) => !usedVoices.has(v.value))?.value;
+    if (alt) {
+      usedVoices.add(alt);
+      fixedCount += 1;
+      return { ...vp, voiceId: alt };
+    }
+    return vp;
+  });
+
+  const nextBp: DerivativeBlueprint = {
+    ...bp,
+    scenes: fixedScenes,
+    ...(fixedProfiles.length > 0 ? { characterVoiceProfiles: fixedProfiles } : {}),
+  };
+
+  const reAudit = runClientBlueprintQc({
+    blueprint: nextBp,
+    characterRefs: params.characterRefs,
+    enableVoiceover: params.enableVoiceover,
+  });
+
+  return {
+    blueprint: {
+      ...nextBp,
+      qcReport: {
+        ...reAudit,
+        autoFixedCount: (bp.qcReport?.autoFixedCount || 0) + fixedCount,
+      },
+    },
+    fixedCount,
+  };
 }
 
 export async function parseJsonSafe<T = any>(res: Response): Promise<T> {

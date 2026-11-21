@@ -33,10 +33,13 @@ import {
   HelpCircle,
   Lock,
   Volume2,
+  ShieldCheck,
+  Wrench,
 } from 'lucide-react';
 import {
   AiProviderId,
   BrollSourceId,
+  CharacterAgeGroup,
   DerivativeAspectRatio,
   DerivativeBlueprint,
   DerivativeJobState,
@@ -54,6 +57,7 @@ import {
   StudioDefaultConfig,
   StudioLibraryVideoItem,
   StudioMusicTrack,
+  StudioProductionFormat,
   StudioProjectProfile,
   StudioScriptMode,
   StudioUploadedAsset,
@@ -64,6 +68,8 @@ import {
 import { formatBytes, formatDuration } from '../utils/formatters';
 import { getDiscoveryThumbUrl } from './VideoDiscoveryCard';
 import {
+  autoFixClientBlueprint,
+  CHARACTER_AGE_GROUP_OPTIONS,
   compileScenePromptClient,
   compressImageFileToDataUrl,
   DURATION_PRESETS,
@@ -72,6 +78,8 @@ import {
   LANGUAGE_OPTIONS,
   NORTHERN_VN_ACCENT_BADGE,
   parseJsonSafe,
+  PRODUCTION_FORMAT_OPTIONS,
+  runClientBlueprintQc,
   STYLE_OPTIONS,
   uploadMediaFileToStudio,
   VIDEO_STYLE_OPTIONS,
@@ -180,7 +188,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [characters, setCharacters] = useState<StudioCharacterRef[]>([]);
   const [charNameInput, setCharNameInput] = useState('');
   const [charPromptInput, setCharPromptInput] = useState('');
-  const [charVoiceModeInput, setCharVoiceModeInput] = useState<'default' | 'ai_online' | 'offline_system'>('ai_online');
+  const [charAgeGroupInput, setCharAgeGroupInput] = useState<CharacterAgeGroup>('auto');
+  const [charVoiceModeInput, setCharVoiceModeInput] = useState<'default' | 'ai_online' | 'offline_system'>('default');
   const [charVoiceIdInput, setCharVoiceIdInput] = useState<Exclude<DerivativeVoiceId, 'none'>>('Kore');
   const [charOfflineVoiceInput, setCharOfflineVoiceInput] = useState<string>('');
   const [isGeneratingChar, setIsGeneratingChar] = useState(false);
@@ -217,6 +226,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     studioDefaults.targetDurationSec >= 10 ? studioDefaults.targetDurationSec : 60
   );
   const [scriptMode, setScriptMode] = useState<StudioScriptMode>('series');
+  const [productionFormat, setProductionFormat] = useState<StudioProductionFormat>('dialogue_film');
+  const [showManualNarrationMusic, setShowManualNarrationMusic] = useState(false);
   const [batchVideoCount, setBatchVideoCount] = useState<number>(3);
   const [batchDurationMode, setBatchDurationMode] = useState<'uniform' | 'per_video'>('uniform');
   const [perVideoDurations, setPerVideoDurations] = useState<number[]>([30, 30, 30]);
@@ -721,13 +732,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
   // Character uploads & AI generation (always adheres to active videoStyle + locked Northern Vietnamese accent)
   const buildNewCharacterVoiceConfig = () => {
+    const ageMeta = CHARACTER_AGE_GROUP_OPTIONS.find((a) => a.value === charAgeGroupInput);
     const voiceObj = GEMINI_VOICE_LIBRARY.find((v) => v.value === charVoiceIdInput);
     const resolvedOfflineVoice = charOfflineVoiceInput || offlineVoice || offlineVoices[0]?.id || undefined;
     return {
+      ageGroup: charAgeGroupInput,
       voiceMode: charVoiceModeInput,
-      voiceId: charVoiceModeInput === 'ai_online' ? charVoiceIdInput : undefined,
+      voiceId: charVoiceModeInput === 'ai_online' ? charVoiceIdInput : charAgeGroupInput !== 'auto' ? ageMeta?.defaultVoiceId : undefined,
       offlineVoice: charVoiceModeInput === 'offline_system' ? resolvedOfflineVoice : undefined,
-      voiceStyle: charVoiceModeInput === 'ai_online' ? voiceObj?.style : undefined,
+      voiceStyle: charVoiceModeInput === 'ai_online' ? voiceObj?.style : ageMeta?.pitchDirective,
       accentLock: 'vn_north' as const,
     };
   };
@@ -905,11 +918,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
     const charSummary = characters
       .map((c) => {
+        const ageMeta = CHARACTER_AGE_GROUP_OPTIONS.find((a) => a.value === (c.ageGroup || 'auto'));
+        const ageLabel = ageMeta && ageMeta.value !== 'auto' ? `Nhóm tuổi: ${ageMeta.label}` : 'Tuổi: AI tự phân tích';
         const voiceNote =
           c.voiceMode === 'offline_system'
             ? `Giọng VieNeu miền Bắc VN: ${c.offlineVoice || 'Mặc định'}`
-            : `Giọng Gemini miền Bắc VN (Hà Nội): ${c.voiceId || voice}`;
-        return [c.name, c.description, voiceNote].filter(Boolean).join(' - ');
+            : c.voiceMode === 'ai_online'
+            ? `Giọng Gemini miền Bắc VN (Hà Nội): ${c.voiceId || voice}`
+            : `AI tự phân tích tuổi chọn giọng Bắc VN (${ageMeta?.defaultVoiceId || 'phù hợp'})`;
+        return [c.name, ageLabel, c.description, voiceNote].filter(Boolean).join(' - ');
       })
       .join('; ');
 
@@ -938,6 +955,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         body: JSON.stringify({
           mode: studioMode,
           scriptMode,
+          productionFormat,
           videoCount: scriptMode === 'independent_batch' ? batchVideoCount : 1,
           perVideoDurations: effectiveBatchDurations,
           ideaPrompt: studioMode === 'creative' ? effectiveCreativeIdea : ideaPrompt.trim(),
@@ -951,6 +969,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           outputLanguage,
           useProModel: aiProvider === 'gemini' && useProModel,
           characterSummary: charSummary,
+          characterRefsMeta: characters.map((c) => ({
+            id: c.id,
+            name: c.name,
+            description: c.description,
+            ageGroup: c.ageGroup,
+            gender: c.gender,
+            voiceId: c.voiceId,
+          })),
           characterBible: characterBibleDraft.trim(),
           settingBible: settingBibleDraft.trim(),
           visualStyleBible: visualStyleBibleDraft.trim(),
@@ -1126,6 +1152,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       continuityBible: activeContinuityBible,
       totalScenes: blueprint.scenes.length,
       mediaType: 'image',
+      hasAttachedRefs: characters.length > 0,
+      targetEngine: imageEngineMode === 'muse2api' ? 'muse2api' : 'gemini',
     });
 
     try {
@@ -1154,7 +1182,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             dialogue: sc.dialogue || '',
             sceneSummary: sc.sceneSummary || '',
             costume: sc.costume || '',
+            cameraAngle: sc.cameraAngle || '',
+            vfxNotes: sc.vfxNotes || '',
+            selectedCharacterIds: sc.selectedCharacterIds,
             characterRefs: characters.map((c) => ({
+              id: c.id,
               dataUrl: c.dataUrl,
               name: c.name,
               description: c.description,
@@ -1247,6 +1279,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       continuityBible: activeContinuityBible,
       totalScenes: blueprint.scenes.length,
       mediaType: 'video',
+      hasAttachedRefs: Boolean(sc.sceneImageDataUrl || characters.length > 0),
+      targetEngine: sceneVideoEngine,
     });
 
     try {
@@ -1276,8 +1310,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           dialogue: sc.dialogue || '',
           sceneSummary: sc.sceneSummary || '',
           costume: sc.costume || '',
+          cameraAngle: sc.cameraAngle || '',
+          vfxNotes: sc.vfxNotes || '',
+          selectedCharacterIds: sc.selectedCharacterIds,
           sceneImageDataUrl: sc.sceneImageDataUrl,
           characterRefs: characters.map((c) => ({
+            id: c.id,
             dataUrl: c.dataUrl,
             name: c.name,
             description: c.description,
@@ -1555,6 +1593,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         blueprint: {
           ...targetBp,
           mode: studioMode,
+          productionFormat: targetBp.productionFormat || productionFormat,
           videoStyle: targetBp.videoStyle || videoStyle,
           characterBible: targetBp.characterBible ?? characterBibleDraft,
           settingBible: targetBp.settingBible ?? settingBibleDraft,
@@ -1578,10 +1617,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         musicPrompt,
         musicVolume: musicVolume / 100,
         characterRefs: characters.map((c) => ({
+          id: c.id,
           dataUrl: c.dataUrl,
           name: c.name,
           description: c.description,
-          voiceMode: c.voiceMode || 'ai_online',
+          ageGroup: c.ageGroup,
+          gender: c.gender,
+          voiceMode: c.voiceMode || 'default',
           voiceId: c.voiceId || voice,
           offlineVoice: c.offlineVoice,
           voiceStyle: c.voiceStyle,
@@ -2401,8 +2443,27 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 </button>
               </div>
 
-              {/* Pre-assign Gemini Voice Reference Library (Locked Northern Vietnamese Accent) */}
+              {/* Pre-assign Age Group & Gemini Voice Reference Library (Locked Northern Vietnamese Accent) */}
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 text-xs">
+                <select
+                  value={charAgeGroupInput}
+                  onChange={(e) => {
+                    const nextAge = e.target.value as CharacterAgeGroup;
+                    setCharAgeGroupInput(nextAge);
+                    const meta = CHARACTER_AGE_GROUP_OPTIONS.find((a) => a.value === nextAge);
+                    if (meta && nextAge !== 'auto') {
+                      setCharVoiceIdInput(meta.defaultVoiceId);
+                    }
+                  }}
+                  aria-label="Nhóm tuổi giọng nói nhân vật"
+                  className={`sm:col-span-4 ${inputCls}`}
+                >
+                  {CHARACTER_AGE_GROUP_OPTIONS.map((ag) => (
+                    <option key={ag.value} value={ag.value}>
+                      {ag.value === 'auto' ? 'Tuổi giọng: AI tự phân tích' : `${ag.label} · ${ag.timbreSummary}`}
+                    </option>
+                  ))}
+                </select>
                 <select
                   value={charVoiceModeInput}
                   onChange={(e) =>
@@ -2411,14 +2472,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   aria-label="Chế độ giọng nhân vật mới"
                   className={`sm:col-span-4 ${inputCls}`}
                 >
-                  <option value="ai_online">Thư viện giọng Gemini (Miền Bắc VN)</option>
-                  <option value="default">Theo giọng mặc định của video</option>
+                  <option value="default">AI tự chọn theo tuổi &amp; giới tính (Bắc VN)</option>
+                  <option value="ai_online">Khóa giọng Gemini cụ thể (Miền Bắc VN)</option>
                   {offlineVoices.length > 0 && (
                     <option value="offline_system">Giọng VieNeu Offline</option>
                   )}
                 </select>
                 {charVoiceModeInput === 'ai_online' && (
-                  <div className="sm:col-span-8 flex items-center gap-1.5">
+                  <div className="sm:col-span-4 flex items-center gap-1.5">
                     <select
                       value={charVoiceIdInput}
                       onChange={(e) =>
@@ -2463,7 +2524,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     value={charOfflineVoiceInput || offlineVoice || offlineVoices[0]?.id || ''}
                     onChange={(e) => setCharOfflineVoiceInput(e.target.value)}
                     aria-label="Chọn giọng VieNeu cho nhân vật mới"
-                    className={`sm:col-span-8 ${inputCls}`}
+                    className={`sm:col-span-4 ${inputCls}`}
                   >
                     {offlineVoices.map((v) => (
                       <option key={v.id} value={v.id}>
@@ -2473,8 +2534,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </select>
                 )}
                 {charVoiceModeInput === 'default' && (
-                  <div className="sm:col-span-8 h-9 px-3 flex items-center text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50/70 dark:bg-[#0c1021]/60 border border-dashed border-slate-200 dark:border-slate-400/20 rounded-xl truncate">
-                    Dùng giọng mặc định của video (đã khóa ngữ âm miền Bắc Việt Nam)
+                  <div className="sm:col-span-4 h-9 px-2.5 flex items-center text-[11px] text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-xl truncate">
+                    Tự động chọn cao độ khớp tuổi
                   </div>
                 )}
               </div>
@@ -2524,7 +2585,29 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
                         <div className="flex items-center gap-1">
                           <select
-                            value={ch.voiceMode || 'ai_online'}
+                            value={ch.ageGroup || 'auto'}
+                            onChange={(e) => {
+                              const nextAge = e.target.value as CharacterAgeGroup;
+                              const meta = CHARACTER_AGE_GROUP_OPTIONS.find((a) => a.value === nextAge);
+                              updateCharacterRef(ch.id, {
+                                ageGroup: nextAge,
+                                ...(meta && nextAge !== 'auto' && (!ch.voiceMode || ch.voiceMode === 'default')
+                                  ? { voiceId: meta.defaultVoiceId, voiceStyle: meta.pitchDirective }
+                                  : {}),
+                              });
+                            }}
+                            aria-label="Nhóm tuổi giọng của nhân vật"
+                            className="h-6 px-1 text-[10px] bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-md text-violet-700 dark:text-violet-300 font-medium focus:outline-none max-w-[104px]"
+                          >
+                            {CHARACTER_AGE_GROUP_OPTIONS.map((ag) => (
+                              <option key={ag.value} value={ag.value}>
+                                {ag.value === 'auto' ? 'Tuổi: AI tự xét' : ag.label}
+                              </option>
+                            ))}
+                          </select>
+
+                          <select
+                            value={ch.voiceMode || 'default'}
                             onChange={(e) => {
                               const nextMode = e.target.value as 'default' | 'ai_online' | 'offline_system';
                               const fallbackVid = ch.voiceId || charVoiceIdInput || 'Kore';
@@ -2541,14 +2624,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                               });
                             }}
                             aria-label="Loại giọng nhân vật"
-                            className="h-6 px-1.5 text-[10px] bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-md text-slate-800 dark:text-slate-100 focus:outline-none"
+                            className="h-6 px-1 text-[10px] bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-md text-slate-800 dark:text-slate-100 focus:outline-none"
                           >
+                            <option value="default">AI theo tuổi</option>
                             <option value="ai_online">Gemini Voice</option>
-                            <option value="default">Mặc định</option>
                             {offlineVoices.length > 0 && <option value="offline_system">VieNeu</option>}
                           </select>
 
-                          {(ch.voiceMode || 'ai_online') === 'ai_online' && (
+                          {ch.voiceMode === 'ai_online' && (
                             <select
                               value={ch.voiceId || 'Kore'}
                               onChange={(e) => {
@@ -2561,7 +2644,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                                 });
                               }}
                               aria-label="Thư viện giọng tham chiếu Gemini của nhân vật"
-                              className="flex-1 min-w-0 h-6 px-1.5 text-[10px] bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-md text-slate-800 dark:text-slate-100 focus:outline-none"
+                              className="flex-1 min-w-0 h-6 px-1 text-[10px] bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-md text-slate-800 dark:text-slate-100 focus:outline-none"
                             >
                               {GEMINI_VOICE_LIBRARY.map((v) => (
                                 <option key={v.value} value={v.value}>
@@ -2588,9 +2671,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                             </select>
                           )}
 
-                          {ch.voiceMode === 'default' && (
-                            <span className="flex-1 min-w-0 h-6 px-1.5 flex items-center text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                              Theo video ({voice})
+                          {(!ch.voiceMode || ch.voiceMode === 'default') && (
+                            <span className="flex-1 min-w-0 h-6 px-1.5 flex items-center text-[10px] text-emerald-700 dark:text-emerald-300 truncate">
+                              AI theo tuổi {ch.voiceId ? `(${ch.voiceId})` : ''}
                             </span>
                           )}
 
@@ -2737,6 +2820,63 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             {/* CONFIG TAB 1: SCRIPT & FRAME PARAMETERS */}
             {configTab === 'script' && (
               <div className="space-y-4 text-xs">
+                {/* 2 Video Production Format Modes: Phim có lời thoại vs Phim thuyết minh kể chuyện */}
+                <div className="space-y-2 pb-3 border-b border-slate-200/80 dark:border-slate-400/15">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-slate-800 dark:text-white">
+                      Chế độ sản xuất video
+                    </span>
+                    <span className="text-[10px] font-medium text-cyan-700 dark:text-cyan-300">
+                      {productionFormat === 'dialogue_film'
+                        ? 'Đồng bộ nhân vật · giọng đúng độ tuổi'
+                        : '1 giọng dẫn chuyện · AI tự ghép nhạc'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {PRODUCTION_FORMAT_OPTIONS.map((fmt) => {
+                      const active = productionFormat === fmt.value;
+                      return (
+                        <button
+                          key={fmt.value}
+                          type="button"
+                          onClick={() => {
+                            setProductionFormat(fmt.value);
+                            if (fmt.value === 'narration_story') {
+                              if (voiceMode === 'none') setVoiceMode('ai_online');
+                              if (musicMode === 'none') setMusicMode('auto_adaptive');
+                              setShowManualNarrationMusic(false);
+                            } else if (musicMode === 'auto_adaptive') {
+                              setMusicMode('none');
+                            }
+                          }}
+                          className={`text-left p-2.5 rounded-xl border transition cursor-pointer space-y-0.5 ${
+                            active
+                              ? fmt.value === 'dialogue_film'
+                                ? 'bg-violet-500/15 border-violet-400/60 text-slate-900 dark:text-white shadow-sm'
+                                : 'bg-emerald-500/15 border-emerald-400/60 text-slate-900 dark:text-white shadow-sm'
+                              : 'bg-slate-50 dark:bg-[#0c1021] border-slate-200 dark:border-slate-400/20 text-slate-600 dark:text-slate-300 hover:border-cyan-400/40'
+                          }`}
+                        >
+                          <div className="font-bold flex items-center justify-between gap-1.5">
+                            <span>{fmt.label}</span>
+                            {active && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/80 dark:bg-white/10 text-slate-800 dark:text-white font-semibold">
+                                Đang chọn
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] opacity-85 leading-snug">{fmt.shortDesc}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                    {PRODUCTION_FORMAT_OPTIONS.find((f) => f.value === productionFormat)?.detailDesc}
+                  </p>
+                </div>
+
                 {/* Script Mode Segmented Selector + Comparison Help */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
@@ -3188,10 +3328,26 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               <div className="space-y-4 text-xs">
                 {/* Voiceover Section */}
                 <div className="space-y-2.5">
-                  <div className="flex items-center gap-2 font-bold text-emerald-700 dark:text-emerald-300">
-                    <Mic className="w-4 h-4" />
-                    <span>Lồng tiếng &amp; Giọng đọc</span>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 font-bold text-emerald-700 dark:text-emerald-300">
+                      <Mic className="w-4 h-4" />
+                      <span>
+                        {productionFormat === 'narration_story'
+                          ? 'Giọng người dẫn chuyện (Thuyết minh kể chuyện)'
+                          : 'Giọng đọc & Phân tích độ tuổi nhân vật'}
+                      </span>
+                    </div>
                   </div>
+
+                  {productionFormat === 'dialogue_film' ? (
+                    <div className="p-2.5 rounded-xl bg-violet-500/10 border border-violet-500/25 text-[11px] text-violet-800 dark:text-violet-200 leading-snug">
+                      AI tự động đọc độ tuổi &amp; giới tính từng nhân vật (<strong>Trẻ em · Thanh niên · Đàn ông · Đàn bà · Trung niên · Người già</strong>) để chọn cao độ giọng riêng biệt, giữ nhất quán xuyên suốt mọi phân cảnh.
+                    </div>
+                  ) : (
+                    <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-[11px] text-emerald-800 dark:text-emerald-200 leading-snug">
+                      Chỉ cần chọn 1 giọng người dẫn chuyện bên dưới; không cần cấu hình giọng riêng cho từng nhân vật.
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-3 gap-1.5">
                     {[
@@ -3306,39 +3462,77 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
                 {/* Background Music Section */}
                 <div className="pt-3 border-t border-slate-200/80 dark:border-slate-400/15 space-y-2.5">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 font-bold text-violet-700 dark:text-violet-300">
                       <Music className="w-4 h-4" />
-                      <span>Ghép nhạc nền</span>
-                    </div>
-                    {musicMode !== 'none' && (
-                      <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                        Âm lượng {musicVolume}%
+                      <span>
+                        {productionFormat === 'narration_story'
+                          ? 'Nhạc nền AI linh động theo bối cảnh'
+                          : 'Ghép nhạc nền'}
                       </span>
-                    )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {musicMode !== 'none' && (
+                        <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                          Âm lượng {musicVolume}%
+                        </span>
+                      )}
+                      {productionFormat === 'narration_story' && (
+                        <button
+                          type="button"
+                          onClick={() => setShowManualNarrationMusic((v) => !v)}
+                          className="text-[10px] font-semibold text-cyan-700 dark:text-cyan-300 hover:underline cursor-pointer"
+                        >
+                          {showManualNarrationMusic ? 'Ẩn tùy chỉnh tay' : 'Chọn nhạc thủ công'}
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  <select
-                    value={musicMode}
-                    onChange={(e) => setMusicMode(e.target.value as DerivativeMusicMode)}
-                    aria-label="Nguồn nhạc nền"
-                    className={inputCls}
-                  >
-                    <option value="none">Không chèn nhạc nền</option>
-                    <option value="ai_lyria">Nhạc nền AI sáng tác (Lyria · Trả phí)</option>
-                    <option value="public_free">Nhạc công cộng miễn phí (Wikimedia Audio)</option>
-                    <option value="uploaded">Tải tệp nhạc từ máy (.mp3 / .wav)</option>
-                  </select>
+                  {productionFormat === 'narration_story' && !showManualNarrationMusic ? (
+                    <div className="p-2.5 rounded-xl bg-violet-500/10 border border-violet-400/30 space-y-2">
+                      <div className="text-[11px] text-slate-700 dark:text-slate-200 leading-snug">
+                        Chế độ <strong>Phim thuyết minh kể chuyện</strong> tự động ưu tiên AI sáng tác hoặc chọn nhạc nền khớp với cảm xúc và bối cảnh kịch bản mà không cần cài đặt thủ công từng cảnh.
+                      </div>
+                      {musicMode !== 'none' && (
+                        <input
+                          type="range"
+                          min={5}
+                          max={45}
+                          value={musicVolume}
+                          onChange={(e) => setMusicVolume(Number(e.target.value))}
+                          aria-label="Âm lượng nhạc nền"
+                          className="w-full accent-violet-500"
+                        />
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <select
+                        value={musicMode}
+                        onChange={(e) => setMusicMode(e.target.value as DerivativeMusicMode)}
+                        aria-label="Nguồn nhạc nền"
+                        className={inputCls}
+                      >
+                        <option value="auto_adaptive">AI tự động chọn nhạc nền phù hợp bối cảnh</option>
+                        <option value="none">Không chèn nhạc nền</option>
+                        <option value="ai_lyria">Nhạc nền AI sáng tác (Lyria · Trả phí)</option>
+                        <option value="public_free">Nhạc công cộng miễn phí (Wikimedia Audio)</option>
+                        <option value="uploaded">Tải tệp nhạc từ máy (.mp3 / .wav)</option>
+                      </select>
 
-                  {musicMode !== 'none' && (
-                    <input
-                      type="range"
-                      min={5}
-                      max={45}
-                      value={musicVolume}
-                      onChange={(e) => setMusicVolume(Number(e.target.value))}
-                      className="w-full accent-violet-500"
-                    />
+                      {musicMode !== 'none' && (
+                        <input
+                          type="range"
+                          min={5}
+                          max={45}
+                          value={musicVolume}
+                          onChange={(e) => setMusicVolume(Number(e.target.value))}
+                          aria-label="Âm lượng nhạc nền"
+                          className="w-full accent-violet-500"
+                        />
+                      )}
+                    </>
                   )}
 
                   {musicMode === 'ai_lyria' && (
@@ -3457,6 +3651,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           <div className="text-xs text-slate-600 dark:text-slate-300 flex flex-wrap items-center gap-2">
             <span>
               <span className="font-semibold text-slate-900 dark:text-white">Tóm tắt Bước 1:</span>{' '}
+              {productionFormat === 'narration_story' ? 'Phim thuyết minh kể chuyện' : 'Phim có lời thoại'} ·{' '}
               {scriptMode === 'independent_batch' ? `${batchVideoCount} video độc lập` : '1 Series'} · {aspectRatio} ·{' '}
               {targetDurationSec}s · {voiceMode === 'none' ? 'Không lồng tiếng' : voiceMode === 'offline_system' ? 'VieNeu Offline' : 'AI Voice'}
             </span>
@@ -3897,6 +4092,110 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 </div>
               )}
 
+              {/* Character Voice Profile Casting Strip (Dialogue Film) / Adaptive Music Strip (Narration Story) */}
+              {(blueprint.productionFormat || productionFormat) === 'dialogue_film' &&
+                Array.isArray(blueprint.characterVoiceProfiles) &&
+                blueprint.characterVoiceProfiles.length > 0 && (
+                  <div className="p-2.5 rounded-xl bg-violet-500/8 border border-violet-400/25 flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="font-bold text-violet-700 dark:text-violet-300 mr-1">
+                      Phân vai giọng nói theo độ tuổi (Bắc VN):
+                    </span>
+                    {blueprint.characterVoiceProfiles.map((vp, vpIdx) => {
+                      const ageMeta = CHARACTER_AGE_GROUP_OPTIONS.find((a) => a.value === vp.ageGroup);
+                      return (
+                        <span
+                          key={`${vp.characterName}_${vpIdx}`}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/80 dark:bg-[#131a35] border border-violet-400/30 text-slate-800 dark:text-slate-100"
+                        >
+                          <span className="font-semibold">{vp.characterName}</span>
+                          <span className="text-[10px] text-violet-600 dark:text-violet-300">
+                            · {ageMeta?.label || vp.ageGroup}
+                          </span>
+                          <span className="text-[10px] font-mono text-cyan-600 dark:text-cyan-300">
+                            ({vp.voiceId})
+                          </span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+
+              {(blueprint.productionFormat || productionFormat) === 'narration_story' && (
+                <div className="p-2.5 rounded-xl bg-emerald-500/8 border border-emerald-400/25 flex flex-wrap items-center justify-between gap-2 text-[11px] text-emerald-800 dark:text-emerald-200">
+                  <span>
+                    <strong>Chế độ Phim thuyết minh kể chuyện:</strong> AI dùng 1 giọng người dẫn chuyện thống nhất &amp; tự ghép nhạc nền phù hợp từng phân cảnh.
+                  </span>
+                  {blueprint.adaptiveMusicPrompt && (
+                    <span className="font-mono text-[10px] opacity-85 truncate max-w-md">
+                      Nhạc nền: {blueprint.adaptiveMusicPrompt}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Pre-Render 6-Point QC Gate Card */}
+              {(() => {
+                const liveQc = runClientBlueprintQc({
+                  blueprint,
+                  characterRefs: characters,
+                  enableVoiceover: voiceMode !== 'none',
+                  targetEngine: sceneVideoEngine,
+                });
+                const fixableIssues = liveQc.issues.filter((is) => is.autoFixable);
+                const serverFixedCount = blueprint.qcReport?.autoFixedCount || 0;
+                return (
+                  <div
+                    className={`p-3 rounded-xl border text-xs space-y-2 ${
+                      liveQc.issues.length === 0
+                        ? 'bg-emerald-500/8 border-emerald-500/25 text-emerald-900 dark:text-emerald-100'
+                        : 'bg-amber-500/8 border-amber-500/30 text-amber-900 dark:text-amber-100'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 shrink-0" />
+                        <span className="font-bold">
+                          Cổng kiểm định Pre-Render QC: {liveQc.passedChecks}/{liveQc.totalChecks} chuẩn đạt · {liveQc.score}/100 điểm
+                        </span>
+                        {serverFixedCount > 0 && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/70 dark:bg-white/10 font-medium">
+                            Đã tự chuẩn hóa {serverFixedCount} mục
+                          </span>
+                        )}
+                      </div>
+                      {fixableIssues.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const fixed = autoFixClientBlueprint({
+                              blueprint,
+                              characterRefs: characters,
+                              enableVoiceover: voiceMode !== 'none',
+                            });
+                            setBlueprint(fixed.blueprint);
+                          }}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-semibold transition cursor-pointer"
+                        >
+                          <Wrench className="w-3 h-3" />
+                          <span>Tự động sửa lỗi đồng bộ ({fixableIssues.length})</span>
+                        </button>
+                      )}
+                    </div>
+                    {liveQc.issues.length > 0 ? (
+                      <ul className="space-y-1 text-[11px] opacity-90 pl-6 list-disc">
+                        {liveQc.issues.slice(0, 4).map((is) => (
+                          <li key={is.id}>{is.message}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-[11px] opacity-85">
+                        Đạt chuẩn đồng bộ nhân vật ↔ lời thoại, mạch nối cảnh, vệ sinh prompt an toàn model, nhịp đọc &amp; phân vai giọng nói.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+
               <div className="divide-y divide-slate-200 dark:divide-slate-400/15 border border-slate-200 dark:border-slate-400/20 rounded-2xl overflow-hidden">
                 {blueprint.scenes.map((sc, idx) => (
                   <StudioSceneCard
@@ -3905,6 +4204,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     index={idx}
                     totalScenes={blueprint.scenes.length}
                     mode={studioMode}
+                    productionFormat={blueprint.productionFormat || productionFormat}
                     videoStyle={blueprint.videoStyle || videoStyle}
                     characterBible={blueprint.characterBible ?? characterBibleDraft}
                     settingBible={blueprint.settingBible ?? settingBibleDraft}
@@ -3912,6 +4212,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     costumeBible={blueprint.costumeBible ?? costumeBibleDraft}
                     continuityBible={blueprint.continuityBible ?? continuityBibleDraft}
                     hasCharacterRefs={characters.length > 0}
+                    characterRefs={characters}
                     sources={sources}
                     busyImg={busySceneImageIds.has(sc.id)}
                     queuedImg={queuedSceneImageIds.has(sc.id)}

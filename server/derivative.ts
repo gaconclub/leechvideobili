@@ -17,9 +17,26 @@ import {
   enhancePromptWithCinematicSkill,
   getCinematicShotRoleForScene,
 } from './skills/cinematicFilmmakingSkill';
+import {
+  auditAndNormalizeBlueprintServer,
+  buildShortDramaScreenplayRules,
+  compileProductionModelPrompt,
+  RuleEngineQcReport,
+  SHORT_DRAMA_IDEA_EXPANSION_RULES,
+} from './skills/shortDramaProductionRules';
 
 export type StudioCreationMode = 'creative' | 'derivative';
 export type StudioScriptMode = 'series' | 'independent_batch';
+export type StudioProductionFormat = 'dialogue_film' | 'narration_story';
+export type CharacterAgeGroup =
+  | 'auto'
+  | 'child'
+  | 'youth'
+  | 'adult_male'
+  | 'adult_female'
+  | 'middle_aged'
+  | 'elderly';
+export type CharacterGenderHint = 'auto' | 'male' | 'female';
 export type StudioVideoStyle =
   | 'professional'
   | 'cinematic'
@@ -66,11 +83,19 @@ export type GeminiTtsVoiceId =
   | 'Sulafat';
 export type DerivativeVoiceId = 'none' | GeminiTtsVoiceId;
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
-export type DerivativeMusicMode = 'none' | 'ai_lyria' | 'public_free' | 'uploaded';
+export type DerivativeMusicMode = 'none' | 'auto_adaptive' | 'ai_lyria' | 'public_free' | 'uploaded';
 export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
 export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api';
 export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
+
+export interface CharacterVoiceProfile {
+  characterName: string;
+  ageGroup: Exclude<CharacterAgeGroup, 'auto'>;
+  gender: Exclude<CharacterGenderHint, 'auto'>;
+  voiceId: Exclude<DerivativeVoiceId, 'none'>;
+  vocalToneNote: string;
+}
 
 export interface DerivativeSourceInput {
   id: string;
@@ -127,7 +152,11 @@ export interface DerivativeScene {
   continuityNote?: string;
   sceneEndState?: string;
   visualNote?: string;
+  vfxNotes?: string;
+  soundLayersNote?: string;
   brollKeywordEn?: string;
+  musicMoodEn?: string;
+  selectedCharacterIds?: string[];
   sceneImageDataUrl?: string;
   omniClipAssetId?: string;
   omniClipPreviewUrl?: string;
@@ -147,6 +176,7 @@ export interface DerivativeSourceInsight {
 export interface DerivativeBlueprint {
   mode?: StudioCreationMode;
   scriptMode?: StudioScriptMode;
+  productionFormat?: StudioProductionFormat;
   batchIndex?: number;
   batchTotal?: number;
   sharedSpiritNote?: string;
@@ -158,6 +188,8 @@ export interface DerivativeBlueprint {
   visualStyleBible?: string;
   costumeBible?: string;
   continuityBible?: string;
+  adaptiveMusicPrompt?: string;
+  characterVoiceProfiles?: CharacterVoiceProfile[];
   enableVoiceover?: boolean;
   referenceAnalysis?: ReferenceVideoAnalysis;
   learnedSummary: string;
@@ -169,6 +201,7 @@ export interface DerivativeBlueprint {
   aspectRatio: DerivativeAspectRatio;
   sourcesAnalyzed: DerivativeSourceInsight[];
   scenes: DerivativeScene[];
+  qcReport?: RuleEngineQcReport;
   usedProvider?: AiProviderId;
   usedModel?: string;
 }
@@ -1001,6 +1034,7 @@ async function generateBlueprintViaOpenAiCompatible(params: {
   wordsMax: number;
   enableVoiceover: boolean;
   isDerivative: boolean;
+  productionFormat?: StudioProductionFormat;
 }): Promise<any> {
   const cfg = resolveOpenAiCompatibleConfig(params.provider);
   if (!cfg.apiKey) {
@@ -1028,11 +1062,21 @@ async function generateBlueprintViaOpenAiCompatible(params: {
 TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU (không markdown, không văn bản thừa):
 {
   "learnedSummary": "Tóm tắt 2-3 câu ý tưởng cốt lõi / nội dung sáng tạo mới",
-  "characterBible": "Character Reference: Mô tả cực chi tiết ngoại hình cố định từng nhân vật (tuổi, khuôn mặt, tóc, dáng, đặc điểm nhận diện)",
+  "characterBible": "Character Reference: Mô tả cực chi tiết ngoại hình cố định từng nhân vật (tên, độ tuổi cụ thể, giới tính, khuôn mặt, tóc, dáng, đặc điểm nhận diện)",
   "settingBible": "Environment Reference: Hồ sơ bối cảnh, địa điểm, kiến trúc, thời gian & môi trường xuyên suốt",
   "visualStyleBible": "Visual Style Reference: Phong cách hình ảnh, chất liệu, ống kính & bảng màu xuyên suốt",
   "costumeBible": "Costume Reference: Trang phục & phụ kiện chuẩn giữ nguyên giữa các cảnh",
-  "continuityBible": "Story Continuity: Quy tắc mạch liên tục câu chuyện & trạng thái chuyển cảnh",${refBlock}
+  "continuityBible": "Story Continuity: Quy tắc mạch liên tục câu chuyện & trạng thái chuyển cảnh",
+  "adaptiveMusicPrompt": "Mô tả tiếng Anh ngắn gọn nhạc nền phù hợp toàn bộ bối cảnh & cảm xúc phim (VD: warm cinematic piano and gentle acoustic strings building emotionally)",
+  "characterVoiceProfiles": [
+    {
+      "characterName": "Tên chính xác của nhân vật",
+      "ageGroup": "child | youth | adult_male | adult_female | middle_aged | elderly",
+      "gender": "male | female",
+      "voiceId": "Tên giọng Gemini phù hợp từ danh sách 30 giọng (khác nhau cho từng nhân vật)",
+      "vocalToneNote": "Mô tả cao độ & sắc thái giọng phù hợp độ tuổi (VD: Giọng trẻ em trong sáng / Giọng người già trầm chậm rãi)"
+    }
+  ],${refBlock}
   "keyTakeaways": ["ý 1", "ý 2", "ý 3", "ý 4"],
   "hookFormula": "Công thức mở đầu & giữ chân",
   "sourceKeyPoints": ["1 câu điểm nhấn / bài học video #1"],
@@ -1055,7 +1099,7 @@ TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU
       "lighting": "Ánh sáng tự nhiên / Điện ảnh / Ngược sáng / Neon...",
       "costume": "Trang phục cụ thể khớp Costume Reference",
       "shotStyle": "Điện ảnh / Tài liệu / Anime / Quảng cáo...",
-      "dialogue": "Lời thoại nhân vật nói trong cảnh (hoặc để trống nếu cảnh không thoại)",
+      "dialogue": "Lời thoại nhân vật theo mẫu 'Tên nhân vật: Câu nói' (để trống nếu là phim thuyết minh không thoại)",
       "narration": "${
         params.enableVoiceover
           ? `Nội dung lồng tiếng / thuyết minh tự nhiên (${params.wordsMin}-${params.wordsMax} chữ)`
@@ -1065,8 +1109,11 @@ TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU
       "continuityNote": "Tiếp nối trực tiếp từ trạng thái cuối phân cảnh trước",
       "sceneEndState": "Trạng thái cuối cùng của nhân vật/vị trí/hành động khi kết thúc cảnh này",
       "imagePrompt": "Prompt hình ảnh CỰC KỲ CHI TIẾT mô tả đầy đủ nhân vật (ngoại hình + trang phục cố định), bối cảnh, hành động đóng khung, góc máy, ánh sáng, phong cách hình ảnh đồng nhất",
-      "videoPrompt": "Prompt video CỰC KỲ CHI TIẾT mô tả hành động liên tục, chuyển động nhân vật, chuyển động camera (${'kiểu quay'}), ánh sáng, bối cảnh & trang phục đồng nhất với imagePrompt",
-      "brollKeywordEn": "2-4 English keywords for Wikimedia Commons stock video lookup"
+      "videoPrompt": "Prompt video CỰC KỲ CHI TIẾT mô tả hành động liên tục, chuyển động nhân vật, chuyển động camera, ánh sáng, bối cảnh & trang phục đồng nhất với imagePrompt",
+      "vfxNotes": "Mô tả kỹ xảo & vật liệu vật lý thực tế nếu có (volumetric light shafts, dust motes, brushed metal reflection, caustics, foreground wipe...)",
+      "soundLayersNote": "Ghi chú 4 lớp âm thanh (MUS nhạc nền / AMB môi trường / BIO nhịp thở-tim / DET tiếng đạo cụ & điểm Silence Drop)",
+      "brollKeywordEn": "2-4 English keywords for Wikimedia Commons stock video lookup",
+      "musicMoodEn": "2-5 English mood keywords for adaptive background music matching this scene"
     }
   ]
 }
@@ -1293,6 +1340,8 @@ export function compileConsistentScenePrompt(params: {
   continuityBible?: string;
   totalScenes?: number;
   mediaType?: 'image' | 'video';
+  hasAttachedRefs?: boolean;
+  targetEngine?: 'muse2api' | 'gemini';
 }): string {
   const styleKey: StudioVideoStyle =
     params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META ? params.videoStyle : 'cinematic';
@@ -1371,16 +1420,28 @@ export function compileConsistentScenePrompt(params: {
       parts.push(`Ending State: ${sc.sceneEndState.trim()}.`);
     }
   }
-  const compiled = parts.join(' ');
-  if (styleKey === 'cinematic_filmmaking') {
-    return enhancePromptWithCinematicSkill({
-      basePrompt: compiled,
-      mediaType,
-      sceneIndex: sc.sceneIndex,
-      totalScenes: params.totalScenes,
-    });
-  }
-  return compiled;
+  const compiledBase = parts.join(' ');
+  const styledCompiled =
+    styleKey === 'cinematic_filmmaking'
+      ? enhancePromptWithCinematicSkill({
+          basePrompt: compiledBase,
+          mediaType,
+          sceneIndex: sc.sceneIndex,
+          totalScenes: params.totalScenes,
+        })
+      : compiledBase;
+
+  return compileProductionModelPrompt({
+    rawCompiledPrompt: styledCompiled,
+    mode: 'scene',
+    mediaType,
+    hasAttachedRefs: Boolean(params.hasAttachedRefs),
+    cameraAngle: sc.cameraAngle,
+    vfxNotes: sc.vfxNotes,
+    targetEngine: params.targetEngine || 'gemini',
+    characterBible: params.characterBible,
+    costumeBible: params.costumeBible,
+  }).prompt;
 }
 
 export interface StudioCharacterRefInput {
@@ -1389,11 +1450,22 @@ export interface StudioCharacterRefInput {
   dataUrl: string;
   description?: string;
   source?: 'uploaded' | 'ai_generated';
+  ageGroup?: CharacterAgeGroup;
+  gender?: CharacterGenderHint;
   voiceMode?: 'default' | 'ai_online' | 'offline_system';
   voiceId?: Exclude<DerivativeVoiceId, 'none'>;
   offlineVoice?: string;
   voiceStyle?: string;
   accentLock?: 'vn_north';
+}
+
+export interface StudioCharacterRefMetaInput {
+  id: string;
+  name: string;
+  description?: string;
+  ageGroup?: CharacterAgeGroup;
+  gender?: CharacterGenderHint;
+  voiceId?: Exclude<DerivativeVoiceId, 'none'>;
 }
 
 export interface IndependentConceptOverride {
@@ -1487,6 +1559,7 @@ YÊU CẦU NỘI DUNG TRIỂN KHAI:
    - Kết thúc đọng lại thông điệp hoặc cảm xúc rõ nét.
 2. Mô tả cụ thể nhân vật trung tâm (ngoại hình/trang phục/thần thái nếu chưa có, hoặc phát huy đúng danh sách nhân vật đã chọn), bối cảnh không gian, không khí ánh sáng & nhịp quay phù hợp phong cách "${styleMeta.labelVi}".
 3. Viết tự nhiên, súc tích, giàu hình ảnh điện ảnh (khoảng 120–240 chữ), chia đoạn rõ ràng để người dùng đọc xong có thể bấm thẳng sang "AI Lên Kịch Bản" ở Bước 2.
+${SHORT_DRAMA_IDEA_EXPANSION_RULES}
 
 TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không giải thích thừa):
 {
@@ -1611,6 +1684,7 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
 export async function learnVideosAndCreateBlueprint(params: {
   mode?: StudioCreationMode;
   scriptMode?: StudioScriptMode;
+  productionFormat?: StudioProductionFormat;
   ideaPrompt?: string;
   query?: string;
   videos?: DerivativeSourceInput[];
@@ -1623,6 +1697,7 @@ export async function learnVideosAndCreateBlueprint(params: {
   outputLanguage?: DerivativeOutputLanguage;
   useProModel?: boolean;
   characterSummary?: string;
+  characterRefsMeta?: StudioCharacterRefMetaInput[];
   characterBible?: string;
   settingBible?: string;
   visualStyleBible?: string;
@@ -1636,6 +1711,9 @@ export async function learnVideosAndCreateBlueprint(params: {
 }): Promise<DerivativeBlueprint> {
   const studioMode: StudioCreationMode = params.mode === 'creative' ? 'creative' : 'derivative';
   const scriptMode: StudioScriptMode = params.scriptMode === 'independent_batch' ? 'independent_batch' : 'series';
+  const productionFormat: StudioProductionFormat =
+    params.productionFormat === 'narration_story' ? 'narration_story' : 'dialogue_film';
+  const characterRefsMeta = Array.isArray(params.characterRefsMeta) ? params.characterRefsMeta : [];
   const videosList = Array.isArray(params.videos) ? params.videos : [];
   const ideaText = (params.ideaPrompt || params.query || '').trim();
   const activeStylePreset: DerivativeStylePreset =
@@ -1790,35 +1868,52 @@ NGUYÊN TẮC CỐT LÕI CHẾ ĐỘ SERIES:
     .filter(Boolean)
     .join('\n');
 
+  const productionFormatDirective =
+    productionFormat === 'narration_story'
+      ? `CHẾ ĐỘ SẢN XUẤT VIDEO BẮT BUỘC: PHIM THUYẾT MINH KỂ CHUYỆN (Narration Storytelling).
+NGUYÊN TẮC BẮT BUỘC:
+- Triển khai kịch bản theo mạch kể chuyện bằng GIỌNG NGƯỜI DẪN CHUYỆN duy nhất xuyên suốt (điền đầy đủ "narration" truyền cảm, tự nhiên cho từng phân cảnh; không cần chia thoại rời rạc, trừ trích dẫn ngắn nếu thật sự cần thì để "dialogue": "").
+- Hình ảnh & chuyển động máy quay ưu tiên tự động minh họa sống động diễn biến lời kể.
+- Bắt buộc điền "adaptiveMusicPrompt" (mô tả nhạc nền tổng thể bằng tiếng Anh) và "musicMoodEn" ở từng phân cảnh (2-5 từ tiếng Anh mô tả không khí âm nhạc chuyển biến theo bối cảnh/cảm xúc cảnh đó) để AI tự ghép nhạc nền tự nhiên, linh động.`
+      : `CHẾ ĐỘ SẢN XUẤT VIDEO BẮT BUỘC: PHIM CÓ LỜI THOẠI (Dialogue & Synced Character Film).
+NGUYÊN TẮC BẮT BUỘC:
+- Các phân cảnh giao tiếp/hành động PHẢI có lời thoại rõ người nói trong "dialogue" theo đúng cú pháp "Tên nhân vật: Câu thoại" (nhiều câu thoại cách nhau bởi dấu xuống dòng \\n).
+- Ghi chính xác tên từng nhân vật xuất hiện trong "charactersInScene" để khớp với dữ liệu Tab Nhân vật đồng bộ (nếu có) — giữ nguyên gương mặt, vóc dáng, trang phục và giọng nói giữa mọi cảnh.
+- BẮT BUỘC điền đầy đủ mảng "characterVoiceProfiles" phân tích từng nhân vật xuất hiện trong phim: ghi rõ độ tuổi/nhóm tuổi ("child" = Trẻ em | "youth" = Thanh niên | "adult_male" = Đàn ông | "adult_female" = Đàn bà | "middle_aged" = Người trung niên | "elderly" = Người già), giới tính ("male" | "female"), chọn voiceId Gemini khác nhau phù hợp độ tuổi (TUYỆT ĐỐI không gán 1 giọng chung cho tất cả nhân vật), và ghi chú cao độ/âm sắc trong "vocalToneNote".`;
+
   const promptText = `Bạn là Hệ thống Đạo diễn AI Thống Nhất — chuyên biên kịch & thiết kế hồ sơ sản xuất video hoàn chỉnh.
 ${modeHeader}
 ${scriptModeDirective}
+${productionFormatDirective}
 ${narrativeStyleDirective}
 Phong cách hình ảnh & quay dựng BẮT BUỘC: ${videoStyleMeta.labelVi} (${videoStyleMeta.visualToneVi} | Prompt style: ${videoStyleMeta.promptDirective}).
 Ngôn ngữ lời thoại & phụ đề BẮT BUỘC: ${OUTPUT_LANG_LABELS[outputLang]}.
 Tỷ lệ khung hình mục tiêu: ${params.aspectRatio}.
 Tùy chọn Lồng tiếng (Voiceover): ${
     enableVoiceover
-      ? `BẬT LỒNG TIẾNG — Tạo nội dung "narration" tự nhiên (${wordsMin}-${wordsMax} chữ/cảnh) đồng bộ với "dialogue", nhân vật và ngôn ngữ.`
+      ? productionFormat === 'narration_story'
+        ? `BẬT LỒNG TIẾNG THUYẾT MINH — Tạo nội dung "narration" kể chuyện tự nhiên (${wordsMin}-${wordsMax} chữ/cảnh) với 1 giọng người dẫn chuyện xuyên suốt.`
+        : `BẬT LỒNG TIẾNG & LỜI THOẠI — Tạo lời thoại nhân vật "dialogue" tự nhiên theo đúng nhân vật và điền "narration" (${wordsMin}-${wordsMax} chữ/cảnh) khi cần dẫn mạch truyện.`
       : 'TẮT LỒNG TIẾNG — BẮT BUỘC đặt "narration": "" (chuỗi rỗng) cho TẤT CẢ mọi phân cảnh, KHÔNG tạo dữ liệu giọng thuyết minh thừa; tập trung diễn đạt qua hình ảnh, hành động, lời thoại nhân vật (nếu có) và phụ đề ngắn.'
   }
 Tổng thời lượng mục tiêu BẮT BUỘC: khoảng ${targetMinutesLabel} chia thành ĐÚNG ${desiredScenes} phân cảnh đánh số lần lượt 1..${desiredScenes} (trung bình ~${avgSceneDur}s/cảnh).
 QUY TẮC THỜI LƯỢNG & BỐI CẢNH:
 - Mỗi bối cảnh / phân cảnh PHẢI tương ứng trọn vẹn với thời lượng được thiết lập (~${avgSceneDur}s/cảnh). Ví dụ nếu thiết lập 10 giây và tạo 1 phân cảnh thì viết 1 phân cảnh duy nhất dài 10 giây với hành động liên tục theo thời gian thực, TUYỆT ĐỐI KHÔNG tự ý xé lẻ thành nhiều đoạn vụn 3-4 giây.
 - Tổng "durationSec" của tất cả các cảnh cộng lại phải xấp xỉ ${desiredTotalSec} giây.
-${params.characterSummary?.trim() ? `DANH SÁCH NHÂN VẬT THAM CHIẾU ĐÃ KHÓA (BẮT BUỘC dùng ĐÚNG tên nhân vật dưới đây trong "charactersInScene", "dialogue", "imagePrompt" và "videoPrompt" để hệ thống ánh xạ đúng ảnh & giọng nói):\n${params.characterSummary.trim()}\nQUY TẮC GIỌNG NÓI NHÂN VẬT: Tất cả nhân vật dùng giọng đọc tiếng Việt chuẩn miền Bắc Việt Nam (Hà Nội) — lời thoại tiếng Việt giữ văn phong, khẩu âm tự nhiên miền Bắc.` : ''}
+${params.characterSummary?.trim() ? `DANH SÁCH NHÂN VẬT THAM CHIẾU ĐÃ KHÓA (BẮT BUỘC dùng ĐÚNG tên nhân vật dưới đây trong "charactersInScene", "dialogue", "characterVoiceProfiles", "imagePrompt" và "videoPrompt" để hệ thống ánh xạ đúng ảnh & giọng nói):\n${params.characterSummary.trim()}\nQUY TẮC GIỌNG NÓI NHÂN VẬT: Tất cả nhân vật dùng giọng đọc tiếng Việt chuẩn miền Bắc Việt Nam (Hà Nội) — lựa chọn cao độ & âm sắc đúng theo ĐỘ TUỔI và GIỚI TÍNH từng nhân vật, giữ nhất quán xuyên suốt.` : ''}
 ${lockedProjectAnchors ? `\nHỒ SƠ DỰ ÁN ĐÃ KHÓA (BẮT BUỘC GIỮ NGUYÊN ĐỒNG BỘ):\n${lockedProjectAnchors}` : ''}
 ${videoStyle === 'cinematic_filmmaking' ? buildCinematicFilmmakingScriptDirective(desiredScenes, avgSceneDur) : ''}
+${buildShortDramaScreenplayRules(productionFormat)}
 ${params.customInstruction?.trim() ? `Yêu cầu bổ sung từ đạo diễn: ${params.customInstruction.trim()}` : ''}
 
 TIÊU CHUẨN CHẤT LƯỢNG BẮT BUỘC (KHÔNG ĐƯỢC VIẾT SƠ SÀI):
 1. Xây dựng BỘ DỮ LIỆU ĐỒNG BỘ 5 THÀNH PHẦN (Mục 2.6):
-   - \`characterBible\` (Character Reference): Mô tả cực chi tiết nhân dạng cố định từng nhân vật (tên, độ tuổi, gương mặt, màu/kiểu tóc, vóc dáng, đặc điểm nhận diện).
+   - \`characterBible\` (Character Reference): Mô tả cực chi tiết nhân dạng cố định từng nhân vật (tên, độ tuổi cụ thể, giới tính, gương mặt, màu/kiểu tóc, vóc dáng, đặc điểm nhận diện).
    - \`settingBible\` (Environment Reference): Mô tả chi tiết không gian, kiến trúc, thời gian, bối cảnh chủ đạo.
    - \`visualStyleBible\` (Visual Style Reference): Phong cách hình ảnh, chất liệu kết xuất, bảng màu & ngôn ngữ ánh sáng xuyên suốt.
    - \`costumeBible\` (Costume Reference): Trang phục, màu sắc vải & phụ kiện cố định từng nhân vật.
    - \`continuityBible\` (Story Continuity): Mạch cốt truyện liên tục, giọng nói nhất quán & quy tắc nối tiếp hành động giữa các cảnh.
-2. Đánh số thứ tự ĐÚNG ${desiredScenes} phân cảnh (\`sceneIndex\`: 1..${desiredScenes}) với ĐẦY ĐỦ 16 TRƯỜNG DỮ LIỆU CHUYÊN SÂU:
+2. Đánh số thứ tự ĐÚNG ${desiredScenes} phân cảnh (\`sceneIndex\`: 1..${desiredScenes}) với ĐẦY ĐỦ 19 TRƯỜNG DỮ LIỆU CHUYÊN SÂU:
    - \`sceneTitle\`: Tên phân cảnh ngắn gọn (3-8 chữ).
    - \`sceneSummary\`: Mô tả nội dung diễn biến chính của phân cảnh.
    - \`durationSec\`: Thời lượng phân cảnh bằng số giây (~${avgSceneDur}s; tổng bằng ~${desiredTotalSec}s).
@@ -1838,7 +1933,10 @@ TIÊU CHUẨN CHẤT LƯỢNG BẮT BUỘC (KHÔNG ĐƯỢC VIẾT SƠ SÀI):
    - \`sceneEndState\`: Trạng thái cuối cùng khi kết thúc cảnh này (vị trí nhân vật, biểu cảm, đạo cụ, thời điểm) để Scene tiếp theo nối vào hợp lý.
    - \`imagePrompt\`: Prompt hình ảnh CỰC KỲ CHI TIẾT (tối thiểu 3 câu giàu dữ liệu thị giác: nêu rõ tên + ngoại hình + trang phục cố định của TỪNG nhân vật trong cảnh, bối cảnh, góc quay, phong cách quay, ánh sáng, thiết bị quay & ống kính, tư thế hành động mở đầu cảnh) để AI tạo ảnh đồng bộ đa nhân vật chuẩn xác.
    - \`videoPrompt\`: Prompt video CỰC KỲ CHI TIẾT (tối thiểu 3 câu mô tả hành động nhân vật diễn ra liên tục theo thời gian thực trong suốt ${avgSceneDur}s, chuyển động tự nhiên liền mạch, góc quay, bối cảnh, phong cách quay, ánh sáng, thiết bị quay & quỹ đạo máy quay ĐỒNG NHẤT 100% với \`imagePrompt\`).
+   - \`vfxNotes\`: Ghi chú kỹ xảo & vật liệu vật lý thực tế (VD: volumetric light shafts, floating dust motes, caustics, rain droplets on lens, foreground wipe — để trống nếu cảnh thuần tự nhiên).
+   - \`soundLayersNote\`: Ghi chú 4 lớp âm thanh (MUS nhạc nền / AMB môi trường / BIO tiếng thở-tim / DET tiếng đạo cụ & điểm Silence Drop trước cao trào).
    - \`brollKeywordEn\`: 2-4 từ khóa tiếng Anh tìm tư liệu minh họa.
+   - \`musicMoodEn\`: 2-5 từ khóa tiếng Anh mô tả tâm trạng & thể loại nhạc nền phù hợp nhất với bối cảnh phân cảnh này.
 ${contexts.length > 0 ? `\nDỮ LIỆU CÁC VIDEO THAM CHIẾU:\n${dossierLines.join('\n\n')}` : ''}`;
 
   parts.push({ text: promptText });
@@ -1881,7 +1979,17 @@ TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU
   "settingBible": "Environment Reference cố định xuyên suốt",
   "visualStyleBible": "Visual Style Reference xuyên suốt",
   "costumeBible": "Costume Reference xuyên suốt",
-  "continuityBible": "Story Continuity xuyên suốt",${museRefBlock}
+  "continuityBible": "Story Continuity xuyên suốt",
+  "adaptiveMusicPrompt": "Mô tả tiếng Anh nhạc nền phù hợp toàn bộ bối cảnh & cảm xúc phim",
+  "characterVoiceProfiles": [
+    {
+      "characterName": "Tên chính xác của nhân vật",
+      "ageGroup": "child | youth | adult_male | adult_female | middle_aged | elderly",
+      "gender": "male | female",
+      "voiceId": "Tên giọng Gemini phù hợp độ tuổi (VD: Leda/Zephyr/Orus/Kore/Charon/Algenib)",
+      "vocalToneNote": "Mô tả cao độ & sắc thái giọng phù hợp độ tuổi"
+    }
+  ],${museRefBlock}
   "keyTakeaways": ["ý 1", "ý 2", "ý 3", "ý 4"],
   "hookFormula": "Công thức mở đầu & giữ chân",
   "sourceKeyPoints": ["1 câu điểm nhấn #1"],
@@ -1912,7 +2020,10 @@ TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU
       "sceneEndState": "Trạng thái cuối cảnh này",
       "imagePrompt": "Prompt hình ảnh cực chi tiết: nhân vật, trang phục, bối cảnh, góc quay, phong cách quay, ánh sáng, thiết bị quay",
       "videoPrompt": "Prompt video cực chi tiết: hành động liên tục theo thời gian thực, chuyển động tự nhiên liền mạch, camera & thiết bị quay đồng bộ imagePrompt",
-      "brollKeywordEn": "2-4 English keywords"
+      "vfxNotes": "Kỹ xảo & vật liệu vật lý thực tế (volumetric light shafts, dust motes, metallic reflection, foreground wipe...)",
+      "soundLayersNote": "4 lớp âm thanh (MUS/AMB/BIO/DET & điểm Silence Drop)",
+      "brollKeywordEn": "2-4 English keywords",
+      "musicMoodEn": "2-5 English keywords describing scene background music mood"
     }
   ]
 }
@@ -1942,6 +2053,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         wordsMax,
         enableVoiceover,
         isDerivative: studioMode === 'derivative',
+        productionFormat,
       });
     } else {
       const ai = getGeminiClient();
@@ -1960,6 +2072,21 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         visualStyleBible: { type: Type.STRING },
         costumeBible: { type: Type.STRING },
         continuityBible: { type: Type.STRING },
+        adaptiveMusicPrompt: { type: Type.STRING },
+        characterVoiceProfiles: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            required: ['characterName', 'ageGroup', 'gender', 'voiceId'],
+            properties: {
+              characterName: { type: Type.STRING },
+              ageGroup: { type: Type.STRING },
+              gender: { type: Type.STRING },
+              voiceId: { type: Type.STRING },
+              vocalToneNote: { type: Type.STRING },
+            },
+          },
+        },
         ...(studioMode === 'derivative'
           ? {
               referenceAnalysis: {
@@ -2047,7 +2174,10 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
               sceneEndState: { type: Type.STRING },
               imagePrompt: { type: Type.STRING },
               videoPrompt: { type: Type.STRING },
+              vfxNotes: { type: Type.STRING },
+              soundLayersNote: { type: Type.STRING },
               brollKeywordEn: { type: Type.STRING },
+              musicMoodEn: { type: Type.STRING },
             },
           },
         },
@@ -2155,6 +2285,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
             wordsMax,
             enableVoiceover,
             isDerivative: studioMode === 'derivative',
+            productionFormat,
           });
         } else if (lastGeminiErr instanceof SyntaxError) {
           throw new Error(
@@ -2227,6 +2358,23 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
             .join('. ')
       ).trim();
 
+      const sceneCorpus = normalizeCharacterMatchText(
+        [charactersInScene, dialogue, actionDetail, sceneSummary, imagePrompt].join(' | ')
+      );
+      const matchedCharacterIds =
+        characterRefsMeta.length > 0
+          ? characterRefsMeta
+              .filter((ref) => {
+                const aliases = extractCharacterAliases(ref.name || '');
+                return aliases.some((al) =>
+                  al.length <= 2
+                    ? new RegExp(`(?:^|\\s)${escapeRegexLiteral(al)}(?:$|\\s|:)`, 'i').test(sceneCorpus)
+                    : sceneCorpus.includes(al)
+                );
+              })
+              .map((ref) => ref.id)
+          : undefined;
+
       return {
         id: `scene_${i + 1}_${crypto.randomBytes(2).toString('hex')}`,
         sceneIndex: i + 1,
@@ -2252,9 +2400,51 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         continuityNote,
         sceneEndState,
         visualNote: imagePrompt,
+        vfxNotes: String(sc?.vfxNotes || '').trim() || undefined,
+        soundLayersNote: String(sc?.soundLayersNote || '').trim() || undefined,
         brollKeywordEn: String(sc?.brollKeywordEn || '').trim(),
+        musicMoodEn: String(sc?.musicMoodEn || '').trim() || undefined,
+        ...(matchedCharacterIds && matchedCharacterIds.length > 0
+          ? { selectedCharacterIds: matchedCharacterIds }
+          : {}),
       };
     });
+
+    const validAgeGroups = new Set<Exclude<CharacterAgeGroup, 'auto'>>([
+      'child',
+      'youth',
+      'adult_male',
+      'adult_female',
+      'middle_aged',
+      'elderly',
+    ]);
+    const rawVoiceProfiles: any[] = Array.isArray(parsed?.characterVoiceProfiles)
+      ? parsed.characterVoiceProfiles
+      : [];
+    const characterVoiceProfiles: CharacterVoiceProfile[] = rawVoiceProfiles
+      .filter((vp) => vp && String(vp.characterName || '').trim())
+      .map((vp) => {
+        const charName = String(vp.characterName).trim();
+        const rawAge = String(vp.ageGroup || '').trim() as Exclude<CharacterAgeGroup, 'auto'>;
+        const rawGender = String(vp.gender || '').trim().toLowerCase() === 'female' ? 'female' : 'male';
+        const classified = classifyCharacterAgeAndGender({
+          name: charName,
+          explicitAgeGroup: validAgeGroups.has(rawAge) ? rawAge : undefined,
+          explicitGender: vp.gender ? rawGender : undefined,
+          scriptContext: `${characterBible} ${vp.vocalToneNote || ''}`,
+        });
+        const assignedVoice = vp.voiceId && GEMINI_VOICE_IDS_SET.has(String(vp.voiceId).trim())
+          ? (String(vp.voiceId).trim() as Exclude<DerivativeVoiceId, 'none'>)
+          : AGE_GROUP_VOICE_CAST_POOLS[classified.ageGroup].voices[0];
+        return {
+          characterName: charName,
+          ageGroup: classified.ageGroup,
+          gender: classified.gender,
+          voiceId: assignedVoice,
+          vocalToneNote:
+            String(vp.vocalToneNote || '').trim() || AGE_GROUP_VOICE_CAST_POOLS[classified.ageGroup].labelVi,
+        };
+      });
 
     const sourceKeyPoints: string[] = Array.isArray(parsed?.sourceKeyPoints) ? parsed.sourceKeyPoints : [];
     const sourcesAnalyzed: DerivativeSourceInsight[] = contexts.map((ctx, i) => ({
@@ -2284,9 +2474,56 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
           }
         : undefined;
 
+    const voiceCastPoolsMap: Record<string, string[]> = Object.fromEntries(
+      Object.entries(AGE_GROUP_VOICE_CAST_POOLS).map(([k, v]) => [k, v.voices])
+    );
+    const baseScenesForAudit: DerivativeScene[] =
+      scenes.length > 0
+        ? scenes
+        : [
+            {
+              id: 'scene_1',
+              sceneIndex: 1,
+              sceneTitle: 'Mở đầu câu chuyện',
+              sceneSummary: 'Giới thiệu nhân vật và bối cảnh mở đầu.',
+              durationSec: Math.max(3, avgSceneDur),
+              sourceVideoIndex: 0,
+              sourceStartPercent: 10,
+              onScreenText: 'Scene 01',
+              charactersInScene: 'Nhân vật chính',
+              narration: enableVoiceover
+                ? 'Khởi đầu câu chuyện với góc nhìn sắc nét và cuốn hút ngay từ những giây đầu tiên.'
+                : '',
+              dialogue: '',
+              actionDetail: 'Nhân vật chính xuất hiện trực diện khung hình, cử chỉ tự tin mở đầu bối cảnh',
+              settingDetail: settingBible || 'Không gian hiện đại đồng bộ ánh sáng chủ đạo',
+              cameraAngle: 'Trung cảnh (Medium close-up)',
+              cameraMovement: 'Slow dolly-in',
+              lighting: 'Soft studio key light with subtle rim light',
+              costume: costumeBible || 'Trang phục gọn gàng đồng bộ nhân vật',
+              shotStyle: videoStyleMeta.labelVi,
+              continuityNote: 'Khởi đầu mạch truyện',
+              sceneEndState: 'Nhân vật nhìn thẳng khung hình chuẩn bị chuyển hành động',
+              imagePrompt: 'Nhân vật chính giới thiệu mở đầu trong khung hình rõ nét, ánh sáng cân bằng',
+              videoPrompt: 'Máy quay tiến chậm (Slow dolly-in) vào nhân vật chính đang xoay người mở đầu hành động',
+              visualNote: 'Nhân vật chính giới thiệu mở đầu trong khung hình rõ nét',
+              brollKeywordEn: 'digital studio presentation',
+            },
+          ];
+
+    const qcAudit = auditAndNormalizeBlueprintServer({
+      scenes: baseScenesForAudit,
+      characterVoiceProfiles,
+      characterRefsMeta: characterRefsMeta.map((c) => ({ id: c.id, name: c.name })),
+      productionFormat,
+      enableVoiceover,
+      voiceCastPools: voiceCastPoolsMap,
+    });
+
     return {
       mode: studioMode,
       scriptMode: params.conceptOverride ? 'independent_batch' : scriptMode,
+      productionFormat,
       batchIndex: params.conceptOverride?.batchIndex,
       batchTotal: params.conceptOverride?.batchTotal,
       sharedSpiritNote: params.conceptOverride?.sharedSpiritNote,
@@ -2298,6 +2535,8 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
       visualStyleBible,
       costumeBible,
       continuityBible,
+      adaptiveMusicPrompt: String(parsed?.adaptiveMusicPrompt || '').trim() || undefined,
+      characterVoiceProfiles: qcAudit.characterVoiceProfiles.length > 0 ? qcAudit.characterVoiceProfiles : undefined,
       enableVoiceover,
       referenceAnalysis,
       learnedSummary: String(
@@ -2327,39 +2566,8 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
       sourcesAnalyzed,
       usedProvider: provider,
       usedModel,
-      scenes:
-        scenes.length > 0
-          ? scenes
-          : [
-              {
-                id: 'scene_1',
-                sceneIndex: 1,
-                sceneTitle: 'Mở đầu câu chuyện',
-                sceneSummary: 'Giới thiệu nhân vật và bối cảnh mở đầu.',
-                durationSec: Math.max(3, avgSceneDur),
-                sourceVideoIndex: 0,
-                sourceStartPercent: 10,
-                onScreenText: 'Scene 01',
-                charactersInScene: 'Nhân vật chính',
-                narration: enableVoiceover
-                  ? 'Khởi đầu câu chuyện với góc nhìn sắc nét và cuốn hút ngay từ những giây đầu tiên.'
-                  : '',
-                dialogue: '',
-                actionDetail: 'Nhân vật chính xuất hiện trực diện khung hình, cử chỉ tự tin mở đầu bối cảnh',
-                settingDetail: settingBible || 'Không gian hiện đại đồng bộ ánh sáng chủ đạo',
-                cameraAngle: 'Trung cảnh (Medium close-up)',
-                cameraMovement: 'Slow dolly-in',
-                lighting: 'Soft studio key light with subtle rim light',
-                costume: costumeBible || 'Trang phục gọn gàng đồng bộ nhân vật',
-                shotStyle: videoStyleMeta.labelVi,
-                continuityNote: 'Khởi đầu mạch truyện',
-                sceneEndState: 'Nhân vật nhìn thẳng khung hình chuẩn bị chuyển hành động',
-                imagePrompt: 'Nhân vật chính giới thiệu mở đầu trong khung hình rõ nét, ánh sáng cân bằng',
-                videoPrompt: 'Máy quay tiến chậm (Slow dolly-in) vào nhân vật chính đang xoay người mở đầu hành động',
-                visualNote: 'Nhân vật chính giới thiệu mở đầu trong khung hình rõ nét',
-                brollKeywordEn: 'digital studio presentation',
-              },
-            ],
+      scenes: qcAudit.scenes,
+      qcReport: qcAudit.qcReport,
     };
   } catch (err: any) {
     if (provider === 'gemini') {
@@ -2589,6 +2797,7 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
 
 export async function learnAndCreateIndependentBatch(params: {
   mode?: StudioCreationMode;
+  productionFormat?: StudioProductionFormat;
   ideaPrompt?: string;
   query?: string;
   videos?: DerivativeSourceInput[];
@@ -2602,6 +2811,7 @@ export async function learnAndCreateIndependentBatch(params: {
   outputLanguage?: DerivativeOutputLanguage;
   useProModel?: boolean;
   characterSummary?: string;
+  characterRefsMeta?: StudioCharacterRefMetaInput[];
   characterBible?: string;
   settingBible?: string;
   visualStyleBible?: string;
@@ -2612,6 +2822,8 @@ export async function learnAndCreateIndependentBatch(params: {
   aiProvider?: AiProviderId;
 }): Promise<{ sharedSpiritNote: string; blueprints: DerivativeBlueprint[] }> {
   const studioMode: StudioCreationMode = params.mode === 'creative' ? 'creative' : 'derivative';
+  const productionFormat: StudioProductionFormat =
+    params.productionFormat === 'narration_story' ? 'narration_story' : 'dialogue_film';
   const videosList = Array.isArray(params.videos) ? params.videos : [];
   const ideaText = (params.ideaPrompt || params.query || '').trim();
   const activeStylePreset: DerivativeStylePreset =
@@ -2689,6 +2901,7 @@ export async function learnAndCreateIndependentBatch(params: {
         blueprints[idx] = await learnVideosAndCreateBlueprint({
           mode: studioMode,
           scriptMode: 'independent_batch',
+          productionFormat,
           ideaPrompt: ideaText,
           query: params.query,
           videos: videosList,
@@ -2700,6 +2913,7 @@ export async function learnAndCreateIndependentBatch(params: {
           outputLanguage: outputLang,
           useProModel: params.useProModel,
           characterSummary: params.characterSummary,
+          characterRefsMeta: params.characterRefsMeta,
           characterBible: concept.characterBible || params.characterBible,
           settingBible: concept.settingBible || params.settingBible,
           visualStyleBible: params.visualStyleBible,
@@ -2927,6 +3141,7 @@ function escapeRegexLiteral(s: string): string {
 
 export async function selectAndMapCharacterRefsForScene(params: {
   characterRefs?: StudioCharacterRefInput[];
+  selectedCharacterIds?: string[];
   prompt: string;
   charactersInScene?: string;
   actionDetail?: string;
@@ -2951,18 +3166,29 @@ export async function selectAndMapCharacterRefsForScene(params: {
       const r = refs[0];
       const name = (r.name || 'Nhân vật chính').trim();
       const desc = r.description?.trim() ? ` (${r.description.trim()})` : '';
-      return `[QUY TẮC ĐỒNG BỘ NHÂN VẬT THAM CHIẾU]: Ảnh tham chiếu #1 tương ứng với nhân vật "${name}"${desc}. Phải giữ chính xác 100% khuôn mặt, kiểu tóc, vóc dáng, trang phục và đặc điểm nhận dạng từ Ảnh tham chiếu #1.`;
+      return `[QUY TẮC ĐỒNG BỘ NHÂN VẬT THAM CHIẾU]: Ảnh tham chiếu #1 tương ứng với nhân vật "${name}"${desc}. Phải giữ chính xác 100% khuôn mặt, vóc dáng, kiểu tóc, trang phục và đặc điểm nhận dạng từ Ảnh tham chiếu #1.`;
     }
     const lines = refs.map((r, idx) => {
       const name = (r.name || `Nhân vật #${idx + 1}`).trim();
       const desc = r.description?.trim() ? ` — Đặc điểm: ${r.description.trim()}` : '';
-      return `- Ảnh tham chiếu #${idx + 1} tương ứng CHÍNH XÁC với nhân vật "${name}"${desc}: BẮT BUỘC giữ nguyên khuôn mặt, ngoại hình, kiểu tóc, trang phục và đặc điểm nhận dạng từ Ảnh #${idx + 1}.`;
+      return `- Ảnh tham chiếu #${idx + 1} tương ứng CHÍNH XÁC với nhân vật "${name}"${desc}: BẮT BUỘC giữ nguyên khuôn mặt, vóc dáng, ngoại hình, kiểu tóc, trang phục và đặc điểm nhận dạng từ Ảnh #${idx + 1}.`;
     });
     return `[QUY TẮC ĐỒNG BỘ ĐA NHÂN VẬT (${refs.length} ẢNH THAM CHIẾU) — TUYỆT ĐỐI KHÔNG CHỈ DÙNG ẢNH #1]:
 Trong phân cảnh này có ${refs.length} nhân vật cần đồng bộ và ĐẦY ĐỦ ${refs.length} ảnh tham chiếu của từng nhân vật đã được đính kèm theo đúng thứ tự:
 ${lines.join('\n')}
-KHÔNG ĐƯỢC phép tự sáng tạo khuôn mặt/trang phục khác cho các nhân vật còn lại. Phải hiển thị đúng nhận dạng từng nhân vật theo đúng số thứ tự ảnh tham chiếu tương ứng.`;
+KHÔNG ĐƯỢC phép tự sáng tạo khuôn mặt/vóc dáng/trang phục khác cho các nhân vật còn lại. Phải hiển thị đúng nhận dạng từng nhân vật theo đúng số thứ tự ảnh tham chiếu tương ứng.`;
   };
+
+  if (Array.isArray(params.selectedCharacterIds) && params.selectedCharacterIds.length > 0) {
+    const idSet = new Set(params.selectedCharacterIds.map((id) => String(id).trim()).filter(Boolean));
+    const explicitlySelected = validRefs.filter((r) => r.id && idSet.has(String(r.id).trim()));
+    if (explicitlySelected.length > 0) {
+      return {
+        selectedRefs: explicitlySelected,
+        mappingDirective: buildMappingDirective(explicitlySelected),
+      };
+    }
+  }
 
   if (validRefs.length === 1) {
     return { selectedRefs: validRefs, mappingDirective: buildMappingDirective(validRefs) };
@@ -3094,6 +3320,9 @@ export async function generateStudioImage(params: {
   dialogue?: string;
   sceneSummary?: string;
   costume?: string;
+  cameraAngle?: string;
+  vfxNotes?: string;
+  selectedCharacterIds?: string[];
   characterRefs?: StudioCharacterRefInput[];
 }): Promise<{ dataUrl: string; model: string }> {
   const aspectRatio = params.aspectRatio || (params.mode === 'character' ? '1:1' : '16:9');
@@ -3125,6 +3354,7 @@ export async function generateStudioImage(params: {
       ? { selectedRefs: [] as StudioCharacterRefInput[], mappingDirective: '' }
       : await selectAndMapCharacterRefsForScene({
           characterRefs: params.characterRefs,
+          selectedCharacterIds: params.selectedCharacterIds,
           prompt: params.prompt,
           charactersInScene: params.charactersInScene,
           actionDetail: params.actionDetail,
@@ -3136,22 +3366,33 @@ export async function generateStudioImage(params: {
   const buildScenePrompt = (refs: StudioCharacterRefInput[], mapping: string) => {
     let basePrompt = '';
     if (params.mode === 'character') {
-      basePrompt = `${consistencyBlock} Create a clean, consistent studio character turnaround / portrait reference sheet suitable for reusing identically across all video scenes. Character description: ${params.prompt}. Crisp framing, balanced lighting, no overlaid watermarks, subtitles, or UI text.`;
+      basePrompt = `${consistencyBlock} Create a clean, consistent studio character turnaround / portrait reference sheet suitable for reusing identically across all video scenes. Character description: ${params.prompt}. Neutral clean studio lighting, soft even key light, uncluttered neutral backdrop, crisp framing, no overlaid watermarks, subtitles, or UI text.`;
     } else if (refs.length > 0) {
       const refNames = refs.map((r, i) => `#${i + 1}: ${r.name || `Nhân vật ${i + 1}`}`).join(', ');
       basePrompt = `${consistencyBlock} ${mapping} Create a cohesive storyboard scene strictly preserving the exact character identities, faces, hairstyles, proportions, and outfits of ALL attached character reference photos (${refNames}). Scene prompt: ${params.prompt}. No overlaid subtitles, speech bubbles, or watermarks.`;
     } else {
       basePrompt = `${consistencyBlock} Create a crisp, cohesive storyboard scene: ${params.prompt}. No overlaid subtitles, text, or watermarks.`;
     }
-    if (params.mode === 'scene' && params.videoStyle === 'cinematic_filmmaking') {
-      return enhancePromptWithCinematicSkill({
-        basePrompt,
-        mediaType: 'image',
-        sceneIndex: params.sceneIndex,
-        totalScenes: params.totalScenes,
-      });
-    }
-    return basePrompt;
+    const styled =
+      params.mode === 'scene' && params.videoStyle === 'cinematic_filmmaking'
+        ? enhancePromptWithCinematicSkill({
+            basePrompt,
+            mediaType: 'image',
+            sceneIndex: params.sceneIndex,
+            totalScenes: params.totalScenes,
+          })
+        : basePrompt;
+    return compileProductionModelPrompt({
+      rawCompiledPrompt: styled,
+      mode: params.mode,
+      mediaType: 'image',
+      hasAttachedRefs: refs.length > 0,
+      cameraAngle: params.cameraAngle,
+      vfxNotes: params.vfxNotes,
+      targetEngine: params.engine === 'muse2api' ? 'muse2api' : 'gemini',
+      characterBible: params.characterBible,
+      costumeBible: params.costumeBible,
+    }).prompt;
   };
 
   if (params.engine === 'muse2api') {
@@ -3245,6 +3486,9 @@ export async function generateSceneVideoWithOmniFlash(params: {
   dialogue?: string;
   sceneSummary?: string;
   costume?: string;
+  cameraAngle?: string;
+  vfxNotes?: string;
+  selectedCharacterIds?: string[];
   sceneImageDataUrl?: string;
   characterRefs?: StudioCharacterRefInput[];
 }): Promise<{ assetId: string; previewUrl: string; durationSec: number; model: string }> {
@@ -3256,6 +3500,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
 
   const { selectedRefs, mappingDirective } = await selectAndMapCharacterRefsForScene({
     characterRefs: params.characterRefs,
+    selectedCharacterIds: params.selectedCharacterIds,
     prompt: params.prompt,
     charactersInScene: params.charactersInScene,
     actionDetail: params.actionDetail,
@@ -3282,7 +3527,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
   const baseVideoPrompt = params.sceneImageDataUrl
     ? `${anchorLines} Animate this exact keyframe scene smoothly with natural continuous real-time motion, keeping every character identity, face, hair, costume & setting identical: ${params.prompt}. No overlaid text or watermarks.`
     : `${anchorLines} High-definition cohesive video scene with continuous real-time action and smooth camera motion: ${params.prompt}. Cohesive lighting, no overlaid text or watermarks.`;
-  const promptText =
+  const styledVideoPrompt =
     params.videoStyle === 'cinematic_filmmaking'
       ? enhancePromptWithCinematicSkill({
           basePrompt: baseVideoPrompt,
@@ -3291,6 +3536,17 @@ export async function generateSceneVideoWithOmniFlash(params: {
           totalScenes: params.totalScenes,
         })
       : baseVideoPrompt;
+  const promptText = compileProductionModelPrompt({
+    rawCompiledPrompt: styledVideoPrompt,
+    mode: 'scene',
+    mediaType: 'video',
+    hasAttachedRefs: Boolean(params.sceneImageDataUrl || selectedRefs.length > 0),
+    cameraAngle: params.cameraAngle,
+    vfxNotes: params.vfxNotes,
+    targetEngine: params.engine === 'muse2api' ? 'muse2api' : 'gemini',
+    characterBible: params.characterBible,
+    costumeBible: params.costumeBible,
+  }).prompt;
 
   if (params.engine === 'muse2api') {
     const museRefList = Array.from(
@@ -4269,6 +4525,162 @@ async function probeDurationSeconds(filePath: string, cwd: string): Promise<numb
   }
 }
 
+type ConcreteAgeGroup = Exclude<CharacterAgeGroup, 'auto'>;
+
+const AGE_GROUP_VOICE_CAST_POOLS: Record<
+  ConcreteAgeGroup,
+  {
+    labelVi: string;
+    defaultGender: 'male' | 'female';
+    voices: Exclude<DerivativeVoiceId, 'none'>[];
+    pitchDirective: string;
+  }
+> = {
+  child: {
+    labelVi: 'Trẻ em',
+    defaultGender: 'female',
+    voices: ['Leda', 'Laomedeia', 'Zephyr', 'Puck'],
+    pitchDirective:
+      'VOCAL AGE & PITCH (Trẻ em): Young child voice with high, bright, clear, innocent pitch and lively natural childlike cadence.',
+  },
+  youth: {
+    labelVi: 'Thanh niên',
+    defaultGender: 'female',
+    voices: ['Zephyr', 'Sadachbia', 'Autonoe', 'Puck', 'Fenrir', 'Kore'],
+    pitchDirective:
+      'VOCAL AGE & PITCH (Thanh niên): Youthful young-adult voice, fresh, energetic, agile and natural modern cadence.',
+  },
+  adult_male: {
+    labelVi: 'Đàn ông',
+    defaultGender: 'male',
+    voices: ['Orus', 'Iapetus', 'Schedar', 'Achird', 'Alnilam', 'Algieba'],
+    pitchDirective:
+      'VOCAL AGE & PITCH (Đàn ông): Adult male voice with natural balanced mid-low resonance, clear steady male timbre fitting an adult man.',
+  },
+  adult_female: {
+    labelVi: 'Đàn bà',
+    defaultGender: 'female',
+    voices: ['Kore', 'Aoede', 'Erinome', 'Despina', 'Pulcherrima', 'Sulafat'],
+    pitchDirective:
+      'VOCAL AGE & PITCH (Đàn bà): Adult female voice with warm, clear, expressive feminine pitch fitting an adult woman.',
+  },
+  middle_aged: {
+    labelVi: 'Người trung niên',
+    defaultGender: 'male',
+    voices: ['Charon', 'Rasalgethi', 'Sadaltager', 'Gacrux', 'Umbriel', 'Sulafat'],
+    pitchDirective:
+      'VOCAL AGE & PITCH (Người trung niên): Mature middle-aged voice with composed, calm, grounded lower-mid timbre and poise.',
+  },
+  elderly: {
+    labelVi: 'Người già',
+    defaultGender: 'male',
+    voices: ['Algenib', 'Enceladus', 'Gacrux', 'Vindemiatrix', 'Charon'],
+    pitchDirective:
+      'VOCAL AGE & PITCH (Người già): Elderly senior voice with deep, weathered mature timbre, unhurried gentle slow cadence fitting an older person.',
+  },
+};
+
+const GEMINI_FEMALE_VOICES = new Set<string>([
+  'Kore', 'Zephyr', 'Aoede', 'Leda', 'Callirrhoe', 'Autonoe', 'Despina',
+  'Erinome', 'Laomedeia', 'Achernar', 'Gacrux', 'Pulcherrima', 'Vindemiatrix',
+  'Sadachbia', 'Sulafat',
+]);
+
+function classifyCharacterAgeAndGender(params: {
+  name: string;
+  description?: string;
+  explicitAgeGroup?: CharacterAgeGroup;
+  explicitGender?: CharacterGenderHint;
+  scriptContext?: string;
+}): { ageGroup: ConcreteAgeGroup; gender: 'male' | 'female' } {
+  const corpus = normalizeCharacterMatchText(
+    [params.name, params.description || '', params.scriptContext || ''].join(' ')
+  );
+
+  // Detect gender first from hints or Vietnamese pronouns/descriptors
+  let gender: 'male' | 'female' =
+    params.explicitGender === 'male'
+      ? 'male'
+      : params.explicitGender === 'female'
+      ? 'female'
+      : /\b(nu|dan ba|phu nu|co gai|be gai|em gai|chi|me|ba|co|di|mo|thim|vo|nu sinh|thieu nu|woman|female|girl|mother|grandma|lady)\b/.test(
+          corpus
+        )
+      ? 'female'
+      : /\b(nam|dan ong|trai|chang trai|be trai|em trai|anh|bo|cha|ong|chu|bac trai|chong|nam sinh|man|male|boy|father|grandpa|gentleman)\b/.test(
+          corpus
+        )
+      ? 'male'
+      : 'female';
+
+  if (params.explicitAgeGroup && params.explicitAgeGroup !== 'auto') {
+    if (params.explicitAgeGroup === 'adult_male') gender = 'male';
+    if (params.explicitAgeGroup === 'adult_female') gender = 'female';
+    return { ageGroup: params.explicitAgeGroup, gender };
+  }
+
+  // Check explicit numeric age if mentioned near name/description
+  const ageMatch = corpus.match(/\b(\d{1,2})\s*(?:tuoi|t|yo|years old)\b/);
+  if (ageMatch) {
+    const yrs = Number(ageMatch[1]);
+    if (yrs > 0 && yrs <= 12) return { ageGroup: 'child', gender };
+    if (yrs >= 13 && yrs <= 24) return { ageGroup: 'youth', gender };
+    if (yrs >= 25 && yrs <= 44) return { ageGroup: gender === 'male' ? 'adult_male' : 'adult_female', gender };
+    if (yrs >= 45 && yrs <= 62) return { ageGroup: 'middle_aged', gender };
+    if (yrs >= 63) return { ageGroup: 'elderly', gender };
+  }
+
+  if (
+    /\b(tre em|be|em be|nhoc|cau be|co be|thieu nhi|hoc sinh tieu hoc|mau giao|child|kid|toddler)\b/.test(corpus)
+  ) {
+    return { ageGroup: 'child', gender };
+  }
+  if (
+    /\b(cu|ong lao|ba lao|nguoi gia|cu ong|cu ba|lao|cao nien|ong noi|ba noi|ong ngoai|ba ngoai|elderly|senior|old man|old woman|grandpa|grandma)\b/.test(
+      corpus
+    )
+  ) {
+    return { ageGroup: 'elderly', gender };
+  }
+  if (/\b(trung nien|bac|trung tuoi|giam doc lon tuoi|phu huynh|middle aged|middle-aged)\b/.test(corpus)) {
+    return { ageGroup: 'middle_aged', gender };
+  }
+  if (/\b(thanh nien|sinh vien|chang trai|co gai tre|thieu nu|thieu nien|gen z|youth|young adult|teen)\b/.test(corpus)) {
+    return { ageGroup: 'youth', gender };
+  }
+  if (gender === 'male') {
+    return { ageGroup: 'adult_male', gender: 'male' };
+  }
+  return { ageGroup: 'adult_female', gender: 'female' };
+}
+
+function buildAdaptiveMusicSearchQueries(blueprint: DerivativeBlueprint): string[] {
+  const rawMoods = [
+    blueprint.adaptiveMusicPrompt || '',
+    ...blueprint.scenes.map((s) => s.musicMoodEn || ''),
+  ]
+    .map((q) => sanitizeStockQuery(q))
+    .filter((q) => q.length >= 3);
+
+  const styleFallbacks: Record<string, string[]> = {
+    cinematic: ['cinematic orchestral instrumental', 'emotional film score piano'],
+    cinematic_filmmaking: ['dramatic cinema soundtrack instrumental', 'orchestral film strings'],
+    documentary: ['documentary ambient acoustic guitar', 'calm minimalist piano'],
+    anime: ['upbeat melodic piano instrumental', 'gentle anime acoustic'],
+    vlog: ['cheerful acoustic guitar instrumental', 'light upbeat chill background'],
+    professional: ['modern corporate ambient instrumental', 'clean electronic minimalist'],
+  };
+
+  return Array.from(
+    new Set([
+      ...rawMoods,
+      ...(styleFallbacks[blueprint.videoStyle || 'cinematic'] || styleFallbacks.cinematic),
+      'ambient instrumental music',
+      'classical piano solo',
+    ])
+  ).slice(0, 6);
+}
+
 export const NORTHERN_VIETNAMESE_ACCENT_DIRECTIVE =
   'MANDATORY ACCENT LOCK: Speak strictly in authentic Northern Vietnamese (Hà Nội / miền Bắc Việt Nam) accent and pronunciation, with crisp Standard Hanoi vowels, clear differentiation of hỏi and ngã tones, natural Northern cadence, and zero Southern or Central dialect inflection.';
 
@@ -4829,6 +5241,9 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   const targetH = isSquare ? 1080 : isVertical ? 1920 : 1080;
   job.resolution = `${targetW}x${targetH}`;
 
+  const productionFormat: StudioProductionFormat =
+    blueprint.productionFormat === 'narration_story' ? 'narration_story' : 'dialogue_film';
+
   const effectiveVoiceMode: DerivativeVoiceMode =
     blueprint.enableVoiceover === false
       ? 'none'
@@ -4842,44 +5257,197 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     voiceStyle: string;
   }
 
-  const findCharacterBySpeakerName = (speakerRaw: string): StudioCharacterRefInput | undefined => {
-    const refs = Array.isArray(params.characterRefs) ? params.characterRefs : [];
-    const normSpeaker = normalizeCharacterMatchText(speakerRaw);
-    if (!normSpeaker) return undefined;
-    return refs.find((r) => {
-      const aliases = extractCharacterAliases(r.name || '');
-      return aliases.some((al) => normSpeaker === al || normSpeaker.includes(al) || al.includes(normSpeaker));
-    });
+  interface ResolvedJobVoice {
+    mode: 'ai_online' | 'offline_system';
+    voiceId: Exclude<DerivativeVoiceId, 'none'>;
+    offlineVoice?: string;
+    voiceStyle: string;
+    ageGroup: ConcreteAgeGroup;
+  }
+
+  const allCharRefs = Array.isArray(params.characterRefs) ? params.characterRefs : [];
+  const defaultNarratorVoiceId: Exclude<DerivativeVoiceId, 'none'> =
+    voice === 'none' ? 'Kore' : sanitizeGeminiVoiceId(voice);
+  const defaultRenderVoiceMode: 'ai_online' | 'offline_system' =
+    effectiveVoiceMode === 'offline_system' ? 'offline_system' : 'ai_online';
+
+  // Lock consistent, distinct age/gender-appropriate voices per character across the entire film
+  const characterVoiceRegistry = new Map<string, ResolvedJobVoice>();
+  const usedCastVoices = new Set<string>();
+
+  const pickDistinctPoolVoice = (
+    ageGroup: ConcreteAgeGroup,
+    gender: 'male' | 'female'
+  ): Exclude<DerivativeVoiceId, 'none'> => {
+    const pool = AGE_GROUP_VOICE_CAST_POOLS[ageGroup];
+    const genderFiltered = pool.voices.filter((v) =>
+      gender === 'female' ? GEMINI_FEMALE_VOICES.has(v) : !GEMINI_FEMALE_VOICES.has(v)
+    );
+    const orderedCandidates = [...genderFiltered, ...pool.voices];
+    const unused = orderedCandidates.find((v) => !usedCastVoices.has(v));
+    const chosen = unused || orderedCandidates[usedCastVoices.size % orderedCandidates.length] || defaultNarratorVoiceId;
+    usedCastVoices.add(chosen);
+    return chosen;
   };
 
-  const resolveCharacterVoiceSegment = (
-    text: string,
-    charRef: StudioCharacterRefInput | undefined,
-    fallbackMode: 'ai_online' | 'offline_system'
-  ): VoiceSegmentSpec => {
-    const defaultVoiceId: Exclude<DerivativeVoiceId, 'none'> = voice === 'none' ? 'Kore' : sanitizeGeminiVoiceId(voice);
-    const defaultStyle = buildNorthernVietnameseTtsStyle(
-      params.voiceStyle?.trim() || 'Clear, engaging video narrator with natural pacing',
-      charRef?.name
-    );
-    if (!charRef || !charRef.voiceMode || charRef.voiceMode === 'default') {
-      return {
-        text,
-        mode: fallbackMode,
-        voiceId: defaultVoiceId,
-        offlineVoice: params.offlineVoice || `${defaultVoiceId} Bắc Hà Nội`,
-        voiceStyle: defaultStyle,
-      };
+  const registerCharacterVoice = (opts: {
+    key: string;
+    name: string;
+    charRef?: StudioCharacterRefInput;
+    profile?: CharacterVoiceProfile;
+    contextHint?: string;
+  }): ResolvedJobVoice => {
+    const normKey = normalizeCharacterMatchText(opts.key);
+    if (normKey && characterVoiceRegistry.has(normKey)) {
+      return characterVoiceRegistry.get(normKey)!;
     }
-    const charVoiceId = sanitizeGeminiVoiceId(charRef.voiceId || defaultVoiceId);
-    return {
-      text,
-      mode: charRef.voiceMode === 'offline_system' ? 'offline_system' : 'ai_online',
-      voiceId: charVoiceId,
-      offlineVoice: charRef.offlineVoice || params.offlineVoice || `${charVoiceId} Bắc Hà Nội`,
-      voiceStyle: buildNorthernVietnameseTtsStyle(charRef.voiceStyle?.trim() || params.voiceStyle?.trim(), charRef.name),
+
+    const { ageGroup, gender } = classifyCharacterAgeAndGender({
+      name: opts.name,
+      description: opts.charRef?.description,
+      explicitAgeGroup:
+        opts.charRef?.ageGroup && opts.charRef.ageGroup !== 'auto'
+          ? opts.charRef.ageGroup
+          : opts.profile?.ageGroup,
+      explicitGender:
+        opts.charRef?.gender && opts.charRef.gender !== 'auto'
+          ? opts.charRef.gender
+          : opts.profile?.gender,
+      scriptContext: [blueprint.characterBible || '', opts.profile?.vocalToneNote || '', opts.contextHint || ''].join(' '),
+    });
+
+    const poolMeta = AGE_GROUP_VOICE_CAST_POOLS[ageGroup];
+    let resolvedVoiceId: Exclude<DerivativeVoiceId, 'none'>;
+    let resolvedMode: 'ai_online' | 'offline_system' = defaultRenderVoiceMode;
+
+    if (opts.charRef?.voiceMode && opts.charRef.voiceMode !== 'default' && opts.charRef.voiceId) {
+      resolvedVoiceId = sanitizeGeminiVoiceId(opts.charRef.voiceId);
+      resolvedMode = opts.charRef.voiceMode === 'offline_system' ? 'offline_system' : 'ai_online';
+      usedCastVoices.add(resolvedVoiceId);
+    } else if (opts.profile?.voiceId && GEMINI_VOICE_IDS_SET.has(opts.profile.voiceId) && !usedCastVoices.has(opts.profile.voiceId)) {
+      resolvedVoiceId = sanitizeGeminiVoiceId(opts.profile.voiceId);
+      usedCastVoices.add(resolvedVoiceId);
+    } else {
+      resolvedVoiceId = pickDistinctPoolVoice(ageGroup, gender);
+    }
+
+    const combinedStyle = buildNorthernVietnameseTtsStyle(
+      [
+        poolMeta.pitchDirective,
+        opts.profile?.vocalToneNote || '',
+        opts.charRef?.voiceStyle?.trim() || params.voiceStyle?.trim() || '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+      opts.name
+    );
+
+    const resolved: ResolvedJobVoice = {
+      mode: resolvedMode,
+      voiceId: resolvedVoiceId,
+      offlineVoice: opts.charRef?.offlineVoice || params.offlineVoice || `${resolvedVoiceId} Bắc Hà Nội`,
+      voiceStyle: combinedStyle,
+      ageGroup,
     };
+
+    if (normKey) {
+      characterVoiceRegistry.set(normKey, resolved);
+    }
+    if (opts.charRef?.id) {
+      characterVoiceRegistry.set(`id:${opts.charRef.id}`, resolved);
+    }
+    for (const al of extractCharacterAliases(opts.name)) {
+      if (!characterVoiceRegistry.has(al)) {
+        characterVoiceRegistry.set(al, resolved);
+      }
+    }
+    return resolved;
   };
+
+  if (productionFormat === 'dialogue_film') {
+    const profiles = Array.isArray(blueprint.characterVoiceProfiles) ? blueprint.characterVoiceProfiles : [];
+    for (const ref of allCharRefs) {
+      const matchedProfile = profiles.find((vp) => {
+        const vpNorm = normalizeCharacterMatchText(vp.characterName);
+        return extractCharacterAliases(ref.name || '').some((al) => vpNorm.includes(al) || al.includes(vpNorm));
+      });
+      registerCharacterVoice({
+        key: ref.id ? `id:${ref.id}` : ref.name || 'Nhân vật',
+        name: ref.name || 'Nhân vật',
+        charRef: ref,
+        profile: matchedProfile,
+      });
+    }
+    for (const vp of profiles) {
+      const vpNorm = normalizeCharacterMatchText(vp.characterName);
+      if (vpNorm && !characterVoiceRegistry.has(vpNorm)) {
+        registerCharacterVoice({
+          key: vp.characterName,
+          name: vp.characterName,
+          profile: vp,
+        });
+      }
+    }
+    // Pre-scan dialogue speaker names so every speaker gets an immutable locked voice before rendering
+    for (const sc of scenes) {
+      const lines = String(sc.dialogue || '')
+        .split(/\n+/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      for (const line of lines) {
+        const colonMatch = line.match(/^([^:：]{1,36})[:：]\s*(.+)$/);
+        if (colonMatch) {
+          const spk = colonMatch[1].trim();
+          const normSpk = normalizeCharacterMatchText(spk);
+          if (normSpk && !characterVoiceRegistry.has(normSpk)) {
+            const matchedRef = allCharRefs.find((r) =>
+              extractCharacterAliases(r.name || '').some((al) => normSpk === al || normSpk.includes(al) || al.includes(normSpk))
+            );
+            registerCharacterVoice({
+              key: spk,
+              name: spk,
+              charRef: matchedRef,
+              contextHint: [sc.charactersInScene || '', sc.sceneSummary || ''].join(' '),
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const lookupCharacterVoice = (speakerRaw?: string, fallbackRef?: StudioCharacterRefInput, sceneHint?: string): ResolvedJobVoice | undefined => {
+    if (fallbackRef?.id && characterVoiceRegistry.has(`id:${fallbackRef.id}`)) {
+      return characterVoiceRegistry.get(`id:${fallbackRef.id}`);
+    }
+    const normSpeaker = normalizeCharacterMatchText(speakerRaw || fallbackRef?.name || '');
+    if (normSpeaker) {
+      if (characterVoiceRegistry.has(normSpeaker)) {
+        return characterVoiceRegistry.get(normSpeaker);
+      }
+      for (const [k, val] of characterVoiceRegistry.entries()) {
+        if (!k.startsWith('id:') && (normSpeaker.includes(k) || k.includes(normSpeaker))) {
+          return val;
+        }
+      }
+      return registerCharacterVoice({
+        key: speakerRaw || fallbackRef?.name || 'Nhân vật',
+        name: speakerRaw || fallbackRef?.name || 'Nhân vật',
+        charRef: fallbackRef,
+        contextHint: sceneHint,
+      });
+    }
+    return undefined;
+  };
+
+  const buildNarratorVoiceSegment = (text: string, fallbackMode: 'ai_online' | 'offline_system'): VoiceSegmentSpec => ({
+    text,
+    mode: fallbackMode,
+    voiceId: defaultNarratorVoiceId,
+    offlineVoice: params.offlineVoice || `${defaultNarratorVoiceId} Bắc Hà Nội`,
+    voiceStyle: buildNorthernVietnameseTtsStyle(
+      params.voiceStyle?.trim() || 'Clear, engaging Northern Vietnamese storyteller narrator with natural pacing'
+    ),
+  });
 
   const buildSceneVoiceSegments = (
     sc: DerivativeScene,
@@ -4888,13 +5456,28 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     const segs: VoiceSegmentSpec[] = [];
     const dialogueRaw = String(sc.dialogue || '').trim();
     const narrationRaw = String(sc.narration || '').trim();
-    const refs = Array.isArray(params.characterRefs) ? params.characterRefs : [];
 
-    // Identify sole character in scene if charactersInScene matches exactly one custom-voiced character
-    const sceneMatchedChars = refs.filter((r) => {
-      const sceneCharsNorm = normalizeCharacterMatchText(sc.charactersInScene || '');
-      return extractCharacterAliases(r.name || '').some((al) => sceneCharsNorm.includes(al));
-    });
+    if (productionFormat === 'narration_story') {
+      // Narration Story Mode: single unified narrator voice across the entire video
+      const spokenText = narrationRaw || dialogueRaw.replace(/^[^:：]{1,36}[:：]\s*/gm, '').trim();
+      if (spokenText) {
+        segs.push(buildNarratorVoiceSegment(spokenText, fallbackMode));
+      }
+      return segs;
+    }
+
+    // Dialogue Film Mode: use selectedCharacterIds first, then charactersInScene, with locked age/gender voices
+    const explicitSceneRefs =
+      Array.isArray(sc.selectedCharacterIds) && sc.selectedCharacterIds.length > 0
+        ? allCharRefs.filter((r) => r.id && sc.selectedCharacterIds!.includes(r.id))
+        : [];
+    const sceneMatchedChars =
+      explicitSceneRefs.length > 0
+        ? explicitSceneRefs
+        : allCharRefs.filter((r) => {
+            const sceneCharsNorm = normalizeCharacterMatchText(sc.charactersInScene || '');
+            return extractCharacterAliases(r.name || '').some((al) => sceneCharsNorm.includes(al));
+          });
     const soleSceneChar = sceneMatchedChars.length === 1 ? sceneMatchedChars[0] : undefined;
 
     if (dialogueRaw) {
@@ -4905,13 +5488,41 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       for (const line of lines) {
         const colonMatch = line.match(/^([^:：]{1,36})[:：]\s*(.+)$/);
         if (colonMatch) {
-          const matchedChar = findCharacterBySpeakerName(colonMatch[1]);
+          const speakerName = colonMatch[1].trim();
           const speech = colonMatch[2].trim();
+          const matchedRef =
+            allCharRefs.find((r) => {
+              const ns = normalizeCharacterMatchText(speakerName);
+              return extractCharacterAliases(r.name || '').some((al) => ns === al || ns.includes(al) || al.includes(ns));
+            }) || soleSceneChar;
+          const resolvedVoice = lookupCharacterVoice(speakerName, matchedRef, sc.charactersInScene);
           if (speech) {
-            segs.push(resolveCharacterVoiceSegment(speech, matchedChar || soleSceneChar, fallbackMode));
+            segs.push(
+              resolvedVoice
+                ? {
+                    text: speech,
+                    mode: resolvedVoice.mode,
+                    voiceId: resolvedVoice.voiceId,
+                    offlineVoice: resolvedVoice.offlineVoice,
+                    voiceStyle: resolvedVoice.voiceStyle,
+                  }
+                : buildNarratorVoiceSegment(speech, fallbackMode)
+            );
           }
         } else {
-          segs.push(resolveCharacterVoiceSegment(line, soleSceneChar, fallbackMode));
+          const fallbackSpeaker = soleSceneChar?.name || sc.charactersInScene?.split(/[,;&/]/)[0]?.trim();
+          const resolvedVoice = lookupCharacterVoice(fallbackSpeaker, soleSceneChar, sc.sceneSummary);
+          segs.push(
+            resolvedVoice
+              ? {
+                  text: line,
+                  mode: resolvedVoice.mode,
+                  voiceId: resolvedVoice.voiceId,
+                  offlineVoice: resolvedVoice.offlineVoice,
+                  voiceStyle: resolvedVoice.voiceStyle,
+                }
+              : buildNarratorVoiceSegment(line, fallbackMode)
+          );
         }
       }
     }
@@ -4922,16 +5533,22 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       if (!normDial || (normNarr !== normDial && !normDial.includes(normNarr))) {
         const colonMatch = narrationRaw.match(/^([^:：]{1,36})[:：]\s*(.+)$/);
         if (colonMatch) {
-          const matchedChar = findCharacterBySpeakerName(colonMatch[1]);
+          const speakerName = colonMatch[1].trim();
           const speech = colonMatch[2].trim();
-          if (speech && matchedChar) {
-            segs.push(resolveCharacterVoiceSegment(speech, matchedChar, fallbackMode));
+          const resolvedVoice = lookupCharacterVoice(speakerName, soleSceneChar, sc.charactersInScene);
+          if (speech && resolvedVoice) {
+            segs.push({
+              text: speech,
+              mode: resolvedVoice.mode,
+              voiceId: resolvedVoice.voiceId,
+              offlineVoice: resolvedVoice.offlineVoice,
+              voiceStyle: resolvedVoice.voiceStyle,
+            });
           } else {
-            segs.push(resolveCharacterVoiceSegment(narrationRaw, undefined, fallbackMode));
+            segs.push(buildNarratorVoiceSegment(narrationRaw, fallbackMode));
           }
         } else {
-          // If no separate dialogue exists and only 1 custom-voiced character is in this scene, keep consistent narrator unless dialogue absent
-          segs.push(resolveCharacterVoiceSegment(narrationRaw, undefined, fallbackMode));
+          segs.push(buildNarratorVoiceSegment(narrationRaw, fallbackMode));
         }
       }
     }
@@ -5165,6 +5782,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
             dialogue: sc.dialogue,
             sceneSummary: sc.sceneSummary,
             costume: sc.costume,
+            selectedCharacterIds: sc.selectedCharacterIds,
             sceneImageDataUrl: sc.sceneImageDataUrl,
             characterRefs: params.characterRefs,
           });
@@ -5334,6 +5952,54 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     if (params.musicAssetId) {
       const rec = getStudioAsset(params.musicAssetId);
       if (rec) bgmLocalPath = rec.filePath;
+    } else if (musicMode === 'auto_adaptive') {
+      job.stepLabel = 'AI đang tự động chọn nhạc nền phù hợp bối cảnh & cảm xúc phim...';
+      const adaptiveQueries = buildAdaptiveMusicSearchQueries(blueprint);
+      const adaptivePrompt =
+        params.musicPrompt?.trim() ||
+        blueprint.adaptiveMusicPrompt?.trim() ||
+        `Natural cinematic instrumental soundtrack fitting mood: ${adaptiveQueries[0] || blueprint.derivativeTitle}`;
+
+      if (process.env.GEMINI_API_KEY?.trim()) {
+        try {
+          const track = await generateStudioMusicWithLyria({
+            prompt: adaptivePrompt,
+            mode: totalPlannedSec > 45 ? 'pro' : 'clip',
+          });
+          const rec = getStudioAsset(track.assetId);
+          if (rec) bgmLocalPath = rec.filePath;
+        } catch {
+          // Safe fallback to Wikimedia Commons mood-matched music if Lyria is unavailable on current API key
+        }
+      }
+
+      if (!bgmLocalPath) {
+        for (const q of adaptiveQueries) {
+          try {
+            const tracks = await searchPublicFreeMusicFromWikimedia(q);
+            const picked = tracks[0];
+            if (!picked?.url) continue;
+            const dl = await fetch(picked.url, {
+              headers: { 'User-Agent': WIKIMEDIA_UA },
+              signal: AbortSignal.timeout(25_000),
+            });
+            if (dl.ok) {
+              const buf = Buffer.from(await dl.arrayBuffer());
+              if (buf.byteLength > 10_000) {
+                const bgmOut = path.join(job.workDir, 'auto_adaptive_bgm.audio');
+                fs.writeFileSync(bgmOut, buf);
+                bgmLocalPath = bgmOut;
+                break;
+              }
+            }
+          } catch {
+            // Try next mood query
+          }
+        }
+      }
+      if (!bgmLocalPath) {
+        job.warnings.push('Không tải được nhạc nền tự động phù hợp — giữ nguyên giọng kể chuyện tự nhiên.');
+      }
     } else if (musicMode === 'ai_lyria') {
       job.stepLabel = 'Đang sáng tác nhạc nền AI bằng Lyria...';
       const track = await generateStudioMusicWithLyria({
@@ -5713,44 +6379,49 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   const finalOutPath = path.join(job.workDir, 'final_derivative.mp4');
   const musicVol = Math.max(0.05, Math.min(0.6, Number(params.musicVolume ?? 0.18)));
 
+  const hasBgm = Boolean(bgmLocalPath && fs.existsSync(bgmLocalPath));
+  const buildBgmAssArgs = (useSidechainDucking: boolean): string[] => [
+    '-y',
+    '-f',
+    'concat',
+    '-safe',
+    '0',
+    '-i',
+    'concat.txt',
+    '-stream_loop',
+    '-1',
+    '-i',
+    bgmLocalPath || '',
+    '-filter_complex',
+    useSidechainDucking
+      ? `[0:a]aresample=44100,asplit=2[avoice][asc];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[abgm][asc]sidechaincompress=threshold=0.04:ratio=4:attack=35:release=350[aduck];[avoice][aduck]amix=inputs=2:duration=first:dropout_transition=0.3[aout]`
+      : `[0:a]aresample=44100[avoice];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[avoice][abgm]amix=inputs=2:duration=first:dropout_transition=0.3[aout]`,
+    '-map',
+    '0:v',
+    '-map',
+    '[aout]',
+    '-vf',
+    'ass=subtitles.ass',
+    '-c:v',
+    'libx264',
+    '-preset',
+    encodePreset,
+    '-crf',
+    '21',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '192k',
+    '-movflags',
+    '+faststart',
+    'final_derivative.mp4',
+  ];
+
   let finalArgs: string[] = [];
-  if (bgmLocalPath && fs.existsSync(bgmLocalPath)) {
-    finalArgs = [
-      '-y',
-      '-f',
-      'concat',
-      '-safe',
-      '0',
-      '-i',
-      'concat.txt',
-      '-stream_loop',
-      '-1',
-      '-i',
-      bgmLocalPath,
-      '-filter_complex',
-      `[0:a]aresample=44100[avoice];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[avoice][abgm]amix=inputs=2:duration=first:dropout_transition=0.3[aout]`,
-      '-map',
-      '0:v',
-      '-map',
-      '[aout]',
-      '-vf',
-      'ass=subtitles.ass',
-      '-c:v',
-      'libx264',
-      '-preset',
-      encodePreset,
-      '-crf',
-      '21',
-      '-pix_fmt',
-      'yuv420p',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '192k',
-      '-movflags',
-      '+faststart',
-      'final_derivative.mp4',
-    ];
+  if (hasBgm) {
+    finalArgs = buildBgmAssArgs(true);
   } else {
     finalArgs = [
       '-y',
@@ -5781,6 +6452,10 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   }
 
   let finalRes = await spawnPromise('ffmpeg', finalArgs, job.workDir, 600_000);
+
+  if (hasBgm && (finalRes.code !== 0 || !fs.existsSync(finalOutPath))) {
+    finalRes = await spawnPromise('ffmpeg', buildBgmAssArgs(false), job.workDir, 600_000);
+  }
 
   // Fallback without libass if libass fails
   if (finalRes.code !== 0 || !fs.existsSync(finalOutPath)) {
