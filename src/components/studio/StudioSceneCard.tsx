@@ -15,6 +15,7 @@ import {
 import {
   DerivativeScene,
   DerivativeVoiceMode,
+  LearnedVideoStyle,
   ServerCapabilitiesStatus,
   StudioCharacterRef,
   StudioCreationMode,
@@ -28,8 +29,8 @@ import {
   CAMERA_MOVEMENT_SUGGESTIONS,
   CHARACTER_AGE_GROUP_OPTIONS,
   LIGHTING_SUGGESTIONS,
-  VIDEO_STYLE_OPTIONS,
   compileScenePromptClient,
+  resolveVideoStyleMetaClient,
 } from './studioConfig';
 
 interface StudioSceneCardProps {
@@ -39,6 +40,8 @@ interface StudioSceneCardProps {
   mode: StudioCreationMode;
   productionFormat?: StudioProductionFormat;
   videoStyle: StudioVideoStyle;
+  learnedStyles?: LearnedVideoStyle[];
+  customStylePrompt?: string;
   characterBible: string;
   settingBible: string;
   visualStyleBible?: string;
@@ -77,6 +80,8 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   mode,
   productionFormat = 'dialogue_film',
   videoStyle,
+  learnedStyles = [],
+  customStylePrompt = '',
   characterBible,
   settingBible,
   visualStyleBible,
@@ -102,7 +107,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   onSpeakPreview,
 }) => {
   const [showCinematographyDetails, setShowCinematographyDetails] = useState(false);
-  const styleMeta = VIDEO_STYLE_OPTIONS.find((s) => s.value === videoStyle) || VIDEO_STYLE_OPTIONS[1];
+  const styleMeta = resolveVideoStyleMetaClient(videoStyle, learnedStyles, customStylePrompt);
   const paddedNumber = String(index + 1).padStart(2, '0');
   const totalPadded = String(totalScenes).padStart(2, '0');
   const sceneCode = `Scene ${paddedNumber}`;
@@ -128,6 +133,8 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
     const compiledImage = compileScenePromptClient({
       scene: { ...scene, imagePrompt: '' },
       videoStyle,
+      learnedStyles,
+      customStylePrompt,
       characterBible,
       settingBible,
       visualStyleBible,
@@ -140,6 +147,8 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
     const compiledVideo = compileScenePromptClient({
       scene: { ...scene, videoPrompt: '' },
       videoStyle,
+      learnedStyles,
+      customStylePrompt,
       characterBible,
       settingBible,
       visualStyleBible,
@@ -160,6 +169,8 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   const compiledVideoPreviewLen = compileScenePromptClient({
     scene,
     videoStyle,
+    learnedStyles,
+    customStylePrompt,
     characterBible,
     settingBible,
     visualStyleBible,
