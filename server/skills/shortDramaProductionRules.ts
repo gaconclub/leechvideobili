@@ -17,7 +17,8 @@ export interface RuleEngineQcIssue {
     | 'continuity_chain'
     | 'prompt_hygiene'
     | 'de_ai_craft'
-    | 'voice_cast_uniqueness';
+    | 'voice_cast_uniqueness'
+    | 'costume_lock_violation';
   severity: 'error' | 'warning' | 'fixed';
   sceneIndex?: number;
   message: string;
@@ -61,6 +62,77 @@ ${formatSpecific}
 - KỸ XẢO & VẬT LIỆU VFX THỰC TẾ: Khi cảnh có tương tác ánh sáng, kính, kim loại, nước, khói hoặc chuyển cảnh, mô tả chất liệu vật lý cụ thể trong "vfxNotes" (VD: volumetric light shafts, floating dust motes, brushed metal reflection, caustics, foreground wipe) thay vì dùng từ khen sáo rỗng ("ultra detailed", "masterpiece").
 - MẠCH LIÊN CẢNH: "continuityNote" của Scene N+1 bắt buộc nối tiếp vị trí đứng, hướng nhìn (tránh nhảy trục), đạo cụ đang cầm và ánh sáng từ "sceneEndState" của Scene N.
 - CHỐNG CHỮ RÁC TRÊN KHUNG HÌNH: Tuyệt đối KHÔNG nhét số đo kích thước (30cm, 1m8, 5m) hay ký hiệu nội bộ ([SC-01], [Continuity]) vào "imagePrompt" và "videoPrompt".`;
+}
+
+export interface LockedCharacterProfileSeed {
+  id?: string;
+  name: string;
+  description?: string;
+  ageLabel?: string;
+  genderLabel?: string;
+  syncProfile?: {
+    face?: string;
+    physique?: string;
+    costume?: string;
+    voice?: string;
+    distinguishingMarks?: string;
+  };
+}
+
+export const EXPLICIT_WARDROBE_CHANGE_REQUEST_RE =
+  /(?:đổi\s*(?:trang\s*phục|đồ|áo|quần|váy|bộ\s*đồ|giáp)|thay\s*(?:trang\s*phục|đồ|áo|quần|váy|giáp|bộ\s*đồ)|mặc\s*(?:trang\s*phục|đồ|áo|quần|váy|giáp|đồng\s*phục)\s*(?:mới|khác)|sang\s*bộ\s*(?:đồ|váy|vest|áo)\s*khác|change\s+(?:outfit|clothes|costume|wardrobe)|new\s+outfit|different\s+(?:outfit|costume|clothes))/i;
+
+export function buildReferenceCharacterLockRules(params: {
+  allowFreeCostumeChange?: boolean;
+  characters: LockedCharacterProfileSeed[];
+  fallbackCostumeBible?: string;
+}): string {
+  const allowFree = Boolean(params.allowFreeCostumeChange);
+  const charBlocks = params.characters
+    .map((c, idx) => {
+      const sp = c.syncProfile || {};
+      const lines = [
+        `  - Nhân vật #${idx + 1}: "${c.name || `Nhân vật ${idx + 1}`}"`,
+        sp.face?.trim() ? `    + Gương mặt, kiểu tóc & màu tóc (KHÓA CỐ ĐỊNH): ${sp.face.trim()}` : '',
+        sp.physique?.trim() ? `    + Vóc dáng, chiều cao & tỷ lệ cơ thể (KHÓA CỐ ĐỊNH): ${sp.physique.trim()}` : '',
+        sp.distinguishingMarks?.trim()
+          ? `    + Đặc điểm nhận dạng riêng (KHÓA CỐ ĐỊNH): ${sp.distinguishingMarks.trim()}`
+          : '',
+        sp.costume?.trim()
+          ? `    + Trang phục, màu sắc & phụ kiện ${allowFree ? '(mặc định ban đầu — có thể đổi nếu ngữ cảnh cảnh yêu cầu)' : '(KHÓA TUYỆT ĐỐI 100%)'}: ${sp.costume.trim()}`
+          : !allowFree
+          ? `    + Trang phục (KHÓA TUYỆT ĐỐI 100%): Giữ nguyên trang phục, màu sắc, chất liệu & phụ kiện đúng theo ảnh nhân vật tham chiếu${params.fallbackCostumeBible?.trim() ? ` (${params.fallbackCostumeBible.trim()})` : ''}`
+          : '',
+        sp.voice?.trim() ? `    + Giọng nói & độ tuổi/giới tính: ${sp.voice.trim()}` : '',
+        !sp.face?.trim() && !sp.physique?.trim() && c.description?.trim()
+          ? `    + Mô tả chuẩn tham chiếu: ${c.description.trim()}`
+          : '',
+      ].filter(Boolean);
+      return lines.join('\n');
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  const priorityHeader = `
+=== THỨ TỰ ƯU TIÊN BẮT BUỘC VỀ NHÂN VẬT & TRANG PHỤC ===
+1. ƯU TIÊN CAO NHẤT: Ảnh nhân vật tham chiếu và Hồ sơ nhân vật đồng bộ đã xác nhận bên dưới.
+2. ƯU TIÊN THỨ HAI: Thiết lập khóa ngoại hình & trang phục (AI ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC NHÂN VẬT = ${allowFree ? 'BẬT' : 'TẮT'}).
+3. ƯU TIÊN THỨ BA: Kịch bản & Prompt phân cảnh.
+4. ƯU TIÊN THẤP NHẤT: Sáng tạo thêm của AI (TUYỆT ĐỐI KHÔNG được ghi đè hoặc tự diễn giải lại các trường đã khóa).`;
+
+  const modeRule = allowFree
+    ? `
+QUY TẮC CHẾ ĐỘ ĐANG BẬT (AI ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC):
+- AI ĐƯỢC PHÉP thay đổi hoặc sáng tạo trang phục phù hợp diễn biến kịch bản, bối cảnh, thời tiết và yêu cầu từng phân cảnh.
+- TUY NHIÊN, VẪN PHẢI KHÓA CỨNG 100% KHUÔN MẶT, KIỂU TÓC, MÀU TÓC, VÓC DÁNG, TỶ LỆ CƠ THỂ VÀ ĐẶC ĐIỂM NHẬN DẠNG theo ảnh tham chiếu & hồ sơ nhân vật.`
+    : `
+QUY TẮC KHÓA CỨNG ĐANG TẮT (KHÔNG ĐƯỢC THAY ĐỔI TRANG PHỤC — MẶC ĐỊNH):
+- KHÓA TUYỆT ĐỐI ngoại hình (khuôn mặt, kiểu tóc, màu tóc, vóc dáng, tỷ lệ, đặc điểm nhận dạng) VÀ TRANG PHỤC (quần áo, màu sắc, kiểu dáng, chất liệu, phụ kiện) theo ảnh nhân vật tham chiếu & hồ sơ đồng bộ ở trên.
+- CẤM TUYỆT ĐỐI AI tự ý thêm áo khoác, đổi màu áo, bỏ/thêm mũ kính trang sức, thay đồ theo thời tiết (mưa, lạnh, đêm), theo bối cảnh, thời đại hoặc diễn biến câu chuyện.
+- Trong MỌI phân cảnh, trường "costume", "costumeBible", "imagePrompt" và "videoPrompt" PHẢI lặp lại chính xác nguyên trạng bộ trang phục đã khóa của nhân vật xuất hiện trong cảnh đó.
+- Nếu ý tưởng đầu vào có chi tiết yêu cầu đổi trang phục nhưng cấu hình đang TẮT: KHÔNG tự sửa hồ sơ nhân vật hay tự đổi trang phục; hãy giữ nguyên trang phục khóa tham chiếu.`;
+
+  return `${priorityHeader}\n${modeRule}${charBlocks ? `\n\nHỒ SƠ NHÂN VẬT THAM CHIẾU ĐỒNG BỘ:\n${charBlocks}` : ''}`;
 }
 
 /**
@@ -142,6 +214,7 @@ export function compileProductionModelPrompt(params: {
   targetEngine?: 'muse2api' | 'gemini';
   characterBible?: string;
   costumeBible?: string;
+  allowFreeCostumeChange?: boolean;
 }): { prompt: string; trimmed: boolean; skippedCostumeForMacro: boolean } {
   const isSceneMode = params.mode === 'scene';
   const maxChars = params.targetEngine === 'muse2api' ? 1440 : 2400;
@@ -164,6 +237,10 @@ export function compileProductionModelPrompt(params: {
     text = text
       .replace(new RegExp(`(?:Locked\\s+)?Costume\\s+Reference\\s*:\\s*${escaped}\\.?`, 'gi'), '')
       .replace(/Costume\s+in\s+Scene\s*:[^.]*\./gi, '');
+  } else if (isSceneMode && params.allowFreeCostumeChange !== true && params.costumeBible?.trim()) {
+    if (!text.toLowerCase().includes('strict costume lock')) {
+      text = `${text} STRICT COSTUME LOCK: Keep character face, hairstyle, physique, and exact reference outfit (${params.costumeBible.trim().slice(0, 140)}) 100% unchanged.`;
+    }
   }
 
   // Reference Image Over Text: if reference photos are attached & prompt is long, compress redundant characterBible prose
@@ -247,6 +324,10 @@ export function auditAndNormalizeBlueprintServer<
     durationSec: number;
     charactersInScene?: string;
     dialogue?: string;
+    sceneSummary?: string;
+    actionDetail?: string;
+    costume?: string;
+    cameraAngle?: string;
     narration: string;
     continuityNote?: string;
     sceneEndState?: string;
@@ -265,22 +346,55 @@ export function auditAndNormalizeBlueprintServer<
 >(params: {
   scenes: TScene[];
   characterVoiceProfiles: TVoiceProfile[];
-  characterRefsMeta: { id: string; name: string }[];
+  characterRefsMeta: {
+    id: string;
+    name: string;
+    description?: string;
+    syncProfile?: {
+      face?: string;
+      physique?: string;
+      costume?: string;
+      voice?: string;
+      distinguishingMarks?: string;
+    };
+  }[];
   productionFormat: 'dialogue_film' | 'narration_story';
   enableVoiceover: boolean;
   voiceCastPools: Record<string, string[]>;
+  allowFreeCostumeChange?: boolean;
+  lockedCostumeBible?: string;
+  ideaOrScriptCorpus?: string;
 }): {
   scenes: TScene[];
   characterVoiceProfiles: TVoiceProfile[];
+  costumeLockWarnings: string[];
   qcReport: RuleEngineQcReport;
 } {
   const issues: RuleEngineQcIssue[] = [];
+  const costumeLockWarnings: string[] = [];
   let autoFixedCount = 0;
+  const allowFreeCostumeChange = Boolean(params.allowFreeCostumeChange);
 
   const normalizedScenes = params.scenes.map((sc) => ({
     ...sc,
     selectedCharacterIds: Array.isArray(sc.selectedCharacterIds) ? [...sc.selectedCharacterIds] : [],
   }));
+
+  const hasLockedCharacterRefs =
+    params.characterRefsMeta.some((c) => Boolean(c.syncProfile?.costume?.trim() || c.description?.trim())) ||
+    Boolean(params.lockedCostumeBible?.trim());
+
+  if (!allowFreeCostumeChange && hasLockedCharacterRefs && EXPLICIT_WARDROBE_CHANGE_REQUEST_RE.test(params.ideaOrScriptCorpus || '')) {
+    const warnMsg =
+      'Ý tưởng/kịch bản có chi tiết nhắc đến thay đổi trang phục, nhưng tùy chọn "AI ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC NHÂN VẬT" đang TẮT. Hệ thống đã giữ nguyên trang phục khóa tham chiếu — hãy bật tùy chọn này trong Thiết lập AI & Sản xuất nếu bạn muốn cho phép đổi đồ theo cảnh.';
+    costumeLockWarnings.push(warnMsg);
+    issues.push({
+      id: 'costume_lock_idea_conflict',
+      rule: 'costume_lock_violation',
+      severity: 'warning',
+      message: warnMsg,
+    });
+  }
 
   // 1. Speaker <-> Ref Sync + Continuity Chain + Prompt Hygiene + Pace + Anti-Cliché
   for (let i = 0; i < normalizedScenes.length; i += 1) {
@@ -387,6 +501,61 @@ export function auditAndNormalizeBlueprintServer<
         message: `Scene ${String(sc.sceneIndex).padStart(2, '0')}: Phát hiện cụm từ sáo rỗng kiểu AI trong thoại/lồng tiếng — nên chuyển sang hành động lên hình.`,
       });
     }
+
+    // 7. Reference Costume Lock Enforcement (when allowFreeCostumeChange === false)
+    if (!allowFreeCostumeChange && hasLockedCharacterRefs) {
+      const sceneCorpus = normalizeMatch(
+        [sc.charactersInScene || '', sc.dialogue || '', sc.sceneSummary || '', sc.actionDetail || ''].join(' | ')
+      );
+      const matchedLockedChars = params.characterRefsMeta.filter((ref) => {
+        if (sc.selectedCharacterIds.includes(ref.id)) return true;
+        return aliasesForName(ref.name).some((al) => sceneCorpus.includes(al));
+      });
+      const targetChars = matchedLockedChars.length > 0 ? matchedLockedChars : params.characterRefsMeta.slice(0, 2);
+      const lockedEntries = targetChars
+        .map((c) => {
+          const cst = String(c.syncProfile?.costume || '').trim();
+          return cst ? `${c.name}: ${cst}` : '';
+        })
+        .filter(Boolean);
+      const canonicalSceneCostume =
+        lockedEntries.length > 0 ? lockedEntries.join(' | ') : String(params.lockedCostumeBible || '').trim();
+
+      if (canonicalSceneCostume) {
+        const curCostume = String(sc.costume || '').trim();
+        const normCur = normalizeMatch(curCostume);
+        const normLocked = normalizeMatch(canonicalSceneCostume);
+        const lockedTokens = normLocked
+          .split(/\s+/)
+          .filter((t) => t.length >= 3 && !['trang', 'phuc', 'mau', 'cua', 'nhan', 'vat', 'theo', 'anh', 'tham', 'chieu'].includes(t));
+        const matchedTokens = lockedTokens.filter((t) => normCur.includes(t));
+        const tokenRatio = lockedTokens.length > 0 ? matchedTokens.length / lockedTokens.length : 1;
+        const hasChangeCue = EXPLICIT_WARDROBE_CHANGE_REQUEST_RE.test(curCostume);
+
+        if (!curCostume || hasChangeCue || (lockedTokens.length >= 2 && tokenRatio < 0.45)) {
+          sc.costume = canonicalSceneCostume;
+          const isMacro = isMacroOrInsertShot(`${sc.cameraAngle || ''} ${sc.imagePrompt || ''} ${sc.actionDetail || ''}`);
+          if (!isMacro) {
+            const lockTag = `Trang phục cố định theo ảnh tham chiếu: ${canonicalSceneCostume}.`;
+            if (sc.imagePrompt && !normalizeMatch(sc.imagePrompt).includes(normLocked.slice(0, 24))) {
+              sc.imagePrompt = `${sc.imagePrompt.replace(/\.+$/, '')}. ${lockTag}`;
+              sc.visualNote = sc.imagePrompt;
+            }
+            if (sc.videoPrompt && !normalizeMatch(sc.videoPrompt).includes(normLocked.slice(0, 24))) {
+              sc.videoPrompt = `${sc.videoPrompt.replace(/\.+$/, '')}. ${lockTag}`;
+            }
+          }
+          autoFixedCount += 1;
+          issues.push({
+            id: `cst_lock_${i + 1}`,
+            rule: 'costume_lock_violation',
+            severity: 'fixed',
+            sceneIndex: sc.sceneIndex,
+            message: `Scene ${String(sc.sceneIndex).padStart(2, '0')}: Đã khóa lại đúng trang phục tham chiếu (${canonicalSceneCostume.slice(0, 80)}) do tùy chọn đổi trang phục đang TẮT.`,
+          });
+        }
+      }
+    }
   }
 
   // 6. Voice Cast Uniqueness across characterVoiceProfiles
@@ -413,7 +582,7 @@ export function auditAndNormalizeBlueprintServer<
   });
 
   const warningOrErrorCount = issues.filter((is) => is.severity === 'warning' || is.severity === 'error').length;
-  const totalChecks = 6;
+  const totalChecks = 7;
   const failedRuleTypes = new Set(
     issues.filter((is) => is.severity === 'warning' || is.severity === 'error').map((is) => is.rule)
   ).size;
@@ -423,6 +592,7 @@ export function auditAndNormalizeBlueprintServer<
   return {
     scenes: normalizedScenes,
     characterVoiceProfiles: normalizedVoiceProfiles,
+    costumeLockWarnings,
     qcReport: {
       score,
       passedChecks,
@@ -545,6 +715,7 @@ export function buildDeterministicMuseDirectorBrief(params: {
   sceneEndState?: string;
   characterBible?: string;
   costumeBible?: string;
+  allowFreeCostumeChange?: boolean;
 }): { prompt: string; extra: string } {
   const isScene = params.mode === 'scene';
   const cameraParts = [
@@ -601,10 +772,15 @@ export function buildDeterministicMuseDirectorBrief(params: {
     prompt = (sep > 500 ? sliced.slice(0, sep + 1) : sliced).trim();
   }
 
+  const allowFreeCostume = Boolean(params.allowFreeCostumeChange);
   const extra =
     params.mediaType === 'video'
-      ? 'STRICT LOCK: Animate smoothly as ONE continuous real-time shot with zero jump cuts. Keep Image 1 composition and every attached character face, hair & outfit 100% identical. Clean frame: zero text, subtitles or watermarks.'
-      : 'STRICT LOCK: Preserve attached character faces, hair & outfits 100% identically. Clean crisp composition with zero text, speech bubbles or watermarks.';
+      ? allowFreeCostume
+        ? 'STRICT IDENTITY LOCK: Animate smoothly as ONE continuous real-time shot with zero jump cuts. Keep attached character faces, hairstyles & body proportions 100% identical while adapting wardrobe strictly as directed by the scene prompt. Zero text, subtitles or watermarks.'
+        : 'STRICT COSTUME & IDENTITY LOCK: Animate smoothly as ONE continuous real-time shot with zero jump cuts. Keep Image 1 composition and EVERY attached character face, hairstyle, physique, outfit, colors & accessories 100% IDENTICAL — ZERO unauthorized wardrobe changes. Clean frame: zero text, subtitles or watermarks.'
+      : allowFreeCostume
+      ? 'STRICT IDENTITY LOCK: Preserve attached character faces, hairstyles & body proportions 100% identically while adapting outfit to the scene prompt. Clean crisp composition with zero text, speech bubbles or watermarks.'
+      : 'STRICT COSTUME & IDENTITY LOCK: Preserve attached character faces, hairstyles, physique, outfits, colors & accessories 100% IDENTICAL to reference — ZERO unauthorized wardrobe changes. Clean crisp composition with zero text, speech bubbles or watermarks.';
 
   return { prompt, extra };
 }

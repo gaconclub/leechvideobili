@@ -242,6 +242,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   );
   const [scriptMode, setScriptMode] = useState<StudioScriptMode>('series');
   const [productionFormat, setProductionFormat] = useState<StudioProductionFormat>('dialogue_film');
+  const [allowFreeCostumeChange, setAllowFreeCostumeChange] = useState<boolean>(false);
   const [showManualNarrationMusic, setShowManualNarrationMusic] = useState(false);
   const [batchVideoCount, setBatchVideoCount] = useState<number>(3);
   const [batchDurationMode, setBatchDurationMode] = useState<'uniform' | 'per_video'>('uniform');
@@ -492,6 +493,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setVisualStyleBibleDraft(found.visualStyleBible || '');
     setCostumeBibleDraft(found.costumeBible || '');
     setContinuityBibleDraft(found.continuityBible || '');
+    setAllowFreeCostumeChange(Boolean(found.allowFreeCostumeChange));
     setCharacters(Array.isArray(found.characterRefs) ? found.characterRefs : []);
     if (blueprint) {
       setBlueprint({
@@ -502,6 +504,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         visualStyleBible: found.visualStyleBible || blueprint.visualStyleBible,
         costumeBible: found.costumeBible || blueprint.costumeBible,
         continuityBible: found.continuityBible || blueprint.continuityBible,
+        allowFreeCostumeChange: Boolean(found.allowFreeCostumeChange),
       });
     }
     setProjectStatusMsg(`Đã nạp hồ sơ dự án "${found.name}" (dùng chung cho Sáng tạo & Phái sinh).`);
@@ -527,6 +530,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           visualStyleBible: blueprint?.visualStyleBible ?? visualStyleBibleDraft,
           costumeBible: blueprint?.costumeBible ?? costumeBibleDraft,
           continuityBible: blueprint?.continuityBible ?? continuityBibleDraft,
+          allowFreeCostumeChange: blueprint?.allowFreeCostumeChange ?? allowFreeCostumeChange,
           characterRefs: characters.slice(0, 8),
         }),
       });
@@ -895,6 +899,57 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     );
   };
 
+  const synthesizeSyncedCharacters = (
+    charList: StudioCharacterRef[],
+    fallbackCostume: string
+  ): { syncedChars: StudioCharacterRef[]; changed: boolean } => {
+    let changed = false;
+    const syncedChars = charList.map((c) => {
+      const sp = c.syncProfile || {
+        face: '',
+        physique: '',
+        costume: '',
+        voice: '',
+        distinguishingMarks: '',
+      };
+      const ageMeta = CHARACTER_AGE_GROUP_OPTIONS.find((a) => a.value === (c.ageGroup || 'auto'));
+      const nextFace = sp.face?.trim() || c.description?.trim() || '';
+      const nextPhysique =
+        sp.physique?.trim() ||
+        (ageMeta && ageMeta.value !== 'auto' ? `Tỷ lệ cơ thể nhóm tuổi ${ageMeta.label}` : '');
+      const nextCostume = sp.costume?.trim() || fallbackCostume.trim() || '';
+      const nextVoice =
+        sp.voice?.trim() ||
+        [
+          ageMeta && ageMeta.value !== 'auto' ? ageMeta.label : 'Giọng Bắc VN chuẩn',
+          c.voiceId ? `(${c.voiceId})` : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+      const nextMarks = sp.distinguishingMarks?.trim() || '';
+      if (
+        !c.syncProfile ||
+        nextFace !== (sp.face || '') ||
+        nextPhysique !== (sp.physique || '') ||
+        nextCostume !== (sp.costume || '') ||
+        nextVoice !== (sp.voice || '')
+      ) {
+        changed = true;
+      }
+      return {
+        ...c,
+        syncProfile: {
+          face: nextFace,
+          physique: nextPhysique,
+          costume: nextCostume,
+          voice: nextVoice,
+          distinguishingMarks: nextMarks,
+        },
+      };
+    });
+    return { syncedChars, changed };
+  };
+
   const handleAnalyzeAllCharacters = async () => {
     if (characters.length === 0 || isAnalyzingCharacters) return;
     setIsAnalyzingCharacters(true);
@@ -1040,6 +1095,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             visualStyleBible: blueprint?.visualStyleBible || visualStyleBibleDraft,
             costumeBible: blueprint?.costumeBible || costumeBibleDraft,
             continuityBible: blueprint?.continuityBible || continuityBibleDraft,
+            allowFreeCostumeChange: blueprint?.allowFreeCostumeChange ?? allowFreeCostumeChange,
           }),
         }
       );
@@ -1078,8 +1134,23 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setExpandIdeaError('');
     setLearnError('');
 
-    const charSummary = characters
-      .map((c) => [c.name, c.description].filter(Boolean).join(' - '))
+    const { syncedChars, changed } = synthesizeSyncedCharacters(characters, costumeBibleDraft.trim());
+    if (changed) {
+      setCharacters(syncedChars);
+    }
+    const charSummary = syncedChars
+      .map((c) => {
+        const sp = c.syncProfile;
+        const profileBits = [
+          sp?.face ? `Mặt: ${sp.face}` : '',
+          sp?.physique ? `Dáng: ${sp.physique}` : '',
+          sp?.costume ? `Trang phục: ${sp.costume}` : '',
+          sp?.distinguishingMarks ? `Nhận dạng: ${sp.distinguishingMarks}` : '',
+        ]
+          .filter(Boolean)
+          .join(', ');
+        return [c.name, profileBits || c.description].filter(Boolean).join(' - ');
+      })
       .filter(Boolean)
       .join('; ');
 
@@ -1100,6 +1171,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           targetDurationSec,
           outputLanguage,
           characterSummary: charSummary,
+          characterRefsMeta: syncedChars.map((c) => ({
+            id: c.id,
+            name: c.name,
+            description: c.description,
+            ageGroup: c.ageGroup,
+            gender: c.gender,
+            voiceId: c.voiceId,
+            syncProfile: c.syncProfile,
+          })),
+          allowFreeCostumeChange,
           aiProvider,
           useProModel: aiProvider === 'gemini' && useProModel,
         }),
@@ -1147,7 +1228,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       return copy;
     });
 
-    const charSummary = characters
+    const { syncedChars, changed } = synthesizeSyncedCharacters(characters, costumeBibleDraft.trim());
+    if (changed) {
+      setCharacters(syncedChars);
+    }
+
+    const charSummary = syncedChars
       .map((c) => {
         const ageMeta = CHARACTER_AGE_GROUP_OPTIONS.find((a) => a.value === (c.ageGroup || 'auto'));
         const ageLabel = ageMeta && ageMeta.value !== 'auto' ? `Nhóm tuổi: ${ageMeta.label}` : 'Tuổi: AI tự phân tích';
@@ -1212,7 +1298,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           outputLanguage,
           useProModel: aiProvider === 'gemini' && useProModel,
           characterSummary: charSummary,
-          characterRefsMeta: characters.map((c) => ({
+          characterRefsMeta: syncedChars.map((c) => ({
             id: c.id,
             name: c.name,
             description: c.description,
@@ -1226,6 +1312,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           visualStyleBible: visualStyleBibleDraft.trim(),
           costumeBible: costumeBibleDraft.trim(),
           continuityBible: continuityBibleDraft.trim(),
+          allowFreeCostumeChange,
           customInstruction: customInstruction.trim(),
           enableVoiceover: voiceMode !== 'none',
           aiProvider,
@@ -1243,18 +1330,27 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         throw new Error(data.error || `HTTP ${res.status}`);
       }
 
-      setBatchBlueprintsByMode((prev) => ({ ...prev, [studioMode]: returnedList }));
+      const normalizedReturnedList = returnedList.map((bpItem) => ({
+        ...bpItem,
+        allowFreeCostumeChange: bpItem.allowFreeCostumeChange ?? allowFreeCostumeChange,
+      }));
+
+      setBatchBlueprintsByMode((prev) => ({ ...prev, [studioMode]: normalizedReturnedList }));
       setActiveBatchIdxByMode((prev) => ({ ...prev, [studioMode]: 0 }));
       setSharedSpiritByMode((prev) => ({
         ...prev,
-        [studioMode]: data.sharedSpiritNote || returnedList[0]?.sharedSpiritNote || '',
+        [studioMode]: data.sharedSpiritNote || normalizedReturnedList[0]?.sharedSpiritNote || '',
       }));
 
-      const first = returnedList[0];
-      if (first?.characterBible) setCharacterBibleDraft(first.characterBible);
+      const first = normalizedReturnedList[0];
+      if (first?.characterBible) {
+        setCharacterBibleDraft((prev) => (!allowFreeCostumeChange && prev.trim() ? prev : first.characterBible || prev));
+      }
       if (first?.settingBible) setSettingBibleDraft(first.settingBible);
       if (first?.visualStyleBible) setVisualStyleBibleDraft(first.visualStyleBible);
-      if (first?.costumeBible) setCostumeBibleDraft(first.costumeBible);
+      if (first?.costumeBible) {
+        setCostumeBibleDraft((prev) => (!allowFreeCostumeChange && prev.trim() ? prev : first.costumeBible || prev));
+      }
       if (first?.continuityBible) setContinuityBibleDraft(first.continuityBible);
 
       // Sync full character reference images & blueprint into Phòng Điều Hành AI Muse
@@ -1272,7 +1368,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           productionFormat,
           aspectRatio,
           videoStyle: first?.videoStyle || videoStyle,
-          characterRefs: characters.slice(0, 8),
+          allowFreeCostumeChange,
+          characterRefs: syncedChars.slice(0, 8),
           visualBible: first?.visualStyleBible ?? visualStyleBibleDraft.trim(),
           settingBible: first?.settingBible ?? settingBibleDraft.trim(),
           costumeBible: first?.costumeBible ?? costumeBibleDraft.trim(),
@@ -1338,6 +1435,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         projectNameInput.trim() ||
         (ideaPrompt.trim() ? ideaPrompt.trim().slice(0, 60) : 'Dự án từ Studio');
 
+      const { syncedChars, changed } = synthesizeSyncedCharacters(characters, costumeBibleDraft.trim());
+      if (changed) {
+        setCharacters(syncedChars);
+      }
+      const effectiveAllowFree = blueprint?.allowFreeCostumeChange ?? allowFreeCostumeChange;
+
       const res = await fetch('/api/command-center/productions/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1347,8 +1450,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           productionFormat: blueprint?.productionFormat || productionFormat,
           aspectRatio,
           videoStyle: blueprint?.videoStyle || videoStyle,
+          allowFreeCostumeChange: effectiveAllowFree,
           studioBlueprint: blueprint || undefined,
-          characterRefs: characters.slice(0, 8),
+          characterRefs: syncedChars.slice(0, 8),
           visualBible: blueprint?.visualStyleBible ?? visualStyleBibleDraft.trim(),
           settingBible: blueprint?.settingBible ?? settingBibleDraft.trim(),
           costumeBible: blueprint?.costumeBible ?? costumeBibleDraft.trim(),
@@ -1501,6 +1605,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     const activeVisualStyleBible = blueprint.visualStyleBible ?? visualStyleBibleDraft;
     const activeCostumeBible = blueprint.costumeBible ?? costumeBibleDraft;
     const activeContinuityBible = blueprint.continuityBible ?? continuityBibleDraft;
+    const effectiveAllowFree = blueprint.allowFreeCostumeChange ?? allowFreeCostumeChange;
     const compiledPrompt = compileScenePromptClient({
       scene: sc,
       videoStyle: activeStyle,
@@ -1517,6 +1622,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       mediaType: 'image',
       hasAttachedRefs: characters.length > 0,
       targetEngine: imageEngineMode === 'muse2api' ? 'muse2api' : 'gemini',
+      allowFreeCostumeChange: effectiveAllowFree,
     });
 
     try {
@@ -1539,6 +1645,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             visualStyleBible: activeVisualStyleBible,
             costumeBible: activeCostumeBible,
             continuityBible: activeContinuityBible,
+            allowFreeCostumeChange: effectiveAllowFree,
             sceneIndex: sc.sceneIndex,
             totalScenes: blueprint.scenes.length,
             sceneTitle: sc.sceneTitle || '',
@@ -1671,6 +1778,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     const activeVisualStyleBible = blueprint.visualStyleBible ?? visualStyleBibleDraft;
     const activeCostumeBible = blueprint.costumeBible ?? costumeBibleDraft;
     const activeContinuityBible = blueprint.continuityBible ?? continuityBibleDraft;
+    const effectiveAllowFree = blueprint.allowFreeCostumeChange ?? allowFreeCostumeChange;
     const compiledPrompt = compileScenePromptClient({
       scene: sc,
       videoStyle: activeStyle,
@@ -1687,6 +1795,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       mediaType: 'video',
       hasAttachedRefs: Boolean(sc.sceneImageDataUrl || characters.length > 0),
       targetEngine: sceneVideoEngine,
+      allowFreeCostumeChange: effectiveAllowFree,
     });
 
     try {
@@ -1710,6 +1819,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           visualStyleBible: activeVisualStyleBible,
           costumeBible: activeCostumeBible,
           continuityBible: activeContinuityBible,
+          allowFreeCostumeChange: effectiveAllowFree,
           sceneIndex: sc.sceneIndex,
           totalScenes: blueprint.scenes.length,
           sceneTitle: sc.sceneTitle || '',
@@ -2019,6 +2129,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           visualStyleBible: targetBp.visualStyleBible ?? visualStyleBibleDraft,
           costumeBible: targetBp.costumeBible ?? costumeBibleDraft,
           continuityBible: targetBp.continuityBible ?? continuityBibleDraft,
+          allowFreeCostumeChange: targetBp.allowFreeCostumeChange ?? allowFreeCostumeChange,
           aspectRatio,
           enableVoiceover: voiceMode !== 'none',
         },
@@ -3788,6 +3899,57 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </div>
                 </div>
 
+                {/* KHÓA ĐỒNG NHẤT NGOẠI HÌNH & TRANG PHỤC NHÂN VẬT THAM CHIẾU */}
+                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/80 border border-slate-200 dark:border-slate-400/20">
+                  <div className="space-y-0.5 min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 font-bold text-slate-800 dark:text-slate-100">
+                      <Lock
+                        className={`w-3.5 h-3.5 shrink-0 ${
+                          allowFreeCostumeChange
+                            ? 'text-amber-600 dark:text-amber-300'
+                            : 'text-emerald-600 dark:text-emerald-300'
+                        }`}
+                      />
+                      <span>AI ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC NHÂN VẬT</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                      {allowFreeCostumeChange
+                        ? 'Đang BẬT: AI được đổi trang phục theo bối cảnh/diễn biến cảnh phim, nhưng VẪN KHÓA 100% khuôn mặt, kiểu tóc, vóc dáng & đặc điểm nhận dạng.'
+                        : 'Đang TẮT (Mặc định): Khóa cứng ngoại hình & trang phục theo ảnh nhân vật tham chiếu. AI tuyệt đối không tự ý đổi, thêm, bớt hay thiết kế lại đồ.'}
+                    </p>
+                  </div>
+                  <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-400/20 overflow-hidden bg-white dark:bg-[#131a35] shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAllowFreeCostumeChange(false);
+                        setBlueprint((prev) => (prev ? { ...prev, allowFreeCostumeChange: false } : prev));
+                      }}
+                      className={`px-2.5 py-1 text-[11px] font-bold transition cursor-pointer ${
+                        !allowFreeCostumeChange
+                          ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                          : 'text-slate-500 dark:text-slate-400'
+                      }`}
+                    >
+                      TẮT (Khóa đồ)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAllowFreeCostumeChange(true);
+                        setBlueprint((prev) => (prev ? { ...prev, allowFreeCostumeChange: true } : prev));
+                      }}
+                      className={`px-2.5 py-1 text-[11px] font-bold transition cursor-pointer ${
+                        allowFreeCostumeChange
+                          ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
+                          : 'text-slate-500 dark:text-slate-400'
+                      }`}
+                    >
+                      BẬT (Tự do)
+                    </button>
+                  </div>
+                </div>
+
                 {videoStyle === 'custom' && (
                   <div className="space-y-1">
                     <span className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -4497,6 +4659,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                           setVisualStyleBibleDraft(bpItem.visualStyleBible || '');
                           setCostumeBibleDraft(bpItem.costumeBible || '');
                           setContinuityBibleDraft(bpItem.continuityBible || '');
+                          if (typeof bpItem.allowFreeCostumeChange === 'boolean') {
+                            setAllowFreeCostumeChange(bpItem.allowFreeCostumeChange);
+                          }
                         }}
                         className={`text-left p-2 rounded-xl border transition cursor-pointer ${
                           isActive
@@ -5004,13 +5169,100 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 </div>
               )}
 
-              {/* Pre-Render 6-Point QC Gate Card */}
+              {/* Reference Appearance & Costume Lock Banner + Warnings */}
               {(() => {
+                const effectiveAllowFree = blueprint.allowFreeCostumeChange ?? allowFreeCostumeChange;
+                const lockWarnings = Array.isArray(blueprint.costumeLockWarnings)
+                  ? blueprint.costumeLockWarnings.filter((w) => w?.trim())
+                  : [];
+                return (
+                  <div className="space-y-2">
+                    <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-200">
+                        <Lock
+                          className={`w-3.5 h-3.5 shrink-0 ${
+                            effectiveAllowFree
+                              ? 'text-amber-600 dark:text-amber-300'
+                              : 'text-emerald-600 dark:text-emerald-300'
+                          }`}
+                        />
+                        <span>
+                          <strong>Khóa nhân vật tham chiếu:</strong>{' '}
+                          {effectiveAllowFree
+                            ? 'BẬT tự do đổi trang phục theo bối cảnh (vẫn khóa 100% mặt, tóc, vóc dáng).'
+                            : 'TẮT đổi trang phục (khóa cứng 100% ngoại hình & bộ đồ gốc xuyên suốt mọi cảnh).'}
+                        </span>
+                      </div>
+                      <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-400/20 overflow-hidden bg-white dark:bg-[#131a35]">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAllowFreeCostumeChange(false);
+                            setBlueprint({ ...blueprint, allowFreeCostumeChange: false });
+                          }}
+                          className={`px-2 py-0.5 text-[10px] font-bold cursor-pointer ${
+                            !effectiveAllowFree
+                              ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                              : 'text-slate-500 dark:text-slate-400'
+                          }`}
+                        >
+                          TẮT (Khóa đồ)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAllowFreeCostumeChange(true);
+                            setBlueprint({ ...blueprint, allowFreeCostumeChange: true });
+                          }}
+                          className={`px-2 py-0.5 text-[10px] font-bold cursor-pointer ${
+                            effectiveAllowFree
+                              ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
+                              : 'text-slate-500 dark:text-slate-400'
+                          }`}
+                        >
+                          BẬT (Tự do)
+                        </button>
+                      </div>
+                    </div>
+
+                    {!effectiveAllowFree && lockWarnings.length > 0 && (
+                      <div className="p-3 rounded-xl bg-amber-500/12 border border-amber-500/35 text-xs text-amber-900 dark:text-amber-100 flex flex-wrap items-start justify-between gap-2">
+                        <div className="space-y-1 flex-1 min-w-0">
+                          <div className="font-bold flex items-center gap-1.5">
+                            <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-300 shrink-0" />
+                            <span>Cảnh báo khóa trang phục tham chiếu</span>
+                          </div>
+                          {lockWarnings.map((w, idx) => (
+                            <p key={idx} className="text-[11px] leading-snug opacity-95">
+                              {w}
+                            </p>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAllowFreeCostumeChange(true);
+                            setBlueprint({ ...blueprint, allowFreeCostumeChange: true });
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-semibold cursor-pointer shrink-0"
+                        >
+                          Bật tự do đổi trang phục
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Pre-Render 7-Point QC Gate Card */}
+              {(() => {
+                const effectiveAllowFree = blueprint.allowFreeCostumeChange ?? allowFreeCostumeChange;
                 const liveQc = runClientBlueprintQc({
                   blueprint,
                   characterRefs: characters,
                   enableVoiceover: voiceMode !== 'none',
                   targetEngine: sceneVideoEngine,
+                  allowFreeCostumeChange: effectiveAllowFree,
                 });
                 const fixableIssues = liveQc.issues.filter((is) => is.autoFixable);
                 const serverFixedCount = blueprint.qcReport?.autoFixedCount || 0;
@@ -5042,6 +5294,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                               blueprint,
                               characterRefs: characters,
                               enableVoiceover: voiceMode !== 'none',
+                              allowFreeCostumeChange: effectiveAllowFree,
                             });
                             setBlueprint(fixed.blueprint);
                           }}
@@ -5060,7 +5313,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       </ul>
                     ) : (
                       <p className="text-[11px] opacity-85">
-                        Đạt chuẩn đồng bộ nhân vật ↔ lời thoại, mạch nối cảnh, vệ sinh prompt an toàn model, nhịp đọc &amp; phân vai giọng nói.
+                        Đạt chuẩn đồng bộ nhân vật ↔ lời thoại, khóa trang phục tham chiếu, mạch nối cảnh, vệ sinh prompt an toàn model, nhịp đọc &amp; phân vai giọng nói.
                       </p>
                     )}
                   </div>
@@ -5086,6 +5339,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     continuityBible={blueprint.continuityBible ?? continuityBibleDraft}
                     hasCharacterRefs={characters.length > 0}
                     characterRefs={characters}
+                    allowFreeCostumeChange={blueprint.allowFreeCostumeChange ?? allowFreeCostumeChange}
                     sources={sources}
                     busyImg={busySceneImageIds.has(sc.id)}
                     queuedImg={queuedSceneImageIds.has(sc.id)}

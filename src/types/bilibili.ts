@@ -405,6 +405,7 @@ export interface StudioProjectProfile {
   name: string;
   description?: string;
   videoStyle: StudioVideoStyle;
+  allowFreeCostumeChange?: boolean;
   characterBible: string;
   settingBible: string;
   visualStyleBible: string;
@@ -509,7 +510,8 @@ export interface StudioQcIssue {
     | 'continuity_chain'
     | 'prompt_hygiene'
     | 'de_ai_craft'
-    | 'voice_cast_uniqueness';
+    | 'voice_cast_uniqueness'
+    | 'costume_lock_violation';
   severity: 'error' | 'warning' | 'fixed';
   sceneIndex?: number;
   message: string;
@@ -582,6 +584,8 @@ export interface DerivativeBlueprint {
   targetDurationSec?: number;
   ideaPrompt?: string;
   videoStyle?: StudioVideoStyle;
+  allowFreeCostumeChange?: boolean;
+  costumeLockWarnings?: string[];
   // 5-part Synchronization Bible (Section 2.6)
   characterBible?: string; // Character Reference
   settingBible?: string; // Environment Reference

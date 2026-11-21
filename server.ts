@@ -4794,6 +4794,7 @@ async function startServer() {
         title: project.name,
         ideaOrCommand: project.description || `Hồ sơ dự án Studio "${project.name}"`,
         videoStyle: project.videoStyle,
+        allowFreeCostumeChange: project.allowFreeCostumeChange === true,
         characterRefs: project.characterRefs,
         visualBible: project.visualStyleBible,
         settingBible: project.settingBible,
@@ -5069,6 +5070,7 @@ async function startServer() {
         vfxNotes = '',
         selectedCharacterIds,
         characterRefs = [],
+        allowFreeCostumeChange = false,
       } = (req.body || {}) as {
         mode?: 'character' | 'scene';
         prompt?: string;
@@ -5094,6 +5096,7 @@ async function startServer() {
         cameraAngle?: string;
         vfxNotes?: string;
         selectedCharacterIds?: string[];
+        allowFreeCostumeChange?: boolean;
         characterRefs?: {
           id?: string;
           dataUrl: string;
@@ -5131,6 +5134,7 @@ async function startServer() {
         vfxNotes: String(vfxNotes || ''),
         selectedCharacterIds: Array.isArray(selectedCharacterIds) ? selectedCharacterIds : undefined,
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
+        allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
       });
       res.json(result);
     } catch (err: any) {
@@ -5172,6 +5176,7 @@ async function startServer() {
         selectedCharacterIds,
         sceneImageDataUrl,
         characterRefs = [],
+        allowFreeCostumeChange = false,
       } = (req.body || {}) as {
         prompt?: string;
         aspectRatio?: DerivativeAspectRatio;
@@ -5202,6 +5207,7 @@ async function startServer() {
         vfxNotes?: string;
         selectedCharacterIds?: string[];
         sceneImageDataUrl?: string;
+        allowFreeCostumeChange?: boolean;
         characterRefs?: {
           id?: string;
           dataUrl: string;
@@ -5244,6 +5250,7 @@ async function startServer() {
         selectedCharacterIds: Array.isArray(selectedCharacterIds) ? selectedCharacterIds : undefined,
         sceneImageDataUrl,
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
+        allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
       });
       res.json(result);
     } catch (err: any) {
@@ -5287,6 +5294,8 @@ async function startServer() {
         targetDurationSec = 60,
         outputLanguage = 'vi',
         characterSummary = '',
+        characterRefsMeta = [],
+        allowFreeCostumeChange = false,
         aiProvider = 'gemini',
         useProModel = false,
       } = (req.body || {}) as {
@@ -5298,6 +5307,16 @@ async function startServer() {
         targetDurationSec?: number;
         outputLanguage?: DerivativeOutputLanguage;
         characterSummary?: string;
+        characterRefsMeta?: {
+          id: string;
+          name: string;
+          description?: string;
+          ageGroup?: 'auto' | 'child' | 'youth' | 'adult_male' | 'adult_female' | 'middle_aged' | 'elderly';
+          gender?: 'auto' | 'male' | 'female';
+          voiceId?: Exclude<DerivativeVoiceId, 'none'>;
+          syncProfile?: CharacterFivePartProfile;
+        }[];
+        allowFreeCostumeChange?: boolean;
         aiProvider?: AiProviderId;
         useProModel?: boolean;
       };
@@ -5316,6 +5335,8 @@ async function startServer() {
         targetDurationSec: Number(targetDurationSec || 60),
         outputLanguage,
         characterSummary: String(characterSummary || ''),
+        characterRefsMeta: Array.isArray(characterRefsMeta) ? characterRefsMeta : [],
+        allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
         aiProvider: validProvider,
         useProModel: Boolean(useProModel),
       });
@@ -5326,6 +5347,8 @@ async function startServer() {
         title: String(seedIdea || '').trim().slice(0, 60) || 'Ý tưởng Studio mới',
         ideaOrCommand: result?.expandedIdea || String(seedIdea || ''),
         videoStyle,
+        allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
+        characterRefs: Array.isArray(characterRefsMeta) ? characterRefsMeta : [],
         settingBible: String(settingHint || ''),
       }).catch(() => {});
 
@@ -5365,6 +5388,7 @@ async function startServer() {
         continuityBible = '',
         customInstruction = '',
         enableVoiceover = true,
+        allowFreeCostumeChange = false,
         aiProvider = 'gemini',
       } = (req.body || {}) as {
         mode?: StudioCreationMode;
@@ -5401,6 +5425,7 @@ async function startServer() {
         continuityBible?: string;
         customInstruction?: string;
         enableVoiceover?: boolean;
+        allowFreeCostumeChange?: boolean;
         aiProvider?: AiProviderId;
       };
 
@@ -5456,6 +5481,7 @@ async function startServer() {
           continuityBible: String(continuityBible || ''),
           customInstruction: String(customInstruction || ''),
           enableVoiceover: enableVoiceover !== false,
+          allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
           aiProvider: validProvider,
         });
         void syncStudioDirectiveToCommandCenter({
@@ -5466,6 +5492,7 @@ async function startServer() {
           productionFormat: resolvedProductionFormat,
           aspectRatio: resolvedAspectRatio,
           videoStyle,
+          allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
           characterRefs: Array.isArray(characterRefsMeta) ? characterRefsMeta : [],
           visualBible: String(visualStyleBible || ''),
           settingBible: String(settingBible || ''),
@@ -5505,6 +5532,7 @@ async function startServer() {
         continuityBible: String(continuityBible || ''),
         customInstruction: String(customInstruction || ''),
         enableVoiceover: enableVoiceover !== false,
+        allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
         aiProvider: validProvider,
       });
 
@@ -5516,6 +5544,7 @@ async function startServer() {
         productionFormat: resolvedProductionFormat,
         aspectRatio: resolvedAspectRatio,
         videoStyle,
+        allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
         characterRefs: Array.isArray(characterRefsMeta) ? characterRefsMeta : [],
         visualBible: String(visualStyleBible || ''),
         settingBible: String(settingBible || ''),
@@ -5700,6 +5729,7 @@ async function startServer() {
         productionFormat: blueprint.productionFormat,
         aspectRatio: blueprint.aspectRatio,
         videoStyle: blueprint.videoStyle,
+        allowFreeCostumeChange: blueprint.allowFreeCostumeChange === true,
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
         visualBible: blueprint.visualStyleBible,
         settingBible: blueprint.settingBible,

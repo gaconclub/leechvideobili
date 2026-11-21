@@ -128,7 +128,7 @@
       "description": "AI kiểm định độc lập: đối chiếu 8 tiêu chí đồng nhất toàn phim, phát hiện sai lệch và yêu cầu tạo lại đúng phân cảnh lỗi.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
-      "status": "supervising",
+      "status": "online",
       "paused": false,
       "permissions": {
         "canModifyProjectMemory": false,
@@ -153,11 +153,11 @@
   ],
   "projectMemory": {
     "projectId": "proj_mwqdvgza",
-    "title": "Smoke Test Session",
-    "version": 1,
-    "updatedAt": 1795264068790,
+    "title": "__test_costume_lock_default__",
+    "version": 3,
+    "updatedAt": 1795276219628,
     "updatedByAgentId": "system",
-    "originalScript": "",
+    "originalScript": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
     "productionFormat": "dialogue_film",
     "aspectRatio": "16:9",
     "videoStyle": "cinematic",
@@ -168,103 +168,93 @@
     "timelineSummary": "",
     "characters": [],
     "scenes": [],
-    "snapshots": []
-  },
-  "sessionMemories": {},
-  "latestStudioDirective": {
-    "syncedAt": 1795257203014,
-    "sourceAction": "learn_script",
-    "mode": "creative",
-    "title": "Test Studio Sync",
-    "scriptOrCommand": "Lệnh test đồng bộ từ Studio sang Phòng Điều Hành\n\nTiêu đề kịch bản Studio: Test Studio Sync\n\nTóm tắt kịch bản:\nTóm tắt kịch bản thử nghiệm\n\nNhân vật đồng bộ (1):\n1. Minh: Chàng trai trẻ\n\nDanh sách 2 phân cảnh:\n- Cảnh 1 (6s) [Cảnh 1]: Nhân vật bước ra | Thoại: \"Xin chào\"\n- Cảnh 2 (6s) [Cảnh 2]: Nhân vật quay đi | Thoại: \"Đi thôi\"",
-    "productionFormat": "dialogue_film",
-    "aspectRatio": "16:9",
-    "videoStyle": "cinematic",
-    "visualBible": "",
-    "settingBible": "",
-    "costumeBible": "",
-    "continuityBible": "",
-    "characterCount": 1,
-    "sceneCount": 2,
-    "hasBlueprint": true
-  },
-  "latestStudioBlueprint": {
-    "syncedAt": 1795257203014,
-    "title": "Test Studio Sync",
-    "scriptOrCommand": "Lệnh test đồng bộ từ Studio sang Phòng Điều Hành\n\nTiêu đề kịch bản Studio: Test Studio Sync\n\nTóm tắt kịch bản:\nTóm tắt kịch bản thử nghiệm\n\nNhân vật đồng bộ (1):\n1. Minh: Chàng trai trẻ\n\nDanh sách 2 phân cảnh:\n- Cảnh 1 (6s) [Cảnh 1]: Nhân vật bước ra | Thoại: \"Xin chào\"\n- Cảnh 2 (6s) [Cảnh 2]: Nhân vật quay đi | Thoại: \"Đi thôi\"",
-    "productionFormat": "dialogue_film",
-    "aspectRatio": "16:9",
-    "videoStyle": "cinematic",
-    "visualBible": "",
-    "settingBible": "",
-    "costumeBible": "",
-    "continuityBible": "",
-    "characters": [
+    "snapshots": [
       {
-        "id": "c1",
-        "name": "Minh",
-        "ageGroup": "youth",
-        "gender": "male",
-        "voiceId": "Kore",
-        "description": "Chàng trai trẻ",
-        "syncProfile": {
-          "face": "Chàng trai trẻ",
-          "physique": "Tỷ lệ cân đối tự nhiên",
-          "costume": "Trang phục đồng bộ xuyên suốt",
-          "voice": "Giọng đọc tự nhiên theo độ tuổi",
-          "distinguishingMarks": "Đặc điểm nhận dạng ổn định"
-        },
-        "approvedVersion": 1
-      }
-    ],
-    "scenes": [
-      {
-        "sceneId": "scene_1",
-        "index": 1,
-        "title": "Cảnh 1",
-        "durationSec": 6,
-        "narration": "",
-        "dialogue": "Xin chào",
-        "speakerName": "",
-        "actionDetail": "Nhân vật bước ra",
-        "settingDetail": "Phố đêm",
-        "costume": "",
-        "cameraAngle": "Trung cảnh",
-        "cameraMovement": "Đẩy máy chậm",
-        "lighting": "Ánh sáng điện ảnh tự nhiên",
-        "vfxNotes": "",
-        "videoTimeline": "",
-        "dependsOnSceneIds": [],
-        "qaStatus": "pending",
-        "retryCount": 0,
-        "lastModifiedBy": "studio"
+        "id": "memsnap_v2_mwql3wmj",
+        "version": 2,
+        "createdAt": 1795276219627,
+        "authorAgentId": "system",
+        "summary": "Bản lưu trước cập nhật (Đồng bộ chỉ thị từ Studio (save_project): __test_costume_lock_default__)",
+        "data": {
+          "title": "__test_costume_lock_default__",
+          "originalScript": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
+          "productionFormat": "dialogue_film",
+          "aspectRatio": "16:9",
+          "videoStyle": "cinematic",
+          "allowFreeCostumeChange": false,
+          "visualBible": "",
+          "settingBible": "",
+          "costumeBible": "",
+          "continuityBible": "",
+          "timelineSummary": "",
+          "characters": [],
+          "scenes": []
+        }
       },
       {
-        "sceneId": "scene_2",
-        "index": 2,
-        "title": "Cảnh 2",
-        "durationSec": 6,
-        "narration": "",
-        "dialogue": "Đi thôi",
-        "speakerName": "",
-        "actionDetail": "Nhân vật quay đi",
-        "settingDetail": "Phố đêm",
-        "costume": "",
-        "cameraAngle": "Trung cảnh",
-        "cameraMovement": "Đẩy máy chậm",
-        "lighting": "Ánh sáng điện ảnh tự nhiên",
-        "vfxNotes": "",
-        "videoTimeline": "",
-        "dependsOnSceneIds": [],
-        "qaStatus": "pending",
-        "retryCount": 0,
-        "lastModifiedBy": "studio"
+        "id": "memsnap_v1_mwql3wly",
+        "version": 1,
+        "createdAt": 1795276219606,
+        "authorAgentId": "system",
+        "summary": "Bản lưu trước cập nhật (Đồng bộ chỉ thị từ Studio (save_project): __test_costume_lock_default__)",
+        "data": {
+          "title": "Smoke Test Session",
+          "originalScript": "",
+          "productionFormat": "dialogue_film",
+          "aspectRatio": "16:9",
+          "videoStyle": "cinematic",
+          "allowFreeCostumeChange": false,
+          "visualBible": "",
+          "settingBible": "",
+          "costumeBible": "",
+          "continuityBible": "",
+          "timelineSummary": "",
+          "characters": [],
+          "scenes": []
+        }
       }
-    ]
+    ],
+    "allowFreeCostumeChange": true
+  },
+  "sessionMemories": {},
+  "selectedRunId": null,
+  "latestStudioDirective": {
+    "syncedAt": 1795276219627,
+    "sourceAction": "save_project",
+    "mode": "creative",
+    "title": "__test_costume_lock_default__",
+    "scriptOrCommand": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
+    "productionFormat": "dialogue_film",
+    "aspectRatio": "16:9",
+    "videoStyle": "cinematic",
+    "allowFreeCostumeChange": true,
+    "visualBible": "",
+    "settingBible": "",
+    "costumeBible": "",
+    "continuityBible": "",
+    "characterCount": 0,
+    "sceneCount": 0,
+    "hasBlueprint": false
+  },
+  "latestStudioBlueprint": {
+    "syncedAt": 1795276219627,
+    "title": "__test_costume_lock_default__",
+    "scriptOrCommand": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
+    "productionFormat": "dialogue_film",
+    "aspectRatio": "16:9",
+    "videoStyle": "cinematic",
+    "allowFreeCostumeChange": true,
+    "visualBible": "",
+    "settingBible": "",
+    "costumeBible": "",
+    "continuityBible": "",
+    "characters": [],
+    "scenes": []
   },
   "runs": [],
   "tasks": [],
   "qaReports": [],
+  "incidents": [],
   "conversations": [
     {
       "channel": "production",
@@ -317,9 +307,43 @@
       "sessionId": "run_1795264068790_c955",
       "id": "msg_1795264068807_e9c0",
       "createdAt": 1795264068807
+    },
+    {
+      "channel": "commander",
+      "projectId": "proj_mwqdvgza",
+      "senderType": "system",
+      "senderId": "studio_sync",
+      "senderName": "Đồng bộ Studio → Muse Director",
+      "targetAgentIds": [
+        "muse-01",
+        "muse-02",
+        "muse-03",
+        "muse-04",
+        "muse-05"
+      ],
+      "messageKind": "ack",
+      "content": "Chỉ thị từ Studio [Lưu dự án Studio]: \"__test_costume_lock_default__\" (0 nhân vật, 0 phân cảnh · 16:9). Đã nạp sẵn vào Trung tâm giao nhiệm vụ tổng & Project Memory để đội 5 Muse AI tiếp nhận.",
+      "id": "msg_1795276219607_21d0",
+      "createdAt": 1795276219607
     }
   ],
   "logs": [
+    {
+      "id": "log_1795276219628_1feb",
+      "timestamp": 1795276219629,
+      "level": "info",
+      "agentId": "muse-01",
+      "action": "Đồng bộ chỉ thị từ Studio",
+      "detail": "Lưu dự án Studio: \"__test_costume_lock_default__\" (0 cảnh, 0 nhân vật)."
+    },
+    {
+      "id": "log_1795276219607_4200",
+      "timestamp": 1795276219607,
+      "level": "info",
+      "agentId": "muse-01",
+      "action": "Đồng bộ chỉ thị từ Studio",
+      "detail": "Lưu dự án Studio: \"__test_costume_lock_default__\" (0 cảnh, 0 nhân vật)."
+    },
     {
       "id": "log_1795264059626_e33a",
       "timestamp": 1795264059626,
@@ -443,10 +467,13 @@
     "parallelLimit": 2,
     "qaPassThreshold": 80,
     "maxRetriesPerScene": 2,
+    "maxIncidentRetries": 3,
+    "autoDirectorIncidentResponse": true,
     "autoBackupRealtime": true,
-    "workerHeartbeatAt": 1795264068803,
-    "workerBootId": "worker_mwqdv4y3_c723",
+    "workerHeartbeatAt": 1795276217759,
+    "workerBootId": "worker_mwql2qoi_e36b",
     "isCloudEndpoint": false
   },
-  "taskSeq": 1
+  "taskSeq": 1,
+  "incidentSeq": 1
 }

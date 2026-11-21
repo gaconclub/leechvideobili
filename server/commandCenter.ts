@@ -23,6 +23,7 @@ import {
   retryWithGeminiBackoff,
   shouldFallbackGeminiModel,
 } from './derivative';
+import { buildReferenceCharacterLockRules } from './skills/shortDramaProductionRules';
 import type {
   CharacterFivePartProfile,
   DerivativeAspectRatio,
@@ -84,6 +85,7 @@ interface StoredStudioBlueprintCache {
   productionFormat: StudioProductionFormat;
   aspectRatio: DerivativeAspectRatio;
   videoStyle: StudioVideoStyle;
+  allowFreeCostumeChange?: boolean;
   visualBible?: string;
   settingBible?: string;
   costumeBible?: string;
@@ -242,6 +244,7 @@ function createEmptyProjectMemory(): ProjectMemory {
     productionFormat: 'dialogue_film',
     aspectRatio: '16:9',
     videoStyle: 'cinematic',
+    allowFreeCostumeChange: false,
     visualBible: '',
     settingBible: '',
     costumeBible: '',
@@ -598,6 +601,7 @@ function commitSessionMemoryUpdate(
       productionFormat: mem.productionFormat,
       aspectRatio: mem.aspectRatio,
       videoStyle: mem.videoStyle,
+      allowFreeCostumeChange: mem.allowFreeCostumeChange === true,
       visualBible: mem.visualBible,
       settingBible: mem.settingBible,
       costumeBible: mem.costumeBible,
@@ -1951,13 +1955,15 @@ Hãy trả về đúng JSON hợp lệ (không markdown) với cấu trúc:
   "continuityLockNotes": "Quy tắc đồng bộ nhân vật, trang phục, bối cảnh cốt lõi cần khóa vào Project Memory"
 }`;
 
+  const allowFree = mem.allowFreeCostumeChange === true;
   const user = `Lệnh sản xuất & Kịch bản gốc từ người dùng:
 ${mem.originalScript}
 
 Thông số dự án:
 - Hình thức: ${mem.productionFormat === 'dialogue_film' ? 'Phim có lời thoại (đồng bộ nhân vật + khẩu hình)' : 'Phim thuyết minh kể chuyện'}
 - Khung hình: ${mem.aspectRatio}
-- Phong cách: ${mem.videoStyle}`;
+- Phong cách: ${mem.videoStyle}
+- Khóa trang phục nhân vật tham chiếu: ${allowFree ? 'BẬT (cho phép đổi trang phục theo cảnh, vẫn khóa gương mặt/vóc dáng)' : 'TẮT (KHÓA TUYỆT ĐỐI ngoại hình VÀ trang phục theo ảnh/hồ sơ tham chiếu)'}`;
 
   const res = await runAgentJsonInference({
     agent,
@@ -2071,12 +2077,27 @@ Trả về DUY NHẤT JSON hợp lệ theo schema:
   ]
 }`;
 
+  const allowFree = mem.allowFreeCostumeChange === true;
+  const lockRulesBlock =
+    mem.characters.length > 0 || mem.costumeBible
+      ? buildReferenceCharacterLockRules({
+          allowFreeCostumeChange: allowFree,
+          characters: mem.characters.map((c) => ({
+            id: c.id,
+            name: c.name,
+            description: c.description,
+            syncProfile: c.syncProfile,
+          })),
+          fallbackCostumeBible: mem.costumeBible,
+        })
+      : '';
+
   const user = `Kịch bản gốc:
 ${mem.originalScript}
 
 Chiến lược Tổng đạo diễn đã duyệt:
 ${mem.timelineSummary}
-
+${lockRulesBlock ? `\n${lockRulesBlock}\n` : ''}
 Lưu ý:
 - Hình thức: ${mem.productionFormat === 'dialogue_film' ? 'Phim có lời thoại (bắt buộc giữ lời thoại nhân vật + lip-sync)' : 'Phim thuyết minh kể chuyện (ưu tiên lời dẫn chuyện tự nhiên)'}.
 - Số phân cảnh: 3 đến 6 phân cảnh rõ ràng, mỗi cảnh 5-8 giây.
@@ -2097,25 +2118,46 @@ Lưu ý:
   throwIfRunStopped(task.runId);
 
   const normalizedChars: CommandMemoryCharacter[] = (Array.isArray(parsed.characters) ? parsed.characters : []).map(
-    (c: any, idx: number) => ({
-      id: String(c.id || `char_${idx + 1}`),
-      name: String(c.name || `Nhân vật ${idx + 1}`).trim(),
-      ageGroup: (['child', 'youth', 'adult_male', 'adult_female', 'middle_aged', 'elderly'].includes(c.ageGroup)
-        ? c.ageGroup
-        : 'youth') as any,
-      gender: c.gender === 'female' ? 'female' : 'male',
-      voiceId: c.gender === 'female' ? 'Aoede' : 'Charon',
-      description: String(c.description || '').trim(),
-      syncProfile: {
-        face: String(c.syncProfile?.face || c.description || 'Gương mặt chuẩn theo kịch bản'),
-        physique: String(c.syncProfile?.physique || 'Tỷ lệ cân đối tự nhiên'),
-        costume: String(c.syncProfile?.costume || parsed.costumeBible || 'Trang phục đồng bộ xuyên suốt'),
-        voice: String(c.syncProfile?.voice || 'Giọng đọc tự nhiên đúng độ tuổi'),
-        distinguishingMarks: String(c.syncProfile?.distinguishingMarks || 'Thần thái đặc trưng ổn định'),
-      },
-      approvedVersion: mem.version + 1,
-    })
+    (c: any, idx: number) => {
+      const existingChar =
+        mem.characters.find((mc) => mc.id === c.id) ||
+        mem.characters.find((mc) => mc.name.trim().toLowerCase() === String(c.name || '').trim().toLowerCase()) ||
+        mem.characters[idx];
+      const lockedCostume =
+        !allowFree && existingChar?.syncProfile?.costume?.trim()
+          ? existingChar.syncProfile.costume.trim()
+          : '';
+      return {
+        id: String(existingChar?.id || c.id || `char_${idx + 1}`),
+        name: String(existingChar?.name || c.name || `Nhân vật ${idx + 1}`).trim(),
+        ageGroup: (['child', 'youth', 'adult_male', 'adult_female', 'middle_aged', 'elderly'].includes(c.ageGroup)
+          ? c.ageGroup
+          : existingChar?.ageGroup || 'youth') as any,
+        gender: existingChar?.gender === 'female' || existingChar?.gender === 'male'
+          ? existingChar.gender
+          : c.gender === 'female'
+          ? 'female'
+          : 'male',
+        voiceId: existingChar?.voiceId || (c.gender === 'female' ? 'Aoede' : 'Charon'),
+        description: String(existingChar?.description || c.description || '').trim(),
+        artifactUrl: existingChar?.artifactUrl,
+        dataUrl: existingChar?.dataUrl,
+        syncProfile: {
+          face: String(existingChar?.syncProfile?.face?.trim() || c.syncProfile?.face || c.description || 'Gương mặt chuẩn theo kịch bản'),
+          physique: String(existingChar?.syncProfile?.physique?.trim() || c.syncProfile?.physique || 'Tỷ lệ cân đối tự nhiên'),
+          costume: lockedCostume || String(c.syncProfile?.costume || mem.costumeBible || parsed.costumeBible || 'Trang phục đồng bộ xuyên suốt'),
+          voice: String(existingChar?.syncProfile?.voice?.trim() || c.syncProfile?.voice || 'Giọng đọc tự nhiên đúng độ tuổi'),
+          distinguishingMarks: String(existingChar?.syncProfile?.distinguishingMarks?.trim() || c.syncProfile?.distinguishingMarks || 'Thần thái đặc trưng ổn định'),
+        },
+        approvedVersion: mem.version + 1,
+      };
+    }
   );
+
+  const canonicalLockedCostumeBible =
+    !allowFree && (mem.costumeBible?.trim() || normalizedChars.some((c) => c.syncProfile.costume))
+      ? mem.costumeBible?.trim() || normalizedChars.map((c) => `${c.name}: ${c.syncProfile.costume}`).join(' | ')
+      : String(parsed.costumeBible || mem.costumeBible || '').trim();
 
   const rawScenes = parsed.scenes.slice(0, 10);
   const normalizedScenes: CommandMemoryScene[] = rawScenes.map((s: any, idx: number) => {
@@ -2131,7 +2173,10 @@ Lưu ý:
       speakerName: String(s.speakerName || normalizedChars[0]?.name || '').trim(),
       actionDetail: String(s.actionDetail || s.title || '').trim(),
       settingDetail: String(s.settingDetail || parsed.settingBible || '').trim(),
-      costume: String(s.costume || parsed.costumeBible || '').trim(),
+      costume:
+        !allowFree && canonicalLockedCostumeBible
+          ? canonicalLockedCostumeBible
+          : String(s.costume || canonicalLockedCostumeBible || '').trim(),
       cameraAngle: String(s.cameraAngle || 'Trung cảnh').trim(),
       cameraMovement: String(s.cameraMovement || 'Đẩy máy chậm').trim(),
       lighting: String(s.lighting || 'Ánh sáng điện ảnh tự nhiên').trim(),
@@ -2151,11 +2196,11 @@ Lưu ý:
     'muse-01',
     `Khóa kịch bản từ ${agent.name} (${normalizedScenes.length} cảnh, ${normalizedChars.length} nhân vật)`,
     (m) => {
-      m.visualBible = String(parsed.visualBible || m.visualBible || '').trim();
-      m.settingBible = String(parsed.settingBible || m.settingBible || '').trim();
-      m.costumeBible = String(parsed.costumeBible || m.costumeBible || '').trim();
-      m.continuityBible = String(parsed.continuityBible || m.continuityBible || '').trim();
-      m.characters = normalizedChars;
+      m.visualBible = String(m.visualBible || parsed.visualBible || '').trim();
+      m.settingBible = String(m.settingBible || parsed.settingBible || '').trim();
+      m.costumeBible = !allowFree && canonicalLockedCostumeBible ? canonicalLockedCostumeBible : String(parsed.costumeBible || m.costumeBible || '').trim();
+      m.continuityBible = String(m.continuityBible || parsed.continuityBible || '').trim();
+      m.characters = normalizedChars.length > 0 ? normalizedChars : m.characters;
       m.scenes = normalizedScenes;
     }
   );
@@ -2313,6 +2358,7 @@ async function executeDesignCharacterRefTask(task: CommandTask, agent: MuseAgent
     costumeBible: ch.syncProfile.costume,
     visualStyleBible: mem.visualBible,
     museAccountId: agent.boundAccountId,
+    allowFreeCostumeChange: mem.allowFreeCostumeChange === true,
   });
 
   throwIfRunStopped(task.runId);
@@ -2412,6 +2458,7 @@ async function executeDesignSceneImageTask(task: CommandTask, agent: MuseAgentCo
     vfxNotes: sc.vfxNotes,
     characterRefs: charRefs,
     museAccountId: agent.boundAccountId,
+    allowFreeCostumeChange: mem.allowFreeCostumeChange === true,
   });
 
   throwIfRunStopped(task.runId);
@@ -2538,6 +2585,7 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
     sceneImageDataUrl: sceneKeyframeDataUrl,
     characterRefs: charRefs,
     museAccountId: agent.boundAccountId,
+    allowFreeCostumeChange: mem.allowFreeCostumeChange === true,
   });
 
   throwIfRunStopped(task.runId);
@@ -2631,8 +2679,33 @@ async function executeQaInspectSceneTask(task: CommandTask, agent: MuseAgentConf
   ).slice(0, 6);
 
   const prevScene = sc.index > 1 ? mem.scenes.find((s) => s.index === sc.index - 1) : undefined;
+  const allowFreeCostumeChange = mem.allowFreeCostumeChange === true;
+  const canonicalCharChecklist =
+    mem.characters.length > 0
+      ? mem.characters
+          .map(
+            (c, i) =>
+              `  ${i + 1}. Nhân vật "${c.name}": Khuôn mặt/tóc="${c.syncProfile.face}"; Vóc dáng="${c.syncProfile.physique}"; Đặc điểm nhận dạng="${c.syncProfile.distinguishingMarks}"; Trang phục chuẩn="${c.syncProfile.costume}"`
+          )
+          .join('\n')
+      : '  (Kiểm tra khớp mô tả nhân vật & trang phục trong kịch bản)';
+
   const sys = `Bạn là ${agent.name} (${agent.roleTitle}) — AI kiểm định độc lập trong Phòng Điều Hành AI Muse.
 Nhiệm vụ: Kiểm tra video đầu ra của Cảnh ${sc.index} dựa trên các khung hình trích xuất thực tế, ảnh tham chiếu nhân vật và Project Memory v${mem.version}.
+QUY TẮC KIỂM ĐỊNH ĐỒNG NHẤT NHÂN VẬT & TRANG PHỤC (BẮT BUỘC):
+1. Khuôn mặt, kiểu tóc, màu tóc phải khớp ảnh tham chiếu & hồ sơ nhân vật.
+2. Vóc dáng, chiều cao, tỷ lệ cơ thể phải đồng nhất.
+3. ${
+    allowFreeCostumeChange
+      ? 'Chế độ ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC đang BẬT — trang phục được phép đổi theo kịch bản cảnh, nhưng khuôn mặt/tóc/vóc dáng vẫn PHẢI khóa đồng nhất 100%.'
+      : 'Chế độ ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC đang TẮT (KHÓA CỨNG) — trang phục, màu sắc vải & phụ kiện PHẢI khớp 100% ảnh tham chiếu & Costume Reference.'
+  }
+4. ${
+    allowFreeCostumeChange
+      ? 'Không kiểm lỗi nếu nhân vật mặc trang phục hợp lý theo cảnh.'
+      : 'Cảnh báo & đánh FAIL tiêu chí "costume" (score < 70, passed: false) NGAY LẬP TỨC nếu phát hiện AI tự thêm áo khoác, đổi màu/kiểu áo quần, thêm/bớt phụ kiện trái phép.'
+  }
+5. Kiểm tra đồng nhất giữa ảnh tham chiếu nhân vật, keyframe cảnh và Cảnh trước đó (nếu có).
 Trả về DUY NHẤT JSON hợp lệ:
 {
   "overallScore": 85,
@@ -2653,15 +2726,18 @@ Trả về DUY NHẤT JSON hợp lệ:
 }`;
 
   const user = `THÔNG SỐ CHUẨN PROJECT MEMORY v${mem.version}:
-- Nhân vật đồng bộ: ${mem.characters.map((c) => `${c.name} (${c.syncProfile.face}; ${c.syncProfile.costume})`).join(' | ') || 'Theo kịch bản'}
+- Thiết lập khóa trang phục: ${allowFreeCostumeChange ? 'TỰ DO ĐỔI THEO CẢNH (vẫn khóa mặt/vóc dáng)' : 'KHÓA CỨNG TRANG PHỤC THEO ẢNH THAM CHIẾU (tuyệt đối không tự đổi)'}
+- Hồ sơ đối chiếu nhân vật chi tiết:
+${canonicalCharChecklist}
+- Trang phục tổng thể (Costume Bible): ${mem.costumeBible || sc.costume || '(Theo ảnh tham chiếu)'}
 - Cảnh cần kiểm tra: Cảnh ${sc.index}/${mem.scenes.length} — "${sc.title}"
 - Thời lượng kiểm tra thực tế từ ffprobe: ${sc.probedDurationSec || sc.durationSec}s · Có luồng audio: ${sc.hasAudioStream ? 'Có' : 'Không'}
 - Bối cảnh chuẩn: ${sc.settingDetail}
-- Trang phục chuẩn: ${sc.costume}
+- Trang phục chuẩn cảnh này: ${sc.costume}
 - Hành động chuẩn: ${sc.actionDetail}
 - Lời thoại chuẩn: ${sc.dialogue || '(Không có thoại)'}
 - Lời dẫn: ${sc.narration || '(Không)'}
-- Cảnh trước đó: ${prevScene ? `Cảnh ${prevScene.index}: ${prevScene.actionDetail} (${prevScene.settingDetail})` : 'Đây là cảnh mở đầu'}
+- Cảnh trước đó: ${prevScene ? `Cảnh ${prevScene.index}: ${prevScene.actionDetail} (Trang phục: ${prevScene.costume})` : 'Đây là cảnh mở đầu'}
 - Số khung hình video thực tế đính kèm: ${extractedFrames.length}`;
 
   const res = await runAgentJsonInference({
@@ -2692,13 +2768,36 @@ Trả về DUY NHẤT JSON hợp lệ:
   const overallScore = Number.isFinite(Number(parsed.overallScore))
     ? Math.max(0, Math.min(100, Math.round(Number(parsed.overallScore))))
     : avgScore;
-  const passed = overallScore >= threshold && criteriaResults.filter((c) => !c.passed).length <= 1;
+
+  // Hard lock gate: character consistency ALWAYS must pass; costume MUST pass whenever allowFreeCostumeChange is OFF
+  const charCrit = criteriaResults.find((c) => c.criterion === 'character');
+  const costumeCrit = criteriaResults.find((c) => c.criterion === 'costume');
+  const charFailed = Boolean(charCrit && (!charCrit.passed || charCrit.score < threshold));
+  const costumeLockedFailed = Boolean(
+    !allowFreeCostumeChange && costumeCrit && (!costumeCrit.passed || costumeCrit.score < threshold)
+  );
+  const hardLockFailed = charFailed || costumeLockedFailed;
+
+  const passed =
+    !hardLockFailed &&
+    overallScore >= threshold &&
+    criteriaResults.filter((c) => !c.passed).length <= 1;
 
   const attemptNumber = sc.retryCount + 1;
   const targetFix: 'muse-02' | 'muse-03' | 'muse-04' =
     parsed.targetFixAgentId === 'muse-03' || parsed.targetFixAgentId === 'muse-02'
       ? parsed.targetFixAgentId
+      : hardLockFailed
+      ? 'muse-03'
       : 'muse-04';
+
+  const baseFixInstr = String(
+    parsed.fixInstruction ||
+      'Bám sát gương mặt nhân vật tham chiếu, trang phục và timeline hành động trong Project Memory.'
+  ).trim();
+  const lockFixSuffix = hardLockFailed
+    ? ` [KHÓA THAM CHIẾU BẮT BUỘC: Giữ nguyên 100% ngoại hình & ${allowFreeCostumeChange ? 'nhân dạng' : 'trang phục tham chiếu'}: ${mem.characters.map((c) => `${c.name} (${c.syncProfile.face}; ${c.syncProfile.costume})`).join(' | ') || mem.costumeBible}]`
+    : '';
 
   const report: QaInspectionReport = {
     id: `qa_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
@@ -2712,11 +2811,16 @@ Trả về DUY NHẤT JSON hợp lệ:
     threshold,
     criteriaResults,
     timestampRange: String(parsed.timestampRange || `0s-${sc.durationSec}s`),
-    summary: String(parsed.summary || (passed ? 'Đạt chuẩn đồng nhất' : 'Cần chỉnh sửa lại phân cảnh')).trim(),
+    summary: String(
+      parsed.summary ||
+        (passed
+          ? 'Đạt chuẩn đồng nhất'
+          : hardLockFailed
+          ? 'Sai lệch ngoại hình hoặc trang phục so với nhân vật tham chiếu đang khóa'
+          : 'Cần chỉnh sửa lại phân cảnh')
+    ).trim(),
     targetFixAgentId: passed ? undefined : targetFix,
-    fixInstruction: passed
-      ? undefined
-      : String(parsed.fixInstruction || 'Bám sát gương mặt nhân vật tham chiếu, trang phục và timeline hành động trong Project Memory.').trim(),
+    fixInstruction: passed ? undefined : `${baseFixInstr}${lockFixSuffix}`,
     attemptNumber,
   };
 
@@ -3842,6 +3946,7 @@ export async function syncStudioDirectiveToCommandCenter(params: {
   productionFormat?: StudioProductionFormat;
   aspectRatio?: DerivativeAspectRatio;
   videoStyle?: StudioVideoStyle;
+  allowFreeCostumeChange?: boolean;
   characterRefs?: StudioCharacterInput[];
   visualBible?: string;
   settingBible?: string;
@@ -3851,6 +3956,10 @@ export async function syncStudioDirectiveToCommandCenter(params: {
   silent?: boolean;
 }): Promise<CommandCenterState> {
   const bp = params.blueprint || null;
+  const resolvedAllowFreeCostumeChange =
+    typeof params.allowFreeCostumeChange === 'boolean'
+      ? params.allowFreeCostumeChange
+      : bp?.allowFreeCostumeChange === true;
   const resolvedTitle =
     String(params.title || bp?.derivativeTitle || '').trim() ||
     `Dự án từ Studio (${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })})`;
@@ -3892,6 +4001,7 @@ export async function syncStudioDirectiveToCommandCenter(params: {
     productionFormat: resolvedFormat,
     aspectRatio: resolvedAspect,
     videoStyle: resolvedStyle,
+    allowFreeCostumeChange: resolvedAllowFreeCostumeChange,
     visualBible: params.visualBible || bp?.visualStyleBible || '',
     settingBible: params.settingBible || bp?.settingBible || '',
     costumeBible: params.costumeBible || bp?.costumeBible || '',
@@ -3909,6 +4019,7 @@ export async function syncStudioDirectiveToCommandCenter(params: {
     productionFormat: resolvedFormat,
     aspectRatio: resolvedAspect,
     videoStyle: resolvedStyle,
+    allowFreeCostumeChange: resolvedAllowFreeCostumeChange,
     visualBible: directive.visualBible,
     settingBible: directive.settingBible,
     costumeBible: directive.costumeBible,
@@ -3926,6 +4037,7 @@ export async function syncStudioDirectiveToCommandCenter(params: {
       m.productionFormat = resolvedFormat;
       m.aspectRatio = resolvedAspect;
       m.videoStyle = resolvedStyle;
+      m.allowFreeCostumeChange = resolvedAllowFreeCostumeChange;
       if (directive.visualBible) m.visualBible = directive.visualBible;
       if (directive.settingBible) m.settingBible = directive.settingBible;
       if (directive.costumeBible) m.costumeBible = directive.costumeBible;
@@ -4028,6 +4140,7 @@ export async function startProductionOrchestration(params: {
   productionFormat?: StudioProductionFormat;
   aspectRatio?: DerivativeAspectRatio;
   videoStyle?: StudioVideoStyle;
+  allowFreeCostumeChange?: boolean;
   studioBlueprint?: Partial<DerivativeBlueprint> | null;
   characterRefs?: StudioCharacterInput[];
   visualBible?: string;
@@ -4036,6 +4149,12 @@ export async function startProductionOrchestration(params: {
   continuityBible?: string;
 }): Promise<CommandCenterState> {
   const cachedBp = storeDoc.latestStudioBlueprint;
+  const resolvedAllowFreeCostumeChange =
+    typeof params.allowFreeCostumeChange === 'boolean'
+      ? params.allowFreeCostumeChange
+      : typeof params.studioBlueprint?.allowFreeCostumeChange === 'boolean'
+      ? params.studioBlueprint.allowFreeCostumeChange
+      : cachedBp?.allowFreeCostumeChange === true;
   const script = String(params.script || cachedBp?.scriptOrCommand || '').trim();
   if (!script && !params.studioBlueprint?.scenes?.length) {
     throw new Error('Vui lòng nhập kịch bản hoặc câu lệnh sản xuất trước khi bắt đầu.');
@@ -4058,6 +4177,7 @@ export async function startProductionOrchestration(params: {
   freshMemory.aspectRatio =
     params.aspectRatio === '9:16' ? '9:16' : params.aspectRatio === '1:1' ? '1:1' : '16:9';
   freshMemory.videoStyle = params.videoStyle || params.studioBlueprint?.videoStyle || 'cinematic';
+  freshMemory.allowFreeCostumeChange = resolvedAllowFreeCostumeChange;
   freshMemory.visualBible = String(params.visualBible || params.studioBlueprint?.visualStyleBible || '').trim();
   freshMemory.settingBible = String(params.settingBible || params.studioBlueprint?.settingBible || '').trim();
   freshMemory.costumeBible = String(params.costumeBible || params.studioBlueprint?.costumeBible || '').trim();
@@ -4755,6 +4875,7 @@ export async function restoreProjectMemorySnapshot(snapshotId: string): Promise<
     m.productionFormat = snap.data.productionFormat;
     m.aspectRatio = snap.data.aspectRatio;
     m.videoStyle = snap.data.videoStyle;
+    m.allowFreeCostumeChange = snap.data.allowFreeCostumeChange === true;
     m.visualBible = snap.data.visualBible;
     m.settingBible = snap.data.settingBible;
     m.costumeBible = snap.data.costumeBible;

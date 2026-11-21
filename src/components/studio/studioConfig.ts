@@ -429,6 +429,7 @@ export function compileScenePromptClient(params: {
   mediaType?: 'image' | 'video';
   hasAttachedRefs?: boolean;
   targetEngine?: 'muse2api' | 'gemini';
+  allowFreeCostumeChange?: boolean;
 }): string {
   const sc = params.scene;
   const mediaType = params.mediaType || 'image';
@@ -491,8 +492,17 @@ export function compileScenePromptClient(params: {
   if (sc.settingDetail?.trim()) {
     segments.push(`Bối cảnh cảnh: ${sc.settingDetail.trim()}`);
   }
+  const allowFreeCostume = Boolean(params.allowFreeCostumeChange);
   if (!isMacroShot && sc.costume?.trim()) {
-    segments.push(`Trang phục cảnh: ${sc.costume.trim()}`);
+    segments.push(
+      allowFreeCostume
+        ? `Trang phục cảnh (linh hoạt theo bối cảnh — VẪN KHÓA 100% khuôn mặt, kiểu tóc, vóc dáng & nhận dạng): ${sc.costume.trim()}`
+        : `Trang phục cảnh (KHÓA TUYỆT ĐỐI 100% theo ảnh nhân vật tham chiếu, KHÔNG tự đổi hay thêm bớt đồ): ${sc.costume.trim()}`
+    );
+  } else if (!isMacroShot && !allowFreeCostume && params.hasAttachedRefs && !params.costumeBible?.trim()) {
+    segments.push(
+      'Khóa trang phục: Giữ nguyên 100% trang phục, màu sắc và phụ kiện từ ảnh nhân vật tham chiếu'
+    );
   }
 
   const primary =
@@ -553,7 +563,11 @@ export function compileScenePromptClient(params: {
     }
   }
   if (!isMacroShot && params.costumeBible?.trim()) {
-    segments.push(`Costume Reference: ${params.costumeBible.trim()}`);
+    segments.push(
+      allowFreeCostume
+        ? `IDENTITY LOCK (giữ mặt, tóc, vóc dáng 100%): Trang phục thích nghi ngữ cảnh (${params.costumeBible.trim()})`
+        : `Costume Reference (KHÓA TUYỆT ĐỐI 100% theo ảnh tham chiếu — giữ nguyên đồ mọi cảnh): ${params.costumeBible.trim()}`
+    );
   }
   if (params.settingBible?.trim()) {
     segments.push(`Environment Reference: ${params.settingBible.trim()}`);
@@ -594,14 +608,19 @@ function clientAliasesForName(name: string): string[] {
   return Array.from(out);
 }
 
+export const CLIENT_WARDROBE_CHANGE_RE =
+  /(?:đổi\s*(?:trang\s*phục|đồ|áo|quần|váy|bộ\s*đồ|giáp)|thay\s*(?:trang\s*phục|đồ|áo|quần|váy|giáp|bộ\s*đồ)|mặc\s*(?:trang\s*phục|đồ|áo|quần|váy|giáp|đồng\s*phục)\s*(?:mới|khác)|sang\s*bộ\s*(?:đồ|váy|vest|áo)\s*khác|change\s+(?:outfit|clothes|costume|wardrobe)|new\s+outfit|different\s+(?:outfit|costume|clothes))/i;
+
 export function runClientBlueprintQc(params: {
   blueprint: DerivativeBlueprint;
   characterRefs: StudioCharacterRef[];
   enableVoiceover: boolean;
   targetEngine?: 'muse2api' | 'gemini';
+  allowFreeCostumeChange?: boolean;
 }): StudioQcReport {
   const issues: StudioQcIssue[] = [];
   const bp = params.blueprint;
+  const allowFree = params.allowFreeCostumeChange ?? (bp.allowFreeCostumeChange === true);
   const format = bp.productionFormat || 'dialogue_film';
   const scenes = bp.scenes || [];
 
@@ -709,7 +728,42 @@ export function runClientBlueprintQc(params: {
     seenVoices.add(vp.voiceId);
   }
 
-  const totalChecks = 6;
+  // 7. Costume lock consistency check (when allowFreeCostumeChange === false)
+  if (!allowFree) {
+    const lockedCostumeSeeds = params.characterRefs
+      .map((c) => c.syncProfile?.costume?.trim())
+      .filter((x): x is string => Boolean(x));
+    const hasLockedCostumeAnchor = lockedCostumeSeeds.length > 0 || Boolean(bp.costumeBible?.trim());
+    if (Array.isArray(bp.costumeLockWarnings)) {
+      bp.costumeLockWarnings.forEach((warn, idx) => {
+        if (warn?.trim()) {
+          issues.push({
+            id: `qc_costume_warn_${idx}`,
+            rule: 'costume_lock_violation',
+            severity: 'warning',
+            message: warn.trim(),
+            autoFixable: false,
+          });
+        }
+      });
+    }
+    if (hasLockedCostumeAnchor) {
+      for (const sc of scenes) {
+        if (sc.costume && CLIENT_WARDROBE_CHANGE_RE.test(sc.costume)) {
+          issues.push({
+            id: `qc_costume_scene_${sc.id}`,
+            rule: 'costume_lock_violation',
+            severity: 'warning',
+            sceneIndex: sc.sceneIndex,
+            message: `Scene ${String(sc.sceneIndex).padStart(2, '0')}: Mô tả trang phục cảnh có dấu hiệu tự ý đổi đồ dù đang TẮT quyền đổi trang phục.`,
+            autoFixable: true,
+          });
+        }
+      }
+    }
+  }
+
+  const totalChecks = 7;
   const failedRules = new Set(issues.filter((is) => is.severity === 'warning' || is.severity === 'error').map((is) => is.rule)).size;
   const passedChecks = Math.max(0, totalChecks - failedRules);
   const score = Math.max(40, Math.min(100, 100 - issues.length * 7));
@@ -727,10 +781,19 @@ export function autoFixClientBlueprint(params: {
   blueprint: DerivativeBlueprint;
   characterRefs: StudioCharacterRef[];
   enableVoiceover: boolean;
+  allowFreeCostumeChange?: boolean;
 }): { blueprint: DerivativeBlueprint; fixedCount: number } {
   const bp = params.blueprint;
+  const allowFree = params.allowFreeCostumeChange ?? (bp.allowFreeCostumeChange === true);
   const format = bp.productionFormat || 'dialogue_film';
   let fixedCount = 0;
+  const canonicalLockedCostume =
+    params.characterRefs
+      .map((c) => (c.syncProfile?.costume?.trim() ? `${c.name}: ${c.syncProfile.costume.trim()}` : ''))
+      .filter(Boolean)
+      .join(' | ') ||
+    bp.costumeBible?.trim() ||
+    '';
 
   const fixedScenes = bp.scenes.map((sc, i, arr) => {
     const next = {
@@ -798,6 +861,12 @@ export function autoFixClientBlueprint(params: {
       }
     }
 
+    // 5. Clamp costume drift if costume lock is active
+    if (!allowFree && canonicalLockedCostume && next.costume && CLIENT_WARDROBE_CHANGE_RE.test(next.costume)) {
+      next.costume = canonicalLockedCostume;
+      fixedCount += 1;
+    }
+
     return next;
   });
 
@@ -828,6 +897,7 @@ export function autoFixClientBlueprint(params: {
     blueprint: nextBp,
     characterRefs: params.characterRefs,
     enableVoiceover: params.enableVoiceover,
+    allowFreeCostumeChange: allowFree,
   });
 
   return {

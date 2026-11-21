@@ -19,8 +19,10 @@ import {
 } from './skills/cinematicFilmmakingSkill';
 import {
   auditAndNormalizeBlueprintServer,
+  buildReferenceCharacterLockRules,
   buildShortDramaScreenplayRules,
   compileProductionModelPrompt,
+  LockedCharacterProfileSeed,
   RuleEngineQcReport,
   SHORT_DRAMA_IDEA_EXPANSION_RULES,
 } from './skills/shortDramaProductionRules';
@@ -214,6 +216,8 @@ export interface DerivativeBlueprint {
   targetDurationSec?: number;
   ideaPrompt?: string;
   videoStyle?: StudioVideoStyle;
+  allowFreeCostumeChange?: boolean;
+  costumeLockWarnings?: string[];
   characterBible?: string;
   settingBible?: string;
   visualStyleBible?: string;
@@ -2194,6 +2198,82 @@ export function formatCharacterSyncProfilesForScene(
   return blocks.join(' | ');
 }
 
+function buildLockedCharacterSeedsAndBibles(params: {
+  characterRefsMeta?: StudioCharacterRefMetaInput[];
+  characterRefs?: StudioCharacterRefInput[];
+  characterBible?: string;
+  costumeBible?: string;
+}): {
+  seeds: LockedCharacterProfileSeed[];
+  canonicalCharacterBible: string;
+  canonicalCostumeBible: string;
+} {
+  const sourceList: Array<{
+    id?: string;
+    name?: string;
+    description?: string;
+    syncProfile?: CharacterFivePartProfile;
+    ageGroup?: CharacterAgeGroup;
+    gender?: CharacterGenderHint;
+  }> =
+    Array.isArray(params.characterRefsMeta) && params.characterRefsMeta.length > 0
+      ? params.characterRefsMeta
+      : Array.isArray(params.characterRefs)
+      ? params.characterRefs
+      : [];
+
+  const seeds: LockedCharacterProfileSeed[] = sourceList.map((c, idx) => {
+    const sp = c.syncProfile;
+    const name = String(c.name || `Nhân vật ${idx + 1}`).trim();
+    const desc = String(c.description || '').trim();
+    return {
+      id: c.id,
+      name,
+      description: desc || undefined,
+      syncProfile: {
+        face: sp?.face?.trim() || desc || undefined,
+        physique: sp?.physique?.trim() || undefined,
+        costume: sp?.costume?.trim() || undefined,
+        voice: sp?.voice?.trim() || undefined,
+        distinguishingMarks: sp?.distinguishingMarks?.trim() || undefined,
+      },
+    };
+  });
+
+  const charIdentityLines = seeds
+    .map((s) => {
+      const sp = s.syncProfile || {};
+      const parts = [
+        sp.face ? `Gương mặt/tóc: ${sp.face}` : '',
+        sp.physique ? `Vóc dáng: ${sp.physique}` : '',
+        sp.distinguishingMarks ? `Nhận dạng: ${sp.distinguishingMarks}` : '',
+        !sp.face && s.description ? s.description : '',
+      ].filter(Boolean);
+      return parts.length > 0 ? `${s.name}: ${parts.join('; ')}` : '';
+    })
+    .filter(Boolean);
+
+  const charCostumeLines = seeds
+    .map((s) => {
+      const cst = s.syncProfile?.costume?.trim();
+      return cst ? `${s.name}: ${cst}` : '';
+    })
+    .filter(Boolean);
+
+  const canonicalCharacterBible =
+    String(params.characterBible || '').trim() || charIdentityLines.join(' | ');
+  const canonicalCostumeBible =
+    charCostumeLines.length > 0
+      ? charCostumeLines.join(' | ')
+      : String(params.costumeBible || '').trim();
+
+  return {
+    seeds,
+    canonicalCharacterBible,
+    canonicalCostumeBible,
+  };
+}
+
 export function compileConsistentScenePrompt(params: {
   scene: Partial<DerivativeScene>;
   videoStyle?: StudioVideoStyle;
@@ -2209,7 +2289,9 @@ export function compileConsistentScenePrompt(params: {
   mediaType?: 'image' | 'video';
   hasAttachedRefs?: boolean;
   targetEngine?: 'muse2api' | 'gemini';
+  allowFreeCostumeChange?: boolean;
 }): string {
+  const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
   const resolvedStyle = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
   const styleKey = resolvedStyle.styleKey;
   const styleMeta = resolvedStyle;
@@ -2263,7 +2345,11 @@ export function compileConsistentScenePrompt(params: {
     parts.push(`Environment/Setting: ${sc.settingDetail.trim()}.`);
   }
   if (sc.costume?.trim()) {
-    parts.push(`Costume in Scene: ${sc.costume.trim()}.`);
+    parts.push(
+      allowFreeCostumeChange
+        ? `Costume in Scene (scene-specific wardrobe allowed): ${sc.costume.trim()}.`
+        : `Locked Costume in Scene (STRICT 100% LOCK — do NOT add outerwear, change colors, or redesign): ${sc.costume.trim()}.`
+    );
   }
 
   const primaryPrompt =
@@ -2319,7 +2405,11 @@ export function compileConsistentScenePrompt(params: {
     parts.push(`Character Reference (MUST keep face, hair, age, body 100% identical): ${params.characterBible.trim()}.`);
   }
   if (params.costumeBible?.trim()) {
-    parts.push(`Costume Reference: ${params.costumeBible.trim()}.`);
+    parts.push(
+      allowFreeCostumeChange
+        ? `Costume Context (IDENTITY LOCK: keep face, hair & physique 100% identical while outfit follows scene prompt): ${params.costumeBible.trim()}.`
+        : `STRICT COSTUME LOCK (DO NOT alter, add, remove, or redesign reference outfits/accessories regardless of weather/setting): ${params.costumeBible.trim()}.`
+    );
   }
   if (params.settingBible?.trim()) {
     parts.push(`Environment Reference: ${params.settingBible.trim()}.`);
@@ -2348,6 +2438,7 @@ export function compileConsistentScenePrompt(params: {
     targetEngine: params.targetEngine || 'gemini',
     characterBible: params.characterBible,
     costumeBible: params.costumeBible,
+    allowFreeCostumeChange,
   }).prompt;
 }
 
@@ -2422,6 +2513,8 @@ export async function expandStudioIdeaWithAi(params: {
   targetDurationSec?: number;
   outputLanguage?: DerivativeOutputLanguage;
   characterSummary?: string;
+  characterRefsMeta?: StudioCharacterRefMetaInput[];
+  allowFreeCostumeChange?: boolean;
   aiProvider?: AiProviderId;
   useProModel?: boolean;
 }): Promise<{
@@ -2439,6 +2532,19 @@ export async function expandStudioIdeaWithAi(params: {
     params.aiProvider === 'openai' || params.aiProvider === 'meta' || params.aiProvider === 'muse2api'
       ? params.aiProvider
       : 'gemini';
+
+  const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
+  const lockBundle = buildLockedCharacterSeedsAndBibles({
+    characterRefsMeta: Array.isArray(params.characterRefsMeta) ? params.characterRefsMeta : [],
+  });
+  const lockRulesText =
+    lockBundle.seeds.length > 0
+      ? buildReferenceCharacterLockRules({
+          allowFreeCostumeChange,
+          characters: lockBundle.seeds,
+          fallbackCostumeBible: lockBundle.canonicalCostumeBible,
+        })
+      : '';
 
   const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
@@ -2459,13 +2565,20 @@ ${params.characterSummary?.trim() ? `- Nhân vật tham chiếu đã chọn: ${p
 - Hình thức triển khai: ${modeLabel}
 - Thời lượng dự kiến: khoảng ${durationSec} giây
 - Ngôn ngữ đầu ra: ${OUTPUT_LANG_LABELS[outputLang]}
+${lockRulesText ? `\n${lockRulesText}` : ''}
 
 YÊU CẦU NỘI DUNG TRIỂN KHAI:
 1. Mở rộng trọn vẹn ý tưởng gốc (giữ đúng tinh thần ban đầu, KHÔNG lạc đề) thành một bản mô tả cốt truyện mạch lạc:
    - Mở đầu gây tò mò (Hook thị giác / tình huống mở màn).
    - Diễn biến cao trào, xung đột hoặc bước ngoặt cảm xúc chính.
    - Kết thúc đọng lại thông điệp hoặc cảm xúc rõ nét.
-2. Mô tả cụ thể nhân vật trung tâm (ngoại hình/trang phục/thần thái nếu chưa có, hoặc phát huy đúng danh sách nhân vật đã chọn), bối cảnh không gian, không khí ánh sáng & nhịp quay phù hợp phong cách "${styleMeta.labelVi}".
+2. ${
+    lockBundle.seeds.length > 0
+      ? allowFreeCostumeChange
+        ? 'Phát huy đúng các nhân vật tham chiếu đã khóa (GIỮ NGUYÊN khuôn mặt, kiểu tóc, vóc dáng & đặc điểm nhận dạng; có thể mô tả chuyển đổi trang phục phù hợp từng tình huống/bối cảnh nếu cần).'
+        : 'Phát huy đúng các nhân vật tham chiếu đã khóa (GIỮ NGUYÊN 100% khuôn mặt, kiểu tóc, vóc dáng, đặc điểm nhận dạng VÀ TRANG PHỤC cố định — TUYỆT ĐỐI KHÔNG tự bịa thêm cảnh nhân vật thay đồ, thêm áo khoác hay đổi trang phục trái hồ sơ tham chiếu).'
+      : `Mô tả cụ thể nhân vật trung tâm (ngoại hình/trang phục/thần thái), bối cảnh không gian, không khí ánh sáng & nhịp quay phù hợp phong cách "${styleMeta.labelVi}".`
+  }
 3. Viết tự nhiên, súc tích, giàu hình ảnh điện ảnh (khoảng 120–240 chữ), chia đoạn rõ ràng để người dùng đọc xong có thể bấm thẳng sang "AI Lên Kịch Bản" ở Bước 2.
 ${SHORT_DRAMA_IDEA_EXPANSION_RULES}
 
@@ -2620,6 +2733,7 @@ export async function learnVideosAndCreateBlueprint(params: {
   continuityBible?: string;
   customInstruction?: string;
   enableVoiceover?: boolean;
+  allowFreeCostumeChange?: boolean;
   aiProvider?: AiProviderId;
   preGatheredContexts?: EnrichedVideoContext[];
   conceptOverride?: IndependentConceptOverride;
@@ -2628,7 +2742,13 @@ export async function learnVideosAndCreateBlueprint(params: {
   const scriptMode: StudioScriptMode = params.scriptMode === 'independent_batch' ? 'independent_batch' : 'series';
   const productionFormat: StudioProductionFormat =
     params.productionFormat === 'narration_story' ? 'narration_story' : 'dialogue_film';
+  const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
   const characterRefsMeta = Array.isArray(params.characterRefsMeta) ? params.characterRefsMeta : [];
+  const lockBundle = buildLockedCharacterSeedsAndBibles({
+    characterRefsMeta,
+    characterBible: params.conceptOverride?.characterBible || params.characterBible,
+    costumeBible: params.conceptOverride?.costumeBible || params.costumeBible,
+  });
   const videosList = Array.isArray(params.videos) ? params.videos : [];
   const ideaText = (params.ideaPrompt || params.query || '').trim();
   const activeStylePreset: DerivativeStylePreset =
@@ -2767,14 +2887,16 @@ NGUYÊN TẮC CỐT LÕI CHẾ ĐỘ SERIES:
       const sp = ref.syncProfile;
       const fields = sp
         ? [
-            sp.face ? `Gương mặt: ${sp.face}` : '',
-            sp.physique ? `Vóc dáng: ${sp.physique}` : '',
-            sp.costume ? `Trang phục: ${sp.costume}` : '',
+            sp.face ? `Gương mặt & tóc (KHÓA CỐ ĐỊNH): ${sp.face}` : '',
+            sp.physique ? `Vóc dáng & tỷ lệ (KHÓA CỐ ĐỊNH): ${sp.physique}` : '',
+            sp.costume
+              ? `Trang phục & phụ kiện (${allowFreeCostumeChange ? 'mặc định ban đầu — được phép đổi theo cảnh' : 'KHÓA TUYỆT ĐỐI 100%'}): ${sp.costume}`
+              : '',
             sp.voice ? `Giọng nói: ${sp.voice}` : '',
-            sp.distinguishingMarks ? `Đặc điểm nhận dạng: ${sp.distinguishingMarks}` : '',
+            sp.distinguishingMarks ? `Đặc điểm nhận dạng (KHÓA CỐ ĐỊNH): ${sp.distinguishingMarks}` : '',
           ].filter(Boolean)
         : [];
-      const extraDesc = ref.description?.trim() ? `Mô tả: ${ref.description.trim()}` : '';
+      const extraDesc = ref.description?.trim() ? `Mô tả tham chiếu: ${ref.description.trim()}` : '';
       const allParts = [...fields, extraDesc].filter(Boolean);
       if (allParts.length === 0) return '';
       return `  * Nhân vật #${idx + 1} "${ref.name || `Nhân vật ${idx + 1}`}": ${allParts.join(' | ')}`;
@@ -2782,12 +2904,21 @@ NGUYÊN TẮC CỐT LÕI CHẾ ĐỘ SERIES:
     .filter(Boolean)
     .join('\n');
 
+  const referenceLockRulesBlock =
+    lockBundle.seeds.length > 0 || lockBundle.canonicalCostumeBible
+      ? buildReferenceCharacterLockRules({
+          allowFreeCostumeChange,
+          characters: lockBundle.seeds,
+          fallbackCostumeBible: lockBundle.canonicalCostumeBible,
+        })
+      : '';
+
   const lockedProjectAnchors = [
-    params.conceptOverride?.characterBible || params.characterBible?.trim()
-      ? `- Character Reference (Nhân vật chuẩn): ${params.conceptOverride?.characterBible || params.characterBible?.trim()}`
+    lockBundle.canonicalCharacterBible
+      ? `- Character Reference (Nhân vật chuẩn — KHÓA CỐ ĐỊNH): ${lockBundle.canonicalCharacterBible}`
       : '',
     perCharSyncDetails
-      ? `- Hồ sơ đồng bộ 5 thành phần RIÊNG BIỆT theo từng nhân vật (BẮT BUỘC giữ nguyên từng đặc điểm riêng khi nhân vật đó xuất hiện):\n${perCharSyncDetails}`
+      ? `- Hồ sơ đồng bộ 5 thành phần RIÊNG BIỆT theo từng nhân vật (BẮT BUỘC giữ nguyên từng đặc điểm đã khóa khi nhân vật đó xuất hiện):\n${perCharSyncDetails}`
       : '',
     params.conceptOverride?.settingBible || params.settingBible?.trim()
       ? `- Environment Reference (Bối cảnh chuẩn): ${params.conceptOverride?.settingBible || params.settingBible?.trim()}`
@@ -2795,8 +2926,8 @@ NGUYÊN TẮC CỐT LÕI CHẾ ĐỘ SERIES:
     params.conceptOverride?.visualStyleBible || params.visualStyleBible?.trim()
       ? `- Visual Style Reference (Phong cách & bảng màu chuẩn): ${params.conceptOverride?.visualStyleBible || params.visualStyleBible?.trim()}`
       : '',
-    params.conceptOverride?.costumeBible || params.costumeBible?.trim()
-      ? `- Costume Reference (Trang phục & phụ kiện chuẩn): ${params.conceptOverride?.costumeBible || params.costumeBible?.trim()}`
+    lockBundle.canonicalCostumeBible
+      ? `- Costume Reference (${allowFreeCostumeChange ? 'Trang phục khởi điểm' : 'Trang phục KHÓA TUYỆT ĐỐI theo ảnh tham chiếu'}): ${lockBundle.canonicalCostumeBible}`
       : '',
     params.conceptOverride?.continuityBible || params.continuityBible?.trim()
       ? `- Story Continuity (Quy tắc liên tục): ${params.conceptOverride?.continuityBible || params.continuityBible?.trim()}`
@@ -2815,7 +2946,7 @@ NGUYÊN TẮC BẮT BUỘC:
       : `CHẾ ĐỘ SẢN XUẤT VIDEO BẮT BUỘC: PHIM CÓ LỜI THOẠI (Dialogue & Synced Character Film).
 NGUYÊN TẮC BẮT BUỘC:
 - Các phân cảnh giao tiếp/hành động PHẢI có lời thoại rõ người nói trong "dialogue" theo đúng cú pháp "Tên nhân vật: Câu thoại" (nhiều câu thoại cách nhau bởi dấu xuống dòng \\n).
-- Ghi chính xác tên từng nhân vật xuất hiện trong "charactersInScene" để khớp với dữ liệu Tab Nhân vật đồng bộ (nếu có) — giữ nguyên gương mặt, vóc dáng, trang phục và giọng nói giữa mọi cảnh.
+- Ghi chính xác tên từng nhân vật xuất hiện trong "charactersInScene" để khớp với dữ liệu Tab Nhân vật đồng bộ (nếu có) — giữ nguyên gương mặt, vóc dáng, giọng nói${allowFreeCostumeChange ? '' : ' và trang phục'} giữa mọi cảnh.
 - BẮT BUỘC điền đầy đủ mảng "characterVoiceProfiles" phân tích từng nhân vật xuất hiện trong phim: ghi rõ độ tuổi/nhóm tuổi ("child" = Trẻ em | "youth" = Thanh niên | "adult_male" = Đàn ông | "adult_female" = Đàn bà | "middle_aged" = Người trung niên | "elderly" = Người già), giới tính ("male" | "female"), chọn voiceId Gemini khác nhau phù hợp độ tuổi (TUYỆT ĐỐI không gán 1 giọng chung cho tất cả nhân vật), và ghi chú cao độ/âm sắc trong "vocalToneNote".`;
 
   const promptText = `Bạn là Hệ thống Đạo diễn AI Thống Nhất — chuyên biên kịch & thiết kế hồ sơ sản xuất video hoàn chỉnh.
@@ -2839,6 +2970,7 @@ QUY TẮC THỜI LƯỢNG & BỐI CẢNH:
 - Tổng "durationSec" của tất cả các cảnh cộng lại phải xấp xỉ ${desiredTotalSec} giây.
 ${params.characterSummary?.trim() ? `DANH SÁCH NHÂN VẬT THAM CHIẾU ĐÃ KHÓA (BẮT BUỘC dùng ĐÚNG tên nhân vật dưới đây trong "charactersInScene", "dialogue", "characterVoiceProfiles", "imagePrompt" và "videoPrompt" để hệ thống ánh xạ đúng ảnh & giọng nói):\n${params.characterSummary.trim()}\nQUY TẮC GIỌNG NÓI NHÂN VẬT: Tất cả nhân vật dùng giọng đọc tiếng Việt chuẩn miền Bắc Việt Nam (Hà Nội) — lựa chọn cao độ & âm sắc đúng theo ĐỘ TUỔI và GIỚI TÍNH từng nhân vật, giữ nhất quán xuyên suốt.` : ''}
 ${lockedProjectAnchors ? `\nHỒ SƠ DỰ ÁN ĐÃ KHÓA (BẮT BUỘC GIỮ NGUYÊN ĐỒNG BỘ):\n${lockedProjectAnchors}` : ''}
+${referenceLockRulesBlock ? `\n${referenceLockRulesBlock}` : ''}
 ${videoStyle === 'cinematic_filmmaking' ? buildCinematicFilmmakingScriptDirective(desiredScenes, avgSceneDur) : ''}
 ${buildShortDramaScreenplayRules(productionFormat)}
 ${params.customInstruction?.trim() ? `Yêu cầu bổ sung từ đạo diễn: ${params.customInstruction.trim()}` : ''}
@@ -3250,14 +3382,20 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
       }
     }
 
-    const characterBible = String(
-      parsed?.characterBible || params.characterBible || params.characterSummary || ''
-    ).trim();
-    const settingBible = String(parsed?.settingBible || params.settingBible || '').trim();
+    // Enforce Priority 1 & 2: Reference character identity is always locked; costume is strictly locked unless allowFreeCostumeChange === true
+    const lockedCharBase = String(lockBundle.canonicalCharacterBible || params.characterBible || '').trim();
+    const characterBible = lockedCharBase
+      ? lockedCharBase
+      : String(parsed?.characterBible || params.characterSummary || '').trim();
+    const settingBible = String(params.settingBible || parsed?.settingBible || '').trim();
     const visualStyleBible = String(
       parsed?.visualStyleBible || params.visualStyleBible || videoStyleMeta.visualToneVi
     ).trim();
-    const costumeBible = String(parsed?.costumeBible || params.costumeBible || '').trim();
+    const lockedCostumeBase = String(lockBundle.canonicalCostumeBible || params.costumeBible || '').trim();
+    const costumeBible =
+      !allowFreeCostumeChange && lockedCostumeBase
+        ? lockedCostumeBase
+        : String(parsed?.costumeBible || lockedCostumeBase || '').trim();
     const continuityBible = String(parsed?.continuityBible || params.continuityBible || '').trim();
 
     const rawScenes: any[] = Array.isArray(parsed?.scenes) ? parsed.scenes : [];
@@ -3482,10 +3620,24 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
     const qcAudit = auditAndNormalizeBlueprintServer({
       scenes: baseScenesForAudit,
       characterVoiceProfiles,
-      characterRefsMeta: characterRefsMeta.map((c) => ({ id: c.id, name: c.name })),
+      characterRefsMeta: characterRefsMeta.map((c) => ({
+        id: c.id,
+        name: c.name,
+        description: c.description,
+        syncProfile: c.syncProfile,
+      })),
       productionFormat,
       enableVoiceover,
       voiceCastPools: voiceCastPoolsMap,
+      allowFreeCostumeChange,
+      lockedCostumeBible: costumeBible,
+      ideaOrScriptCorpus: [
+        ideaText,
+        params.customInstruction || '',
+        params.conceptOverride?.premise || '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
     });
 
     return {
@@ -3498,6 +3650,10 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
       targetDurationSec: desiredTotalSec,
       ideaPrompt: ideaText,
       videoStyle,
+      allowFreeCostumeChange,
+      ...(qcAudit.costumeLockWarnings.length > 0
+        ? { costumeLockWarnings: qcAudit.costumeLockWarnings }
+        : {}),
       characterBible,
       settingBible,
       visualStyleBible,
@@ -3566,6 +3722,9 @@ async function planIndependentVideoConcepts(params: {
   useProModel?: boolean;
   customInstruction?: string;
   characterSummary?: string;
+  characterRefsMeta?: StudioCharacterRefMetaInput[];
+  allowFreeCostumeChange?: boolean;
+  costumeBible?: string;
 }): Promise<{ sharedSpiritNote: string; concepts: PlannedIndependentConcept[] }> {
   const dossierText = params.contexts
     .map(
@@ -3576,6 +3735,20 @@ async function planIndependentVideoConcepts(params: {
     )
     .join('\n\n');
 
+  const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
+  const lockBundle = buildLockedCharacterSeedsAndBibles({
+    characterRefsMeta: params.characterRefsMeta,
+    costumeBible: params.costumeBible,
+  });
+  const lockNote =
+    lockBundle.seeds.length > 0
+      ? buildReferenceCharacterLockRules({
+          allowFreeCostumeChange,
+          characters: lockBundle.seeds,
+          fallbackCostumeBible: lockBundle.canonicalCostumeBible,
+        })
+      : '';
+
   const planPrompt = `Bạn là Giám đốc Sáng tạo Nội dung AI.
 NHIỆM VỤ: Từ nguồn cảm hứng dưới đây, hãy lên ý tưởng cho ĐÚNG ${params.videoCount} VIDEO ĐỘC LẬP HOÀN TOÀN KHÁC NHAU.
 
@@ -3583,7 +3756,13 @@ NGUYÊN TẮC TỐI QUAN TRỌNG (KHÔNG ĐƯỢC VI PHẠM):
 - Người dùng KHÔNG muốn chia nhỏ một câu chuyện thành nhiều tập (KHÔNG phải Tập 1, Tập 2, Tập 3 hay Phần 1, Phần 2).
 - Người dùng muốn tạo ${params.videoCount} CÂU CHUYỆN RIÊNG BIỆT ĐỘC LẬP:
   1. Mỗi video có 1 cốt truyện riêng biệt, không lặp lại ý tưởng hay tình huống của các video khác.
-  2. Mỗi video có thể sử dụng NHÂN VẬT HOÀN TOÀN KHÁC NHAU (tên, ngoại hình, trang phục, tính cách riêng).
+  2. ${
+    lockBundle.seeds.length > 0
+      ? allowFreeCostumeChange
+        ? 'Nếu sử dụng lại các nhân vật tham chiếu đã chọn, BẮT BUỘC giữ nguyên khuôn mặt, kiểu tóc, vóc dáng và đặc điểm nhận dạng; có thể thay đổi trang phục theo bối cảnh riêng từng video.'
+        : 'Khi sử dụng nhân vật tham chiếu đã khóa, BẮT BUỘC giữ nguyên 100% khuôn mặt, kiểu tóc, vóc dáng, đặc điểm nhận dạng VÀ TRANG PHỤC cố định — KHÔNG tự ý đổi trang phục trong characterBible.'
+      : 'Mỗi video có thể sử dụng NHÂN VẬT HOÀN TOÀN KHÁC NHAU (tên, ngoại hình, trang phục, tính cách riêng).'
+  }
   3. Bối cảnh, không gian và diễn biến của từng video được sáng tạo độc lập.
   4. TẤT CẢ ${params.videoCount} video đều phải giữ chung **tinh thần, chủ đề, phong cách hình ảnh (${params.videoStyleMeta.labelVi}) và cảm xúc chủ đạo** của ý tưởng / video tham chiếu ban đầu.
 
@@ -3595,6 +3774,7 @@ NGUYÊN TẮC TỐI QUAN TRỌNG (KHÔNG ĐƯỢC VI PHẠM):
 - Ngôn ngữ đầu ra: ${OUTPUT_LANG_LABELS[params.outputLang]}
 ${params.characterSummary?.trim() ? `- Gợi ý nhân vật tham khảo: ${params.characterSummary.trim()}` : ''}
 ${params.customInstruction?.trim() ? `- Yêu cầu thêm: ${params.customInstruction.trim()}` : ''}
+${lockNote ? `\n${lockNote}` : ''}
 ${dossierText ? `\nTƯ LIỆU THAM CHIẾU:\n${dossierText}` : ''}
 
 TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG MẢNG "concepts":
@@ -3795,11 +3975,13 @@ export async function learnAndCreateIndependentBatch(params: {
   continuityBible?: string;
   customInstruction?: string;
   enableVoiceover?: boolean;
+  allowFreeCostumeChange?: boolean;
   aiProvider?: AiProviderId;
 }): Promise<{ sharedSpiritNote: string; blueprints: DerivativeBlueprint[] }> {
   const studioMode: StudioCreationMode = params.mode === 'creative' ? 'creative' : 'derivative';
   const productionFormat: StudioProductionFormat =
     params.productionFormat === 'narration_story' ? 'narration_story' : 'dialogue_film';
+  const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
   const videosList = Array.isArray(params.videos) ? params.videos : [];
   const ideaText = (params.ideaPrompt || params.query || '').trim();
   const activeStylePreset: DerivativeStylePreset =
@@ -3838,6 +4020,9 @@ export async function learnAndCreateIndependentBatch(params: {
     useProModel: params.useProModel,
     customInstruction: params.customInstruction,
     characterSummary: params.characterSummary,
+    characterRefsMeta: params.characterRefsMeta,
+    allowFreeCostumeChange,
+    costumeBible: params.costumeBible,
   });
 
   // Top up cleanly if the model returned slightly fewer concepts than requested
@@ -3890,19 +4075,26 @@ export async function learnAndCreateIndependentBatch(params: {
           useProModel: params.useProModel,
           characterSummary: params.characterSummary,
           characterRefsMeta: params.characterRefsMeta,
-          characterBible: concept.characterBible || params.characterBible,
+          characterBible:
+            !allowFreeCostumeChange && params.characterBible?.trim()
+              ? params.characterBible
+              : concept.characterBible || params.characterBible,
           settingBible: concept.settingBible || params.settingBible,
           visualStyleBible: params.visualStyleBible,
           costumeBible: params.costumeBible,
           continuityBible: params.continuityBible,
           customInstruction: params.customInstruction,
           enableVoiceover: params.enableVoiceover,
+          allowFreeCostumeChange,
           aiProvider: provider,
           preGatheredContexts: contexts,
           conceptOverride: {
             title: concept.title,
             premise: concept.premise,
-            characterBible: concept.characterBible,
+            characterBible:
+              !allowFreeCostumeChange && params.characterBible?.trim()
+                ? params.characterBible
+                : concept.characterBible,
             settingBible: concept.settingBible,
             visualStyleBible: params.visualStyleBible,
             costumeBible: params.costumeBible,
@@ -3931,6 +4123,7 @@ export interface StudioProjectProfileRecord {
   name: string;
   description?: string;
   videoStyle: StudioVideoStyle;
+  allowFreeCostumeChange?: boolean;
   characterBible: string;
   settingBible: string;
   visualStyleBible: string;
@@ -3977,6 +4170,7 @@ export function saveStudioProjectProfile(input: Partial<StudioProjectProfileReco
     name: name.slice(0, 80),
     description: String(input.description || '').trim().slice(0, 240),
     videoStyle: validStyle,
+    allowFreeCostumeChange: input.allowFreeCostumeChange === true,
     characterBible: String(input.characterBible || '').trim(),
     settingBible: String(input.settingBible || '').trim(),
     visualStyleBible: String(input.visualStyleBible || '').trim(),
@@ -4319,7 +4513,9 @@ export async function generateStudioImage(params: {
   selectedCharacterIds?: string[];
   characterRefs?: StudioCharacterRefInput[];
   museAccountId?: string;
+  allowFreeCostumeChange?: boolean;
 }): Promise<{ dataUrl: string; model: string }> {
+  const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
   const aspectRatio = params.aspectRatio || (params.mode === 'character' ? '1:1' : '16:9');
   const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
 
@@ -4358,7 +4554,11 @@ export async function generateStudioImage(params: {
     params.characterBible?.trim()
       ? `Locked Character Reference (MUST keep exact facial features, hair, proportions consistent): ${params.characterBible.trim()}.`
       : '',
-    params.costumeBible?.trim() ? `Locked Costume Reference: ${params.costumeBible.trim()}.` : '',
+    params.costumeBible?.trim()
+      ? allowFreeCostumeChange
+        ? `Costume Guidance (adapt outfit strictly as directed by scene prompt while keeping character face, hair & physique identical): ${params.costumeBible.trim()}.`
+        : `Locked Costume Reference (STRICT 100% LOCK — DO NOT alter outfit, colors, sleeves, outerwear, or accessories): ${params.costumeBible.trim()}.`
+      : '',
     params.settingBible?.trim() ? `Locked Environment Reference: ${params.settingBible.trim()}.` : '',
     params.continuityBible?.trim() ? `Story Continuity Rule: ${params.continuityBible.trim()}.` : '',
   ]
@@ -4385,7 +4585,10 @@ export async function generateStudioImage(params: {
       basePrompt = `${styleBlock} ${bibleTailBlock} Create a clean, consistent studio character turnaround / portrait reference sheet suitable for reusing identically across all video scenes. Character description: ${params.prompt}. Neutral clean studio lighting, soft even key light, uncluttered neutral backdrop, crisp framing, no overlaid watermarks, subtitles, or UI text.`;
     } else if (refs.length > 0) {
       const refNames = refs.map((r, i) => `#${i + 1}: ${r.name || `Nhân vật ${i + 1}`}`).join(', ');
-      basePrompt = `${sceneNarrativeAnchor} ${mapping} Create a cohesive storyboard illustration depicting the EXACT Main Scene Content above while strictly preserving the exact character identities, faces, hairstyles, proportions, and outfits of ALL attached character reference photos (${refNames}). ${styleBlock} Detailed visual instructions: ${params.prompt}. ${bibleTailBlock} No overlaid subtitles, speech bubbles, or watermarks.`;
+      const lockClause = allowFreeCostumeChange
+        ? `strictly preserving the exact character identities, faces, hairstyles, hair colors, body proportions & distinguishing marks of ALL attached character reference photos (${refNames}) while adapting outfits strictly as directed by the scene prompt`
+        : `strictly preserving the exact character identities, faces, hairstyles, hair colors, body proportions, AND exact outfits, garment colors & accessories of ALL attached character reference photos (${refNames}) with ZERO unauthorized wardrobe changes`;
+      basePrompt = `${sceneNarrativeAnchor} ${mapping} Create a cohesive storyboard illustration depicting the EXACT Main Scene Content above while ${lockClause}. ${styleBlock} Detailed visual instructions: ${params.prompt}. ${bibleTailBlock} No overlaid subtitles, speech bubbles, or watermarks.`;
     } else {
       basePrompt = `${sceneNarrativeAnchor} Create a crisp, cohesive storyboard illustration depicting the EXACT Main Scene Content above. ${styleBlock} Detailed visual instructions: ${params.prompt}. ${bibleTailBlock} No overlaid subtitles, text, or watermarks.`;
     }
@@ -4408,6 +4611,7 @@ export async function generateStudioImage(params: {
       targetEngine: params.engine === 'muse2api' ? 'muse2api' : 'gemini',
       characterBible: params.characterBible,
       costumeBible: params.costumeBible,
+      allowFreeCostumeChange,
     }).prompt;
   };
 
@@ -4811,7 +5015,9 @@ export async function generateSceneVideoWithOmniFlash(params: {
   sceneImageDataUrl?: string;
   characterRefs?: StudioCharacterRefInput[];
   museAccountId?: string;
+  allowFreeCostumeChange?: boolean;
 }): Promise<{ assetId: string; previewUrl: string; durationSec: number; hasAudio: boolean; model: string }> {
+  const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
   const clampedDur = Math.max(3, Math.min(15, Math.round(params.durationSec || 8)));
   const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
 
@@ -4871,16 +5077,24 @@ export async function generateSceneVideoWithOmniFlash(params: {
       : '',
     params.visualStyleBible?.trim() ? `Visual Style Reference: ${params.visualStyleBible.trim()}.` : '',
     params.characterBible?.trim() ? `Character Reference: ${params.characterBible.trim()}.` : '',
-    params.costumeBible?.trim() ? `Costume Reference: ${params.costumeBible.trim()}.` : '',
+    params.costumeBible?.trim()
+      ? allowFreeCostumeChange
+        ? `Costume Guidance (adapt outfit strictly as directed by scene prompt while keeping face, hair & physique identical): ${params.costumeBible.trim()}.`
+        : `STRICT COSTUME LOCK (DO NOT alter, add, remove, or redesign reference clothes/accessories): ${params.costumeBible.trim()}.`
+      : '',
     params.settingBible?.trim() ? `Environment Reference: ${params.settingBible.trim()}.` : '',
     params.continuityBible?.trim() ? `Story Continuity: ${params.continuityBible.trim()}.` : '',
   ]
     .filter(Boolean)
     .join(' ');
 
+  const lockPhrase = allowFreeCostumeChange
+    ? 'keeping every character identity, face, hair, physique & distinguishing marks 100% identical while adapting outfit per scene prompt'
+    : 'keeping EVERY character identity, face, hair, physique, AND exact reference costume/colors/accessories 100% identical with ZERO unauthorized wardrobe changes';
+
   const baseVideoPrompt = params.sceneImageDataUrl
-    ? `${priorityLeadLines} Animate this exact keyframe scene smoothly following the exact Per-Second Timeline above with natural continuous real-time motion, keeping every character identity, face, hair, costume & setting identical: ${params.prompt}. ${trailingBibles} No overlaid text or watermarks.`
-    : `${priorityLeadLines} High-definition cohesive video scene following the exact Per-Second Timeline above with continuous real-time action and smooth camera motion: ${params.prompt}. ${trailingBibles} Cohesive lighting, no overlaid text or watermarks.`;
+    ? `${priorityLeadLines} Animate this exact keyframe scene smoothly following the exact Per-Second Timeline above with natural continuous real-time motion, ${lockPhrase}: ${params.prompt}. ${trailingBibles} No overlaid text or watermarks.`
+    : `${priorityLeadLines} High-definition cohesive video scene following the exact Per-Second Timeline above with continuous real-time action and smooth camera motion, ${lockPhrase}: ${params.prompt}. ${trailingBibles} Cohesive lighting, no overlaid text or watermarks.`;
 
   const styledVideoPrompt =
     params.videoStyle === 'cinematic_filmmaking'
@@ -4901,6 +5115,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
     targetEngine: params.engine === 'muse2api' ? 'muse2api' : 'gemini',
     characterBible: params.characterBible,
     costumeBible: params.costumeBible,
+    allowFreeCostumeChange,
   }).prompt;
 
   if (params.engine === 'muse2api') {
@@ -7010,6 +7225,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         job.progress = 10 + Math.round(((i + 1) / scenes.length) * 26);
         try {
           const customStyleHint = blueprint.videoStyle === 'custom' ? blueprint.visualStyleBible || '' : '';
+          const allowFreeCostumeChange = blueprint.allowFreeCostumeChange === true;
           const consistentPrompt = compileConsistentScenePrompt({
             scene: sc,
             videoStyle: blueprint.videoStyle,
@@ -7023,6 +7239,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
             enableVoiceover: effectiveVoiceMode !== 'none',
             totalScenes: scenes.length,
             mediaType: 'video',
+            allowFreeCostumeChange,
           });
           const clipRes = await generateSceneVideoWithOmniFlash({
             engine: useMuseVideo ? 'muse2api' : 'gemini',
@@ -7055,6 +7272,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
             selectedCharacterIds: sc.selectedCharacterIds,
             sceneImageDataUrl: sc.sceneImageDataUrl,
             characterRefs: params.characterRefs,
+            allowFreeCostumeChange,
           });
           const asset = getStudioAsset(clipRes.assetId);
           if (asset) {
