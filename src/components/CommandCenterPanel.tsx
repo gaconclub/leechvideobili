@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  AlertOctagon,
   AlertTriangle,
   Download,
   Film,
@@ -12,6 +13,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Siren,
   Square,
   Upload,
 } from 'lucide-react';
@@ -39,12 +41,14 @@ import {
   renderPresetSvgIcon,
 } from './command-center/AgentAvatar';
 import { CommunicationHub } from './command-center/CommunicationHub';
+import { IncidentCommandTab } from './command-center/IncidentCommandTab';
 import { PerformanceMonitorTab } from './command-center/PerformanceMonitorTab';
 
 type CommandCenterSubTab =
   | 'overview'
   | 'agents'
   | 'chat'
+  | 'incidents'
   | 'tasks'
   | 'pipeline'
   | 'qa'
@@ -57,6 +61,7 @@ const SUB_TABS: { id: CommandCenterSubTab; label: string }[] = [
   { id: 'overview', label: 'Tổng quan & Lệnh tổng' },
   { id: 'agents', label: 'Đội ngũ 5 Muse AI' },
   { id: 'chat', label: 'Trung tâm giao tiếp' },
+  { id: 'incidents', label: 'Trung tâm sự cố' },
   { id: 'tasks', label: 'Giao việc & Nhiệm vụ' },
   { id: 'pipeline', label: 'Điều phối & Project Memory' },
   { id: 'qa', label: 'Giám sát chất lượng' },
@@ -199,8 +204,9 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   const [agentDraftClearAvatar, setAgentDraftClearAvatar] = useState(false);
   const [agentTestReplies, setAgentTestReplies] = useState<Record<string, string>>({});
 
-  // Chat initial channel deep-link
+  // Chat & Incident deep-link
   const [chatInitialChannel, setChatInitialChannel] = useState<CommunicationChannelId>('commander');
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
 
   // Manual Task form
   const [manualAgentId, setManualAgentId] = useState<MuseAgentId>('muse-01');
@@ -230,6 +236,8 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   const [parallelLimit, setParallelLimit] = useState(2);
   const [qaThreshold, setQaThreshold] = useState(80);
   const [maxRetries, setMaxRetries] = useState(2);
+  const [maxIncidentRetries, setMaxIncidentRetries] = useState(3);
+  const [autoDirectorIncidentResponse, setAutoDirectorIncidentResponse] = useState(true);
   const [autoBackup, setAutoBackup] = useState(true);
   const [newAccLabel, setNewAccLabel] = useState('');
   const [newAccCookie, setNewAccCookie] = useState('');
@@ -275,6 +283,8 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
       setParallelLimit(state.cloudConfig.parallelLimit);
       setQaThreshold(state.cloudConfig.qaPassThreshold);
       setMaxRetries(state.cloudConfig.maxRetriesPerScene);
+      setMaxIncidentRetries(state.cloudConfig.maxIncidentRetries ?? 3);
+      setAutoDirectorIncidentResponse(state.cloudConfig.autoDirectorIncidentResponse !== false);
       setAutoBackup(state.cloudConfig.autoBackupRealtime);
       setCloudSyncedOnce(true);
     }
@@ -507,6 +517,8 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
             parallelLimit,
             qaPassThreshold: qaThreshold,
             maxRetriesPerScene: maxRetries,
+            maxIncidentRetries,
+            autoDirectorIncidentResponse,
             autoBackupRealtime: autoBackup,
           }),
         }),
@@ -551,6 +563,10 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   const memory = state?.projectMemory;
   const activeRun = state?.activeRun || null;
   const health = state?.integrationHealth;
+  const incidents = state?.incidents || [];
+  const escalatedIncidents = incidents.filter((i) => i.status === 'escalated_to_user');
+  const activeIncidents = incidents.filter((i) => !['resolved', 'escalated_to_user'].includes(i.status));
+  const openIncidentsCount = escalatedIncidents.length + activeIncidents.length;
   const filteredLogs = (state?.logs || []).filter((l) => {
     if (logAgentFilter !== 'all' && l.agentId !== logAgentFilter) return false;
     if (logLevelFilter !== 'all' && l.level !== logLevelFilter) return false;
@@ -648,20 +664,31 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
           </div>
         </div>
 
-        {/* Sub-navigation Segmented Control (9 management sections) */}
+        {/* Sub-navigation Segmented Control */}
         <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0c1021] border border-slate-200/80 dark:border-slate-700/40">
           {SUB_TABS.map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => setSubTab(t.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
                 subTab === t.id
                   ? 'bg-white dark:bg-[#1a2244] text-slate-900 dark:text-white shadow-sm border border-slate-200/80 dark:border-slate-600/40'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white border border-transparent'
               }`}
             >
-              {t.label}
+              <span>{t.label}</span>
+              {t.id === 'incidents' && openIncidentsCount > 0 && (
+                <span
+                  className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono tabular-nums font-bold ${
+                    escalatedIncidents.length > 0
+                      ? 'bg-rose-500 text-white'
+                      : 'bg-cyan-500/20 text-cyan-700 dark:text-cyan-300'
+                  }`}
+                >
+                  {openIncidentsCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -714,6 +741,91 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
          ========================================================= */}
       {subTab === 'overview' && (
         <div className="space-y-5">
+          {/* Escalated Incidents Banner (ONLY interrupts user when Muse 01 escalates) */}
+          {escalatedIncidents.length > 0 && (
+            <div className="rounded-2xl border border-rose-400/70 bg-rose-50/95 dark:bg-rose-950/40 p-4 space-y-2.5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 font-bold text-rose-800 dark:text-rose-200">
+                  <AlertOctagon className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                  <span>
+                    Muse AI 01 báo cáo khẩn: {escalatedIncidents.length} sự cố cần quyết định của bạn
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setChatInitialChannel('incident');
+                      setSubTab('chat');
+                    }}
+                    className="px-2.5 py-1 rounded-lg border border-rose-300 dark:border-rose-700 bg-white/80 dark:bg-[#0c1021] text-rose-700 dark:text-rose-300 font-semibold cursor-pointer"
+                  >
+                    Mở # INCIDENT COMMAND
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedIncidentId(escalatedIncidents[0].id);
+                      setSubTab('incidents');
+                    }}
+                    className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold cursor-pointer"
+                  >
+                    Xử lý ngay →
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1">
+                {escalatedIncidents.slice(0, 3).map((inc) => (
+                  <div
+                    key={inc.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white/75 dark:bg-[#0c1021]/80 px-3 py-2 border border-rose-200 dark:border-rose-800/50"
+                  >
+                    <div className="min-w-0">
+                      <span className="font-mono font-bold text-rose-700 dark:text-rose-300 mr-2">{inc.code}</span>
+                      <span className="font-semibold text-slate-900 dark:text-white mr-2">{inc.categoryLabel}:</span>
+                      <span className="text-slate-700 dark:text-slate-200">
+                        {inc.escalationReason || inc.errorDescription}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedIncidentId(inc.id);
+                        setSubTab('incidents');
+                      }}
+                      className="text-[11px] font-semibold text-rose-700 dark:text-rose-300 underline cursor-pointer shrink-0"
+                    >
+                      Mở hồ sơ
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Subtle Autonomous Recovery Info Strip (non-intrusive when Muse 01 handles silently) */}
+          {escalatedIncidents.length === 0 && activeIncidents.length > 0 && (
+            <div className="rounded-xl border border-cyan-500/35 bg-cyan-50/70 dark:bg-cyan-950/25 px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-cyan-900 dark:text-cyan-200">
+                <Siren className="w-4 h-4 text-cyan-600 dark:text-cyan-400 shrink-0" />
+                <span>
+                  <strong>Muse AI 01 (Đạo diễn tổng)</strong> đang trực tiếp trao đổi và xử lý tự động{' '}
+                  <strong>{activeIncidents.length} sự cố</strong> trong phạm vi quyền hạn (không gián đoạn các cảnh đã đạt).
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedIncidentId(activeIncidents[0].id);
+                  setSubTab('incidents');
+                }}
+                className="text-xs font-semibold text-cyan-700 dark:text-cyan-300 underline cursor-pointer"
+              >
+                Theo dõi trong Trung tâm sự cố →
+              </button>
+            </div>
+          )}
+
           {/* 5 Muse AI Live Team Roster */}
           <section className="glass-card rounded-2xl p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1395,6 +1507,27 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
           initialChannel={chatInitialChannel}
           onJumpToTask={() => setSubTab('tasks')}
           onJumpToScene={() => setSubTab('pipeline')}
+          onJumpToIncident={(incId) => {
+            if (incId) setSelectedIncidentId(incId);
+            setSubTab('incidents');
+          }}
+        />
+      )}
+
+      {/* =========================================================
+          3B. AI DIRECTOR INCIDENT COMMAND CENTER
+         ========================================================= */}
+      {subTab === 'incidents' && state && (
+        <IncidentCommandTab
+          state={state}
+          initialSelectedIncidentId={selectedIncidentId}
+          busyAction={busyAction}
+          onRunAction={runAction}
+          onOpenIncidentChannel={() => {
+            setChatInitialChannel('incident');
+            setSubTab('chat');
+          }}
+          apiJson={apiJson}
         />
       )}
 
@@ -2207,6 +2340,32 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                   onChange={(e) => setMaxRetries(Number(e.target.value) || 2)}
                   className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono tabular-nums text-slate-900 dark:text-white"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
+                  Vòng tự xử lý sự cố tối đa (Muse 01)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={5}
+                  value={maxIncidentRetries}
+                  onChange={(e) => setMaxIncidentRetries(Math.max(1, Math.min(5, Number(e.target.value) || 3)))}
+                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono tabular-nums text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="flex items-end pb-1.5">
+                <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoDirectorIncidentResponse}
+                    onChange={(e) => setAutoDirectorIncidentResponse(e.target.checked)}
+                    className="rounded border-slate-300"
+                  />
+                  <span>Muse AI 01 tự trao đổi &amp; xử lý sự cố</span>
+                </label>
               </div>
 
               <div className="flex items-end pb-1.5">

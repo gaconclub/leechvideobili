@@ -3,6 +3,7 @@ import type {
   CommandCenterState,
   CommandTask,
   ConversationMessage,
+  IncidentRecord,
   MuseAgentConfig,
   PerformanceAlert,
   ProductionRun,
@@ -162,6 +163,23 @@ export function useCommandCenterLive(isActive: boolean) {
         return {
           ...prev,
           performanceAlerts: [alert, ...prev.performanceAlerts].slice(0, 60),
+        };
+      });
+    });
+
+    es.addEventListener('incident:updated', (ev) => {
+      const inc = safeParse<IncidentRecord>((ev as MessageEvent).data);
+      if (!inc || !isMountedRef.current) return;
+      setState((prev) => {
+        if (!prev) return prev;
+        const current = Array.isArray(prev.incidents) ? prev.incidents : [];
+        const exists = current.some((i) => i.id === inc.id);
+        const incidents = exists
+          ? current.map((i) => (i.id === inc.id ? inc : i))
+          : [inc, ...current];
+        return {
+          ...prev,
+          incidents: incidents.slice(0, 120),
         };
       });
     });

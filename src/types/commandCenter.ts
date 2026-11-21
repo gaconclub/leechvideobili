@@ -297,6 +297,7 @@ export interface ProductionRun {
 
 export type CommunicationChannelId =
   | 'commander'
+  | 'incident'
   | 'production'
   | 'script'
   | 'visual'
@@ -317,7 +318,9 @@ export interface ConversationMessage {
   senderName: string;
   senderAvatarUrl?: string;
   senderColor?: string;
-  messageKind?: 'chat' | 'ai_bus' | 'ack' | 'alert' | 'deliverable';
+  messageKind?: 'chat' | 'ai_bus' | 'ack' | 'alert' | 'deliverable' | 'incident';
+  incidentId?: string;
+  roleBadge?: string;
   targetAgentIds?: MuseAgentId[];
   content: string;
   promptDelivered?: string;
@@ -377,6 +380,8 @@ export interface CloudOrchestratorConfig {
   parallelLimit: number;
   qaPassThreshold: number;
   maxRetriesPerScene: number;
+  maxIncidentRetries?: number;
+  autoDirectorIncidentResponse?: boolean;
   autoBackupRealtime: boolean;
   workerHeartbeatAt: number;
   workerBootId: string;
@@ -436,6 +441,85 @@ export interface StudioSyncedDirective {
   hasBlueprint: boolean;
 }
 
+export type IncidentCategory =
+  | 'wrong_character'
+  | 'wrong_dialogue'
+  | 'wrong_voice'
+  | 'wrong_costume'
+  | 'wrong_setting'
+  | 'motion_error'
+  | 'video_technical_error'
+  | 'muse_disconnected'
+  | 'recurring_error';
+
+export type IncidentSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+export type IncidentStatus =
+  | 'reported'
+  | 'investigating'
+  | 'remediating'
+  | 'verifying'
+  | 'resolved'
+  | 'escalated_to_user';
+
+export interface IncidentDialogTurn {
+  id: string;
+  timestamp: number;
+  actorId: MuseAgentId | 'system' | 'user';
+  actorName: string;
+  roleBadge: string;
+  kind:
+    | 'report'
+    | 'question'
+    | 'explanation'
+    | 'directive'
+    | 'progress'
+    | 'qa_review'
+    | 'resolution'
+    | 'escalation';
+  content: string;
+  attachments?: string[];
+}
+
+export interface IncidentRecord {
+  id: string;
+  code: string;
+  projectId: string;
+  sessionId: string;
+  runId: string;
+  taskId?: string;
+  sceneId?: string;
+  sceneIndex?: number;
+  timestampRange?: string;
+  reporterAgentId: MuseAgentId;
+  responsibleAgentId: MuseAgentId;
+  assignedFixAgentId: MuseAgentId;
+  category: IncidentCategory;
+  categoryLabel: string;
+  severity: IncidentSeverity;
+  priority: 'urgent' | 'high' | 'normal';
+  status: IncidentStatus;
+  errorDescription: string;
+  suspectedRootCause: string;
+  analyzedRootCause?: string;
+  initialProposal: string;
+  directorPlan?: string;
+  directorCommand?: string;
+  artifactUrls: string[];
+  referenceDataSummary: string;
+  attemptCount: number;
+  maxAttempts: number;
+  remediationTaskIds: string[];
+  qaVerificationTaskId?: string;
+  withinAutonomyScope: boolean;
+  escalationReason?: string;
+  resolutionSummary?: string;
+  createdAt: number;
+  updatedAt: number;
+  resolvedAt?: number;
+  history: IncidentDialogTurn[];
+}
+
 export type CommandCenterSseEventType =
   | 'state:sync'
   | 'run:updated'
@@ -443,7 +527,8 @@ export type CommandCenterSseEventType =
   | 'message:created'
   | 'agent:updated'
   | 'metric:updated'
-  | 'alert:created';
+  | 'alert:created'
+  | 'incident:updated';
 
 export interface CommandCenterState {
   metrics: CommandCenterSummaryMetrics;
@@ -455,6 +540,7 @@ export interface CommandCenterState {
   runs: ProductionRun[];
   tasks: CommandTask[];
   qaReports: QaInspectionReport[];
+  incidents: IncidentRecord[];
   conversations: ConversationMessage[];
   logs: CommandActivityLog[];
   backups: CommandBackupRecord[];

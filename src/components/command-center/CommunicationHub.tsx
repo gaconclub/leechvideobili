@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Clapperboard,
@@ -15,6 +15,7 @@ import {
   Search,
   Send,
   ShieldCheck,
+  Siren,
   Terminal,
   X,
 } from 'lucide-react';
@@ -32,6 +33,7 @@ export const TEAM_CHANNELS: {
   label: string;
   purpose: string;
   defaultResponder: MuseAgentId;
+  highPriority?: boolean;
 }[] = [
   {
     id: 'commander',
@@ -39,6 +41,14 @@ export const TEAM_CHANNELS: {
     label: 'Tổng chỉ huy',
     purpose: 'Người dùng giao lệnh trực tiếp cho cả đội ngũ 5 Muse AI',
     defaultResponder: 'muse-01',
+  },
+  {
+    id: 'incident',
+    slug: '#incident-command',
+    label: 'INCIDENT COMMAND',
+    purpose: 'Trung tâm chỉ huy xử lý sự cố — Muse AI 01 tiếp nhận báo lỗi, điều tra và ra lệnh sửa ngay',
+    defaultResponder: 'muse-01',
+    highPriority: true,
   },
   {
     id: 'production',
@@ -84,12 +94,33 @@ export const TEAM_CHANNELS: {
   },
 ];
 
+function getRoleBadgeClass(badge: string): string {
+  const b = badge.toLowerCase();
+  if (b.includes('báo cáo lỗi') || b.includes('cần can thiệp') || b.includes('cần người dùng')) {
+    return 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/35';
+  }
+  if (b.includes('điều hành') || b.includes('chỉ đạo')) {
+    return 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/35';
+  }
+  if (b.includes('giải trình')) {
+    return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35';
+  }
+  if (b.includes('phản hồi')) {
+    return 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/35';
+  }
+  if (b.includes('kiểm duyệt') || b.includes('đóng sự cố')) {
+    return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35';
+  }
+  return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/30';
+}
+
 interface CommunicationHubProps {
   state: CommandCenterState;
   setState: React.Dispatch<React.SetStateAction<CommandCenterState | null>>;
   initialChannel?: CommunicationChannelId;
   onJumpToTask?: (taskId: string) => void;
   onJumpToScene?: (sceneId: string) => void;
+  onJumpToIncident?: (incidentId?: string) => void;
 }
 
 function fmtDateTime(ts: number): string {
@@ -117,6 +148,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
   initialChannel = 'commander',
   onJumpToTask,
   onJumpToScene,
+  onJumpToIncident,
 }) => {
   const [activeChannel, setActiveChannel] = useState<CommunicationChannelId>(initialChannel);
   const [leftOpen, setLeftOpen] = useState(true);
@@ -134,12 +166,23 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
     [initialChannel]: Date.now(),
   }));
 
+  useEffect(() => {
+    setActiveChannel(initialChannel);
+    const meta = TEAM_CHANNELS.find((c) => c.id === initialChannel);
+    setResponderAgentId(meta ? meta.defaultResponder : (initialChannel as MuseAgentId));
+    setLastSeenByChannel((prev) => ({ ...prev, [initialChannel]: Date.now() }));
+  }, [initialChannel]);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const agents = state.agents;
   const activeRunId = state.selectedRunId || state.activeRun?.id || '';
   const activeChannelMeta = TEAM_CHANNELS.find((c) => c.id === activeChannel);
   const dmAgent = agents.find((a) => a.id === activeChannel);
+  const openIncidents = useMemo(
+    () => (state.incidents || []).filter((i) => i.status !== 'resolved'),
+    [state.incidents]
+  );
 
   const handleSelectChannel = (ch: CommunicationChannelId) => {
     setActiveChannel(ch);
@@ -283,6 +326,8 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
             {TEAM_CHANNELS.map((ch) => {
               const unread = unreadCounts[ch.id] || 0;
               const isSelected = activeChannel === ch.id;
+              const isIncidentCh = ch.id === 'incident';
+              const incidentCount = isIncidentCh ? openIncidents.length : 0;
               return (
                 <button
                   key={ch.id}
@@ -290,12 +335,18 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                   onClick={() => handleSelectChannel(ch.id)}
                   className={`w-full px-2.5 py-2 rounded-xl text-xs flex items-center justify-between gap-2 transition cursor-pointer ${
                     isSelected
-                      ? 'bg-violet-600 text-white font-semibold shadow-sm'
+                      ? isIncidentCh
+                        ? 'bg-rose-600 text-white font-semibold shadow-sm'
+                        : 'bg-violet-600 text-white font-semibold shadow-sm'
+                      : isIncidentCh && incidentCount > 0
+                      ? 'text-rose-700 dark:text-rose-300 bg-rose-500/10 border border-rose-500/25 hover:bg-rose-500/15 font-semibold'
                       : 'text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-white/5'
                   }`}
                 >
                   <span className="flex items-center gap-2 truncate">
-                    {ch.id === 'ai_bus' ? (
+                    {isIncidentCh ? (
+                      <Siren className="w-3.5 h-3.5 shrink-0" />
+                    ) : ch.id === 'ai_bus' ? (
                       <Terminal className="w-3.5 h-3.5 shrink-0 opacity-80" />
                     ) : ch.id === 'qa' ? (
                       <ShieldCheck className="w-3.5 h-3.5 shrink-0 opacity-80" />
@@ -310,11 +361,24 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                     )}
                     <span className="truncate">{ch.label}</span>
                   </span>
-                  {unread > 0 && (
-                    <span className="px-1.5 py-0.5 rounded-md bg-rose-500 text-white text-[10px] font-mono tabular-nums font-bold">
-                      {unread}
-                    </span>
-                  )}
+                  <span className="flex items-center gap-1 shrink-0">
+                    {isIncidentCh && (
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${
+                          isSelected
+                            ? 'bg-white/20 text-white'
+                            : 'bg-rose-500/15 text-rose-700 dark:text-rose-300'
+                        }`}
+                      >
+                        {incidentCount > 0 ? `${incidentCount} mở` : 'Ưu tiên'}
+                      </span>
+                    )}
+                    {unread > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-md bg-rose-500 text-white text-[10px] font-mono tabular-nums font-bold">
+                        {unread}
+                      </span>
+                    )}
+                  </span>
                 </button>
               );
             })}
@@ -439,6 +503,46 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
           </div>
         </div>
 
+        {/* Incident Command Strip */}
+        {activeChannel === 'incident' && (
+          <div className="px-3.5 py-2.5 border-b border-rose-500/25 bg-rose-50/70 dark:bg-rose-950/25 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <span className="inline-flex items-center gap-1 font-bold text-rose-700 dark:text-rose-300">
+                <Siren className="w-3.5 h-3.5" />
+                <span>ƯU TIÊN CAO</span>
+              </span>
+              <span className="text-slate-600 dark:text-slate-300">
+                {openIncidents.length > 0
+                  ? `${openIncidents.length} sự cố đang điều phối bởi Muse AI 01:`
+                  : 'Chưa có sự cố đang mở. Mọi lỗi phát sinh sẽ tự động báo về đây.'}
+              </span>
+              {openIncidents.slice(0, 3).map((inc) => (
+                <button
+                  key={inc.id}
+                  type="button"
+                  onClick={() => onJumpToIncident?.(inc.id)}
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-mono border cursor-pointer ${
+                    inc.status === 'escalated_to_user'
+                      ? 'bg-rose-600 text-white border-rose-600'
+                      : 'bg-white/85 dark:bg-[#0c1021] text-slate-800 dark:text-slate-200 border-rose-300 dark:border-rose-700/50'
+                  }`}
+                >
+                  {inc.code} · {inc.attemptCount}/{inc.maxAttempts}
+                </button>
+              ))}
+            </div>
+            {onJumpToIncident && (
+              <button
+                type="button"
+                onClick={() => onJumpToIncident(openIncidents[0]?.id)}
+                className="text-[11px] font-semibold text-rose-700 dark:text-rose-300 underline cursor-pointer shrink-0"
+              >
+                Mở Trung tâm sự cố →
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Message List */}
         <div className="flex-1 overflow-y-auto max-h-[460px] p-4 space-y-3">
           {visibleMessages.length === 0 ? (
@@ -491,6 +595,15 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                           {senderAgent.roleTitle}
                         </span>
                       )}
+                      {msg.roleBadge && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold whitespace-nowrap ${getRoleBadgeClass(
+                            msg.roleBadge
+                          )}`}
+                        >
+                          {msg.roleBadge}
+                        </span>
+                      )}
                       {isBus && (
                         <span className="text-[10px] font-mono text-cyan-700 dark:text-cyan-300">
                           [AI-BUS]
@@ -499,6 +612,15 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                     </div>
 
                     <div className="flex items-center gap-2 text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                      {msg.incidentId && onJumpToIncident && (
+                        <button
+                          type="button"
+                          onClick={() => onJumpToIncident(msg.incidentId)}
+                          className="underline text-rose-600 dark:text-rose-300 cursor-pointer"
+                        >
+                          Hồ sơ sự cố
+                        </button>
+                      )}
                       {msg.sceneId && (
                         <button
                           type="button"

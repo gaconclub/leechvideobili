@@ -84,6 +84,7 @@ import {
   testMuse2ApiAccount,
 } from './server/muse2api';
 import {
+  commandIncidentAction,
   controlProductionRun,
   controlTask,
   createEmptyProductionSession,
@@ -92,6 +93,7 @@ import {
   getBackupExportFilePath,
   getCommandCenterState,
   initCommandCenter,
+  reportCommandCenterIncident,
   resolveArtifactDiskPath,
   resolveSceneQaManual,
   restoreBackupById,
@@ -6038,6 +6040,33 @@ async function startServer() {
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không thể gửi tin nhắn tới đội ngũ Muse AI.' });
+    }
+  });
+
+  app.post('/api/command-center/incidents', async (req, res) => {
+    try {
+      const result = await reportCommandCenterIncident(req.body || {});
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tiếp nhận báo cáo sự cố tới Muse AI 01.' });
+    }
+  });
+
+  app.post('/api/command-center/incidents/:incidentId/command', async (req, res) => {
+    try {
+      const action = req.body?.action;
+      if (action !== 'directive' && action !== 'reopen' && action !== 'escalate' && action !== 'resolve') {
+        return res.status(400).json({ error: 'Hành động xử lý sự cố không hợp lệ.' });
+      }
+      const state = await commandIncidentAction({
+        incidentId: req.params.incidentId,
+        action,
+        message: req.body?.message,
+        targetAgentId: req.body?.targetAgentId,
+      });
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể thực thi chỉ đạo sự cố.' });
     }
   });
 
