@@ -99,11 +99,10 @@ export function sanitizeVisualPromptForModel(rawPrompt: string, options?: { isSc
   let out = String(rawPrompt || '').trim();
   if (!out) return '';
 
-  // 1. Strip internal script tags/metadata markers leaked from LLM outputs
+  // 1. Strip internal script tags/metadata markers leaked from LLM outputs (preserve per-second timeline stamps like 1s - 3s)
   out = out
     .replace(/\[(?:SC|SHOT|SCENE|CONTINUITY|LIÊN TỤC|CHECK|NOTE)[-_:\s]*\d*[^\]]*\]/gi, ' ')
-    .replace(/\b(?:SC|SHOT)[-_]?\d{1,3}\s*[:：-]/gi, ' ')
-    .replace(/\(\s*\d{1,3}\s*(?:s|giây|sec)\s*\)/gi, ' ');
+    .replace(/\b(?:SC|SHOT)[-_]?\d{1,3}\s*[:：-]/gi, ' ');
 
   // 2. Strip stray unquoted physical measurement numbers that cause garbled text artifacts
   out = out.replace(/\b\d+(?:[.,]\d+)?\s*(?:cm|mm|km|mét|met|m)\b(?![^"“”«»]*["”»])/gi, '');

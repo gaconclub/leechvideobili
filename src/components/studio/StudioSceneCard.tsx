@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   ChevronDown,
   ChevronUp,
+  Clock,
   Film,
   Image as ImageIcon,
   Loader2,
@@ -29,6 +30,7 @@ import {
   CAMERA_MOVEMENT_SUGGESTIONS,
   CHARACTER_AGE_GROUP_OPTIONS,
   LIGHTING_SUGGESTIONS,
+  buildSceneTimelineFallbackClient,
   compileScenePromptClient,
   resolveVideoStyleMetaClient,
 } from './studioConfig';
@@ -63,6 +65,7 @@ interface StudioSceneCardProps {
   onMoveScene: (sceneId: string, direction: 'up' | 'down') => void;
   onGenerateImage: (scene: DerivativeScene) => void;
   onUploadSceneImage: (sceneId: string, file: File) => void;
+  onDeleteSceneImage?: (sceneId: string) => void;
   onGenerateOmniClip: (scene: DerivativeScene) => void;
   onSpeakPreview: (text: string, sceneId: string) => void;
 }
@@ -103,6 +106,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   onMoveScene,
   onGenerateImage,
   onUploadSceneImage,
+  onDeleteSceneImage,
   onGenerateOmniClip,
   onSpeakPreview,
 }) => {
@@ -130,8 +134,10 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   };
 
   const handleRebuildPromptsFromFields = () => {
+    const nextTimeline = (scene.videoTimeline || '').trim() || buildSceneTimelineFallbackClient(scene);
+    const sceneWithTimeline = { ...scene, videoTimeline: nextTimeline };
     const compiledImage = compileScenePromptClient({
-      scene: { ...scene, imagePrompt: '' },
+      scene: { ...sceneWithTimeline, imagePrompt: '' },
       videoStyle,
       learnedStyles,
       customStylePrompt,
@@ -140,12 +146,14 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
       visualStyleBible,
       costumeBible,
       continuityBible,
+      characterRefs,
+      enableVoiceover: !isVoiceoverOff,
       totalScenes,
       mediaType: 'image',
       hasAttachedRefs: hasCharacterRefs,
     });
     const compiledVideo = compileScenePromptClient({
-      scene: { ...scene, videoPrompt: '' },
+      scene: { ...sceneWithTimeline, videoPrompt: '' },
       videoStyle,
       learnedStyles,
       customStylePrompt,
@@ -154,12 +162,15 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
       visualStyleBible,
       costumeBible,
       continuityBible,
+      characterRefs,
+      enableVoiceover: !isVoiceoverOff,
       totalScenes,
       mediaType: 'video',
       hasAttachedRefs: hasCharacterRefs,
       targetEngine: sceneVideoEngine,
     });
     onUpdateScene(scene.id, {
+      videoTimeline: nextTimeline,
       imagePrompt: compiledImage,
       videoPrompt: compiledVideo,
       visualNote: compiledImage,
@@ -176,6 +187,8 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
     visualStyleBible,
     costumeBible,
     continuityBible,
+    characterRefs,
+    enableVoiceover: !isVoiceoverOff,
     totalScenes,
     mediaType: 'video',
     hasAttachedRefs: hasCharacterRefs,
@@ -288,11 +301,19 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
         <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
           <span>Phong cách: {styleMeta.label}</span>
           <span> · </span>
-          <span>
-            {hasCharacterRefs
-              ? 'Đã khóa ảnh mẫu nhân vật đồng bộ'
-              : 'Đồng bộ 5 hồ sơ nhân vật · bối cảnh · trang phục'}
-          </span>
+          {scene.sceneImageDataUrl && !scene.omniClipPreviewUrl ? (
+            <span>
+              {scene.sceneImageSource === 'uploaded'
+                ? 'Ảnh chính: Ảnh tải lên (mặc định khi xuất)'
+                : 'Ảnh chính: Ảnh AI đã tạo'}
+            </span>
+          ) : (
+            <span>
+              {hasCharacterRefs
+                ? 'Đã khóa ảnh mẫu nhân vật đồng bộ'
+                : 'Đồng bộ 5 hồ sơ nhân vật · bối cảnh · trang phục'}
+            </span>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-1.5">
@@ -332,6 +353,26 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
               }}
             />
           </label>
+
+          {scene.sceneImageDataUrl && (
+            <button
+              type="button"
+              disabled={busyImg || queuedImg}
+              onClick={() =>
+                onDeleteSceneImage
+                  ? onDeleteSceneImage(scene.id)
+                  : onUpdateScene(scene.id, {
+                      sceneImageDataUrl: undefined,
+                      sceneImageSource: undefined,
+                    })
+              }
+              title="Xóa ảnh phân cảnh đã tạo hoặc tải lên"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 hover:border-rose-400/50 hover:text-rose-600 dark:hover:text-rose-300 text-slate-700 dark:text-slate-200 rounded-lg transition cursor-pointer disabled:opacity-60 whitespace-nowrap"
+            >
+              <Trash2 className="w-3 h-3" />
+              <span>Xóa ảnh</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -721,6 +762,41 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
                     className={fieldInputCls}
                   />
                 </label>
+              </div>
+
+              {/* Per-Second Scene Timeline for AI Muse / Omni Flash */}
+              <div className="p-2.5 rounded-xl bg-white/80 dark:bg-[#10162f]/90 border border-cyan-500/25 space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-cyan-700 dark:text-cyan-300">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>
+                      Timeline phân cảnh theo từng giây ({Math.max(4, Math.round(scene.durationSec || 8))} giây)
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onUpdateScene(scene.id, {
+                        videoTimeline: buildSceneTimelineFallbackClient(scene),
+                      })
+                    }
+                    title="Tự động tạo lại timeline từng mốc giây từ hành động, góc quay và lời thoại"
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-cyan-700 dark:text-cyan-300 hover:underline cursor-pointer whitespace-nowrap"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Tạo Timeline từ cảnh</span>
+                  </button>
+                </div>
+                <textarea
+                  rows={3}
+                  value={scene.videoTimeline ?? ''}
+                  onChange={(e) => onUpdateScene(scene.id, { videoTimeline: e.target.value })}
+                  placeholder={`1s - 3s: [Toàn cảnh | ${scene.cameraMovement || 'Dolly chậm'}] Giới thiệu bối cảnh và nhân vật...\n4s - 6s: [Cận cảnh nhân vật] Nhân vật nói lời thoại đúng kịch bản (đồng bộ khẩu hình lip-sync)...\n7s - ${Math.max(7, Math.round(scene.durationSec || 10))}s: Diễn biến & chuyển động camera kết cảnh...`}
+                  className={fieldTextareaCls}
+                />
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                  Timeline từng mốc giây, lời thoại nhân vật (lip-sync) và chuyển động camera được ưu tiên truyền đầy đủ sang AI Muse / Omni Flash.
+                </p>
               </div>
 
               {/* Dedicated Image Prompt + Video Prompt */}
