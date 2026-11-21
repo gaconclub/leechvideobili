@@ -341,6 +341,33 @@ function shouldFallbackGeminiModel(err: any): boolean {
   return isTransientGemini503Error(err) || isGeminiRateLimit429Error(err);
 }
 
+const geminiModelCooldownUntil = new Map<string, number>();
+
+function markGeminiModelOverloaded(model: string, err: any, cooldownMs = 75_000): void {
+  if (isTransientGemini503Error(err) || isGeminiRateLimit429Error(err)) {
+    geminiModelCooldownUntil.set(model, Date.now() + cooldownMs);
+  }
+}
+
+function prioritizeGeminiCandidateModels(baseCandidates: string[]): string[] {
+  const now = Date.now();
+  const healthy: string[] = [];
+  const cooled: string[] = [];
+  for (const m of baseCandidates) {
+    const until = geminiModelCooldownUntil.get(m) || 0;
+    if (until > now) cooled.push(m);
+    else healthy.push(m);
+  }
+  if (healthy.length > 0) return [...healthy, ...cooled];
+  const liteIdx = cooled.indexOf('gemini-3.1-flash-lite');
+  if (liteIdx > 0) {
+    const copy = [...cooled];
+    const [lite] = copy.splice(liteIdx, 1);
+    return [lite, ...copy];
+  }
+  return cooled;
+}
+
 async function retryWithGeminiBackoff<T>(
   fn: () => Promise<T>,
   delaysMs: number[] = [1500, 3200, 5500]
@@ -2030,11 +2057,15 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
       parsed = parseAiBlueprintJsonSafe(String(data?.choices?.[0]?.message?.content || '{}'));
     } else {
       const ai = getGeminiClient();
-      const candidateModels = params.useProModel
+      const baseCandidates = params.useProModel
         ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
         : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+      const candidateModels = prioritizeGeminiCandidateModels(baseCandidates);
       let lastErr: any;
-      for (const candidateModel of candidateModels) {
+      for (let mIdx = 0; mIdx < candidateModels.length; mIdx += 1) {
+        const candidateModel = candidateModels[mIdx];
+        const isLastCandidate = mIdx === candidateModels.length - 1;
+        const callTimeoutMs = isLastCandidate ? 30_000 : 18_000;
         try {
           const response = await retryWithGeminiBackoff(
             () =>
@@ -2042,6 +2073,7 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
                 model: candidateModel,
                 contents: [{ text: expandPrompt }],
                 config: {
+                  httpOptions: { timeout: callTimeoutMs },
                   maxOutputTokens: 2048,
                   ...(candidateModel.startsWith('gemini-4-')
                     ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
@@ -2057,7 +2089,7 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
                   },
                 },
               }),
-            [1000]
+            isLastCandidate ? [800] : []
           );
           parsed = parseAiBlueprintJsonSafe((response?.text ?? '{}').trim());
           if (String(parsed?.expandedIdea || '').trim()) {
@@ -2066,6 +2098,7 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
           }
         } catch (err: any) {
           lastErr = err;
+          markGeminiModelOverloaded(candidateModel, err);
           if (!shouldFallbackGeminiModel(err) && !(err instanceof SyntaxError)) {
             throw err;
           }
@@ -2471,9 +2504,10 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
       });
     } else {
       const ai = getGeminiClient();
-      const candidateModels = params.useProModel
+      const baseCandidates = params.useProModel
         ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
         : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+      const candidateModels = prioritizeGeminiCandidateModels(baseCandidates);
 
       const compactParts = parts.filter((p, idx) => p.text || idx < 2);
       let parsedFromGemini: any = null;
@@ -2597,12 +2631,17 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         },
       };
 
-      const callGeminiBlueprint = async (candidateModel: string, activeParts: any[], withSchema: boolean) => {
+      const callGeminiBlueprint = async (
+        candidateModel: string,
+        activeParts: any[],
+        withSchema: boolean,
+        timeoutMs: number
+      ) => {
         return ai.models.generateContent({
           model: candidateModel,
           contents: { parts: activeParts },
           config: {
-            httpOptions: { timeout: 55_000 },
+            httpOptions: { timeout: timeoutMs },
             maxOutputTokens: 24576,
             ...(candidateModel.startsWith('gemini-4-')
               ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
@@ -2633,24 +2672,30 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         });
       };
 
-      for (const candidateModel of candidateModels) {
+      for (let mIdx = 0; mIdx < candidateModels.length; mIdx += 1) {
+        const candidateModel = candidateModels[mIdx];
+        const isLastCandidate = mIdx === candidateModels.length - 1;
+        const callTimeoutMs = isLastCandidate
+          ? Math.min(55_000, Math.max(38_000, 26_000 + desiredScenes * 1400))
+          : Math.min(34_000, Math.max(22_000, 16_000 + desiredScenes * 1200));
+        const backoffDelays = isLastCandidate ? [900, 1800] : [];
         const activeParts = candidateModel === 'gemini-3.1-flash-lite' ? compactParts : parts;
         const mStart = Date.now();
-        console.log(`[Studio AI] Calling ${candidateModel} (scenes=${desiredScenes}, mode=${studioMode})...`);
+        console.log(`[Studio AI] Calling ${candidateModel} (scenes=${desiredScenes}, mode=${studioMode}, timeout=${callTimeoutMs}ms)...`);
         try {
           let response;
           try {
             response = await retryWithGeminiBackoff(
-              () => callGeminiBlueprint(candidateModel, activeParts, true),
-              [1200]
+              () => callGeminiBlueprint(candidateModel, activeParts, true, callTimeoutMs),
+              backoffDelays
             );
           } catch (schemaErr: any) {
             const msg = String(schemaErr?.message || schemaErr || '').toLowerCase();
             if (msg.includes('too many states') || msg.includes('invalid_argument')) {
               console.warn(`[Studio AI] Schema constraint too large on ${candidateModel}, retrying JSON-only without responseSchema...`);
               response = await retryWithGeminiBackoff(
-                () => callGeminiBlueprint(candidateModel, activeParts, false),
-                [1200]
+                () => callGeminiBlueprint(candidateModel, activeParts, false, callTimeoutMs),
+                backoffDelays
               );
             } else {
               throw schemaErr;
@@ -2662,7 +2707,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
           const candidateScenes = Array.isArray(candidateParsed?.scenes) ? candidateParsed.scenes : [];
           if (
             (candidateScenes.length === 0 || (desiredScenes >= 3 && candidateScenes.length <= 1)) &&
-            candidateModel !== candidateModels[candidateModels.length - 1]
+            !isLastCandidate
           ) {
             lastGeminiErr = new Error('AI trả về kịch bản chưa đủ số phân cảnh.');
             continue;
@@ -2673,6 +2718,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         } catch (err: any) {
           console.warn(`[Studio AI] ${candidateModel} failed after ${Date.now() - mStart}ms:`, err?.message || err);
           lastGeminiErr = err;
+          markGeminiModelOverloaded(candidateModel, err);
           if (!shouldFallbackGeminiModel(err) && !(err instanceof SyntaxError)) {
             throw err;
           }
@@ -3113,12 +3159,17 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
     }
     parts.push({ text: planPrompt });
 
-    const candidateModels = params.useProModel
+    const baseCandidates = params.useProModel
       ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
       : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+    const candidateModels = prioritizeGeminiCandidateModels(baseCandidates);
 
     let lastErr: any;
-    for (const candidateModel of candidateModels) {
+    for (let mIdx = 0; mIdx < candidateModels.length; mIdx += 1) {
+      const candidateModel = candidateModels[mIdx];
+      const isLastCandidate = mIdx === candidateModels.length - 1;
+      const callTimeoutMs = isLastCandidate ? 38_000 : 22_000;
+      const backoffDelays = isLastCandidate ? [900, 1800] : [];
       try {
         const response = await retryWithGeminiBackoff(
           () =>
@@ -3126,6 +3177,7 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
               model: candidateModel,
               contents: { parts },
               config: {
+                httpOptions: { timeout: callTimeoutMs },
                 maxOutputTokens: 12288,
                 ...(candidateModel.startsWith('gemini-4-')
                   ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
@@ -3159,12 +3211,12 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
                 },
               },
             }),
-          [1400, 3000]
+          backoffDelays
         );
         const candidateConceptParsed = parseAiBlueprintJsonSafe((response?.text ?? '{}').trim());
         if (
           (!Array.isArray(candidateConceptParsed?.concepts) || candidateConceptParsed.concepts.length === 0) &&
-          candidateModel !== candidateModels[candidateModels.length - 1]
+          !isLastCandidate
         ) {
           lastErr = new Error('AI trả về danh sách ý tưởng rỗng.');
           continue;
@@ -3173,6 +3225,7 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
         break;
       } catch (err: any) {
         lastErr = err;
+        markGeminiModelOverloaded(candidateModel, err);
         if (!shouldFallbackGeminiModel(err) && !(err instanceof SyntaxError)) {
           throw err;
         }
@@ -3296,7 +3349,7 @@ export async function learnAndCreateIndependentBatch(params: {
   const selectedConcepts = plan.concepts.slice(0, count);
   const allTitles = selectedConcepts.map((c) => c.title);
   const blueprints: DerivativeBlueprint[] = new Array(selectedConcepts.length);
-  const concurrency = provider === 'muse2api' ? 1 : 2;
+  const concurrency = provider === 'muse2api' ? 1 : selectedConcepts.length >= 3 ? 3 : 2;
 
   for (let start = 0; start < selectedConcepts.length; start += concurrency) {
     const chunkIndices = Array.from(

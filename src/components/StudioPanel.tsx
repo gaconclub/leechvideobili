@@ -266,6 +266,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     derivative: '',
   });
   const [isLearning, setIsLearning] = useState(false);
+  const [learningElapsedSec, setLearningElapsedSec] = useState(0);
   const [learnError, setLearnError] = useState('');
   const [learnSuccess, setLearnSuccess] = useState('');
 
@@ -658,6 +659,18 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       }
     }
   };
+
+  useEffect(() => {
+    if (!isLearning) {
+      setLearningElapsedSec(0);
+      return;
+    }
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      setLearningElapsedSec(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isLearning]);
 
   useEffect(() => {
     void fetchCapabilitiesAndVoices();
@@ -1066,7 +1079,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           enableVoiceover: voiceMode !== 'none',
           aiProvider,
         }),
-      });
+      }, undefined, 0);
 
       const returnedList =
         Array.isArray(data.blueprints) && data.blueprints.length > 0
@@ -3829,8 +3842,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               <span>
                 {isLearning
                   ? scriptMode === 'independent_batch'
-                    ? `Đang sáng tạo ${batchVideoCount} kịch bản...`
-                    : 'AI đang lên kịch bản...'
+                    ? `Đang sáng tạo ${batchVideoCount} kịch bản (${learningElapsedSec}s)...`
+                    : `AI đang lên kịch bản (${learningElapsedSec}s)...`
                   : scriptMode === 'independent_batch'
                   ? `AI Lên ${batchVideoCount} Kịch Bản & Sang Bước 2`
                   : 'AI Lên Kịch Bản & Sang Bước 2'}

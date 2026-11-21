@@ -759,14 +759,18 @@ export async function parseJsonSafe<T = any>(res: Response): Promise<T> {
 export async function fetchStudioJsonWithAutoRetry<T>(
   url: string,
   init: RequestInit,
-  onRetrying?: () => void
+  onRetrying?: () => void,
+  maxRetries = 1
 ): Promise<{ res: Response; data: T }> {
   let res = await fetch(url, init);
   let data = await parseJsonSafe<T>(res);
-  const errStr = String((data as any)?.error || '');
-  if (!res.ok && (res.status === 503 || errStr.includes('503') || errStr.includes('truy cập cao'))) {
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    const errStr = String((data as any)?.error || '');
+    if (res.ok || !(res.status === 503 || errStr.includes('503') || errStr.includes('truy cập cao'))) {
+      break;
+    }
     onRetrying?.();
-    await new Promise((r) => setTimeout(r, 3200));
+    await new Promise((r) => setTimeout(r, 2400));
     res = await fetch(url, init);
     data = await parseJsonSafe<T>(res);
   }
