@@ -7,6 +7,7 @@ import {
   Film,
   Image as ImageIcon,
   Loader2,
+  Lock,
   Pause,
   Play,
   Plus,
@@ -187,6 +188,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   const [productionFormat, setProductionFormat] = useState<StudioProductionFormat>('dialogue_film');
   const [aspectRatio, setAspectRatio] = useState<DerivativeAspectRatio>('16:9');
   const [videoStyle, setVideoStyle] = useState<StudioVideoStyle>('cinematic');
+  const [allowFreeCostumeChange, setAllowFreeCostumeChange] = useState<boolean>(false);
   const [studioProfiles, setStudioProfiles] = useState<StudioProjectProfile[]>([]);
   const [hasManualFormEdit, setHasManualFormEdit] = useState(false);
   const hydratedSyncAtRef = useRef<number>(0);
@@ -251,6 +253,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
         setProductionFormat(dir.productionFormat || 'dialogue_film');
         setAspectRatio(dir.aspectRatio || '16:9');
         setVideoStyle(dir.videoStyle || 'cinematic');
+        setAllowFreeCostumeChange(Boolean(dir.allowFreeCostumeChange));
         hydratedSyncAtRef.current = dir.syncedAt;
         return true;
       }
@@ -260,6 +263,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
         setProductionFormat(mem.productionFormat || 'dialogue_film');
         setAspectRatio(mem.aspectRatio || '16:9');
         setVideoStyle(mem.videoStyle || 'cinematic');
+        setAllowFreeCostumeChange(Boolean(mem.allowFreeCostumeChange));
         hydratedSyncAtRef.current = mem.updatedAt;
         return true;
       }
@@ -358,6 +362,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
             productionFormat,
             aspectRatio,
             videoStyle,
+            allowFreeCostumeChange,
           }),
         }),
       'Đã bàn giao kịch bản cho Muse AI 01 — Tổng đạo diễn và khởi động hàng đợi Cloud.'
@@ -376,6 +381,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     if (!proj) return;
     setProjectTitle(proj.name);
     setVideoStyle(proj.videoStyle || 'cinematic');
+    setAllowFreeCostumeChange(Boolean(proj.allowFreeCostumeChange));
     const summaryParts = [
       proj.description ? `Ý tưởng / Kịch bản: ${proj.description}` : '',
       proj.characterBible ? `Hồ sơ nhân vật: ${proj.characterBible}` : '',
@@ -1050,6 +1056,56 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                   placeholder="Nhập kịch bản chi tiết hoặc chỉ thị tổng (ví dụ: Hãy sản xuất tập phim ngắn theo kịch bản này, giữ đồng nhất gương mặt nhân vật, giọng nói theo độ tuổi và bối cảnh; kiểm định QA và tự sửa cảnh lỗi trước khi bàn giao)..."
                   className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
                 />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/80 border border-slate-200 dark:border-slate-700/60">
+                <div className="space-y-0.5 min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100">
+                    <Lock
+                      className={`w-3.5 h-3.5 shrink-0 ${
+                        allowFreeCostumeChange
+                          ? 'text-amber-600 dark:text-amber-300'
+                          : 'text-emerald-600 dark:text-emerald-300'
+                      }`}
+                    />
+                    <span>AI được phép tự do thay đổi trang phục nhân vật</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {allowFreeCostumeChange
+                      ? 'Đang BẬT: AI được đổi trang phục theo bối cảnh/diễn biến cảnh, nhưng VẪN KHÓA 100% mặt, tóc, vóc dáng.'
+                      : 'Đang TẮT (Mặc định): Khóa cứng ngoại hình & trang phục theo ảnh tham chiếu — Muse AI 05 sẽ trả về nếu phát hiện đổi đồ.'}
+                  </p>
+                </div>
+                <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700/60 overflow-hidden bg-white dark:bg-[#131a35] shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAllowFreeCostumeChange(false);
+                      setHasManualFormEdit(true);
+                    }}
+                    className={`px-2.5 py-1 text-[11px] font-bold cursor-pointer ${
+                      !allowFreeCostumeChange
+                        ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                        : 'text-slate-500 dark:text-slate-400'
+                    }`}
+                  >
+                    TẮT (Khóa đồ)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAllowFreeCostumeChange(true);
+                      setHasManualFormEdit(true);
+                    }}
+                    className={`px-2.5 py-1 text-[11px] font-bold cursor-pointer ${
+                      allowFreeCostumeChange
+                        ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
+                        : 'text-slate-500 dark:text-slate-400'
+                    }`}
+                  >
+                    BẬT (Tự do)
+                  </button>
+                </div>
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-1">

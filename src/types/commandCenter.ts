@@ -168,6 +168,7 @@ export interface ProjectMemorySnapshot {
     productionFormat: StudioProductionFormat;
     aspectRatio: DerivativeAspectRatio;
     videoStyle: StudioVideoStyle;
+    allowFreeCostumeChange?: boolean;
     visualBible: string;
     settingBible: string;
     costumeBible: string;
@@ -188,6 +189,7 @@ export interface ProjectMemory {
   productionFormat: StudioProductionFormat;
   aspectRatio: DerivativeAspectRatio;
   videoStyle: StudioVideoStyle;
+  allowFreeCostumeChange?: boolean;
   visualBible: string;
   settingBible: string;
   costumeBible: string;
@@ -432,6 +434,7 @@ export interface StudioSyncedDirective {
   productionFormat: StudioProductionFormat;
   aspectRatio: DerivativeAspectRatio;
   videoStyle: StudioVideoStyle;
+  allowFreeCostumeChange?: boolean;
   visualBible?: string;
   settingBible?: string;
   costumeBible?: string;

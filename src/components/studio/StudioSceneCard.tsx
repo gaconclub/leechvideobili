@@ -51,6 +51,7 @@ interface StudioSceneCardProps {
   continuityBible?: string;
   hasCharacterRefs: boolean;
   characterRefs?: StudioCharacterRef[];
+  allowFreeCostumeChange?: boolean;
   sources: (TrendingVideoItem & { localAssetId?: string })[];
   busyImg: boolean;
   queuedImg: boolean;
@@ -92,6 +93,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   continuityBible,
   hasCharacterRefs,
   characterRefs = [],
+  allowFreeCostumeChange = false,
   sources,
   busyImg,
   queuedImg,
@@ -151,6 +153,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
       totalScenes,
       mediaType: 'image',
       hasAttachedRefs: hasCharacterRefs,
+      allowFreeCostumeChange,
     });
     const compiledVideo = compileScenePromptClient({
       scene: { ...sceneWithTimeline, videoPrompt: '' },
@@ -168,6 +171,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
       mediaType: 'video',
       hasAttachedRefs: hasCharacterRefs,
       targetEngine: sceneVideoEngine,
+      allowFreeCostumeChange,
     });
     onUpdateScene(scene.id, {
       videoTimeline: nextTimeline,
@@ -193,6 +197,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
     mediaType: 'video',
     hasAttachedRefs: hasCharacterRefs,
     targetEngine: sceneVideoEngine,
+    allowFreeCostumeChange,
   }).length;
 
   return (

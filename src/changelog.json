@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.0.11",
+    "date": "21/11/2026",
+    "title": "feat(studio): add allowFreeCostumeChange option",
+    "changes": [
+      "feat(studio): add allowFreeCostumeChange option"
+    ]
+  },
+  {
     "version": "1.0.10",
     "date": "21/11/2026",
     "title": "AI Muse Command Center, Giám sát Sản xuất Live & Kết nối GitHub",
