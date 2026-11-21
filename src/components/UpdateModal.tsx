@@ -12,6 +12,14 @@ import {
 
 import { APP_VERSION } from '../version';
 
+export interface ReleaseUpdateItem {
+  version: string;
+  date: string;
+  title: string;
+  changes: string[];
+  commit?: string;
+}
+
 export interface UpdateStatusInfo {
   supported: boolean;
   reason?: string;
@@ -27,6 +35,7 @@ export interface UpdateStatusInfo {
   hasLocalChanges?: boolean;
   localVersion?: string;
   remoteVersion?: string;
+  recentUpdates?: ReleaseUpdateItem[];
   checkedAt?: number;
   error?: string;
 }

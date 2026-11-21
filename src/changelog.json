@@ -1,0 +1,33 @@
+[
+  {
+    "version": "1.0.9",
+    "date": "21/11/2026",
+    "title": "Timeline đạo diễn AI theo giây, Đồng bộ 5 thành phần & Tự động tăng phiên bản",
+    "changes": [
+      "Bổ sung cơ chế tự động tăng số phiên bản mỗi khi có bản cập nhật mới và hiển thị lịch sử 3 lần cập nhật gần nhất trong tab Cập nhật.",
+      "Tự động tạo và cho phép chỉnh sửa Timeline phân cảnh theo từng giây (1s–3s, 4s–6s...) trong Chi tiết đạo diễn, ưu tiên truyền đầy đủ sang AI Muse.",
+      "Tách bạch Lời thoại nhân vật (lip-sync khẩu hình trực tiếp) và Lồng tiếng dẫn chuyện, kèm công tắc BẬT/TẮT Lồng tiếng nhanh ở Bước 1 & Bước 2.",
+      "Nâng cấp Hồ sơ đồng bộ 5 thành phần độc lập cho từng nhân vật (1..N) và bổ sung tính năng AI tự phân tích tất cả nhân vật."
+    ]
+  },
+  {
+    "version": "1.0.8",
+    "date": "20/11/2026",
+    "title": "Học phong cách từ video mẫu & Tối ưu bám sát ảnh phân cảnh AI",
+    "changes": [
+      "Bổ sung chức năng Học phong cách từ video mẫu (link YouTube, TikTok, Facebook, Douyin hoặc tải file video) để áp dụng đồng bộ cho dự án Studio.",
+      "Cải thiện AI tạo ảnh phân cảnh bám sát vào Mô tả nội dung (diễn biến chính của cảnh), hỗ trợ xóa ảnh đã tạo và ưu tiên ảnh tải lên làm ảnh chính.",
+      "Tối ưu cơ chế tự động thử lại và chuyển đổi mô hình Gemini dự phòng khi máy chủ AI quá tải (503/504)."
+    ]
+  },
+  {
+    "version": "1.0.7",
+    "date": "19/11/2026",
+    "title": "Mở rộng Studio 2 chế độ kịch bản Series & Dữ liệu đạo diễn đồng bộ",
+    "changes": [
+      "Bổ sung 2 chế độ sáng tạo kịch bản: Series nhiều tập có cốt truyện xuyên suốt và Phái sinh nhiều video độc lập.",
+      "Mở rộng đầy đủ 15 trường thông tin đạo diễn cho từng phân cảnh (Góc máy, Ánh sáng, Kiểu quay, Thiết bị, Lời thoại, Lồng tiếng...) và bộ dữ liệu đồng bộ chung.",
+      "Hoàn thiện luồng tải hàng loạt đa nền tảng, tách tập Bilibili tự động và ghép xuất video hoàn chỉnh bằng FFmpeg."
+    ]
+  }
+]
