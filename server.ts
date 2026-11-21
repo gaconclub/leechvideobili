@@ -98,6 +98,7 @@ import {
   searchCommandCenterArchive,
   sendCommandCenterChat,
   startProductionOrchestration,
+  syncStudioDirectiveToCommandCenter,
   testMuseAgentConnection,
   updateCloudConfig,
   updateMuseAgentConfig,
@@ -4779,9 +4780,20 @@ async function startServer() {
     }
   });
 
-  app.post('/api/studio/projects', (req, res) => {
+  app.post('/api/studio/projects', async (req, res) => {
     try {
       const project = saveStudioProjectProfile(req.body || {});
+      void syncStudioDirectiveToCommandCenter({
+        sourceAction: 'save_project',
+        title: project.name,
+        ideaOrCommand: project.description || `Hồ sơ dự án Studio "${project.name}"`,
+        videoStyle: project.videoStyle,
+        characterRefs: project.characterRefs,
+        visualBible: project.visualStyleBible,
+        settingBible: project.settingBible,
+        costumeBible: project.costumeBible,
+        continuityBible: project.continuityBible,
+      }).catch(() => {});
       res.json({ project, projects: listStudioProjectProfiles() });
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không lưu được hồ sơ dự án.' });
@@ -5302,6 +5314,15 @@ async function startServer() {
         useProModel: Boolean(useProModel),
       });
 
+      void syncStudioDirectiveToCommandCenter({
+        sourceAction: 'expand_idea',
+        mode: 'creative',
+        title: String(seedIdea || '').trim().slice(0, 60) || 'Ý tưởng Studio mới',
+        ideaOrCommand: result?.expandedIdea || String(seedIdea || ''),
+        videoStyle,
+        settingBible: String(settingHint || ''),
+      }).catch(() => {});
+
       res.json(result);
     } catch (err: any) {
       const msg = String(err?.message || 'Không thể triển khai ý tưởng lúc này.');
@@ -5431,6 +5452,21 @@ async function startServer() {
           enableVoiceover: enableVoiceover !== false,
           aiProvider: validProvider,
         });
+        void syncStudioDirectiveToCommandCenter({
+          sourceAction: 'learn_script',
+          mode: studioMode,
+          title: batchResult.blueprints[0]?.derivativeTitle,
+          ideaOrCommand: String(ideaPrompt || query || customInstruction || '').trim(),
+          productionFormat: resolvedProductionFormat,
+          aspectRatio: resolvedAspectRatio,
+          videoStyle,
+          characterRefs: Array.isArray(characterRefsMeta) ? characterRefsMeta : [],
+          visualBible: String(visualStyleBible || ''),
+          settingBible: String(settingBible || ''),
+          costumeBible: String(costumeBible || ''),
+          continuityBible: String(continuityBible || ''),
+          blueprint: batchResult.blueprints[0],
+        }).catch(() => {});
         return res.json({
           blueprint: batchResult.blueprints[0],
           blueprints: batchResult.blueprints,
@@ -5465,6 +5501,22 @@ async function startServer() {
         enableVoiceover: enableVoiceover !== false,
         aiProvider: validProvider,
       });
+
+      void syncStudioDirectiveToCommandCenter({
+        sourceAction: 'learn_script',
+        mode: studioMode,
+        title: blueprint?.derivativeTitle,
+        ideaOrCommand: String(ideaPrompt || query || customInstruction || '').trim(),
+        productionFormat: resolvedProductionFormat,
+        aspectRatio: resolvedAspectRatio,
+        videoStyle,
+        characterRefs: Array.isArray(characterRefsMeta) ? characterRefsMeta : [],
+        visualBible: String(visualStyleBible || ''),
+        settingBible: String(settingBible || ''),
+        costumeBible: String(costumeBible || ''),
+        continuityBible: String(continuityBible || ''),
+        blueprint,
+      }).catch(() => {});
 
       res.json({ blueprint, blueprints: [blueprint] });
     } catch (err: any) {
@@ -5633,6 +5685,22 @@ async function startServer() {
         downloadSourceVideo: (src, outPath) =>
           downloadSourceVideoForDerivative(src, outPath, sessdata, ytCookies),
       });
+
+      void syncStudioDirectiveToCommandCenter({
+        sourceAction: 'generate_video',
+        mode: blueprint.mode === 'derivative' ? 'derivative' : 'creative',
+        title: blueprint.derivativeTitle,
+        ideaOrCommand: blueprint.ideaPrompt || blueprint.learnedSummary || '',
+        productionFormat: blueprint.productionFormat,
+        aspectRatio: blueprint.aspectRatio,
+        videoStyle: blueprint.videoStyle,
+        characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
+        visualBible: blueprint.visualStyleBible,
+        settingBible: blueprint.settingBible,
+        costumeBible: blueprint.costumeBible,
+        continuityBible: blueprint.continuityBible,
+        blueprint,
+      }).catch(() => {});
 
       res.json({
         jobId: job.jobId,
@@ -5815,6 +5883,18 @@ async function startServer() {
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ ok: false, error: err?.message || 'Kiểm tra kết nối Muse AI thất bại.' });
+    }
+  });
+
+  app.post('/api/command-center/studio-sync', async (req, res) => {
+    try {
+      const state = await syncStudioDirectiveToCommandCenter({
+        sourceAction: 'manual_dispatch',
+        ...(req.body || {}),
+      });
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể đồng bộ chỉ thị từ Studio.' });
     }
   });
 

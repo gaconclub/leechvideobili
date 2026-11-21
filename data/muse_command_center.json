@@ -8,7 +8,7 @@
       "roleTitle": "Đạo diễn tổng",
       "description": "AI điều phối trưởng: nhận lệnh sản xuất, phân tích kịch bản tổng thể, chia việc song song, quản lý Project Memory và tổng hợp phim hoàn chỉnh.",
       "boundAccountId": "auto",
-      "engineMode": "muse2api",
+      "engineMode": "muse2api_with_gemini_fallback",
       "status": "offline",
       "paused": false,
       "permissions": {
@@ -36,7 +36,7 @@
       "roleTitle": "Biên kịch",
       "description": "Phân tích kịch bản, hồ sơ nhân vật 5 thành phần, giọng nói theo độ tuổi, lời thoại, bối cảnh, timeline theo giây và cấu trúc phân cảnh.",
       "boundAccountId": "auto",
-      "engineMode": "muse2api",
+      "engineMode": "muse2api_with_gemini_fallback",
       "status": "offline",
       "paused": false,
       "permissions": {
@@ -63,7 +63,7 @@
       "roleTitle": "Thiết kế hình ảnh",
       "description": "Tạo ảnh tham chiếu nhân vật và ảnh keyframe phân cảnh, giữ đồng bộ gương mặt, vóc dáng, trang phục và bối cảnh.",
       "boundAccountId": "auto",
-      "engineMode": "muse2api",
+      "engineMode": "muse2api_with_gemini_fallback",
       "status": "offline",
       "paused": false,
       "permissions": {
@@ -91,7 +91,7 @@
       "roleTitle": "Đạo diễn hình ảnh & video",
       "description": "Sản xuất video phân cảnh theo timeline từng giây, chuyển động, góc quay, lời thoại, khẩu hình và nối cảnh liên tục.",
       "boundAccountId": "auto",
-      "engineMode": "muse2api",
+      "engineMode": "muse2api_with_gemini_fallback",
       "status": "offline",
       "paused": false,
       "permissions": {
@@ -119,7 +119,7 @@
       "roleTitle": "Giám sát chất lượng",
       "description": "AI kiểm định độc lập: đối chiếu 8 tiêu chí đồng nhất toàn phim, phát hiện sai lệch và yêu cầu tạo lại đúng phân cảnh lỗi.",
       "boundAccountId": "auto",
-      "engineMode": "muse2api",
+      "engineMode": "muse2api_with_gemini_fallback",
       "status": "offline",
       "paused": false,
       "permissions": {
@@ -160,11 +160,126 @@
     "scenes": [],
     "snapshots": []
   },
+  "latestStudioDirective": {
+    "syncedAt": 1795257203014,
+    "sourceAction": "learn_script",
+    "mode": "creative",
+    "title": "Test Studio Sync",
+    "scriptOrCommand": "Lệnh test đồng bộ từ Studio sang Phòng Điều Hành\n\nTiêu đề kịch bản Studio: Test Studio Sync\n\nTóm tắt kịch bản:\nTóm tắt kịch bản thử nghiệm\n\nNhân vật đồng bộ (1):\n1. Minh: Chàng trai trẻ\n\nDanh sách 2 phân cảnh:\n- Cảnh 1 (6s) [Cảnh 1]: Nhân vật bước ra | Thoại: \"Xin chào\"\n- Cảnh 2 (6s) [Cảnh 2]: Nhân vật quay đi | Thoại: \"Đi thôi\"",
+    "productionFormat": "dialogue_film",
+    "aspectRatio": "16:9",
+    "videoStyle": "cinematic",
+    "visualBible": "",
+    "settingBible": "",
+    "costumeBible": "",
+    "continuityBible": "",
+    "characterCount": 1,
+    "sceneCount": 2,
+    "hasBlueprint": true
+  },
+  "latestStudioBlueprint": {
+    "syncedAt": 1795257203014,
+    "title": "Test Studio Sync",
+    "scriptOrCommand": "Lệnh test đồng bộ từ Studio sang Phòng Điều Hành\n\nTiêu đề kịch bản Studio: Test Studio Sync\n\nTóm tắt kịch bản:\nTóm tắt kịch bản thử nghiệm\n\nNhân vật đồng bộ (1):\n1. Minh: Chàng trai trẻ\n\nDanh sách 2 phân cảnh:\n- Cảnh 1 (6s) [Cảnh 1]: Nhân vật bước ra | Thoại: \"Xin chào\"\n- Cảnh 2 (6s) [Cảnh 2]: Nhân vật quay đi | Thoại: \"Đi thôi\"",
+    "productionFormat": "dialogue_film",
+    "aspectRatio": "16:9",
+    "videoStyle": "cinematic",
+    "visualBible": "",
+    "settingBible": "",
+    "costumeBible": "",
+    "continuityBible": "",
+    "characters": [
+      {
+        "id": "c1",
+        "name": "Minh",
+        "ageGroup": "youth",
+        "gender": "male",
+        "voiceId": "Kore",
+        "description": "Chàng trai trẻ",
+        "syncProfile": {
+          "face": "Chàng trai trẻ",
+          "physique": "Tỷ lệ cân đối tự nhiên",
+          "costume": "Trang phục đồng bộ xuyên suốt",
+          "voice": "Giọng đọc tự nhiên theo độ tuổi",
+          "distinguishingMarks": "Đặc điểm nhận dạng ổn định"
+        },
+        "approvedVersion": 1
+      }
+    ],
+    "scenes": [
+      {
+        "sceneId": "scene_1",
+        "index": 1,
+        "title": "Cảnh 1",
+        "durationSec": 6,
+        "narration": "",
+        "dialogue": "Xin chào",
+        "speakerName": "",
+        "actionDetail": "Nhân vật bước ra",
+        "settingDetail": "Phố đêm",
+        "costume": "",
+        "cameraAngle": "Trung cảnh",
+        "cameraMovement": "Đẩy máy chậm",
+        "lighting": "Ánh sáng điện ảnh tự nhiên",
+        "vfxNotes": "",
+        "videoTimeline": "",
+        "dependsOnSceneIds": [],
+        "qaStatus": "pending",
+        "retryCount": 0,
+        "lastModifiedBy": "studio"
+      },
+      {
+        "sceneId": "scene_2",
+        "index": 2,
+        "title": "Cảnh 2",
+        "durationSec": 6,
+        "narration": "",
+        "dialogue": "Đi thôi",
+        "speakerName": "",
+        "actionDetail": "Nhân vật quay đi",
+        "settingDetail": "Phố đêm",
+        "costume": "",
+        "cameraAngle": "Trung cảnh",
+        "cameraMovement": "Đẩy máy chậm",
+        "lighting": "Ánh sáng điện ảnh tự nhiên",
+        "vfxNotes": "",
+        "videoTimeline": "",
+        "dependsOnSceneIds": [],
+        "qaStatus": "pending",
+        "retryCount": 0,
+        "lastModifiedBy": "studio"
+      }
+    ]
+  },
   "runs": [],
   "tasks": [],
   "qaReports": [],
   "conversations": [],
   "logs": [
+    {
+      "id": "log_1795257203023_a646",
+      "timestamp": 1795257203023,
+      "level": "warn",
+      "agentId": "system",
+      "action": "Khôi phục từ Backup",
+      "detail": "Đã khôi phục toàn bộ trạng thái từ bkp_1795257202896_6205."
+    },
+    {
+      "id": "log_1795257203015_6f1b",
+      "timestamp": 1795257203015,
+      "level": "info",
+      "agentId": "muse-01",
+      "action": "Đồng bộ chỉ thị từ Studio",
+      "detail": "Lên kịch bản từ Studio: \"Test Studio Sync\" (2 cảnh, 1 nhân vật)."
+    },
+    {
+      "id": "log_1795257202896_b65f",
+      "timestamp": 1795257202896,
+      "level": "success",
+      "agentId": "system",
+      "action": "Tạo bản sao lưu thủ công",
+      "detail": "Đã lưu snapshot Project Memory v1 và 0 tin nhắn."
+    },
     {
       "id": "log_1795255054013_901e",
       "timestamp": 1795255054013,
@@ -192,6 +307,26 @@
   ],
   "backups": [
     {
+      "id": "bkp_1795257203023_c618",
+      "createdAt": 1795257203023,
+      "kind": "pre_restore",
+      "projectId": "proj_mwq8hxp0",
+      "summary": "Sao lưu tự động trước khi khôi phục bkp_1795257202896_6205",
+      "messageCount": 1,
+      "taskCount": 0,
+      "memoryVersion": 2
+    },
+    {
+      "id": "bkp_1795257202896_6205",
+      "createdAt": 1795257202896,
+      "kind": "manual",
+      "projectId": "proj_mwq8hxp0",
+      "summary": "Pre-test snapshot",
+      "messageCount": 0,
+      "taskCount": 0,
+      "memoryVersion": 1
+    },
+    {
       "id": "bkp_1795255054012_fee0",
       "createdAt": 1795255054013,
       "kind": "manual",
@@ -211,8 +346,8 @@
     "qaPassThreshold": 80,
     "maxRetriesPerScene": 2,
     "autoBackupRealtime": true,
-    "workerHeartbeatAt": 1795255053206,
-    "workerBootId": "worker_mwq8hxc4_1d65",
+    "workerHeartbeatAt": 1795257201690,
+    "workerBootId": "worker_mwq9s3sx_6d43",
     "isCloudEndpoint": false
   },
   "taskSeq": 1

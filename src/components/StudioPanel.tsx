@@ -109,6 +109,7 @@ interface StudioPanelProps {
   ytCookies: string;
   studioDefaults: StudioDefaultConfig;
   onOpenSettings: () => void;
+  onOpenCommandCenter?: () => void;
 }
 
 const CREATIVE_IDEA_STARTERS = [
@@ -150,6 +151,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   ytCookies,
   studioDefaults,
   onOpenSettings,
+  onOpenCommandCenter,
 }) => {
   const [capabilities, setCapabilities] = useState<ServerCapabilitiesStatus | null>(null);
 
@@ -276,6 +278,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [learningElapsedSec, setLearningElapsedSec] = useState(0);
   const [learnError, setLearnError] = useState('');
   const [learnSuccess, setLearnSuccess] = useState('');
+  const [isDispatchingToCommandCenter, setIsDispatchingToCommandCenter] = useState(false);
+  const [commandCenterError, setCommandCenterError] = useState('');
 
   const blueprints = batchBlueprintsByMode[studioMode];
   const activeBatchIndex = Math.min(
@@ -1253,6 +1257,30 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       if (first?.costumeBible) setCostumeBibleDraft(first.costumeBible);
       if (first?.continuityBible) setContinuityBibleDraft(first.continuityBible);
 
+      // Sync full character reference images & blueprint into Phòng Điều Hành AI Muse
+      void fetch('/api/command-center/studio-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceAction: 'learn_script',
+          mode: studioMode,
+          title: projectNameInput.trim() || first?.derivativeTitle || '',
+          ideaOrCommand:
+            (studioMode === 'creative' ? effectiveCreativeIdea : ideaPrompt.trim() || customInstruction.trim()) ||
+            first?.learnedSummary ||
+            '',
+          productionFormat,
+          aspectRatio,
+          videoStyle: first?.videoStyle || videoStyle,
+          characterRefs: characters.slice(0, 8),
+          visualBible: first?.visualStyleBible ?? visualStyleBibleDraft.trim(),
+          settingBible: first?.settingBible ?? settingBibleDraft.trim(),
+          costumeBible: first?.costumeBible ?? costumeBibleDraft.trim(),
+          continuityBible: first?.continuityBible ?? continuityBibleDraft.trim(),
+          blueprint: first,
+        }),
+      }).catch(() => {});
+
       const styleLabel = resolveVideoStyleMetaClient(
         first?.videoStyle || videoStyle,
         learnedStyles,
@@ -1273,6 +1301,70 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       setLearnError(err?.message || 'AI không thể phân tích hoặc tạo kịch bản.');
     } finally {
       setIsLearning(false);
+    }
+  };
+
+  // Send Studio idea / script / blueprint directly to Phòng Điều Hành (5 Muse AI)
+  const handleDispatchToCommandCenter = async () => {
+    const activeIdea = [expandedIdeaPrompt.trim(), ideaPrompt.trim(), customInstruction.trim()]
+      .filter(Boolean)
+      .join('\n\n');
+    const sourceTitles =
+      studioMode === 'derivative' && sources.length > 0
+        ? `Video tham chiếu (${sources.length}): ${sources.map((s) => s.title || s.sourceUrl).join('; ')}`
+        : '';
+    const fullDirective = [
+      activeIdea,
+      sourceTitles,
+      blueprint?.learnedSummary ? `Tóm tắt kịch bản:\n${blueprint.learnedSummary}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+
+    if (!fullDirective && !blueprint?.scenes?.length) {
+      setCommandCenterError(
+        'Vui lòng nhập ý tưởng, hướng dẫn hoặc tạo kịch bản phân cảnh trước khi giao cho Phòng Điều Hành 5 Muse AI.'
+      );
+      return;
+    }
+
+    setIsDispatchingToCommandCenter(true);
+    setCommandCenterError('');
+    setLearnError('');
+    try {
+      const resolvedTitle =
+        blueprint?.derivativeTitle?.trim() ||
+        projectNameInput.trim() ||
+        (ideaPrompt.trim() ? ideaPrompt.trim().slice(0, 60) : 'Dự án từ Studio');
+
+      const res = await fetch('/api/command-center/productions/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: resolvedTitle,
+          script: fullDirective || resolvedTitle,
+          productionFormat: blueprint?.productionFormat || productionFormat,
+          aspectRatio,
+          videoStyle: blueprint?.videoStyle || videoStyle,
+          studioBlueprint: blueprint || undefined,
+          characterRefs: characters.slice(0, 8),
+          visualBible: blueprint?.visualStyleBible ?? visualStyleBibleDraft.trim(),
+          settingBible: blueprint?.settingBible ?? settingBibleDraft.trim(),
+          costumeBible: blueprint?.costumeBible ?? costumeBibleDraft.trim(),
+          continuityBible: blueprint?.continuityBible ?? continuityBibleDraft.trim(),
+        }),
+      });
+      const data = await parseJsonSafe<{ error?: string }>(res);
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setProjectStatusMsg('Đã giao lệnh sản xuất sang Phòng Điều Hành 5 Muse AI.');
+      onOpenCommandCenter?.();
+    } catch (err: any) {
+      const msg = err?.message || 'Không thể giao lệnh sang Phòng Điều Hành 5 Muse AI.';
+      setCommandCenterError(msg);
+      setLearnError(msg);
+    } finally {
+      setIsDispatchingToCommandCenter(false);
     }
   };
 
@@ -4291,6 +4383,19 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             )}
             <button
               type="button"
+              disabled={isDispatchingToCommandCenter || isLearning || (!canSubmitLearn && !blueprint)}
+              onClick={() => void handleDispatchToCommandCenter()}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-900 dark:bg-white/10 hover:bg-slate-800 dark:hover:bg-white/15 border border-slate-700/40 dark:border-white/15 text-white font-semibold text-xs transition disabled:opacity-45 cursor-pointer whitespace-nowrap"
+            >
+              {isDispatchingToCommandCenter ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Clapperboard className="w-3.5 h-3.5 text-cyan-400" />
+              )}
+              <span>Giao Phòng Điều Hành (5 Muse AI)</span>
+            </button>
+            <button
+              type="button"
               disabled={isLearning || !canSubmitLearn}
               onClick={handleLearnAndCreateScript}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 text-white font-bold text-xs sm:text-sm shadow-lg shadow-violet-600/25 transition disabled:opacity-50 cursor-pointer"
@@ -4309,6 +4414,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             </button>
           </div>
         </div>
+        {commandCenterError && (
+          <div className="flex items-start gap-2 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{commandCenterError}</span>
+          </div>
+        )}
       </section>
 
       {/* ================================================================= */}
@@ -4451,7 +4562,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </button>
                 </div>
 
-                <div className="flex items-center gap-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
                   <button
                     type="button"
                     onClick={() => setActiveStudioStep(1)}
@@ -4459,6 +4570,19 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   >
                     <ArrowLeft className="w-3.5 h-3.5" />
                     <span>Sửa nguồn / Cấu hình</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDispatchingToCommandCenter}
+                    onClick={() => void handleDispatchToCommandCenter()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-semibold cursor-pointer whitespace-nowrap"
+                  >
+                    {isDispatchingToCommandCenter ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Clapperboard className="w-3.5 h-3.5" />
+                    )}
+                    <span>Giao đội 5 Muse AI sản xuất</span>
                   </button>
                   <button
                     type="button"
@@ -5029,6 +5153,20 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </span>
                 </button>
               )}
+
+              <button
+                type="button"
+                disabled={!blueprint || isDispatchingToCommandCenter}
+                onClick={() => void handleDispatchToCommandCenter()}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-violet-700 dark:text-violet-200 bg-violet-500/15 border border-violet-500/35 hover:bg-violet-500/25 rounded-xl transition disabled:opacity-45 cursor-pointer whitespace-nowrap"
+              >
+                {isDispatchingToCommandCenter ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Clapperboard className="w-3.5 h-3.5" />
+                )}
+                <span>Giao Phòng Điều Hành (5 Muse AI)</span>
+              </button>
 
               <button
                 id="btn-studio-render-primary"

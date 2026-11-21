@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -139,9 +139,10 @@ async function apiJson<T = any>(url: string, init?: RequestInit): Promise<T> {
 
 interface CommandCenterPanelProps {
   onOpenSettings?: () => void;
+  isActiveTab?: boolean;
 }
 
-export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
+export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActiveTab = false }) => {
   const [subTab, setSubTab] = useState<CommandCenterSubTab>('overview');
   const [state, setState] = useState<CommandCenterState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -156,6 +157,8 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
   const [aspectRatio, setAspectRatio] = useState<DerivativeAspectRatio>('16:9');
   const [videoStyle, setVideoStyle] = useState<StudioVideoStyle>('cinematic');
   const [studioProfiles, setStudioProfiles] = useState<StudioProjectProfile[]>([]);
+  const [hasManualFormEdit, setHasManualFormEdit] = useState(false);
+  const hydratedSyncAtRef = useRef<number>(0);
 
   // Agent editing draft
   const [editingAgentId, setEditingAgentId] = useState<MuseAgentId | null>(null);
@@ -205,6 +208,31 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
   const [newAccCookie, setNewAccCookie] = useState('');
   const [cloudSyncedOnce, setCloudSyncedOnce] = useState(false);
 
+  const applySyncedDirectiveToForm = useCallback(
+    (dir: CommandCenterState['latestStudioDirective'] | null | undefined, mem?: CommandCenterState['projectMemory']) => {
+      if (dir && dir.scriptOrCommand) {
+        setProjectTitle(dir.title || '');
+        setScriptText(dir.scriptOrCommand || '');
+        setProductionFormat(dir.productionFormat || 'dialogue_film');
+        setAspectRatio(dir.aspectRatio || '16:9');
+        setVideoStyle(dir.videoStyle || 'cinematic');
+        hydratedSyncAtRef.current = dir.syncedAt;
+        return true;
+      }
+      if (mem && mem.originalScript) {
+        setProjectTitle(mem.title || '');
+        setScriptText(mem.originalScript || '');
+        setProductionFormat(mem.productionFormat || 'dialogue_film');
+        setAspectRatio(mem.aspectRatio || '16:9');
+        setVideoStyle(mem.videoStyle || 'cinematic');
+        hydratedSyncAtRef.current = mem.updatedAt;
+        return true;
+      }
+      return false;
+    },
+    []
+  );
+
   const fetchState = useCallback(async (forceHealth = false) => {
     try {
       const data = await apiJson<CommandCenterState>(
@@ -220,22 +248,39 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
         setAutoBackup(data.cloudConfig.autoBackupRealtime);
         setCloudSyncedOnce(true);
       }
+      const dir = data.latestStudioDirective;
+      if (dir && dir.syncedAt > hydratedSyncAtRef.current && (!hasManualFormEdit || !scriptText.trim())) {
+        applySyncedDirectiveToForm(dir, data.projectMemory);
+      } else if (!hasManualFormEdit && !scriptText.trim() && data.projectMemory?.originalScript) {
+        applySyncedDirectiveToForm(null, data.projectMemory);
+      }
     } catch (err: any) {
       setBannerError(err?.message || 'Không thể tải trạng thái Phòng Điều Hành.');
     } finally {
       setLoading(false);
     }
-  }, [cloudSyncedOnce]);
+  }, [cloudSyncedOnce, hasManualFormEdit, scriptText, applySyncedDirectiveToForm]);
 
-  useEffect(() => {
-    void fetchState(true);
+  const refreshStudioProjects = useCallback(() => {
     fetch('/api/studio/projects')
       .then((r) => (r.ok ? r.json() : { projects: [] }))
       .then((d) => {
         if (Array.isArray(d?.projects)) setStudioProfiles(d.projects);
       })
       .catch(() => {});
-  }, [fetchState]);
+  }, []);
+
+  useEffect(() => {
+    void fetchState(true);
+    refreshStudioProjects();
+  }, [fetchState, refreshStudioProjects]);
+
+  useEffect(() => {
+    if (isActiveTab) {
+      void fetchState(false);
+      refreshStudioProjects();
+    }
+  }, [isActiveTab, fetchState, refreshStudioProjects]);
 
   const hasActiveProcessing = useMemo(() => {
     if (!state) return false;
@@ -297,6 +342,13 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
   };
 
   const handleLoadStudioProject = (projId: string) => {
+    if (projId === '__latest_studio_directive__') {
+      if (applySyncedDirectiveToForm(state?.latestStudioDirective, state?.projectMemory)) {
+        setHasManualFormEdit(false);
+        setBannerNotice('Đã nạp chỉ thị mới nhất đồng bộ từ Studio vào Trung tâm giao nhiệm vụ tổng.');
+      }
+      return;
+    }
     const proj = studioProfiles.find((p) => p.id === projId);
     if (!proj) return;
     setProjectTitle(proj.name);
@@ -309,6 +361,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
       proj.continuityBible ? `Nối cảnh: ${proj.continuityBible}` : '',
     ].filter(Boolean);
     setScriptText(summaryParts.join('\n\n'));
+    setHasManualFormEdit(true);
     setBannerNotice(`Đã nạp dữ liệu dự án "${proj.name}" từ Studio.`);
   };
 
@@ -755,7 +808,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
                   </p>
                 </div>
 
-                {studioProfiles.length > 0 && (
+                {(studioProfiles.length > 0 || state?.latestStudioDirective) && (
                   <select
                     defaultValue=""
                     onChange={(e) => {
@@ -764,6 +817,11 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
                     className="h-8 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-700 dark:text-slate-200"
                   >
                     <option value="">Nạp kịch bản từ Studio...</option>
+                    {state?.latestStudioDirective && (
+                      <option value="__latest_studio_directive__">
+                        [Mới nhất từ Studio] {state.latestStudioDirective.title} ({state.latestStudioDirective.sceneCount} cảnh)
+                      </option>
+                    )}
                     {studioProfiles.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
@@ -773,6 +831,31 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
                 )}
               </div>
 
+              {state?.latestStudioDirective && (
+                <div className="rounded-xl border border-cyan-500/35 bg-cyan-50/70 dark:bg-cyan-950/25 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-cyan-900 dark:text-cyan-200 truncate">
+                      Đã nhận chỉ thị từ Studio: {state.latestStudioDirective.title}
+                    </div>
+                    <div className="text-[11px] text-cyan-800/80 dark:text-cyan-300/80 tabular-nums">
+                      {state.latestStudioDirective.characterCount} nhân vật · {state.latestStudioDirective.sceneCount} phân cảnh · {state.latestStudioDirective.aspectRatio} · Đồng bộ lúc{' '}
+                      {new Date(state.latestStudioDirective.syncedAt).toLocaleTimeString('vi-VN')}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      applySyncedDirectiveToForm(state.latestStudioDirective, state.projectMemory);
+                      setHasManualFormEdit(false);
+                      setBannerNotice('Đã đồng bộ lại nội dung mới nhất từ Studio vào khung lệnh.');
+                    }}
+                    className="px-2.5 py-1 rounded-lg border border-cyan-500/40 bg-white/80 dark:bg-[#0c1021] text-[11px] font-medium text-cyan-800 dark:text-cyan-200 hover:bg-cyan-500/15 cursor-pointer whitespace-nowrap"
+                  >
+                    Nạp lại chỉ thị Studio
+                  </button>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
@@ -781,7 +864,10 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
                   <input
                     type="text"
                     value={projectTitle}
-                    onChange={(e) => setProjectTitle(e.target.value)}
+                    onChange={(e) => {
+                      setProjectTitle(e.target.value);
+                      setHasManualFormEdit(true);
+                    }}
                     placeholder="Ví dụ: Tập 01 - Cuộc gặp định mệnh"
                     className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
                   />
@@ -793,7 +879,10 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
                   </label>
                   <select
                     value={productionFormat}
-                    onChange={(e) => setProductionFormat(e.target.value as StudioProductionFormat)}
+                    onChange={(e) => {
+                      setProductionFormat(e.target.value as StudioProductionFormat);
+                      setHasManualFormEdit(true);
+                    }}
                     className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
                   >
                     <option value="dialogue_film">Phim có lời thoại</option>
@@ -807,7 +896,10 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
                   </label>
                   <select
                     value={aspectRatio}
-                    onChange={(e) => setAspectRatio(e.target.value as DerivativeAspectRatio)}
+                    onChange={(e) => {
+                      setAspectRatio(e.target.value as DerivativeAspectRatio);
+                      setHasManualFormEdit(true);
+                    }}
                     className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
                   >
                     <option value="16:9">16:9 Ngang điện ảnh</option>
@@ -824,7 +916,10 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = () => {
                 <textarea
                   rows={5}
                   value={scriptText}
-                  onChange={(e) => setScriptText(e.target.value)}
+                  onChange={(e) => {
+                    setScriptText(e.target.value);
+                    setHasManualFormEdit(true);
+                  }}
                   placeholder="Nhập kịch bản chi tiết hoặc chỉ thị tổng (ví dụ: Hãy sản xuất tập phim ngắn theo kịch bản này, giữ đồng nhất gương mặt nhân vật, giọng nói theo độ tuổi và bối cảnh; kiểm định QA và tự sửa cảnh lỗi trước khi bàn giao)..."
                   className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
                 />

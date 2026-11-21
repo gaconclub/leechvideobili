@@ -341,10 +341,29 @@ export interface CommandCenterSummaryMetrics {
   totalTasks: number;
 }
 
+export interface StudioSyncedDirective {
+  syncedAt: number;
+  sourceAction: 'expand_idea' | 'learn_script' | 'save_project' | 'generate_video' | 'manual_dispatch';
+  mode: 'creative' | 'derivative';
+  title: string;
+  scriptOrCommand: string;
+  productionFormat: StudioProductionFormat;
+  aspectRatio: DerivativeAspectRatio;
+  videoStyle: StudioVideoStyle;
+  visualBible?: string;
+  settingBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
+  characterCount: number;
+  sceneCount: number;
+  hasBlueprint: boolean;
+}
+
 export interface CommandCenterState {
   metrics: CommandCenterSummaryMetrics;
   agents: MuseAgentConfig[];
   projectMemory: ProjectMemory;
+  latestStudioDirective?: StudioSyncedDirective | null;
   activeRun: ProductionRun | null;
   runs: ProductionRun[];
   tasks: CommandTask[];
@@ -355,3 +374,4 @@ export interface CommandCenterState {
   cloudConfig: CloudOrchestratorConfig;
   integrationHealth: MuseIntegrationHealth;
 }
+

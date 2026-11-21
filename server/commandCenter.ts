@@ -25,6 +25,7 @@ import {
 import type {
   CharacterFivePartProfile,
   DerivativeAspectRatio,
+  DerivativeBlueprint,
   StudioProductionFormat,
   StudioVideoStyle,
 } from '../src/types/bilibili';
@@ -52,6 +53,7 @@ import type {
   QaCriterionId,
   QaCriterionResult,
   QaInspectionReport,
+  StudioSyncedDirective,
 } from '../src/types/commandCenter';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -61,9 +63,26 @@ const BACKUPS_DIR = path.join(DATA_DIR, 'command_center_backups');
 const STUDIO_ASSETS_DIR = path.join(process.cwd(), 'studio_assets');
 const WORKER_BOOT_ID = `worker_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
 
+interface StoredStudioBlueprintCache {
+  syncedAt: number;
+  title: string;
+  scriptOrCommand: string;
+  productionFormat: StudioProductionFormat;
+  aspectRatio: DerivativeAspectRatio;
+  videoStyle: StudioVideoStyle;
+  visualBible?: string;
+  settingBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
+  characters?: CommandMemoryCharacter[];
+  scenes?: CommandMemoryScene[];
+}
+
 interface PersistedCommandCenterDoc {
   agents: MuseAgentConfig[];
   projectMemory: ProjectMemory;
+  latestStudioDirective?: StudioSyncedDirective | null;
+  latestStudioBlueprint?: StoredStudioBlueprintCache | null;
   runs: ProductionRun[];
   tasks: CommandTask[];
   qaReports: QaInspectionReport[];
@@ -84,7 +103,7 @@ const DEFAULT_AGENTS: MuseAgentConfig[] = [
     description:
       'AI điều phối trưởng: nhận lệnh sản xuất, phân tích kịch bản tổng thể, chia việc song song, quản lý Project Memory và tổng hợp phim hoàn chỉnh.',
     boundAccountId: 'auto',
-    engineMode: 'muse2api',
+    engineMode: 'muse2api_with_gemini_fallback',
     status: 'offline',
     paused: false,
     permissions: {
@@ -104,7 +123,7 @@ const DEFAULT_AGENTS: MuseAgentConfig[] = [
     description:
       'Phân tích kịch bản, hồ sơ nhân vật 5 thành phần, giọng nói theo độ tuổi, lời thoại, bối cảnh, timeline theo giây và cấu trúc phân cảnh.',
     boundAccountId: 'auto',
-    engineMode: 'muse2api',
+    engineMode: 'muse2api_with_gemini_fallback',
     status: 'offline',
     paused: false,
     permissions: {
@@ -124,7 +143,7 @@ const DEFAULT_AGENTS: MuseAgentConfig[] = [
     description:
       'Tạo ảnh tham chiếu nhân vật và ảnh keyframe phân cảnh, giữ đồng bộ gương mặt, vóc dáng, trang phục và bối cảnh.',
     boundAccountId: 'auto',
-    engineMode: 'muse2api',
+    engineMode: 'muse2api_with_gemini_fallback',
     status: 'offline',
     paused: false,
     permissions: {
@@ -144,7 +163,7 @@ const DEFAULT_AGENTS: MuseAgentConfig[] = [
     description:
       'Sản xuất video phân cảnh theo timeline từng giây, chuyển động, góc quay, lời thoại, khẩu hình và nối cảnh liên tục.',
     boundAccountId: 'auto',
-    engineMode: 'muse2api',
+    engineMode: 'muse2api_with_gemini_fallback',
     status: 'offline',
     paused: false,
     permissions: {
@@ -164,7 +183,7 @@ const DEFAULT_AGENTS: MuseAgentConfig[] = [
     description:
       'AI kiểm định độc lập: đối chiếu 8 tiêu chí đồng nhất toàn phim, phát hiện sai lệch và yêu cầu tạo lại đúng phân cảnh lỗi.',
     boundAccountId: 'auto',
-    engineMode: 'muse2api',
+    engineMode: 'muse2api_with_gemini_fallback',
     status: 'offline',
     paused: false,
     permissions: {
@@ -214,6 +233,8 @@ function createDefaultDoc(): PersistedCommandCenterDoc {
   return {
     agents: structuredClone(DEFAULT_AGENTS),
     projectMemory: createEmptyProjectMemory(),
+    latestStudioDirective: null,
+    latestStudioBlueprint: null,
     runs: [],
     tasks: [],
     qaReports: [],
@@ -1957,11 +1978,25 @@ export function initCommandCenter(): void {
     try {
       const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) as Partial<PersistedCommandCenterDoc>;
       const base = createDefaultDoc();
+      const loadedAgents = Array.isArray(raw.agents) && raw.agents.length === 5 ? raw.agents : base.agents;
+      // Enable hybrid Muse2API -> Gemini fallback for untouched default agents so Command Center works immediately
+      for (const ag of loadedAgents) {
+        if (
+          ag.engineMode === 'muse2api' &&
+          !ag.lastActiveAt &&
+          ag.stats?.completed === 0 &&
+          ag.stats?.failed === 0
+        ) {
+          ag.engineMode = 'muse2api_with_gemini_fallback';
+        }
+      }
       storeDoc = {
         ...base,
         ...raw,
-        agents: Array.isArray(raw.agents) && raw.agents.length === 5 ? raw.agents : base.agents,
+        agents: loadedAgents,
         projectMemory: raw.projectMemory || base.projectMemory,
+        latestStudioDirective: raw.latestStudioDirective || null,
+        latestStudioBlueprint: raw.latestStudioBlueprint || null,
         runs: Array.isArray(raw.runs) ? raw.runs : [],
         tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
         qaReports: Array.isArray(raw.qaReports) ? raw.qaReports : [],
@@ -2063,6 +2098,7 @@ export async function getCommandCenterState(forceHealth = false): Promise<Comman
     metrics,
     agents: storeDoc.agents,
     projectMemory: storeDoc.projectMemory,
+    latestStudioDirective: storeDoc.latestStudioDirective || null,
     activeRun,
     runs: storeDoc.runs.slice(0, 20),
     tasks: [...storeDoc.tasks].reverse().slice(0, 120),
@@ -2130,15 +2166,303 @@ export async function testMuseAgentConnection(agentId: MuseAgentId): Promise<{
   return { ok: true, provider: res.provider, reply: res.text };
 }
 
+interface StudioCharacterInput {
+  id?: string;
+  name?: string;
+  description?: string;
+  ageGroup?: string;
+  gender?: string;
+  voiceId?: string;
+  dataUrl?: string;
+  syncProfile?: Partial<CharacterFivePartProfile>;
+}
+
+function normalizeStudioCharactersToMemory(
+  rawChars: StudioCharacterInput[] = [],
+  existingVersion = 1,
+  fallbackCostumeBible = ''
+): CommandMemoryCharacter[] {
+  return rawChars.slice(0, 8).map((c, idx) => {
+    const id = String(c.id || `char_${idx + 1}`);
+    const name = String(c.name || `Nhân vật ${idx + 1}`).trim();
+    let artifactUrl: string | undefined;
+    if (c.dataUrl && c.dataUrl.startsWith('data:')) {
+      const saved = saveDataUrlArtifact(`studio_char_${id}`, c.dataUrl);
+      if (saved) artifactUrl = saved.url;
+    }
+    const validAge = ['auto', 'child', 'youth', 'adult_male', 'adult_female', 'middle_aged', 'elderly'].includes(
+      String(c.ageGroup || '')
+    )
+      ? (c.ageGroup as any)
+      : 'auto';
+    const validGender = c.gender === 'female' ? 'female' : c.gender === 'male' ? 'male' : 'auto';
+    return {
+      id,
+      name,
+      ageGroup: validAge,
+      gender: validGender,
+      voiceId: String(c.voiceId || (validGender === 'female' ? 'Aoede' : 'Kore')),
+      description: String(c.description || '').trim(),
+      artifactUrl,
+      syncProfile: {
+        face: String(c.syncProfile?.face || c.description || 'Gương mặt theo mô tả Studio'),
+        physique: String(c.syncProfile?.physique || 'Tỷ lệ cân đối tự nhiên'),
+        costume: String(c.syncProfile?.costume || fallbackCostumeBible || 'Trang phục đồng bộ xuyên suốt'),
+        voice: String(c.syncProfile?.voice || 'Giọng đọc tự nhiên theo độ tuổi'),
+        distinguishingMarks: String(c.syncProfile?.distinguishingMarks || 'Đặc điểm nhận dạng ổn định'),
+      },
+      approvedVersion: existingVersion,
+    };
+  });
+}
+
+function normalizeStudioBlueprintScenesToMemory(bp?: Partial<DerivativeBlueprint> | null): CommandMemoryScene[] {
+  if (!bp || !Array.isArray(bp.scenes) || bp.scenes.length === 0) return [];
+  return bp.scenes.slice(0, 14).map((sc, idx) => {
+    const sceneId = `scene_${idx + 1}`;
+    const prevId = idx > 0 ? `scene_${idx}` : undefined;
+    let keyframeImageUrl: string | undefined;
+    let keyframeArtifactName: string | undefined;
+    if (sc.sceneImageDataUrl && sc.sceneImageDataUrl.startsWith('data:')) {
+      const savedKf = saveDataUrlArtifact(`studio_kf_${idx + 1}`, sc.sceneImageDataUrl);
+      if (savedKf) {
+        keyframeImageUrl = savedKf.url;
+        keyframeArtifactName = savedKf.fileName;
+      }
+    }
+    return {
+      sceneId,
+      index: Number(sc.sceneIndex || idx + 1),
+      title: String(sc.sceneTitle || `Cảnh ${idx + 1}`).trim(),
+      durationSec: Math.max(4, Math.min(12, Number(sc.durationSec) || 6)),
+      narration: String(sc.narration || '').trim(),
+      dialogue: String(sc.dialogue || '').trim(),
+      speakerName: String(sc.charactersInScene || '').trim(),
+      actionDetail: String(sc.actionDetail || sc.sceneSummary || sc.sceneTitle || '').trim(),
+      settingDetail: String(sc.settingDetail || bp.settingBible || '').trim(),
+      costume: String(sc.costume || bp.costumeBible || '').trim(),
+      cameraAngle: String(sc.cameraAngle || 'Trung cảnh').trim(),
+      cameraMovement: String(sc.cameraMovement || 'Đẩy máy chậm').trim(),
+      lighting: String(sc.lighting || 'Ánh sáng điện ảnh tự nhiên').trim(),
+      vfxNotes: String(sc.vfxNotes || '').trim(),
+      videoTimeline: String(sc.videoTimeline || '').trim(),
+      dependsOnSceneIds: prevId && sc.continuityNote ? [prevId] : [],
+      continuityAnchorFromSceneId: prevId && sc.continuityNote ? prevId : undefined,
+      keyframeImageUrl,
+      keyframeArtifactName,
+      qaStatus: 'pending',
+      retryCount: 0,
+      lastModifiedBy: 'studio',
+    };
+  });
+}
+
+function buildStudioDirectiveScriptText(params: {
+  title?: string;
+  ideaOrCommand?: string;
+  blueprint?: Partial<DerivativeBlueprint> | null;
+  characterRefs?: StudioCharacterInput[];
+  visualBible?: string;
+  settingBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
+}): string {
+  const parts: string[] = [];
+  const mainIdea = String(params.ideaOrCommand || params.blueprint?.ideaPrompt || '').trim();
+  if (mainIdea) parts.push(mainIdea);
+
+  const bp = params.blueprint;
+  if (bp?.derivativeTitle && !mainIdea.includes(bp.derivativeTitle)) {
+    parts.push(`Tiêu đề kịch bản Studio: ${bp.derivativeTitle}`);
+  }
+  if (bp?.learnedSummary) {
+    parts.push(`Tóm tắt kịch bản:\n${bp.learnedSummary}`);
+  }
+  if (Array.isArray(params.characterRefs) && params.characterRefs.length > 0) {
+    const charLines = params.characterRefs.slice(0, 8).map((c, i) => {
+      const sp = c.syncProfile;
+      const detail = sp
+        ? [sp.face, sp.physique, sp.costume, sp.voice].filter(Boolean).join('; ')
+        : c.description || '';
+      return `${i + 1}. ${c.name || `Nhân vật ${i + 1}`}${detail ? `: ${detail}` : ''}`;
+    });
+    parts.push(`Nhân vật đồng bộ (${charLines.length}):\n${charLines.join('\n')}`);
+  }
+  const vBible = params.visualBible || bp?.visualStyleBible;
+  const sBible = params.settingBible || bp?.settingBible;
+  const cBible = params.costumeBible || bp?.costumeBible;
+  const contBible = params.continuityBible || bp?.continuityBible;
+  if (vBible || sBible || cBible || contBible) {
+    parts.push(
+      [
+        vBible ? `- Phong cách hình ảnh: ${vBible}` : '',
+        sBible ? `- Bối cảnh: ${sBible}` : '',
+        cBible ? `- Trang phục: ${cBible}` : '',
+        contBible ? `- Mạch nối cảnh: ${contBible}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    );
+  }
+  if (bp?.scenes && bp.scenes.length > 0) {
+    const sceneLines = bp.scenes.slice(0, 12).map((sc, idx) => {
+      const talk = sc.dialogue ? ` | Thoại: "${sc.dialogue}"` : sc.narration ? ` | Dẫn: "${sc.narration}"` : '';
+      return `- Cảnh ${sc.sceneIndex || idx + 1} (${sc.durationSec || 6}s) [${sc.sceneTitle || 'Phân cảnh'}]: ${
+        sc.actionDetail || sc.sceneSummary || sc.visualNote || ''
+      }${talk}`;
+    });
+    parts.push(`Danh sách ${bp.scenes.length} phân cảnh:\n${sceneLines.join('\n')}`);
+  }
+  return parts.filter(Boolean).join('\n\n').trim();
+}
+
+export async function syncStudioDirectiveToCommandCenter(params: {
+  sourceAction: StudioSyncedDirective['sourceAction'];
+  mode?: 'creative' | 'derivative';
+  title?: string;
+  ideaOrCommand?: string;
+  productionFormat?: StudioProductionFormat;
+  aspectRatio?: DerivativeAspectRatio;
+  videoStyle?: StudioVideoStyle;
+  characterRefs?: StudioCharacterInput[];
+  visualBible?: string;
+  settingBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
+  blueprint?: Partial<DerivativeBlueprint> | null;
+  silent?: boolean;
+}): Promise<CommandCenterState> {
+  const bp = params.blueprint || null;
+  const resolvedTitle =
+    String(params.title || bp?.derivativeTitle || '').trim() ||
+    `Dự án từ Studio (${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })})`;
+
+  const resolvedFormat: StudioProductionFormat =
+    (params.productionFormat || bp?.productionFormat) === 'narration_story' ? 'narration_story' : 'dialogue_film';
+  const rawAr = params.aspectRatio || bp?.aspectRatio;
+  const resolvedAspect: DerivativeAspectRatio = rawAr === '9:16' ? '9:16' : rawAr === '1:1' ? '1:1' : '16:9';
+  const resolvedStyle: StudioVideoStyle = params.videoStyle || bp?.videoStyle || 'cinematic';
+
+  const scriptOrCommand = buildStudioDirectiveScriptText({
+    title: resolvedTitle,
+    ideaOrCommand: params.ideaOrCommand,
+    blueprint: bp,
+    characterRefs: params.characterRefs,
+    visualBible: params.visualBible,
+    settingBible: params.settingBible,
+    costumeBible: params.costumeBible,
+    continuityBible: params.continuityBible,
+  });
+
+  if (!scriptOrCommand && (!bp?.scenes || bp.scenes.length === 0)) {
+    return getCommandCenterState(false);
+  }
+
+  const chars = normalizeStudioCharactersToMemory(
+    params.characterRefs || [],
+    storeDoc.projectMemory.version,
+    params.costumeBible || bp?.costumeBible || ''
+  );
+  const scenes = normalizeStudioBlueprintScenesToMemory(bp);
+
+  const directive: StudioSyncedDirective = {
+    syncedAt: Date.now(),
+    sourceAction: params.sourceAction,
+    mode: params.mode === 'derivative' || bp?.mode === 'derivative' ? 'derivative' : 'creative',
+    title: resolvedTitle,
+    scriptOrCommand: scriptOrCommand || resolvedTitle,
+    productionFormat: resolvedFormat,
+    aspectRatio: resolvedAspect,
+    videoStyle: resolvedStyle,
+    visualBible: params.visualBible || bp?.visualStyleBible || '',
+    settingBible: params.settingBible || bp?.settingBible || '',
+    costumeBible: params.costumeBible || bp?.costumeBible || '',
+    continuityBible: params.continuityBible || bp?.continuityBible || '',
+    characterCount: chars.length,
+    sceneCount: scenes.length,
+    hasBlueprint: scenes.length > 0,
+  };
+
+  storeDoc.latestStudioDirective = directive;
+  storeDoc.latestStudioBlueprint = {
+    syncedAt: directive.syncedAt,
+    title: resolvedTitle,
+    scriptOrCommand: directive.scriptOrCommand,
+    productionFormat: resolvedFormat,
+    aspectRatio: resolvedAspect,
+    videoStyle: resolvedStyle,
+    visualBible: directive.visualBible,
+    settingBible: directive.settingBible,
+    costumeBible: directive.costumeBible,
+    continuityBible: directive.continuityBible,
+    characters: chars,
+    scenes,
+  };
+
+  // If no active run is currently executing in Command Center, hydrate Project Memory immediately so the 5 Muse AIs understand the Studio context
+  const hasRunning = storeDoc.runs.some((r) => ['planning', 'producing', 'inspecting', 'assembling'].includes(r.status));
+  if (!hasRunning) {
+    commitProjectMemoryUpdate('system', `Đồng bộ chỉ thị từ Studio (${params.sourceAction}): ${resolvedTitle}`, (m) => {
+      m.title = resolvedTitle;
+      m.originalScript = directive.scriptOrCommand;
+      m.productionFormat = resolvedFormat;
+      m.aspectRatio = resolvedAspect;
+      m.videoStyle = resolvedStyle;
+      if (directive.visualBible) m.visualBible = directive.visualBible;
+      if (directive.settingBible) m.settingBible = directive.settingBible;
+      if (directive.costumeBible) m.costumeBible = directive.costumeBible;
+      if (directive.continuityBible) m.continuityBible = directive.continuityBible;
+      if (chars.length > 0) m.characters = chars;
+      if (scenes.length > 0) m.scenes = scenes;
+    });
+  }
+
+  if (!params.silent) {
+    const actionLabelMap: Record<StudioSyncedDirective['sourceAction'], string> = {
+      expand_idea: 'Triển khai ý tưởng từ Studio',
+      learn_script: 'Lên kịch bản từ Studio',
+      save_project: 'Lưu dự án Studio',
+      generate_video: 'Khởi tạo dựng video từ Studio',
+      manual_dispatch: 'Đồng bộ thủ công từ Studio',
+    };
+    const lastMsg = storeDoc.conversations[storeDoc.conversations.length - 1];
+    const summaryText = `Chỉ thị từ Studio [${actionLabelMap[params.sourceAction]}]: **${resolvedTitle}** (${chars.length} nhân vật, ${scenes.length} phân cảnh · ${resolvedAspect}). Đã nạp sẵn vào Trung tâm giao nhiệm vụ tổng & Project Memory để đội 5 Muse AI tiếp nhận.`;
+    if (!lastMsg || lastMsg.content !== summaryText) {
+      appendConversationMessage({
+        channel: 'group',
+        projectId: storeDoc.projectMemory.projectId,
+        senderType: 'system',
+        senderId: 'studio_sync',
+        senderName: 'Đồng bộ Studio → Muse AI 01',
+        targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+        content: summaryText,
+      });
+    }
+    addActivityLog('info', 'Đồng bộ chỉ thị từ Studio', `${actionLabelMap[params.sourceAction]}: "${resolvedTitle}" (${scenes.length} cảnh, ${chars.length} nhân vật).`, {
+      agentId: 'muse-01',
+    });
+  }
+
+  saveStateAtomic();
+  return getCommandCenterState(false);
+}
+
 export async function startProductionOrchestration(params: {
   title?: string;
   script: string;
   productionFormat?: StudioProductionFormat;
   aspectRatio?: DerivativeAspectRatio;
   videoStyle?: StudioVideoStyle;
+  studioBlueprint?: Partial<DerivativeBlueprint> | null;
+  characterRefs?: StudioCharacterInput[];
+  visualBible?: string;
+  settingBible?: string;
+  costumeBible?: string;
+  continuityBible?: string;
 }): Promise<CommandCenterState> {
-  const script = String(params.script || '').trim();
-  if (!script) {
+  const cachedBp = storeDoc.latestStudioBlueprint;
+  const script = String(params.script || cachedBp?.scriptOrCommand || '').trim();
+  if (!script && !params.studioBlueprint?.scenes?.length) {
     throw new Error('Vui lòng nhập kịch bản hoặc câu lệnh sản xuất trước khi bắt đầu.');
   }
 
@@ -2148,27 +2472,62 @@ export async function startProductionOrchestration(params: {
   }
 
   const runId = `run_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
-  const title = (params.title || '').trim() || `Phim AI ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`;
+  const title =
+    (params.title || params.studioBlueprint?.derivativeTitle || '').trim() ||
+    `Phim AI ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`;
 
   const freshMemory = createEmptyProjectMemory();
   freshMemory.title = title;
-  freshMemory.originalScript = script;
+  freshMemory.originalScript = script || title;
   freshMemory.productionFormat = params.productionFormat === 'narration_story' ? 'narration_story' : 'dialogue_film';
   freshMemory.aspectRatio =
     params.aspectRatio === '9:16' ? '9:16' : params.aspectRatio === '1:1' ? '1:1' : '16:9';
-  freshMemory.videoStyle = params.videoStyle || 'cinematic';
+  freshMemory.videoStyle = params.videoStyle || params.studioBlueprint?.videoStyle || 'cinematic';
+  freshMemory.visualBible = String(params.visualBible || params.studioBlueprint?.visualStyleBible || '').trim();
+  freshMemory.settingBible = String(params.settingBible || params.studioBlueprint?.settingBible || '').trim();
+  freshMemory.costumeBible = String(params.costumeBible || params.studioBlueprint?.costumeBible || '').trim();
+  freshMemory.continuityBible = String(params.continuityBible || params.studioBlueprint?.continuityBible || '').trim();
   freshMemory.updatedByAgentId = 'user';
+
+  // Determine whether we already have structured Studio scenes/characters to orchestrate immediately
+  let preSeededChars: CommandMemoryCharacter[] = normalizeStudioCharactersToMemory(
+    params.characterRefs || [],
+    1,
+    freshMemory.costumeBible
+  );
+  let preSeededScenes: CommandMemoryScene[] = normalizeStudioBlueprintScenesToMemory(params.studioBlueprint);
+
+  if (
+    preSeededScenes.length === 0 &&
+    cachedBp &&
+    cachedBp.scenes &&
+    cachedBp.scenes.length > 0 &&
+    script.slice(0, 120) === cachedBp.scriptOrCommand.slice(0, 120)
+  ) {
+    preSeededScenes = structuredClone(cachedBp.scenes);
+    if (preSeededChars.length === 0 && cachedBp.characters) {
+      preSeededChars = structuredClone(cachedBp.characters);
+    }
+    if (!freshMemory.visualBible && cachedBp.visualBible) freshMemory.visualBible = cachedBp.visualBible;
+    if (!freshMemory.settingBible && cachedBp.settingBible) freshMemory.settingBible = cachedBp.settingBible;
+    if (!freshMemory.costumeBible && cachedBp.costumeBible) freshMemory.costumeBible = cachedBp.costumeBible;
+    if (!freshMemory.continuityBible && cachedBp.continuityBible) freshMemory.continuityBible = cachedBp.continuityBible;
+  }
+
+  freshMemory.characters = preSeededChars;
+  freshMemory.scenes = preSeededScenes;
   storeDoc.projectMemory = freshMemory;
 
+  const hasPreSeededScenes = preSeededScenes.length > 0;
   const run: ProductionRun = {
     id: runId,
     projectId: freshMemory.projectId,
     title,
-    userCommand: script,
-    status: 'planning',
+    userCommand: script || title,
+    status: hasPreSeededScenes ? 'producing' : 'planning',
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    sceneCount: 0,
+    sceneCount: preSeededScenes.length,
     completedScenes: 0,
     passedQaScenes: 0,
     escalatedScenes: 0,
@@ -2184,22 +2543,137 @@ export async function startProductionOrchestration(params: {
     senderId: 'user',
     senderName: 'Đạo diễn (Bạn)',
     targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
-    content: script,
+    content: script || title,
   });
 
-  enqueueTask({
-    runId,
-    type: 'plan_production',
-    title: `Tổng đạo diễn lập kế hoạch & phân công sản xuất: ${title}`,
-    instructions: script,
-    assignedAgentId: 'muse-01',
-    priority: 10,
-  });
+  if (hasPreSeededScenes) {
+    // Bypass redundant re-scripting: Muse AI 01 locks the Studio Blueprint & dispatches parallel production immediately!
+    const planTask = enqueueTask({
+      runId,
+      type: 'plan_production',
+      title: `Tổng đạo diễn tiếp nhận kịch bản Studio (${preSeededScenes.length} phân cảnh)`,
+      instructions: script || title,
+      assignedAgentId: 'muse-01',
+      priority: 10,
+    });
+    planTask.status = 'completed';
+    planTask.completedAt = Date.now();
+    planTask.executedByProvider = 'studio-blueprint';
+    planTask.outputText = `Đã tiếp nhận kịch bản hoàn chỉnh từ Studio (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh) và lập hàng đợi song song.`;
 
-  addActivityLog('info', 'Khởi động dây chuyền sản xuất', `Phiên "${title}" đã được giao cho Muse AI 01 — Tổng đạo diễn.`, {
-    agentId: 'muse-01',
-    runId,
-  });
+    const charTaskIds: string[] = [];
+    for (const ch of preSeededChars.slice(0, 4)) {
+      if (!ch.artifactUrl) {
+        const ct = enqueueTask({
+          runId,
+          type: 'design_character_ref',
+          title: `Tạo ảnh tham chiếu nhân vật: ${ch.name}`,
+          instructions: `${ch.name}: ${ch.syncProfile.face}. Vóc dáng: ${ch.syncProfile.physique}. Trang phục: ${ch.syncProfile.costume}.`,
+          assignedAgentId: 'muse-03',
+          characterId: ch.id,
+          priority: 9,
+        });
+        charTaskIds.push(ct.id);
+      }
+    }
+
+    const sceneVideoTaskBySceneId = new Map<string, string>();
+    const qaTaskIds: string[] = [];
+
+    for (const sc of preSeededScenes) {
+      const videoDeps: string[] = [];
+      if (!sc.keyframeImageUrl) {
+        const imgTask = enqueueTask({
+          runId,
+          type: 'design_scene_image',
+          title: `Cảnh ${sc.index}: Tạo ảnh keyframe "${sc.title}"`,
+          instructions: `${sc.actionDetail}. Bối cảnh: ${sc.settingDetail}. Góc máy: ${sc.cameraAngle}. Ánh sáng: ${sc.lighting}.`,
+          assignedAgentId: 'muse-03',
+          dependsOnTaskIds: charTaskIds,
+          sceneId: sc.sceneId,
+          sceneIndex: sc.index,
+          priority: 8,
+        });
+        videoDeps.push(imgTask.id);
+      } else if (charTaskIds.length > 0) {
+        videoDeps.push(...charTaskIds);
+      }
+
+      if (sc.continuityAnchorFromSceneId && sceneVideoTaskBySceneId.has(sc.continuityAnchorFromSceneId)) {
+        videoDeps.push(sceneVideoTaskBySceneId.get(sc.continuityAnchorFromSceneId)!);
+      }
+
+      const vidTask = enqueueTask({
+        runId,
+        type: 'produce_scene_video',
+        title: `Cảnh ${sc.index}: Quay & dựng video "${sc.title}" (${sc.durationSec}s)`,
+        instructions: `${sc.actionDetail}. Timeline: ${sc.videoTimeline || 'chuyển động mượt liên tục'}. ${sc.dialogue ? `Lời thoại: ${sc.dialogue}` : ''}`,
+        assignedAgentId: 'muse-04',
+        dependsOnTaskIds: videoDeps,
+        sceneId: sc.sceneId,
+        sceneIndex: sc.index,
+        priority: 6,
+      });
+      sceneVideoTaskBySceneId.set(sc.sceneId, vidTask.id);
+
+      const qaTask = enqueueTask({
+        runId,
+        type: 'qa_inspect_scene',
+        title: `Kiểm định 8 tiêu chí Cảnh ${sc.index}: "${sc.title}"`,
+        instructions: `Đối chiếu Cảnh ${sc.index} với Project Memory v${freshMemory.version} và các cảnh lân cận.`,
+        assignedAgentId: 'muse-05',
+        dependsOnTaskIds: [vidTask.id],
+        sceneId: sc.sceneId,
+        sceneIndex: sc.index,
+        priority: 5,
+      });
+      qaTaskIds.push(qaTask.id);
+    }
+
+    enqueueTask({
+      runId,
+      type: 'assemble_final_film',
+      title: `Ghép xuất phim hoàn chỉnh (${preSeededScenes.length} phân cảnh)`,
+      instructions: `Tổng hợp toàn bộ phân cảnh đã đạt QA thành video MP4 hoàn chỉnh và bàn giao.`,
+      assignedAgentId: 'muse-01',
+      dependsOnTaskIds: qaTaskIds,
+      priority: 1,
+    });
+
+    appendConversationMessage({
+      channel: 'group',
+      projectId: freshMemory.projectId,
+      runId,
+      senderType: 'agent',
+      senderId: 'muse-01',
+      senderName: 'Muse AI 01 (Tổng đạo diễn)',
+      targetAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
+      taskId: planTask.id,
+      content: `Đã tiếp nhận kịch bản & phân cảnh đồng bộ từ Studio cho "${title}" (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh). Đã khóa Project Memory v${freshMemory.version} và phân công song song cho Muse AI 03, Muse AI 04 và QA Muse AI 05.`,
+    });
+
+    addActivityLog(
+      'info',
+      'Tiếp nhận kịch bản từ Studio',
+      `Muse AI 01 đã phân công ${preSeededScenes.length} phân cảnh của "${title}" vào dây chuyền sản xuất song song.`,
+      { agentId: 'muse-01', runId }
+    );
+  } else {
+    enqueueTask({
+      runId,
+      type: 'plan_production',
+      title: `Tổng đạo diễn lập kế hoạch & phân công sản xuất: ${title}`,
+      instructions: script,
+      assignedAgentId: 'muse-01',
+      priority: 10,
+    });
+
+    addActivityLog('info', 'Khởi động dây chuyền sản xuất', `Phiên "${title}" đã được giao cho Muse AI 01 — Tổng đạo diễn.`, {
+      agentId: 'muse-01',
+      runId,
+    });
+  }
+
   saveStateAtomic();
   void tickOrchestratorQueue();
   return getCommandCenterState(false);
@@ -2424,13 +2898,24 @@ export async function sendCommandCenterChat(params: {
     .map((m) => `${m.senderName}: ${m.content}`)
     .join('\n');
 
+  const studioDirectiveNote = storeDoc.latestStudioDirective
+    ? `\nChỉ thị mới nhất đồng bộ từ Studio (${storeDoc.latestStudioDirective.sourceAction}): "${storeDoc.latestStudioDirective.title}" · ${storeDoc.latestStudioDirective.characterCount} nhân vật, ${storeDoc.latestStudioDirective.sceneCount} phân cảnh.\nNội dung chỉ thị Studio:\n${storeDoc.latestStudioDirective.scriptOrCommand.slice(0, 1400)}`
+    : '';
+  const memoryScenesNote =
+    mem.scenes.length > 0
+      ? `\nCác phân cảnh trong Project Memory:\n${mem.scenes
+          .slice(0, 8)
+          .map((s) => `- Cảnh ${s.index}: ${s.title} (${s.qaStatus}) — ${s.actionDetail.slice(0, 100)}`)
+          .join('\n')}`
+      : '';
+
   const sys = `Bạn là ${responder.name} (${responder.roleTitle}) trong Phòng Điều Hành AI Muse.
 Vai trò: ${responder.description}
-Dự án hiện tại: "${mem.title}" (Project Memory v${mem.version}, ${mem.characters.length} nhân vật, ${mem.scenes.length} cảnh).
+Dự án hiện tại: "${mem.title}" (Project Memory v${mem.version}, ${mem.characters.length} nhân vật, ${mem.scenes.length} cảnh).${studioDirectiveNote}${memoryScenesNote}
 ${
   params.channel === 'group'
-    ? 'Bạn đang trả lời trong Phòng họp nhóm 5 AI Muse. Hãy phản hồi rõ ràng, phối hợp công việc thực tế với các thành viên còn lại.'
-    : 'Bạn đang trao đổi trực tiếp 1-1 với Đạo diễn.'
+    ? 'Bạn đang trả lời trong Phòng họp nhóm 5 AI Muse. Hãy phản hồi rõ ràng, chứng tỏ đã nắm rõ chỉ thị từ Studio/Project Memory và phối hợp công việc thực tế với các thành viên còn lại.'
+    : 'Bạn đang trao đổi trực tiếp 1-1 với Đạo diễn. Hãy trả lời bám sát dữ liệu dự án và chỉ thị mới nhất từ Studio.'
 }`;
 
   const prompt = `Lịch sử trao đổi gần đây:\n${recentHistory}\n\nYêu cầu mới nhất của Đạo diễn:\n${text}`;

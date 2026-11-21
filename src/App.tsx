@@ -1454,6 +1454,7 @@ export default function App() {
                 ytCookies={ytCookies}
                 studioDefaults={studioDefaults}
                 onOpenSettings={() => handleChangeTab('settings')}
+                onOpenCommandCenter={() => handleChangeTab('command_center')}
               />
             </div>
           )}
@@ -1461,7 +1462,10 @@ export default function App() {
           {/* VIEW 3B: PHÒNG ĐIỀU HÀNH AI MUSE */}
           {mountedCommandCenter && (
             <div className={activeTab === 'command_center' ? 'block' : 'hidden'}>
-              <CommandCenterPanel onOpenSettings={() => handleChangeTab('settings')} />
+              <CommandCenterPanel
+                onOpenSettings={() => handleChangeTab('settings')}
+                isActiveTab={activeTab === 'command_center'}
+              />
             </div>
           )}
 
