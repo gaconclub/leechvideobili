@@ -6570,30 +6570,185 @@ async function startServer() {
     });
   };
 
-  const readLocalAppVersion = (cwd: string): string => {
+  const parseSemverParts = (v: string): [number, number, number] => {
+    const m = String(v || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)/i);
+    if (!m) return [1, 0, 9];
+    return [Number(m[1]) || 0, Number(m[2]) || 0, Number(m[3]) || 0];
+  };
+
+  const compareSemver = (a: string, b: string): number => {
+    const pa = parseSemverParts(a);
+    const pb = parseSemverParts(b);
+    for (let i = 0; i < 3; i++) {
+      if (pa[i] > pb[i]) return 1;
+      if (pa[i] < pb[i]) return -1;
+    }
+    return 0;
+  };
+
+  const incrementPatchVersion = (v: string): string => {
+    const [maj, min, pat] = parseSemverParts(v);
+    return `${maj}.${min}.${pat + 1}`;
+  };
+
+  const readRuntimeVersionOverride = (cwd: string): { version: string; commit: string } | null => {
+    try {
+      const overridePath = path.join(cwd, '.update-backup', 'runtime-version.json');
+      if (fs.existsSync(overridePath)) {
+        const parsed = JSON.parse(fs.readFileSync(overridePath, 'utf8'));
+        if (typeof parsed?.version === 'string' && parsed.version.trim()) {
+          return {
+            version: parsed.version.trim(),
+            commit: typeof parsed?.commit === 'string' ? parsed.commit.trim() : '',
+          };
+        }
+      }
+    } catch {
+      // ignore override read error
+    }
+    return null;
+  };
+
+  const writeRuntimeVersionOverride = (cwd: string, version: string, commit: string) => {
+    try {
+      const overridePath = path.join(cwd, '.update-backup', 'runtime-version.json');
+      fs.mkdirSync(path.dirname(overridePath), { recursive: true });
+      fs.writeFileSync(
+        overridePath,
+        JSON.stringify({ version, commit, updatedAt: Date.now() }, null, 2),
+        'utf8'
+      );
+    } catch {
+      // ignore override write error
+    }
+  };
+
+  const readLocalAppVersion = (cwd: string, currentCommit?: string): string => {
+    let pkgVersion = '1.0.9';
     try {
       const pkgPath = path.join(cwd, 'package.json');
       if (fs.existsSync(pkgPath)) {
         const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
         if (typeof parsed?.version === 'string' && parsed.version.trim()) {
-          return parsed.version.trim();
+          pkgVersion = parsed.version.trim();
         }
       }
     } catch {
       // ignore package.json read error
     }
-    return '1.0.8';
+
+    const override = readRuntimeVersionOverride(cwd);
+    if (
+      override &&
+      (!currentCommit || !override.commit || override.commit === currentCommit) &&
+      compareSemver(override.version, pkgVersion) > 0
+    ) {
+      return override.version;
+    }
+    return pkgVersion;
+  };
+
+  interface ReleaseUpdateEntry {
+    version: string;
+    date: string;
+    title: string;
+    changes: string[];
+    commit?: string;
+  }
+
+  const formatCommitDateVi = (isoOrGitDate: string): string => {
+    const parsed = new Date(isoOrGitDate);
+    if (Number.isNaN(parsed.getTime())) return isoOrGitDate.slice(0, 10);
+    const dd = String(parsed.getDate()).padStart(2, '0');
+    const mm = String(parsed.getMonth() + 1).padStart(2, '0');
+    const yyyy = parsed.getFullYear();
+    return `${dd}/${mm}/${yyyy}`;
+  };
+
+  const readRecentUpdatesChangelog = async (
+    cwd: string,
+    includeGitHistory: boolean,
+    localVersion: string
+  ): Promise<ReleaseUpdateEntry[]> => {
+    let entries: ReleaseUpdateEntry[] = [];
+    try {
+      const changelogPath = path.join(cwd, 'src', 'changelog.json');
+      if (fs.existsSync(changelogPath)) {
+        const parsed = JSON.parse(fs.readFileSync(changelogPath, 'utf8'));
+        if (Array.isArray(parsed)) {
+          entries = parsed
+            .filter((item) => item && typeof item.version === 'string' && typeof item.date === 'string')
+            .map((item) => ({
+              version: String(item.version).trim(),
+              date: String(item.date).trim(),
+              title: String(item.title || '').trim() || `Phiên bản V${item.version}`,
+              changes: Array.isArray(item.changes)
+                ? item.changes.map((c: unknown) => String(c || '').trim()).filter(Boolean)
+                : [],
+              commit: typeof item.commit === 'string' ? item.commit.trim() : undefined,
+            }));
+        }
+      }
+    } catch {
+      // ignore changelog read failure
+    }
+
+    if (includeGitHistory && fs.existsSync(path.join(cwd, '.git'))) {
+      try {
+        const logRes = await runExec(
+          'git',
+          ['log', '-n', '3', '--pretty=format:%h%x09%ci%x09%s'],
+          6000
+        );
+        if (logRes.code === 0 && logRes.stdout) {
+          const gitRows = logRes.stdout
+            .split(/\r?\n/)
+            .map((line) => line.split('\t'))
+            .filter((parts) => parts.length >= 3);
+
+          // Attach short commit hash to matching version entries, or prepend git commit if version isn't in changelog yet
+          if (entries.length > 0 && gitRows[0]) {
+            const [latestHash, latestDateRaw, latestSubject] = gitRows[0];
+            if (entries[0].version === localVersion && !entries[0].commit) {
+              entries[0] = { ...entries[0], commit: latestHash };
+            } else if (compareSemver(localVersion, entries[0].version) > 0) {
+              entries.unshift({
+                version: localVersion,
+                date: formatCommitDateVi(latestDateRaw),
+                title: latestSubject || `Cập nhật phiên bản V${localVersion}`,
+                changes: latestSubject ? [latestSubject] : [`Cập nhật mới nhất lên V${localVersion}.`],
+                commit: latestHash,
+              });
+            }
+          } else if (entries.length === 0) {
+            entries = gitRows.map(([hash, dateRaw, subject], idx) => ({
+              version: idx === 0 ? localVersion : '1.0.x',
+              date: formatCommitDateVi(dateRaw),
+              title: subject || `Cập nhật (${hash})`,
+              changes: subject ? [subject] : [],
+              commit: hash,
+            }));
+          }
+        }
+      } catch {
+        // ignore git log error
+      }
+    }
+
+    return entries.slice(0, 3);
   };
 
   app.get('/api/system/update-status', async (_req, res) => {
     const supervisorActive = process.env.BILIBATCH_SUPERVISOR === '1';
     const cwd = process.cwd();
-    const localVersion = readLocalAppVersion(cwd);
+    let localVersion = readLocalAppVersion(cwd);
     try {
       if (!fs.existsSync(path.join(cwd, '.git'))) {
+        const recentUpdates = await readRecentUpdatesChangelog(cwd, false, localVersion);
         return res.json({
           supported: false,
           localVersion,
+          recentUpdates,
           supervisorActive,
           reason: 'Thư mục hiện tại chưa được kết nối GitHub (.git).',
         });
@@ -6601,9 +6756,11 @@ async function startServer() {
 
       const remoteRes = await runExec('git', ['remote', 'get-url', 'origin'], 8000).catch(() => null);
       if (!remoteRes || remoteRes.code !== 0 || !remoteRes.stdout) {
+        const recentUpdates = await readRecentUpdatesChangelog(cwd, true, localVersion);
         return res.json({
           supported: false,
           localVersion,
+          recentUpdates,
           supervisorActive,
           reason: 'Chưa gắn địa chỉ GitHub (remote origin) cho thư mục dự án.',
         });
@@ -6616,6 +6773,8 @@ async function startServer() {
           : 'main';
       const commitRes = await runExec('git', ['rev-parse', '--short', 'HEAD'], 8000);
       const currentCommit = commitRes.code === 0 ? commitRes.stdout : '';
+      localVersion = readLocalAppVersion(cwd, currentCommit);
+      const recentUpdates = await readRecentUpdatesChangelog(cwd, true, localVersion);
 
       const fetchRes = await runExec('git', ['fetch', 'origin', branch, '--quiet'], 18_000).catch(
         (err: any) => ({ code: 1, stdout: '', stderr: err?.message || 'Lỗi kết nối GitHub' })
@@ -6626,6 +6785,7 @@ async function startServer() {
           supported: true,
           hasUpdate: false,
           localVersion,
+          recentUpdates,
           currentCommit,
           branch,
           remoteUrl: remoteRes.stdout,
@@ -6674,12 +6834,20 @@ async function startServer() {
       }
 
       const latestCommit = latestHashRes.code === 0 ? latestHashRes.stdout : '';
+      const effectiveRemoteVersion =
+        behindCount > 0
+          ? remoteVersion && compareSemver(remoteVersion, localVersion) > 0
+            ? remoteVersion
+            : incrementPatchVersion(localVersion)
+          : remoteVersion || localVersion;
+
       res.json({
         supported: true,
         hasUpdate: behindCount > 0,
         behindCount,
         localVersion,
-        remoteVersion: remoteVersion || undefined,
+        remoteVersion: effectiveRemoteVersion || undefined,
+        recentUpdates,
         currentCommit,
         remoteCommit: latestCommit,
         latestCommit,
@@ -6690,9 +6858,11 @@ async function startServer() {
         supervisorActive,
       });
     } catch (err: any) {
+      const recentUpdates = await readRecentUpdatesChangelog(cwd, false, localVersion);
       res.json({
         supported: false,
         localVersion,
+        recentUpdates,
         supervisorActive,
         reason: err?.message || 'Không thể kiểm tra trạng thái Git',
       });
@@ -6721,6 +6891,10 @@ async function startServer() {
         branchRes.code === 0 && branchRes.stdout && branchRes.stdout !== 'HEAD'
           ? branchRes.stdout
           : 'main';
+
+      const prevCommitRes = await runExec('git', ['rev-parse', '--short', 'HEAD'], 8000);
+      const prevCommit = prevCommitRes.code === 0 ? prevCommitRes.stdout : '';
+      const prevEffectiveVersion = readLocalAppVersion(cwd, prevCommit);
 
       const pkgPath = path.join(cwd, 'package.json');
       const prevPkg = fs.existsSync(pkgPath) ? fs.readFileSync(pkgPath, 'utf8') : '';
@@ -6877,14 +7051,22 @@ async function startServer() {
       }
 
       const newCommitRes = await runExec('git', ['rev-parse', '--short', 'HEAD'], 8000);
+      const newCommit = newCommitRes.code === 0 ? newCommitRes.stdout : '';
       const newMsgRes = await runExec('git', ['log', '-1', '--pretty=%s', 'HEAD'], 8000);
       const supervisorActive = process.env.BILIBATCH_SUPERVISOR === '1';
+
+      let newVersion = readLocalAppVersion(cwd, newCommit);
+      if (newCommit && prevCommit && newCommit !== prevCommit && compareSemver(newVersion, prevEffectiveVersion) <= 0) {
+        newVersion = incrementPatchVersion(prevEffectiveVersion);
+        writeRuntimeVersionOverride(cwd, newVersion, newCommit);
+      }
 
       res.json({
         ok: true,
         updated: true,
         npmInstalled,
-        commit: newCommitRes.code === 0 ? newCommitRes.stdout : '',
+        commit: newCommit,
+        newVersion,
         message: newMsgRes.code === 0 ? newMsgRes.stdout : '',
         restarting: supervisorActive,
       });

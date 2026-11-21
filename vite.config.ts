@@ -4,11 +4,34 @@ import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
 
+function readPackageVersion(): string {
+  try {
+    const pkgPath = path.resolve(import.meta.dirname, 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    if (typeof pkg?.version === 'string' && pkg.version.trim()) {
+      return pkg.version.trim();
+    }
+  } catch {
+    // ignore
+  }
+  return '1.0.9';
+}
+
 export default defineConfig(() => {
+  const appVersion = readPackageVersion();
   return {
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
+    },
     plugins: [
       react(),
       tailwindcss(),
+      {
+        name: 'sync-html-app-version',
+        transformIndexHtml(html: string) {
+          return html.replace(/GaConPro V\d+\.\d+\.\d+/g, `GaConPro V${appVersion}`);
+        },
+      },
       // Copies src/assets into dist/ so root-relative URLs like
       // "/src/assets/images/..." (e.g. generate_image output) still resolve
       // in production builds. Do not remove.

@@ -7,9 +7,12 @@ import {
   Loader2,
   GitBranch,
   RotateCcw,
+  History,
+  Calendar,
 } from 'lucide-react';
-import { UpdateStatusInfo } from './UpdateModal';
+import { ReleaseUpdateItem, UpdateStatusInfo } from './UpdateModal';
 import { APP_VERSION } from '../version';
+import defaultChangelog from '../changelog.json';
 
 interface UpdatePanelProps {
   status: UpdateStatusInfo | null;
@@ -41,6 +44,11 @@ export const UpdatePanel: React.FC<UpdatePanelProps> = ({
     ? `V${currentVersion} (${status.currentCommit})`
     : `V${currentVersion}`;
   const remoteRef = status?.remoteCommit || status?.latestCommit;
+  const recentUpdates: ReleaseUpdateItem[] = (
+    status?.recentUpdates && status.recentUpdates.length > 0
+      ? status.recentUpdates
+      : (defaultChangelog as ReleaseUpdateItem[])
+  ).slice(0, 3);
 
   return (
     <section className="space-y-4">
@@ -176,31 +184,67 @@ export const UpdatePanel: React.FC<UpdatePanelProps> = ({
           </div>
         )}
 
-        {/* Feature Highlights Changelog */}
-        <div className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300">
-          <div className="rounded-xl bg-slate-50 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/15 p-3.5">
-            <div className="font-bold text-cyan-700 dark:text-cyan-300">
-              • Luồng Tải hàng loạt &amp; Xử lý FFmpeg
-            </div>
-            <p className="text-slate-500 dark:text-slate-400 mt-1">
-              Tách tập Bilibili P1/P2 tự động, xóa logo gốc, gắn logo thương hiệu, biến đổi khung hình và xuất ZIP theo thư mục cấu hình.
-            </p>
+        {/* 3 Latest Updates Changelog */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white inline-flex items-center gap-2">
+              <History className="w-4 h-4 text-cyan-500 dark:text-cyan-400" />
+              <span>3 lần cập nhật gần nhất</span>
+            </h2>
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+              Hiển thị ngày phát hành &amp; tóm tắt thay đổi
+            </span>
           </div>
-          <div className="rounded-xl bg-slate-50 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/15 p-3.5">
-            <div className="font-bold text-violet-700 dark:text-violet-300">
-              • Studio Phái Sinh &amp; Sáng Tạo Hàng Loạt (3 Giai đoạn)
-            </div>
-            <p className="text-slate-500 dark:text-slate-400 mt-1">
-              Hỗ trợ Series và Nhiều video độc lập, khóa nhân vật đồng bộ 5 thành phần, lên kịch bản hàng loạt và dựng xuất MP4 với giọng đọc AI / VieNeu-TTS Offline.
-            </p>
-          </div>
-          <div className="rounded-xl bg-slate-50 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/15 p-3.5">
-            <div className="font-bold text-emerald-700 dark:text-emerald-300">
-              • Gộp Xu hướng &amp; Tìm kiếm Độc lập + Trung tâm Cấu hình 3 Tab
-            </div>
-            <p className="text-slate-500 dark:text-slate-400 mt-1">
-              Chuyển đổi tức thì giữa bảng xếp hạng Xu hướng và Tìm kiếm trực tiếp không giới hạn, cùng bảng 3 tab hợp nhất Cookies · AI Kịch bản · Muse2API Pool.
-            </p>
+
+          <div className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300">
+            {recentUpdates.map((item, idx) => (
+              <div
+                key={`${item.version}-${item.date}-${idx}`}
+                className={`rounded-xl border p-3.5 space-y-2 ${
+                  idx === 0
+                    ? 'bg-gradient-to-br from-violet-500/8 via-slate-50 to-cyan-500/8 dark:from-violet-950/35 dark:via-[#0c1021]/95 dark:to-cyan-950/25 border-violet-300/60 dark:border-violet-400/30'
+                    : 'bg-slate-50 dark:bg-[#0c1021]/90 border-slate-200 dark:border-slate-400/15'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={`inline-flex items-center px-2 py-0.5 rounded-md font-mono font-bold text-[11px] tabular-nums ${
+                        idx === 0
+                          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-400/30'
+                          : 'bg-slate-200/75 dark:bg-white/10 text-slate-700 dark:text-slate-200'
+                      }`}
+                    >
+                      V{item.version}
+                    </span>
+                    {idx === 0 && (
+                      <span className="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-700 dark:text-violet-300 border border-violet-400/25 text-[10px] font-semibold">
+                        Mới nhất
+                      </span>
+                    )}
+                    <span className="font-bold text-slate-900 dark:text-white">{item.title}</span>
+                  </div>
+
+                  <div className="inline-flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                    <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                    <span>{item.date}</span>
+                    {item.commit && (
+                      <span className="px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-white/10 text-[10px]">
+                        {item.commit}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {item.changes && item.changes.length > 0 && (
+                  <ul className="space-y-1 pl-4 list-disc text-slate-600 dark:text-slate-300 leading-relaxed">
+                    {item.changes.map((line, cIdx) => (
+                      <li key={cIdx}>{line}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       </div>
