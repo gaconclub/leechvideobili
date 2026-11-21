@@ -357,6 +357,14 @@ export interface StudioUploadedAsset {
   hasAudio: boolean;
 }
 
+export interface CharacterFivePartProfile {
+  face: string; // 1. Gương mặt
+  physique: string; // 2. Vóc dáng
+  costume: string; // 3. Trang phục
+  voice: string; // 4. Giọng nói
+  distinguishingMarks: string; // 5. Đặc điểm nhận dạng
+}
+
 export interface StudioCharacterRef {
   id: string;
   name: string;
@@ -370,6 +378,7 @@ export interface StudioCharacterRef {
   offlineVoice?: string;
   voiceStyle?: string;
   accentLock?: 'vn_north';
+  syncProfile?: CharacterFivePartProfile;
 }
 
 export interface CharacterVoiceProfile {
@@ -535,6 +544,7 @@ export interface DerivativeScene {
   shotStyle?: string; // Phong cách quay: Điện ảnh, tài liệu, anime, quảng cáo...
   dialogue?: string; // Lời thoại nhân vật nói
   narration: string; // Lồng tiếng / thuyết minh hoặc giọng dẫn (rỗng khi tắt lồng tiếng)
+  videoTimeline?: string; // Timeline chi tiết theo từng giây (1s - Ns: hành động, lời thoại, góc quay, chuyển động camera)
   imagePrompt?: string; // Prompt hình ảnh chi tiết đồng bộ
   videoPrompt?: string; // Prompt video chi tiết hành động & chuyển động đồng bộ
   continuityNote?: string; // Mạch liên kết từ trạng thái cuối cảnh trước
@@ -546,6 +556,7 @@ export interface DerivativeScene {
   musicMoodEn?: string; // Gợi ý cảm xúc nhạc nền cho phân cảnh
   selectedCharacterIds?: string[]; // Danh sách ID nhân vật đồng bộ được chọn cho phân cảnh
   sceneImageDataUrl?: string;
+  sceneImageSource?: 'uploaded' | 'ai';
   omniClipAssetId?: string;
   omniClipPreviewUrl?: string;
 }

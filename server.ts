@@ -21,9 +21,11 @@ import {
 } from './server/trending';
 import {
   AiProviderId,
+  analyzeCharactersFivePartProfiles,
   analyzeSampleVideoAndLearnStyle,
   appendStudioUploadChunk,
   BrollSourceId,
+  CharacterFivePartProfile,
   completeStudioChunkedUpload,
   deleteLearnedVideoStyle,
   deleteStudioProjectProfile,
@@ -4958,6 +4960,50 @@ async function startServer() {
     }
   });
 
+  app.post('/api/studio/analyze-characters', async (req, res) => {
+    try {
+      const {
+        characters = [],
+        videoStyle,
+        customStylePrompt = '',
+        ideaContext = '',
+        aiProvider = 'gemini',
+      } = (req.body || {}) as {
+        characters?: {
+          id: string;
+          name: string;
+          dataUrl?: string;
+          description?: string;
+          ageGroup?: 'auto' | 'child' | 'youth' | 'adult_male' | 'adult_female' | 'middle_aged' | 'elderly';
+          gender?: 'auto' | 'male' | 'female';
+          syncProfile?: CharacterFivePartProfile;
+        }[];
+        videoStyle?: StudioVideoStyle;
+        customStylePrompt?: string;
+        ideaContext?: string;
+        aiProvider?: AiProviderId;
+      };
+      if (!Array.isArray(characters) || characters.length === 0) {
+        return res.status(400).json({ error: 'Vui lòng tải lên hoặc tạo ít nhất 1 nhân vật để phân tích.' });
+      }
+      const validProvider: AiProviderId =
+        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse2api'
+          ? aiProvider
+          : 'gemini';
+      const result = await analyzeCharactersFivePartProfiles({
+        characters,
+        videoStyle,
+        customStylePrompt: String(customStylePrompt || ''),
+        ideaContext: String(ideaContext || ''),
+        aiProvider: validProvider,
+      });
+      res.json(result);
+    } catch (err: any) {
+      const msg = String(err?.message || 'Không thể phân tích hồ sơ 5 thành phần nhân vật.');
+      res.status(msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500).json({ error: msg });
+    }
+  });
+
   app.post('/api/studio/generate-image', async (req, res) => {
     try {
       const {
@@ -4975,7 +5021,9 @@ async function startServer() {
         continuityBible = '',
         sceneIndex,
         totalScenes,
+        sceneTitle = '',
         charactersInScene = '',
+        settingDetail = '',
         actionDetail = '',
         dialogue = '',
         sceneSummary = '',
@@ -4999,7 +5047,9 @@ async function startServer() {
         continuityBible?: string;
         sceneIndex?: number;
         totalScenes?: number;
+        sceneTitle?: string;
         charactersInScene?: string;
+        settingDetail?: string;
         actionDetail?: string;
         dialogue?: string;
         sceneSummary?: string;
@@ -5007,7 +5057,13 @@ async function startServer() {
         cameraAngle?: string;
         vfxNotes?: string;
         selectedCharacterIds?: string[];
-        characterRefs?: { id?: string; dataUrl: string; name?: string; description?: string }[];
+        characterRefs?: {
+          id?: string;
+          dataUrl: string;
+          name?: string;
+          description?: string;
+          syncProfile?: CharacterFivePartProfile;
+        }[];
       };
       if (!String(prompt).trim()) {
         return res.status(400).json({ error: 'Vui lòng nhập mô tả để AI tạo hình ảnh.' });
@@ -5027,7 +5083,9 @@ async function startServer() {
         continuityBible: String(continuityBible || ''),
         sceneIndex: typeof sceneIndex === 'number' ? sceneIndex : undefined,
         totalScenes: typeof totalScenes === 'number' ? totalScenes : undefined,
+        sceneTitle: String(sceneTitle || ''),
         charactersInScene: String(charactersInScene || ''),
+        settingDetail: String(settingDetail || ''),
         actionDetail: String(actionDetail || ''),
         dialogue: String(dialogue || ''),
         sceneSummary: String(sceneSummary || ''),
@@ -5060,9 +5118,16 @@ async function startServer() {
         continuityBible = '',
         sceneIndex,
         totalScenes,
+        sceneTitle = '',
+        settingDetail = '',
+        cameraMovement = '',
+        cameraEquipment = '',
         charactersInScene = '',
         actionDetail = '',
         dialogue = '',
+        narration = '',
+        videoTimeline = '',
+        enableVoiceover = true,
         sceneSummary = '',
         costume = '',
         cameraAngle = '',
@@ -5084,16 +5149,29 @@ async function startServer() {
         continuityBible?: string;
         sceneIndex?: number;
         totalScenes?: number;
+        sceneTitle?: string;
+        settingDetail?: string;
+        cameraMovement?: string;
+        cameraEquipment?: string;
         charactersInScene?: string;
         actionDetail?: string;
         dialogue?: string;
+        narration?: string;
+        videoTimeline?: string;
+        enableVoiceover?: boolean;
         sceneSummary?: string;
         costume?: string;
         cameraAngle?: string;
         vfxNotes?: string;
         selectedCharacterIds?: string[];
         sceneImageDataUrl?: string;
-        characterRefs?: { id?: string; dataUrl: string; name?: string; description?: string }[];
+        characterRefs?: {
+          id?: string;
+          dataUrl: string;
+          name?: string;
+          description?: string;
+          syncProfile?: CharacterFivePartProfile;
+        }[];
       };
       if (!String(prompt).trim()) {
         return res.status(400).json({ error: 'Thiếu mô tả phân cảnh để dựng clip AI.' });
@@ -5112,9 +5190,16 @@ async function startServer() {
         continuityBible: String(continuityBible || ''),
         sceneIndex: typeof sceneIndex === 'number' ? sceneIndex : undefined,
         totalScenes: typeof totalScenes === 'number' ? totalScenes : undefined,
+        sceneTitle: String(sceneTitle || ''),
+        settingDetail: String(settingDetail || ''),
+        cameraMovement: String(cameraMovement || ''),
+        cameraEquipment: String(cameraEquipment || ''),
         charactersInScene: String(charactersInScene || ''),
         actionDetail: String(actionDetail || ''),
         dialogue: String(dialogue || ''),
+        narration: String(narration || ''),
+        videoTimeline: String(videoTimeline || ''),
+        enableVoiceover: enableVoiceover !== false,
         sceneSummary: String(sceneSummary || ''),
         costume: String(costume || ''),
         cameraAngle: String(cameraAngle || ''),
@@ -5261,6 +5346,7 @@ async function startServer() {
           ageGroup?: 'auto' | 'child' | 'youth' | 'adult_male' | 'adult_female' | 'middle_aged' | 'elderly';
           gender?: 'auto' | 'male' | 'female';
           voiceId?: Exclude<DerivativeVoiceId, 'none'>;
+          syncProfile?: CharacterFivePartProfile;
         }[];
         characterBible?: string;
         settingBible?: string;
@@ -5483,6 +5569,7 @@ async function startServer() {
           voiceId?: Exclude<DerivativeVoiceId, 'none'>;
           offlineVoice?: string;
           voiceStyle?: string;
+          syncProfile?: CharacterFivePartProfile;
         }[];
         sessdata?: string;
         ytCookies?: string;

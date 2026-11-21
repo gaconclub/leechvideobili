@@ -40,6 +40,7 @@ import {
   AiProviderId,
   BrollSourceId,
   CharacterAgeGroup,
+  CharacterFivePartProfile,
   DerivativeAspectRatio,
   DerivativeBlueprint,
   DerivativeJobState,
@@ -70,6 +71,7 @@ import { formatBytes, formatDuration } from '../utils/formatters';
 import { getDiscoveryThumbUrl } from './VideoDiscoveryCard';
 import {
   autoFixClientBlueprint,
+  buildSceneTimelineFallbackClient,
   CHARACTER_AGE_GROUP_OPTIONS,
   compileScenePromptClient,
   compressImageFileToDataUrl,
@@ -189,6 +191,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [projectStatusMsg, setProjectStatusMsg] = useState('');
 
   const [characters, setCharacters] = useState<StudioCharacterRef[]>([]);
+  const [selectedCharacterId, setSelectedCharacterId] = useState<string>('');
+  const [isAnalyzingCharacters, setIsAnalyzingCharacters] = useState(false);
+  const [charAnalyzeError, setCharAnalyzeError] = useState('');
   const [charNameInput, setCharNameInput] = useState('');
   const [charPromptInput, setCharPromptInput] = useState('');
   const [charAgeGroupInput, setCharAgeGroupInput] = useState<CharacterAgeGroup>('auto');
@@ -198,6 +203,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [isGeneratingChar, setIsGeneratingChar] = useState(false);
   const [charError, setCharError] = useState('');
   const charUploadInputRef = useRef<HTMLInputElement>(null);
+
+  const selectedChar = characters.find((c) => c.id === selectedCharacterId) || characters[0] || null;
 
   const [characterBibleDraft, setCharacterBibleDraft] = useState('');
   const [settingBibleDraft, setSettingBibleDraft] = useState('');
@@ -359,6 +366,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [voiceMode, setVoiceMode] = useState<DerivativeVoiceMode>(
     studioDefaults.voice === 'none' ? 'none' : 'ai_online'
   );
+  const lastActiveVoiceModeRef = useRef<Exclude<DerivativeVoiceMode, 'none'>>('ai_online');
   const [voice, setVoice] = useState<Exclude<DerivativeVoiceId, 'none'>>(
     studioDefaults.voice === 'none' ? 'Kore' : studioDefaults.voice
   );
@@ -370,6 +378,24 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewObjectUrlRef = useRef<string | null>(null);
   const [keepSourceAudio, setKeepSourceAudio] = useState(studioDefaults.keepSourceAudio);
+
+  useEffect(() => {
+    if (voiceMode !== 'none') {
+      lastActiveVoiceModeRef.current = voiceMode;
+    }
+  }, [voiceMode]);
+
+  const handleToggleVoiceover = (enable: boolean) => {
+    if (enable) {
+      setVoiceMode(lastActiveVoiceModeRef.current || 'ai_online');
+    } else {
+      if (voiceMode !== 'none') {
+        lastActiveVoiceModeRef.current = voiceMode;
+      }
+      setVoiceMode('none');
+    }
+    setBlueprint((prev) => (prev ? { ...prev, enableVoiceover: enable } : prev));
+  };
 
   const [jobsByKey, setJobsByKey] = useState<Record<string, DerivativeJobState>>({});
   const [isGeneratingFinal, setIsGeneratingFinal] = useState(false);
@@ -839,6 +865,107 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setCharacters((prev) => prev.map((c) => (c.id === charId ? { ...c, ...patch } : c)));
   };
 
+  const updateSelectedCharacterSyncProfile = (
+    charId: string,
+    field: keyof CharacterFivePartProfile,
+    value: string
+  ) => {
+    setCharacters((prev) =>
+      prev.map((c) => {
+        if (c.id !== charId) return c;
+        const currentProfile: CharacterFivePartProfile = c.syncProfile || {
+          face: '',
+          physique: '',
+          costume: '',
+          voice: '',
+          distinguishingMarks: '',
+        };
+        return {
+          ...c,
+          syncProfile: {
+            ...currentProfile,
+            [field]: value,
+          },
+        };
+      })
+    );
+  };
+
+  const handleAnalyzeAllCharacters = async () => {
+    if (characters.length === 0 || isAnalyzingCharacters) return;
+    setIsAnalyzingCharacters(true);
+    setCharAnalyzeError('');
+    setCharError('');
+    setShowDraftBible(true);
+    try {
+      const { res, data } = await fetchStudioJsonWithAutoRetry<{
+        profiles?: {
+          id: string;
+          name: string;
+          syncProfile: CharacterFivePartProfile;
+          suggestedDescription?: string;
+          suggestedAgeGroup?: Exclude<CharacterAgeGroup, 'auto'>;
+          suggestedGender?: 'male' | 'female';
+        }[];
+        error?: string;
+      }>('/api/studio/analyze-characters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          characters: characters.map((c) => ({
+            id: c.id,
+            name: c.name,
+            dataUrl: c.dataUrl,
+            description: c.description,
+            ageGroup: c.ageGroup,
+            gender: c.gender,
+            syncProfile: c.syncProfile,
+          })),
+          videoStyle: blueprint?.videoStyle || videoStyle,
+          customStylePrompt: customStylePrompt.trim(),
+          ideaContext: (expandedIdeaPrompt || ideaPrompt || blueprint?.derivativeTitle || '').trim(),
+          aiProvider,
+        }),
+      });
+      if (!res.ok || !Array.isArray(data.profiles)) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      const profileById = new Map(data.profiles.map((p) => [p.id, p]));
+      setCharacters((prev) =>
+        prev.map((c) => {
+          const found = profileById.get(c.id);
+          if (!found) return c;
+          const ageMeta = found.suggestedAgeGroup
+            ? CHARACTER_AGE_GROUP_OPTIONS.find((a) => a.value === found.suggestedAgeGroup)
+            : undefined;
+          return {
+            ...c,
+            syncProfile: found.syncProfile,
+            description: c.description?.trim() ? c.description : found.suggestedDescription,
+            ageGroup:
+              !c.ageGroup || c.ageGroup === 'auto'
+                ? found.suggestedAgeGroup || c.ageGroup
+                : c.ageGroup,
+            gender:
+              !c.gender || c.gender === 'auto'
+                ? found.suggestedGender || c.gender
+                : c.gender,
+            ...(ageMeta && (!c.voiceMode || c.voiceMode === 'default') && !c.voiceId
+              ? { voiceId: ageMeta.defaultVoiceId, voiceStyle: ageMeta.pitchDirective }
+              : {}),
+          };
+        })
+      );
+      if (!selectedCharacterId && characters[0]) {
+        setSelectedCharacterId(characters[0].id);
+      }
+    } catch (err: any) {
+      setCharAnalyzeError(err?.message || 'AI chưa phân tích được đầy đủ hồ sơ 5 thành phần nhân vật.');
+    } finally {
+      setIsAnalyzingCharacters(false);
+    }
+  };
+
   const handleUploadCharacters = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
@@ -846,8 +973,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setCharError('');
     try {
       const voiceCfg = buildNewCharacterVoiceConfig();
+      let lastCreatedId = '';
       for (const file of files.slice(0, 8)) {
         const dataUrl = await compressImageFileToDataUrl(file, 960);
+        const newId = `char_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        lastCreatedId = newId;
         setCharacters((prev) => {
           if (prev.length >= 8) return prev;
           const fallbackName = file.name.replace(/\.[^.]+$/, '');
@@ -860,7 +990,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           return [
             ...prev,
             {
-              id: `char_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              id: newId,
               name: finalName,
               dataUrl,
               description: charPromptInput.trim() || undefined,
@@ -869,6 +999,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             },
           ];
         });
+      }
+      if (lastCreatedId) {
+        setSelectedCharacterId(lastCreatedId);
       }
       setCharNameInput('');
     } catch (err: any) {
@@ -909,10 +1042,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       if (!res.ok || !data.dataUrl) throw new Error(data.error || `HTTP ${res.status}`);
       const generatedUrl = data.dataUrl;
       const voiceCfg = buildNewCharacterVoiceConfig();
+      const newCharId = `char_ai_${Date.now()}`;
       setCharacters((prev) => [
         ...prev.slice(0, 7),
         {
-          id: `char_ai_${Date.now()}`,
+          id: newCharId,
           name: (overrideName ?? charNameInput).trim() || `Nhân vật ${prev.length + 1}`,
           description: desc,
           dataUrl: generatedUrl,
@@ -920,6 +1054,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           ...voiceCfg,
         },
       ]);
+      setSelectedCharacterId(newCharId);
       if (!overrideName) setCharNameInput('');
     } catch (err: any) {
       setCharError(err?.message || 'Không thể tạo ảnh nhân vật AI.');
@@ -1018,7 +1153,18 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             : c.voiceMode === 'ai_online'
             ? `Giọng Gemini miền Bắc VN (Hà Nội): ${c.voiceId || voice}`
             : `AI tự phân tích tuổi chọn giọng Bắc VN (${ageMeta?.defaultVoiceId || 'phù hợp'})`;
-        return [c.name, ageLabel, c.description, voiceNote].filter(Boolean).join(' - ');
+        const syncNote = c.syncProfile
+          ? [
+              c.syncProfile.face ? `Mặt: ${c.syncProfile.face}` : '',
+              c.syncProfile.physique ? `Dáng: ${c.syncProfile.physique}` : '',
+              c.syncProfile.costume ? `Trang phục: ${c.syncProfile.costume}` : '',
+              c.syncProfile.voice ? `Chất giọng: ${c.syncProfile.voice}` : '',
+              c.syncProfile.distinguishingMarks ? `Nhận dạng: ${c.syncProfile.distinguishingMarks}` : '',
+            ]
+              .filter(Boolean)
+              .join(', ')
+          : '';
+        return [c.name, ageLabel, syncNote || c.description, voiceNote].filter(Boolean).join(' - ');
       })
       .join('; ');
 
@@ -1069,6 +1215,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             ageGroup: c.ageGroup,
             gender: c.gender,
             voiceId: c.voiceId,
+            syncProfile: c.syncProfile,
           })),
           characterBible: characterBibleDraft.trim(),
           settingBible: settingBibleDraft.trim(),
@@ -1146,8 +1293,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       const styleMeta = resolveVideoStyleMetaClient(prev.videoStyle || videoStyle, learnedStyles, customStylePrompt);
       const lastScene = prev.scenes[idx - 1];
       const sceneCode = `Scene ${String(idx + 1).padStart(2, '0')}`;
-      const newScene: DerivativeScene = {
-        id: `scene_custom_${Date.now()}`,
+      const baseSceneFields: Partial<DerivativeScene> = {
         sceneIndex: idx + 1,
         sceneTitle: `Tiếp nối diễn biến (${sceneCode})`,
         sceneSummary: 'Nhân vật tiếp tục hành động nối tiếp trạng thái cuối của phân cảnh trước.',
@@ -1173,6 +1319,30 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           ? `Tiếp nối từ ${lastScene.sceneEndState}`
           : `Tiếp nối mạch từ Scene ${String(Math.max(1, idx)).padStart(2, '0')}`,
         sceneEndState: 'Nhân vật hoàn tất động tác chuyển sang nhịp tiếp theo',
+      };
+      const newScene: DerivativeScene = {
+        id: `scene_custom_${Date.now()}`,
+        sceneIndex: baseSceneFields.sceneIndex!,
+        sceneTitle: baseSceneFields.sceneTitle!,
+        sceneSummary: baseSceneFields.sceneSummary!,
+        durationSec: baseSceneFields.durationSec!,
+        sourceVideoIndex: baseSceneFields.sourceVideoIndex!,
+        sourceStartPercent: baseSceneFields.sourceStartPercent!,
+        onScreenText: baseSceneFields.onScreenText!,
+        dialogue: baseSceneFields.dialogue!,
+        narration: baseSceneFields.narration!,
+        charactersInScene: baseSceneFields.charactersInScene,
+        actionDetail: baseSceneFields.actionDetail,
+        settingDetail: baseSceneFields.settingDetail,
+        cameraAngle: baseSceneFields.cameraAngle,
+        cameraMovement: baseSceneFields.cameraMovement,
+        cameraEquipment: baseSceneFields.cameraEquipment,
+        lighting: baseSceneFields.lighting,
+        costume: baseSceneFields.costume,
+        shotStyle: baseSceneFields.shotStyle,
+        continuityNote: baseSceneFields.continuityNote,
+        sceneEndState: baseSceneFields.sceneEndState,
+        videoTimeline: buildSceneTimelineFallbackClient(baseSceneFields),
         imagePrompt: 'Khung hình rõ nét, bố cục cân đối giữ nguyên ngoại hình nhân vật, trang phục, ánh sáng và bối cảnh đồng bộ.',
         videoPrompt: 'Chuyển động tự nhiên mượt mà, máy quay đẩy chậm giữ trọn không khí và tính liên tục.',
         visualNote: 'Nhân vật xuất hiện nối tiếp tự nhiên trong bối cảnh đồng bộ.',
@@ -1249,6 +1419,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       visualStyleBible: activeVisualStyleBible,
       costumeBible: activeCostumeBible,
       continuityBible: activeContinuityBible,
+      characterRefs: characters,
+      enableVoiceover: voiceMode !== 'none',
       totalScenes: blueprint.scenes.length,
       mediaType: 'image',
       hasAttachedRefs: characters.length > 0,
@@ -1277,7 +1449,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             continuityBible: activeContinuityBible,
             sceneIndex: sc.sceneIndex,
             totalScenes: blueprint.scenes.length,
+            sceneTitle: sc.sceneTitle || '',
             charactersInScene: sc.charactersInScene || '',
+            settingDetail: sc.settingDetail || '',
             actionDetail: sc.actionDetail || '',
             dialogue: sc.dialogue || '',
             sceneSummary: sc.sceneSummary || '',
@@ -1290,12 +1464,18 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               dataUrl: c.dataUrl,
               name: c.name,
               description: c.description,
+              syncProfile: c.syncProfile,
             })),
           }),
         }
       );
       if (!res.ok || !data.dataUrl) throw new Error(data.error || `HTTP ${res.status}`);
-      updateScene(sc.id, { sceneImageDataUrl: data.dataUrl });
+      updateScene(sc.id, {
+        sceneImageDataUrl: data.dataUrl,
+        sceneImageSource: 'ai',
+        omniClipAssetId: undefined,
+        omniClipPreviewUrl: undefined,
+      });
       return true;
     } catch (err: any) {
       const errMsg = err?.message || `Không thể tạo ảnh cho phân cảnh ${sc.sceneIndex}.`;
@@ -1352,10 +1532,34 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const handleUploadSceneImage = async (sceneId: string, file: File) => {
     try {
       const dataUrl = await compressImageFileToDataUrl(file, 1280);
-      updateScene(sceneId, { sceneImageDataUrl: dataUrl });
+      setSceneImageErrors((prev) => {
+        if (!(sceneId in prev)) return prev;
+        const next = { ...prev };
+        delete next[sceneId];
+        return next;
+      });
+      updateScene(sceneId, {
+        sceneImageDataUrl: dataUrl,
+        sceneImageSource: 'uploaded',
+        omniClipAssetId: undefined,
+        omniClipPreviewUrl: undefined,
+      });
     } catch (err: any) {
       setSceneMediaError(err?.message || 'Không đọc được ảnh tải lên.');
     }
+  };
+
+  const handleDeleteSceneImage = (sceneId: string) => {
+    setSceneImageErrors((prev) => {
+      if (!(sceneId in prev)) return prev;
+      const next = { ...prev };
+      delete next[sceneId];
+      return next;
+    });
+    updateScene(sceneId, {
+      sceneImageDataUrl: undefined,
+      sceneImageSource: undefined,
+    });
   };
 
   // Generate AI Video Clip with Gemini Omni Flash or Muse2API keeping full consistency context
@@ -1379,6 +1583,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       visualStyleBible: activeVisualStyleBible,
       costumeBible: activeCostumeBible,
       continuityBible: activeContinuityBible,
+      characterRefs: characters,
+      enableVoiceover: voiceMode !== 'none',
       totalScenes: blueprint.scenes.length,
       mediaType: 'video',
       hasAttachedRefs: Boolean(sc.sceneImageDataUrl || characters.length > 0),
@@ -1408,9 +1614,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           continuityBible: activeContinuityBible,
           sceneIndex: sc.sceneIndex,
           totalScenes: blueprint.scenes.length,
+          sceneTitle: sc.sceneTitle || '',
+          settingDetail: sc.settingDetail || '',
+          cameraMovement: sc.cameraMovement || '',
+          cameraEquipment: sc.cameraEquipment || '',
           charactersInScene: sc.charactersInScene || '',
           actionDetail: sc.actionDetail || '',
           dialogue: sc.dialogue || '',
+          narration: voiceMode !== 'none' ? sc.narration || '' : '',
+          videoTimeline: (sc.videoTimeline || '').trim() || buildSceneTimelineFallbackClient(sc),
+          enableVoiceover: voiceMode !== 'none',
           sceneSummary: sc.sceneSummary || '',
           costume: sc.costume || '',
           cameraAngle: sc.cameraAngle || '',
@@ -1422,6 +1635,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             dataUrl: c.dataUrl,
             name: c.name,
             description: c.description,
+            syncProfile: c.syncProfile,
           })),
         }),
       });
@@ -1731,6 +1945,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           offlineVoice: c.offlineVoice,
           voiceStyle: c.voiceStyle,
           accentLock: c.accentLock || 'vn_north',
+          syncProfile: c.syncProfile,
         })),
         sessdata,
         ytCookies,
@@ -2651,10 +2866,17 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
               {characters.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-80 overflow-y-auto pr-1">
-                  {characters.map((ch, idx) => (
+                  {characters.map((ch, idx) => {
+                    const isActiveChar = selectedChar?.id === ch.id;
+                    return (
                     <div
                       key={ch.id}
-                      className="flex gap-2.5 p-2 rounded-xl border border-slate-200 dark:border-slate-400/20 bg-slate-50/90 dark:bg-[#0c1021]/90"
+                      onClick={() => setSelectedCharacterId(ch.id)}
+                      className={`flex gap-2.5 p-2 rounded-xl border transition cursor-pointer ${
+                        isActiveChar
+                          ? 'border-violet-500/70 ring-1 ring-violet-400/35 bg-violet-500/5 dark:bg-violet-500/10'
+                          : 'border-slate-200 dark:border-slate-400/20 bg-slate-50/90 dark:bg-[#0c1021]/90 hover:border-violet-400/40'
+                      }`}
                     >
                       <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-200 dark:bg-slate-800 shrink-0">
                         <img src={ch.dataUrl} alt={ch.name} className="w-full h-full object-cover" />
@@ -2675,9 +2897,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                           />
                           <button
                             type="button"
-                            onClick={() =>
-                              setCharacters((prev) => prev.filter((item) => item.id !== ch.id))
-                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCharacters((prev) => {
+                                const next = prev.filter((item) => item.id !== ch.id);
+                                if (selectedCharacterId === ch.id) {
+                                  setSelectedCharacterId(next[0]?.id || '');
+                                }
+                                return next;
+                              });
+                            }}
                             aria-label="Xóa nhân vật"
                             title="Xóa nhân vật"
                             className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer shrink-0"
@@ -2791,7 +3020,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                           <button
                             type="button"
                             disabled={previewingSceneId === `char_${ch.id}`}
-                            onClick={() =>
+                            onClick={(e) => {
+                              e.stopPropagation();
                               void handleSpeakOfflineBrowserPreview(
                                 `Xin chào, tôi là ${ch.name || 'nhân vật chính'}, nói giọng miền Bắc Việt Nam.`,
                                 `char_${ch.id}`,
@@ -2799,8 +3029,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                                 ch.offlineVoice,
                                 ch.voiceId || voice,
                                 ch.name
-                              )
-                            }
+                              );
+                            }}
                             title="Nghe thử giọng Gemini miền Bắc VN của nhân vật này"
                             className="px-1.5 h-6 text-[10px] font-medium bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30 rounded-md cursor-pointer shrink-0 disabled:opacity-50"
                           >
@@ -2817,59 +3047,237 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                         />
                       </div>
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
               )}
 
-              {/* Collapsible Pre-generation 5-Bible Notes */}
-              <div className="pt-1 border-t border-slate-200/80 dark:border-slate-400/15">
-                <button
-                  type="button"
-                  onClick={() => setShowDraftBible((v) => !v)}
-                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-cyan-600 dark:hover:text-cyan-300 cursor-pointer"
-                >
-                  {showDraftBible ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                  <span>Khóa trước Hồ sơ đồng bộ 5 thành phần (tùy chọn)</span>
-                </button>
+              {/* Collapsible Pre-generation 5-Bible Notes — Per-Character Independent Sync Profiles */}
+              <div className="pt-1.5 border-t border-slate-200/80 dark:border-slate-400/15 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowDraftBible((v) => !v)}
+                    className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:text-cyan-600 dark:hover:text-cyan-300 cursor-pointer"
+                  >
+                    {showDraftBible ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    <span>Khóa trước Hồ sơ đồng bộ 5 thành phần (tùy chọn)</span>
+                  </button>
+
+                  {characters.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={isAnalyzingCharacters}
+                      onClick={() => void handleAnalyzeAllCharacters()}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold text-violet-700 dark:text-violet-200 bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/30 rounded-lg transition cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                    >
+                      {isAnalyzingCharacters ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3 h-3" />
+                      )}
+                      <span>
+                        {isAnalyzingCharacters
+                          ? `AI đang phân tích ${characters.length} nhân vật...`
+                          : `AI tự phân tích tất cả nhân vật (${characters.length})`}
+                      </span>
+                    </button>
+                  )}
+                </div>
+
+                {charAnalyzeError && (
+                  <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-800 dark:text-amber-200">
+                    {charAnalyzeError}
+                  </div>
+                )}
 
                 {showDraftBible && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2.5 text-xs">
-                    <input
-                      type="text"
-                      value={characterBibleDraft}
-                      onChange={(e) => setCharacterBibleDraft(e.target.value)}
-                      placeholder="1. Ngoại hình nhân vật cố định..."
-                      className={inputCls}
-                    />
-                    <input
-                      type="text"
-                      value={costumeBibleDraft}
-                      onChange={(e) => setCostumeBibleDraft(e.target.value)}
-                      placeholder="2. Trang phục & phụ kiện..."
-                      className={inputCls}
-                    />
-                    <input
-                      type="text"
-                      value={visualStyleBibleDraft}
-                      onChange={(e) => setVisualStyleBibleDraft(e.target.value)}
-                      placeholder="3. Bảng màu & chất liệu hình ảnh..."
-                      className={inputCls}
-                    />
-                    <input
-                      type="text"
-                      value={continuityBibleDraft}
-                      onChange={(e) => setContinuityBibleDraft(e.target.value)}
-                      placeholder="4. Trục liên tục câu chuyện..."
-                      className={inputCls}
-                    />
-                    {studioMode === 'derivative' && (
-                      <input
-                        type="text"
-                        value={settingBibleDraft}
-                        onChange={(e) => setSettingBibleDraft(e.target.value)}
-                        placeholder="5. Bối cảnh & không gian cố định..."
-                        className={`sm:col-span-2 ${inputCls}`}
-                      />
+                  <div className="space-y-2.5 pt-1 text-xs">
+                    {characters.length > 0 && selectedChar ? (
+                      <>
+                        <div className="p-2.5 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/20 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {characters.map((ch, idx) => {
+                                const isSel = ch.id === selectedChar.id;
+                                const hasProfile = Boolean(
+                                  ch.syncProfile?.face ||
+                                    ch.syncProfile?.physique ||
+                                    ch.syncProfile?.costume
+                                );
+                                return (
+                                  <button
+                                    key={ch.id}
+                                    type="button"
+                                    onClick={() => setSelectedCharacterId(ch.id)}
+                                    className={`inline-flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-lg border transition cursor-pointer ${
+                                      isSel
+                                        ? 'bg-violet-600 text-white border-violet-500 font-semibold shadow-sm'
+                                        : 'bg-white dark:bg-[#131a35] border-slate-200 dark:border-slate-400/20 text-slate-700 dark:text-slate-200 hover:border-violet-400/50'
+                                    }`}
+                                  >
+                                    <span className="font-mono text-[10px] opacity-80">#{idx + 1}</span>
+                                    <span className="max-w-[110px] truncate">
+                                      {ch.name || `Nhân vật ${idx + 1}`}
+                                    </span>
+                                    {hasProfile && (
+                                      <CheckCircle2
+                                        className={`w-3 h-3 shrink-0 ${
+                                          isSel ? 'text-white' : 'text-emerald-500'
+                                        }`}
+                                      />
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300">
+                              Đang chọn: <strong>{selectedChar.name}</strong>
+                            </span>
+                          </div>
+
+                          <div key={selectedChar.id} className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                            <label className="space-y-0.5">
+                              <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                1. Gương mặt ({selectedChar.name})
+                              </span>
+                              <input
+                                type="text"
+                                value={selectedChar.syncProfile?.face ?? ''}
+                                onChange={(e) =>
+                                  updateSelectedCharacterSyncProfile(selectedChar.id, 'face', e.target.value)
+                                }
+                                placeholder="Kiểu tóc, màu mắt, đường nét khuôn mặt..."
+                                className={inputCls}
+                              />
+                            </label>
+                            <label className="space-y-0.5">
+                              <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                2. Vóc dáng ({selectedChar.name})
+                              </span>
+                              <input
+                                type="text"
+                                value={selectedChar.syncProfile?.physique ?? ''}
+                                onChange={(e) =>
+                                  updateSelectedCharacterSyncProfile(selectedChar.id, 'physique', e.target.value)
+                                }
+                                placeholder="Chiều cao, dáng người, phong thái..."
+                                className={inputCls}
+                              />
+                            </label>
+                            <label className="space-y-0.5">
+                              <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                3. Trang phục ({selectedChar.name})
+                              </span>
+                              <input
+                                type="text"
+                                value={selectedChar.syncProfile?.costume ?? ''}
+                                onChange={(e) =>
+                                  updateSelectedCharacterSyncProfile(selectedChar.id, 'costume', e.target.value)
+                                }
+                                placeholder="Quần áo, màu sắc chất liệu, giày dép..."
+                                className={inputCls}
+                              />
+                            </label>
+                            <label className="space-y-0.5">
+                              <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                4. Giọng nói ({selectedChar.name})
+                              </span>
+                              <input
+                                type="text"
+                                value={selectedChar.syncProfile?.voice ?? ''}
+                                onChange={(e) =>
+                                  updateSelectedCharacterSyncProfile(selectedChar.id, 'voice', e.target.value)
+                                }
+                                placeholder="Cao độ, âm sắc, giọng Bắc VN chuẩn Hà Nội..."
+                                className={inputCls}
+                              />
+                            </label>
+                            <label className="sm:col-span-2 space-y-0.5">
+                              <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                5. Đặc điểm nhận dạng riêng ({selectedChar.name})
+                              </span>
+                              <input
+                                type="text"
+                                value={selectedChar.syncProfile?.distinguishingMarks ?? ''}
+                                onChange={(e) =>
+                                  updateSelectedCharacterSyncProfile(
+                                    selectedChar.id,
+                                    'distinguishingMarks',
+                                    e.target.value
+                                  )
+                                }
+                                placeholder="Sẹo, kính, phụ kiện, nốt ruồi, dấu hiệu phân biệt với nhân vật khác..."
+                                className={inputCls}
+                              />
+                            </label>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <input
+                            type="text"
+                            value={settingBibleDraft}
+                            onChange={(e) => setSettingBibleDraft(e.target.value)}
+                            placeholder="Bối cảnh chung dự án..."
+                            className={inputCls}
+                          />
+                          <input
+                            type="text"
+                            value={visualStyleBibleDraft}
+                            onChange={(e) => setVisualStyleBibleDraft(e.target.value)}
+                            placeholder="Bảng màu & ánh sáng..."
+                            className={inputCls}
+                          />
+                          <input
+                            type="text"
+                            value={continuityBibleDraft}
+                            onChange={(e) => setContinuityBibleDraft(e.target.value)}
+                            placeholder="Mạch liên tục chung..."
+                            className={inputCls}
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          value={characterBibleDraft}
+                          onChange={(e) => setCharacterBibleDraft(e.target.value)}
+                          placeholder="1. Ngoại hình nhân vật cố định..."
+                          className={inputCls}
+                        />
+                        <input
+                          type="text"
+                          value={costumeBibleDraft}
+                          onChange={(e) => setCostumeBibleDraft(e.target.value)}
+                          placeholder="2. Trang phục & phụ kiện..."
+                          className={inputCls}
+                        />
+                        <input
+                          type="text"
+                          value={visualStyleBibleDraft}
+                          onChange={(e) => setVisualStyleBibleDraft(e.target.value)}
+                          placeholder="3. Bảng màu & chất liệu hình ảnh..."
+                          className={inputCls}
+                        />
+                        <input
+                          type="text"
+                          value={continuityBibleDraft}
+                          onChange={(e) => setContinuityBibleDraft(e.target.value)}
+                          placeholder="4. Trục liên tục câu chuyện..."
+                          className={inputCls}
+                        />
+                        {studioMode === 'derivative' && (
+                          <input
+                            type="text"
+                            value={settingBibleDraft}
+                            onChange={(e) => setSettingBibleDraft(e.target.value)}
+                            placeholder="5. Bối cảnh & không gian cố định..."
+                            className={`sm:col-span-2 ${inputCls}`}
+                          />
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
@@ -3236,6 +3644,45 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                         AI tự do sáng tạo
                       </div>
                     )}
+                  </div>
+                </div>
+
+                {/* Accessible BẬT / TẮT Lồng tiếng (Thuyết minh / Giọng dẫn) Toggle */}
+                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/80 border border-slate-200 dark:border-slate-400/20">
+                  <div className="space-y-0.5 min-w-0">
+                    <div className="flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-100">
+                      <Mic className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-300 shrink-0" />
+                      <span>Lồng tiếng (Thuyết minh / Giọng dẫn)</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                      {voiceMode === 'none'
+                        ? 'Đang TẮT thuyết minh dẫn chuyện (vẫn giữ lời thoại trực tiếp nhân vật lip-sync nếu có).'
+                        : 'Đang BẬT thuyết minh dẫn chuyện tách biệt hoàn toàn với lời thoại nhân vật.'}
+                    </p>
+                  </div>
+                  <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-400/20 overflow-hidden bg-white dark:bg-[#131a35] shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleVoiceover(true)}
+                      className={`px-2.5 py-1 text-[11px] font-bold transition cursor-pointer ${
+                        voiceMode !== 'none'
+                          ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                          : 'text-slate-500 dark:text-slate-400'
+                      }`}
+                    >
+                      BẬT
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleVoiceover(false)}
+                      className={`px-2.5 py-1 text-[11px] font-bold transition cursor-pointer ${
+                        voiceMode === 'none'
+                          ? 'bg-rose-500/20 text-rose-700 dark:text-rose-300'
+                          : 'text-slate-500 dark:text-slate-400'
+                      }`}
+                    >
+                      TẮT
+                    </button>
                   </div>
                 </div>
 
@@ -4084,6 +4531,17 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       Khóa đồng bộ xuyên suốt từ Scene 01 → Scene {String(blueprint.scenes.length).padStart(2, '0')}
                     </span>
                     <div className="flex flex-wrap items-center gap-2">
+                      {characters.length > 0 && (
+                        <button
+                          type="button"
+                          disabled={isAnalyzingCharacters}
+                          onClick={() => void handleAnalyzeAllCharacters()}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-violet-700 dark:text-violet-200 bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/35 rounded-xl cursor-pointer disabled:opacity-50"
+                        >
+                          {isAnalyzingCharacters ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                          <span>AI phân tích tất cả nhân vật ({characters.length})</span>
+                        </button>
+                      )}
                       {characters.length < 8 && (blueprint.characterBible || characterBibleDraft) && (
                         <button
                           type="button"
@@ -4111,6 +4569,88 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       </button>
                     </div>
                   </div>
+
+                  {characters.length > 0 && selectedChar && (
+                    <div className="p-3 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/90 border border-violet-400/30 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {characters.map((ch, idx) => {
+                            const isSel = ch.id === selectedChar.id;
+                            return (
+                              <button
+                                key={ch.id}
+                                type="button"
+                                onClick={() => setSelectedCharacterId(ch.id)}
+                                className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-lg border transition cursor-pointer ${
+                                  isSel
+                                    ? 'bg-violet-600 text-white border-violet-500 font-semibold shadow-sm'
+                                    : 'bg-white dark:bg-[#131a35] border-slate-200 dark:border-slate-400/20 text-slate-700 dark:text-slate-200 hover:border-violet-400/50'
+                                }`}
+                              >
+                                <span className="font-mono text-[10px] opacity-80">#{idx + 1}</span>
+                                <span className="max-w-[120px] truncate">{ch.name || `Nhân vật ${idx + 1}`}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300">
+                          Hồ sơ 5 thành phần · Đang chọn: <strong>{selectedChar.name}</strong>
+                        </span>
+                      </div>
+
+                      <div key={selectedChar.id} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                        <input
+                          type="text"
+                          value={selectedChar.syncProfile?.face ?? ''}
+                          onChange={(e) =>
+                            updateSelectedCharacterSyncProfile(selectedChar.id, 'face', e.target.value)
+                          }
+                          placeholder="1. Gương mặt..."
+                          className={inputCls}
+                        />
+                        <input
+                          type="text"
+                          value={selectedChar.syncProfile?.physique ?? ''}
+                          onChange={(e) =>
+                            updateSelectedCharacterSyncProfile(selectedChar.id, 'physique', e.target.value)
+                          }
+                          placeholder="2. Vóc dáng..."
+                          className={inputCls}
+                        />
+                        <input
+                          type="text"
+                          value={selectedChar.syncProfile?.costume ?? ''}
+                          onChange={(e) =>
+                            updateSelectedCharacterSyncProfile(selectedChar.id, 'costume', e.target.value)
+                          }
+                          placeholder="3. Trang phục..."
+                          className={inputCls}
+                        />
+                        <input
+                          type="text"
+                          value={selectedChar.syncProfile?.voice ?? ''}
+                          onChange={(e) =>
+                            updateSelectedCharacterSyncProfile(selectedChar.id, 'voice', e.target.value)
+                          }
+                          placeholder="4. Giọng nói..."
+                          className={inputCls}
+                        />
+                        <input
+                          type="text"
+                          value={selectedChar.syncProfile?.distinguishingMarks ?? ''}
+                          onChange={(e) =>
+                            updateSelectedCharacterSyncProfile(
+                              selectedChar.id,
+                              'distinguishingMarks',
+                              e.target.value
+                            )
+                          }
+                          placeholder="5. Đặc điểm nhận dạng..."
+                          className={inputCls}
+                        />
+                      </div>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5">
                     <label className="md:col-span-6 space-y-1">
@@ -4217,6 +4757,35 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex items-center rounded-xl border border-slate-200 dark:border-slate-400/20 bg-slate-50 dark:bg-[#0c1021] p-0.5 text-[11px]">
+                    <span className="px-2 text-slate-600 dark:text-slate-300 font-medium inline-flex items-center gap-1">
+                      <Mic className="w-3 h-3 text-emerald-600 dark:text-emerald-300" />
+                      <span>Lồng tiếng:</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleVoiceover(true)}
+                      className={`px-2 py-1 rounded-lg font-bold transition cursor-pointer ${
+                        voiceMode !== 'none'
+                          ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                          : 'text-slate-500 dark:text-slate-400'
+                      }`}
+                    >
+                      BẬT
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleVoiceover(false)}
+                      className={`px-2 py-1 rounded-lg font-bold transition cursor-pointer ${
+                        voiceMode === 'none'
+                          ? 'bg-rose-500/20 text-rose-700 dark:text-rose-300'
+                          : 'text-slate-500 dark:text-slate-400'
+                      }`}
+                    >
+                      TẮT
+                    </button>
+                  </div>
+
                   <button
                     type="button"
                     disabled={isBatchGeneratingImages}
@@ -4397,6 +4966,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     onMoveScene={handleMoveScene}
                     onGenerateImage={(s) => void generateSingleSceneImage(s)}
                     onUploadSceneImage={(sceneId, f) => void handleUploadSceneImage(sceneId, f)}
+                    onDeleteSceneImage={handleDeleteSceneImage}
                     onGenerateOmniClip={(s) => void handleGenerateSceneOmniClip(s)}
                     onSpeakPreview={(txt, id) => void handleSpeakOfflineBrowserPreview(txt, id)}
                   />

@@ -333,7 +333,6 @@ export function sanitizeVisualPromptClient(rawPrompt: string): string {
   out = out
     .replace(/\[(?:SC|SHOT|SCENE|CONTINUITY|LIÊN TỤC|CHECK|NOTE)[-_:\s]*\d*[^\]]*\]/gi, ' ')
     .replace(/\b(?:SC|SHOT)[-_]?\d{1,3}\s*[:：-]/gi, ' ')
-    .replace(/\(\s*\d{1,3}\s*(?:s|giây|sec)\s*\)/gi, ' ')
     .replace(/\b\d+(?:[.,]\d+)?\s*(?:cm|mm|km|mét|met|m)\b(?![^"“”«»]*["”»])/gi, '')
     .replace(/\b(?:flat\s+lighting|neutral\s+flat\s+lighting|even\s+flat\s+backdrop)\b/gi, 'cinematic sculpted lighting');
 
@@ -341,6 +340,77 @@ export function sanitizeVisualPromptClient(rawPrompt: string): string {
     out = out.replace(pattern, replacement);
   }
   return out.replace(/\s{2,}/g, ' ').replace(/\s+([.,;:])/g, '$1').trim();
+}
+
+export function buildSceneTimelineFallbackClient(sc: Partial<DerivativeScene>): string {
+  const dur = Math.max(4, Math.min(120, Math.round(Number(sc.durationSec || 8))));
+  const t1End = Math.max(2, Math.min(dur - 2, Math.round(dur * 0.3)));
+  const t2Start = Math.min(dur - 1, t1End + 1);
+  const t2End = Math.max(t2Start, Math.min(dur - 1, Math.round(dur * 0.7)));
+  const t3Start = Math.min(dur, t2End + 1);
+
+  const angle = (sc.cameraAngle || 'Toàn cảnh / Trung cảnh').trim();
+  const move = (sc.cameraMovement || 'Đẩy máy chậm (Slow dolly-in)').trim();
+  const setting = (sc.settingDetail || 'Không gian đồng bộ theo bối cảnh').trim();
+  const chars = (sc.charactersInScene || 'Nhân vật').trim();
+  const action = (sc.actionDetail || sc.sceneSummary || 'Nhân vật thực hiện hành động chính của cảnh').trim();
+  const dialogue = (sc.dialogue || '').trim();
+  const endState = (sc.sceneEndState || 'Giữ trọn biểu cảm và chuyển động chuyển tiếp sang cảnh sau').trim();
+
+  const lines: string[] = [
+    `1s - ${t1End}s: [Góc quay: ${angle} | Camera: ${move}] Mở khung hình giới thiệu bối cảnh (${setting}) và sự xuất hiện của ${chars}.`,
+  ];
+
+  if (dialogue) {
+    lines.push(
+      `${t2Start}s - ${t2End}s: [Cận cảnh / Trung cảnh đối thoại] ${chars} trực tiếp nói lời thoại với khẩu hình khớp chính xác (lip-sync): "${dialogue}" kết hợp hành động: ${action}.`
+    );
+  } else {
+    lines.push(
+      `${t2Start}s - ${t2End}s: [Chuyển động chính | ${move}] ${chars} thực hiện rõ hành động: ${action}.`
+    );
+  }
+
+  if (t3Start <= dur) {
+    lines.push(
+      `${t3Start}s - ${dur}s: [Theo sát chuyển động | ${move}] Hoàn tất nhịp hành động hướng tới trạng thái cuối: ${endState}.`
+    );
+  }
+
+  return lines.join('\n');
+}
+
+export function formatCharacterSyncProfilesForSceneClient(
+  scene: Partial<DerivativeScene>,
+  characterRefs?: StudioCharacterRef[]
+): string {
+  if (!Array.isArray(characterRefs) || characterRefs.length === 0) return '';
+  const selectedIds = new Set(Array.isArray(scene.selectedCharacterIds) ? scene.selectedCharacterIds : []);
+  const corpus = normalizeClientMatch(
+    [scene.charactersInScene || '', scene.dialogue || '', scene.sceneSummary || '', scene.actionDetail || ''].join(' | ')
+  );
+  const matched = characterRefs.filter((c) => {
+    if (selectedIds.size > 0 && selectedIds.has(c.id)) return true;
+    const aliases = clientAliasesForName(c.name || '');
+    return aliases.some((al) => corpus.includes(al));
+  });
+  const targets = matched.length > 0 ? matched : characterRefs.slice(0, 2);
+  const blocks = targets
+    .map((c) => {
+      const sp = c.syncProfile;
+      if (!sp) return c.description?.trim() ? `${c.name}: ${c.description.trim()}` : '';
+      const fields = [
+        sp.face?.trim() ? `Gương mặt: ${sp.face.trim()}` : '',
+        sp.physique?.trim() ? `Vóc dáng: ${sp.physique.trim()}` : '',
+        sp.costume?.trim() ? `Trang phục: ${sp.costume.trim()}` : '',
+        sp.voice?.trim() ? `Giọng nói: ${sp.voice.trim()}` : '',
+        sp.distinguishingMarks?.trim() ? `Đặc điểm nhận dạng: ${sp.distinguishingMarks.trim()}` : '',
+      ].filter(Boolean);
+      if (fields.length === 0) return c.description?.trim() ? `${c.name}: ${c.description.trim()}` : '';
+      return `${c.name} (${fields.join('; ')})`;
+    })
+    .filter(Boolean);
+  return blocks.join(' | ');
 }
 
 export function compileScenePromptClient(params: {
@@ -353,6 +423,8 @@ export function compileScenePromptClient(params: {
   visualStyleBible?: string;
   costumeBible?: string;
   continuityBible?: string;
+  characterRefs?: StudioCharacterRef[];
+  enableVoiceover?: boolean;
   totalScenes?: number;
   mediaType?: 'image' | 'video';
   hasAttachedRefs?: boolean;
@@ -371,11 +443,102 @@ export function compileScenePromptClient(params: {
     `${sc.cameraAngle || ''} ${sc.imagePrompt || ''} ${sc.videoPrompt || ''} ${sc.actionDetail || ''}`
   );
 
+  // 1. Style anchor (concise) + Scene core plot (sceneSummary) FIRST
   segments.push(
     styleMeta.learned
       ? `Learned Sample Video Style (${styleMeta.label}): ${styleMeta.learned.promptDirective}`
       : `Visual Style Reference: ${styleMeta.label} (${styleMeta.desc})`
   );
+
+  if (sc.sceneSummary?.trim()) {
+    segments.push(`Diễn biến chính của phân cảnh (BẮT BUỘC bám sát nội dung này): ${sc.sceneSummary.trim()}`);
+  }
+  if (sc.sceneTitle?.trim()) {
+    segments.push(`Tên phân cảnh: ${sc.sceneTitle.trim()}`);
+  }
+
+  // 2. For VIDEO prompts: Per-second Timeline + Lip-Sync Character Dialogue come IMMEDIATELY before trailing bibles
+  const dur = Math.max(3, Math.round(Number(sc.durationSec || 8)));
+  if (mediaType === 'video') {
+    const timelineText = (sc.videoTimeline || '').trim() || buildSceneTimelineFallbackClient(sc);
+    segments.push(`Timeline phân cảnh (${dur}s): ${timelineText.replace(/\n+/g, ' | ')}`);
+    if (sc.dialogue?.trim()) {
+      segments.push(
+        `Lời thoại nhân vật nói trực tiếp (BẮT BUỘC nhân vật tự mở miệng nói đúng lời thoại với lip-sync khớp từng giây, KHÔNG đổi thành giọng thuyết minh): ${sc.dialogue.trim()}`
+      );
+    }
+    if (params.enableVoiceover !== false && sc.narration?.trim()) {
+      const narr = sc.narration.trim();
+      const dial = (sc.dialogue || '').trim();
+      if (!dial || narr !== dial) {
+        segments.push(`Bối cảnh dẫn chuyện nền (tách biệt hoàn toàn với lời thoại nhân vật): ${narr}`);
+      }
+    }
+  }
+
+  if (sc.actionDetail?.trim()) {
+    segments.push(`Hành động cụ thể: ${sc.actionDetail.trim()}`);
+  }
+  if (sc.charactersInScene?.trim()) {
+    segments.push(`Nhân vật trong cảnh: ${sc.charactersInScene.trim()}`);
+  }
+
+  const charProfileText = formatCharacterSyncProfilesForSceneClient(sc, params.characterRefs);
+  if (charProfileText) {
+    segments.push(`Hồ sơ 5 thành phần nhân vật trong cảnh: ${charProfileText}`);
+  }
+
+  if (sc.settingDetail?.trim()) {
+    segments.push(`Bối cảnh cảnh: ${sc.settingDetail.trim()}`);
+  }
+  if (!isMacroShot && sc.costume?.trim()) {
+    segments.push(`Trang phục cảnh: ${sc.costume.trim()}`);
+  }
+
+  const primary =
+    mediaType === 'video'
+      ? sc.videoPrompt?.trim() || sc.imagePrompt?.trim() || sc.visualNote?.trim()
+      : sc.imagePrompt?.trim() || sc.visualNote?.trim() || sc.videoPrompt?.trim();
+  if (primary) {
+    segments.push(`${mediaType === 'video' ? 'Prompt video' : 'Prompt hình ảnh'}: ${primary}`);
+  }
+
+  if (sc.cameraAngle?.trim()) {
+    segments.push(`Góc máy: ${sc.cameraAngle.trim()}`);
+  }
+  if (sc.cameraMovement?.trim()) {
+    segments.push(`Kiểu quay: ${sc.cameraMovement.trim()}`);
+  }
+  if (sc.cameraEquipment?.trim()) {
+    segments.push(`Thiết bị quay & ống kính: ${sc.cameraEquipment.trim()}`);
+  }
+  if (sc.lighting?.trim()) {
+    segments.push(`Ánh sáng: ${sc.lighting.trim()}`);
+  }
+  if (sc.shotStyle?.trim()) {
+    segments.push(`Phong cách quay: ${sc.shotStyle.trim()}`);
+  }
+  if (sc.vfxNotes?.trim()) {
+    segments.push(`VFX & Vật liệu: ${sc.vfxNotes.trim()}`);
+  }
+  if (sc.continuityNote?.trim()) {
+    segments.push(`Liên kết từ cảnh trước: ${sc.continuityNote.trim()}`);
+  }
+  if (mediaType === 'video') {
+    segments.push(
+      `Chuyển động thời gian thực (${dur}s): Diễn biến diễn ra đúng từng mốc thời gian, chuyển động camera & khẩu hình nhân vật khớp tự nhiên`
+    );
+  }
+  if (mediaType === 'video' && sc.sceneEndState?.trim()) {
+    segments.push(`Trạng thái cuối cảnh: ${sc.sceneEndState.trim()}`);
+  }
+  if (params.videoStyle === 'cinematic_filmmaking') {
+    segments.push(
+      'Cinematic Filmmaking Skill: Bố cục 3 lớp xuyên tiền cảnh, tương phản sáng tối điện ảnh kèm ánh sáng viền (rim light), chuyển động máy mượt mà theo nhịp dựng và vi biểu cảm chân thực'
+    );
+  }
+
+  // 3. Append 5-part synchronization bibles cleanly after the scene plot & timeline
   if (params.visualStyleBible?.trim()) {
     segments.push(`Bảng màu & Phong cách chung: ${params.visualStyleBible.trim()}`);
   }
@@ -398,60 +561,7 @@ export function compileScenePromptClient(params: {
   if (params.continuityBible?.trim()) {
     segments.push(`Story Continuity: ${params.continuityBible.trim()}`);
   }
-  if (sc.charactersInScene?.trim()) {
-    segments.push(`Nhân vật trong cảnh: ${sc.charactersInScene.trim()}`);
-  }
-  if (!isMacroShot && sc.costume?.trim()) {
-    segments.push(`Trang phục cảnh: ${sc.costume.trim()}`);
-  }
-  if (sc.settingDetail?.trim()) {
-    segments.push(`Bối cảnh cảnh: ${sc.settingDetail.trim()}`);
-  }
-  if (sc.actionDetail?.trim()) {
-    segments.push(`Hành động liên tục: ${sc.actionDetail.trim()}`);
-  }
-  if (sc.cameraAngle?.trim()) {
-    segments.push(`Góc máy: ${sc.cameraAngle.trim()}`);
-  }
-  if (sc.cameraMovement?.trim()) {
-    segments.push(`Kiểu quay: ${sc.cameraMovement.trim()}`);
-  }
-  if (sc.cameraEquipment?.trim()) {
-    segments.push(`Thiết bị quay & ống kính: ${sc.cameraEquipment.trim()}`);
-  }
-  if (sc.lighting?.trim()) {
-    segments.push(`Ánh sáng: ${sc.lighting.trim()}`);
-  }
-  if (sc.shotStyle?.trim()) {
-    segments.push(`Phong cách quay: ${sc.shotStyle.trim()}`);
-  }
-  if (sc.continuityNote?.trim()) {
-    segments.push(`Liên kết từ cảnh trước: ${sc.continuityNote.trim()}`);
-  }
-  const primary =
-    mediaType === 'video'
-      ? sc.videoPrompt?.trim() || sc.imagePrompt?.trim() || sc.visualNote?.trim()
-      : sc.imagePrompt?.trim() || sc.visualNote?.trim() || sc.videoPrompt?.trim();
-  if (primary) {
-    segments.push(`${mediaType === 'video' ? 'Prompt video' : 'Prompt hình ảnh'}: ${primary}`);
-  }
-  if (sc.vfxNotes?.trim()) {
-    segments.push(`VFX & Vật liệu: ${sc.vfxNotes.trim()}`);
-  }
-  if (mediaType === 'video') {
-    const dur = Math.max(3, Math.round(Number(sc.durationSec || 8)));
-    segments.push(
-      `Chuyển động thời gian thực (${dur}s): Toàn bộ diễn biến diễn ra liên tục trong 1 cú máy liền mạch, không cắt vụn, ưu tiên chuyển động tự nhiên và nhất quán câu chuyện`
-    );
-  }
-  if (mediaType === 'video' && sc.sceneEndState?.trim()) {
-    segments.push(`Trạng thái cuối cảnh: ${sc.sceneEndState.trim()}`);
-  }
-  if (params.videoStyle === 'cinematic_filmmaking') {
-    segments.push(
-      'Cinematic Filmmaking Skill: Bố cục 3 lớp xuyên tiền cảnh, tương phản sáng tối điện ảnh kèm ánh sáng viền (rim light), chuyển động máy mượt mà theo nhịp dựng và vi biểu cảm chân thực'
-    );
-  }
+
   let compiled = sanitizeVisualPromptClient(segments.join('. '));
   const maxChars = params.targetEngine === 'muse2api' ? 1440 : 2400;
   if (compiled.length > maxChars) {
