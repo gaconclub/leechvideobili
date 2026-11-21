@@ -45,6 +45,10 @@ import type {
   CommunicationChannelId,
   ConversationMessage,
   FastCommStats,
+  IncidentCategory,
+  IncidentDialogTurn,
+  IncidentRecord,
+  IncidentSeverity,
   MuseAgentAvatarPreset,
   MuseAgentConfig,
   MuseAgentEngineMode,
@@ -98,6 +102,7 @@ interface PersistedCommandCenterDoc {
   runs: ProductionRun[];
   tasks: CommandTask[];
   qaReports: QaInspectionReport[];
+  incidents: IncidentRecord[];
   conversations: ConversationMessage[];
   logs: CommandActivityLog[];
   backups: CommandBackupRecord[];
@@ -110,6 +115,7 @@ interface PersistedCommandCenterDoc {
   };
   cloudConfig: CloudOrchestratorConfig & { customMuse2ApiKey?: string };
   taskSeq: number;
+  incidentSeq: number;
 }
 
 const DEFAULT_AGENTS: MuseAgentConfig[] = [
@@ -269,6 +275,7 @@ function createDefaultDoc(): PersistedCommandCenterDoc {
     runs: [],
     tasks: [],
     qaReports: [],
+    incidents: [],
     conversations: [],
     logs: [],
     backups: [],
@@ -287,12 +294,15 @@ function createDefaultDoc(): PersistedCommandCenterDoc {
       parallelLimit: 2,
       qaPassThreshold: 80,
       maxRetriesPerScene: 2,
+      maxIncidentRetries: 3,
+      autoDirectorIncidentResponse: true,
       autoBackupRealtime: true,
       workerHeartbeatAt: Date.now(),
       workerBootId: WORKER_BOOT_ID,
       isCloudEndpoint: !isLocalhostUrl(cfg.baseUrl),
     },
     taskSeq: 1,
+    incidentSeq: 1,
   };
 }
 
@@ -390,6 +400,7 @@ function mapLegacyChannel(ch?: string): CommunicationChannelId {
   if (!ch || ch === 'group') return 'commander';
   if (
     ch === 'commander' ||
+    ch === 'incident' ||
     ch === 'production' ||
     ch === 'script' ||
     ch === 'visual' ||
@@ -693,6 +704,823 @@ function enqueueTask(input: {
   }
   emitCommandCenterEvent('task:updated', task);
   return task;
+}
+
+// ==========================================
+// AI DIRECTOR COMMAND & INCIDENT RESPONSE (CENTRALIZED RECOVERY)
+// ==========================================
+const INCIDENT_SMART_RULES: Record<
+  IncidentCategory,
+  { label: string; directive: string; rebuildKeyframe: boolean; targetAgent?: MuseAgentId }
+> = {
+  wrong_character: {
+    label: 'Sai nhân vật',
+    directive: 'Kiểm tra lại Character ID và hồ sơ tham chiếu 5 thành phần rồi tạo lại riêng phân cảnh.',
+    rebuildKeyframe: true,
+    targetAgent: 'muse-03',
+  },
+  wrong_dialogue: {
+    label: 'Sai lời thoại',
+    directive: 'Đối chiếu kịch bản gốc, sửa phân vai Character ID, lời thoại và timeline lời thoại trước khi tạo lại.',
+    rebuildKeyframe: false,
+    targetAgent: 'muse-04',
+  },
+  wrong_voice: {
+    label: 'Sai giọng nói',
+    directive: 'Khôi phục cấu hình giọng chuẩn theo giới tính, độ tuổi và sắc thái nhân vật trong Project Memory.',
+    rebuildKeyframe: false,
+    targetAgent: 'muse-04',
+  },
+  wrong_costume: {
+    label: 'Sai trang phục',
+    directive: 'Đối chiếu hồ sơ đồng bộ trang phục cố định của nhân vật và vẽ/tạo lại riêng cảnh lỗi.',
+    rebuildKeyframe: true,
+    targetAgent: 'muse-03',
+  },
+  wrong_setting: {
+    label: 'Sai bối cảnh',
+    directive: 'Kiểm tra dữ liệu bối cảnh, ánh sáng của cảnh trước và cảnh sau để nối mạch không gian chuẩn.',
+    rebuildKeyframe: true,
+    targetAgent: 'muse-03',
+  },
+  motion_error: {
+    label: 'Lỗi chuyển động',
+    directive: 'Điều chỉnh lại timeline theo từng giây, hành động cụ thể và chuyển động camera.',
+    rebuildKeyframe: false,
+    targetAgent: 'muse-04',
+  },
+  video_technical_error: {
+    label: 'Video lỗi kỹ thuật',
+    directive: 'Kiểm tra thông số tạo clip, âm thanh/khung hình và yêu cầu tạo lại riêng phân cảnh này.',
+    rebuildKeyframe: false,
+    targetAgent: 'muse-04',
+  },
+  muse_disconnected: {
+    label: 'Muse mất kết nối',
+    directive: 'Thử kết nối lại tài khoản khỏe mạnh, kích hoạt dự phòng hoặc chuyển giao nhiệm vụ sang Muse khả dụng.',
+    rebuildKeyframe: false,
+  },
+  recurring_error: {
+    label: 'Lỗi lặp lại',
+    directive: 'Phân tích nguyên nhân gốc từ các lần sửa trước, thay đổi phương án tạo lại từ keyframe và khóa chặt prompt chuẩn.',
+    rebuildKeyframe: true,
+    targetAgent: 'muse-03',
+  },
+};
+
+function nextIncidentCode(): string {
+  const seq = Number(storeDoc.incidentSeq) || storeDoc.incidents.length + 1;
+  const code = `INC-${String(seq).padStart(3, '0')}`;
+  storeDoc.incidentSeq = seq + 1;
+  return code;
+}
+
+function appendIncidentTurn(
+  inc: IncidentRecord,
+  turn: Omit<IncidentDialogTurn, 'id' | 'timestamp'>
+): IncidentDialogTurn {
+  const full: IncidentDialogTurn = {
+    ...turn,
+    id: `inct_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+    timestamp: Date.now(),
+  };
+  inc.history.push(full);
+  if (inc.history.length > 60) {
+    inc.history = inc.history.slice(-60);
+  }
+  inc.updatedAt = full.timestamp;
+  return full;
+}
+
+function postIncidentChannelMessage(params: {
+  inc: IncidentRecord;
+  senderId: MuseAgentId | 'user' | 'system';
+  senderName: string;
+  roleBadge: string;
+  content: string;
+  targetAgentIds?: MuseAgentId[];
+  attachments?: string[];
+}): void {
+  const senderAgent = storeDoc.agents.find((a) => a.id === params.senderId);
+  appendConversationMessage({
+    channel: 'incident',
+    projectId: params.inc.projectId,
+    runId: params.inc.runId,
+    sessionId: params.inc.sessionId,
+    sceneId: params.inc.sceneId,
+    taskId: params.inc.taskId,
+    incidentId: params.inc.id,
+    roleBadge: params.roleBadge,
+    senderType: params.senderId === 'user' ? 'user' : params.senderId === 'system' ? 'system' : 'agent',
+    senderId: params.senderId,
+    senderName: params.senderName,
+    senderAvatarUrl: senderAgent?.avatarUrl,
+    senderColor: senderAgent?.accentColor || (params.senderId === 'system' ? '#F59E0B' : undefined),
+    targetAgentIds: params.targetAgentIds,
+    messageKind: 'incident',
+    attachments: params.attachments,
+    content: params.content,
+  });
+}
+
+function classifyIncidentCategory(params: {
+  explicitCategory?: IncidentCategory;
+  qaReport?: QaInspectionReport;
+  errorText?: string;
+  priorAttempts?: number;
+}): IncidentCategory {
+  if ((params.priorAttempts || 0) >= 1) {
+    return 'recurring_error';
+  }
+  if (params.explicitCategory) return params.explicitCategory;
+
+  const text = `${params.errorText || ''} ${params.qaReport?.summary || ''} ${params.qaReport?.fixInstruction || ''}`.toLowerCase();
+  if (/mất kết nối|offline|timeout|vượt timeout|treo|econnrefused|ngoại tuyến|cookie|chưa có kết nối/i.test(text)) {
+    return 'muse_disconnected';
+  }
+  if (params.qaReport) {
+    const failed = [...params.qaReport.criteriaResults]
+      .filter((c) => !c.passed)
+      .sort((a, b) => a.score - b.score);
+    const worst = failed[0]?.criterion;
+    if (worst === 'dialogue') return 'wrong_dialogue';
+    if (worst === 'voice') return 'wrong_voice';
+    if (worst === 'character') return 'wrong_character';
+    if (worst === 'costume') return 'wrong_costume';
+    if (worst === 'setting' || worst === 'continuity') return 'wrong_setting';
+    if (worst === 'motion') return 'motion_error';
+    if (worst === 'audio') return 'video_technical_error';
+  }
+  if (/lời thoại|dialogue|phát sai|khẩu hình|lip-?sync/i.test(text)) return 'wrong_dialogue';
+  if (/giọng|voice|nam nói|nữ nói|tts/i.test(text)) return 'wrong_voice';
+  if (/trang phục|quần áo|costume/i.test(text)) return 'wrong_costume';
+  if (/bối cảnh|ánh sáng|setting|nối cảnh/i.test(text)) return 'wrong_setting';
+  if (/nhân vật|gương mặt|character|face/i.test(text)) return 'wrong_character';
+  if (/chuyển động|camera|timeline|motion/i.test(text)) return 'motion_error';
+  return 'video_technical_error';
+}
+
+function inferAgentFromCategory(category: IncidentCategory, task?: CommandTask, qaReport?: QaInspectionReport): MuseAgentId {
+  if (qaReport?.targetFixAgentId) return qaReport.targetFixAgentId;
+  if (task?.assignedAgentId) return task.assignedAgentId;
+  if (category === 'wrong_character' || category === 'wrong_costume' || category === 'wrong_setting') {
+    return 'muse-03';
+  }
+  return 'muse-04';
+}
+
+async function generateQuickDirectorDialogPair(params: {
+  inc: IncidentRecord;
+  director: MuseAgentConfig;
+  responsible: MuseAgentConfig;
+  ruleDirective: string;
+  scene?: CommandMemoryScene;
+  mem: ProjectMemory;
+}): Promise<{ directorQuestion: string; responsibleExplanation: string; directorAnalysis: string }> {
+  const scLabel = params.scene
+    ? `Cảnh ${String(params.scene.index).padStart(2, '0')} "${params.scene.title}"`
+    : params.inc.taskId || 'Nhiệm vụ sản xuất';
+  const fallbackQuestion = `${params.responsible.name}, kiểm tra gấp ${scLabel} (${params.inc.timestampRange || 'toàn cảnh'}). Báo cáo ghi nhận "${params.inc.categoryLabel}": ${params.inc.errorDescription}. Giải trình nguyên nhân sai lệch so với Project Memory v${params.mem.version} (nhân vật: ${params.mem.characters.map((c) => c.name).join(', ') || 'theo kịch bản'}).`;
+  const fallbackExplanation = `Đã đối chiếu dữ liệu gốc ${scLabel}: nguyên nhân dự kiến do ${params.inc.suspectedRootCause || 'prompt/ràng buộc tham chiếu chưa khóa chặt theo đúng phân vai và mốc thời gian kịch bản'}.`;
+  const fallbackAnalysis = `Nguyên nhân gốc: ${params.inc.suspectedRootCause}. Phương án xử lý: ${params.ruleDirective}`;
+
+  // Fast non-blocking AI synthesis (8s cap) so Director always speaks smartly without stalling on offline APIs
+  if (params.inc.category === 'muse_disconnected') {
+    return {
+      directorQuestion: fallbackQuestion,
+      responsibleExplanation: `Hệ thống ghi nhận lỗi kết nối/quá thời gian ở tài khoản hoặc kênh thực thi của ${params.responsible.name}: ${params.inc.errorDescription}`,
+      directorAnalysis: fallbackAnalysis,
+    };
+  }
+
+  try {
+    const health = await refreshIntegrationHealth(false);
+    const hasEngine = health.geminiConfigured || (health.muse2ApiReachable && health.healthyAccounts > 0);
+    if (!hasEngine) {
+      return {
+        directorQuestion: fallbackQuestion,
+        responsibleExplanation: fallbackExplanation,
+        directorAnalysis: fallbackAnalysis,
+      };
+    }
+
+    const res = await Promise.race([
+      runAgentJsonInference({
+        agent: params.director,
+        systemPrompt: `Bạn là ${params.director.name} (Đạo diễn tổng) đang trực tiếp trao đổi với ${params.responsible.name} (${params.responsible.roleTitle}) về sự cố sản xuất phim.
+Trả về DUY NHẤT JSON ngắn gọn bằng tiếng Việt:
+{
+  "directorQuestion": "Câu hỏi trực tiếp sắc bén của Đạo diễn tổng yêu cầu Muse gây lỗi giải trình (1-2 câu)",
+  "responsibleExplanation": "Lời giải trình ngắn gọn thực tế của ${params.responsible.name} sau khi kiểm tra lại prompt/dữ liệu (1-2 câu)",
+  "directorAnalysis": "Phân tích nguyên nhân gốc & phương án khắc phục cụ thể (1-2 câu)"
+}`,
+        userPrompt: `Sự cố ${params.inc.code} [${params.inc.categoryLabel}] tại ${scLabel} (mốc ${params.inc.timestampRange || '0s'}).
+Mô tả lỗi: ${params.inc.errorDescription}
+Dữ liệu tham chiếu: ${params.inc.referenceDataSummary}
+Quy tắc xử lý gợi ý: ${params.ruleDirective}`,
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8500)),
+    ]);
+
+    if (res && (res as any).parsed) {
+      const p = (res as any).parsed;
+      return {
+        directorQuestion: String(p.directorQuestion || fallbackQuestion).trim(),
+        responsibleExplanation: String(p.responsibleExplanation || fallbackExplanation).trim(),
+        directorAnalysis: String(p.directorAnalysis || fallbackAnalysis).trim(),
+      };
+    }
+  } catch {
+    // Fallback immediately if AI inference throws during incident triage
+  }
+
+  return {
+    directorQuestion: fallbackQuestion,
+    responsibleExplanation: fallbackExplanation,
+    directorAnalysis: fallbackAnalysis,
+  };
+}
+
+function resolveIncidentRecord(
+  inc: IncidentRecord,
+  resolverAgent: MuseAgentConfig,
+  summary: string
+): void {
+  if (inc.status === 'resolved') return;
+  const director = storeDoc.agents.find((a) => a.id === 'muse-01') || storeDoc.agents[0];
+  inc.status = 'resolved';
+  inc.resolvedAt = Date.now();
+  inc.resolutionSummary = summary;
+
+  appendIncidentTurn(inc, {
+    actorId: resolverAgent.id,
+    actorName: `${resolverAgent.name} (${resolverAgent.roleTitle})`,
+    roleBadge: 'Kiểm duyệt',
+    kind: 'qa_review',
+    content: summary,
+  });
+  appendIncidentTurn(inc, {
+    actorId: director.id,
+    actorName: `${director.name} (Đạo diễn tổng)`,
+    roleBadge: 'Đóng sự cố',
+    kind: 'resolution',
+    content: `Xác nhận kết quả sửa chữa đạt yêu cầu. Đóng sự cố ${inc.code}, giữ nguyên toàn bộ các phân cảnh đã duyệt và tiếp tục dây chuyền sản xuất.`,
+  });
+
+  postIncidentChannelMessage({
+    inc,
+    senderId: resolverAgent.id,
+    senderName: `${resolverAgent.name} (${resolverAgent.roleTitle})`,
+    roleBadge: 'Kiểm duyệt · ĐẠT',
+    targetAgentIds: ['muse-01'],
+    content: `[${inc.code}] ${summary}`,
+  });
+  postIncidentChannelMessage({
+    inc,
+    senderId: director.id,
+    senderName: `${director.name} (Đạo diễn tổng)`,
+    roleBadge: 'Đóng sự cố',
+    content: `[${inc.code}] Đã nghiệm thu kết quả sửa lỗi và đóng sự cố. Không làm gián đoạn các cảnh khác.`,
+  });
+  postAiBusMessage({
+    fromAgent: director,
+    toAgentIds: [inc.assignedFixAgentId, 'muse-05'],
+    runId: inc.runId,
+    projectId: inc.projectId,
+    taskId: inc.taskId,
+    sceneId: inc.sceneId,
+    content: `[DIRECTOR→RESOLVED ${inc.code}] Đã kiểm định đạt và đóng sự cố.`,
+  });
+
+  // Clear escalated error on run if no remaining unresolved escalated incidents exist
+  const run = storeDoc.runs.find((r) => r.id === inc.runId);
+  if (run) {
+    const stillEscalated = storeDoc.incidents.some(
+      (x) => x.runId === inc.runId && x.status === 'escalated_to_user'
+    );
+    if (!stillEscalated && run.status === 'needs_attention') {
+      run.status = 'producing';
+      run.error = undefined;
+      run.updatedAt = Date.now();
+      emitCommandCenterEvent('run:updated', run);
+    }
+  }
+
+  emitCommandCenterEvent('incident:updated', inc);
+}
+
+async function openOrAdvanceDirectorIncident(params: {
+  incidentId?: string;
+  runId: string;
+  task?: CommandTask;
+  scene?: CommandMemoryScene;
+  qaReport?: QaInspectionReport;
+  reporterAgentId: MuseAgentId;
+  responsibleAgentId?: MuseAgentId;
+  explicitCategory?: IncidentCategory;
+  errorDescription: string;
+  suspectedRootCause?: string;
+  initialProposal?: string;
+  severity?: IncidentSeverity;
+  artifactUrls?: string[];
+  requiresUserApproval?: boolean;
+}): Promise<{ incident: IncidentRecord; autonomousFixQueued: boolean; escalated: boolean }> {
+  const mem = getRunMemory(params.runId);
+  const director = storeDoc.agents.find((a) => a.id === 'muse-01') || storeDoc.agents[0];
+  const reporter = storeDoc.agents.find((a) => a.id === params.reporterAgentId) || storeDoc.agents[4];
+
+  // Reuse an explicit incident or an open incident for the same run + scene/task to track multi-round remediation
+  let inc = params.incidentId
+    ? storeDoc.incidents.find((x) => x.id === params.incidentId)
+    : storeDoc.incidents.find(
+        (x) =>
+          x.runId === params.runId &&
+          !['resolved', 'escalated_to_user'].includes(x.status) &&
+          ((params.scene?.sceneId && x.sceneId === params.scene.sceneId) ||
+            (!params.scene?.sceneId && params.task?.id && x.taskId === params.task.id))
+      );
+
+  const priorAttempts = inc ? inc.attemptCount : 0;
+  const category = classifyIncidentCategory({
+    explicitCategory: params.explicitCategory,
+    qaReport: params.qaReport,
+    errorText: params.errorDescription,
+    priorAttempts,
+  });
+  const rule = INCIDENT_SMART_RULES[category];
+  const responsibleId =
+    params.responsibleAgentId || inferAgentFromCategory(category, params.task, params.qaReport);
+  const responsible = storeDoc.agents.find((a) => a.id === responsibleId) || storeDoc.agents[3];
+  const maxAttempts = Math.max(
+    1,
+    Number(storeDoc.cloudConfig.maxIncidentRetries ?? storeDoc.cloudConfig.maxRetriesPerScene ?? 3)
+  );
+  const scNum = params.scene ? `Cảnh ${String(params.scene.index).padStart(2, '0')}` : params.task?.code || 'Nhiệm vụ';
+  const tsRange =
+    params.qaReport?.timestampRange ||
+    (params.scene ? `0s - ${params.scene.durationSec}s` : undefined);
+  const refSummary = params.scene
+    ? `Nhân vật: ${mem.characters.map((c) => `${c.name} (${c.voiceId})`).join(', ') || 'Theo kịch bản'} | Thoại: ${params.scene.dialogue || 'Không'} | Bối cảnh: ${params.scene.settingDetail} | Timeline: ${params.scene.videoTimeline || 'Chuẩn'}`
+    : `Project Memory v${mem.version} (${mem.characters.length} nhân vật, ${mem.scenes.length} cảnh)`;
+  const severity: IncidentSeverity =
+    params.severity ||
+    (category === 'muse_disconnected' || category === 'recurring_error'
+      ? 'critical'
+      : 'high');
+  const artifacts = Array.from(
+    new Set([
+      ...(params.artifactUrls || []),
+      ...(params.scene?.videoUrl ? [params.scene.videoUrl] : []),
+      ...(params.scene?.keyframeImageUrl ? [params.scene.keyframeImageUrl] : []),
+    ])
+  ).filter(Boolean);
+
+  if (!inc) {
+    inc = {
+      id: `inc_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+      code: nextIncidentCode(),
+      projectId: mem.projectId,
+      sessionId: params.runId,
+      runId: params.runId,
+      taskId: params.task?.id,
+      sceneId: params.scene?.sceneId,
+      sceneIndex: params.scene?.index,
+      timestampRange: tsRange,
+      reporterAgentId: reporter.id,
+      responsibleAgentId: responsible.id,
+      assignedFixAgentId: responsible.id,
+      category,
+      categoryLabel: rule.label,
+      severity,
+      priority: severity === 'critical' || severity === 'high' ? 'urgent' : 'high',
+      status: 'reported',
+      errorDescription: params.errorDescription,
+      suspectedRootCause:
+        params.suspectedRootCause ||
+        params.qaReport?.summary ||
+        'Sai lệch thông số đồng bộ hoặc lỗi thực thi giữa tác vụ và Project Memory.',
+      initialProposal: params.initialProposal || rule.directive,
+      artifactUrls: artifacts,
+      referenceDataSummary: refSummary,
+      attemptCount: 0,
+      maxAttempts,
+      remediationTaskIds: [],
+      withinAutonomyScope: !params.requiresUserApproval,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      history: [],
+    };
+    storeDoc.incidents.unshift(inc);
+    if (storeDoc.incidents.length > 150) {
+      storeDoc.incidents = storeDoc.incidents.slice(0, 150);
+    }
+  } else {
+    inc.category = category;
+    inc.categoryLabel = rule.label;
+    inc.severity = severity;
+    inc.errorDescription = params.errorDescription;
+    inc.suspectedRootCause = params.suspectedRootCause || inc.suspectedRootCause;
+    inc.artifactUrls = Array.from(new Set([...inc.artifactUrls, ...artifacts]));
+    inc.maxAttempts = maxAttempts;
+    inc.taskId = params.task?.id || inc.taskId;
+  }
+
+  // 1. Report to Muse AI 01 (Urgent)
+  const reportText = `[Báo cáo khẩn → Muse AI 01] ${inc.code} · ${scNum}${tsRange ? ` (${tsRange})` : ''}
+• Muse phát hiện: ${reporter.name} | Phụ trách: ${responsible.name} | Loại: ${inc.categoryLabel}
+• Lỗi cụ thể: ${inc.errorDescription}
+• Nguyên nhân dự kiến: ${inc.suspectedRootCause}
+• Đề xuất ban đầu: ${inc.initialProposal}`;
+
+  appendIncidentTurn(inc, {
+    actorId: reporter.id,
+    actorName: `${reporter.name} (${reporter.roleTitle})`,
+    roleBadge: 'Báo cáo lỗi',
+    kind: 'report',
+    content: reportText,
+    attachments: artifacts.slice(0, 3),
+  });
+  postIncidentChannelMessage({
+    inc,
+    senderId: reporter.id,
+    senderName: `${reporter.name} – Báo cáo lỗi`,
+    roleBadge: 'Báo cáo lỗi',
+    targetAgentIds: ['muse-01'],
+    attachments: artifacts.slice(0, 2),
+    content: `${scNum}: ${inc.errorDescription}\n(Task: ${params.task?.code || inc.taskId || 'N/A'} · Mức độ: ${severity.toUpperCase()})`,
+  });
+
+  // 2. Muse AI 01 directly investigates & dialogues with Responsible Muse
+  inc.status = 'investigating';
+  const dialog = await generateQuickDirectorDialogPair({
+    inc,
+    director,
+    responsible,
+    ruleDirective: rule.directive,
+    scene: params.scene,
+    mem,
+  });
+
+  inc.analyzedRootCause = dialog.directorAnalysis;
+
+  appendIncidentTurn(inc, {
+    actorId: director.id,
+    actorName: `${director.name} (Đạo diễn tổng)`,
+    roleBadge: 'Điều hành',
+    kind: 'question',
+    content: dialog.directorQuestion,
+  });
+  appendIncidentTurn(inc, {
+    actorId: responsible.id,
+    actorName: `${responsible.name} (${responsible.roleTitle})`,
+    roleBadge: 'Giải trình',
+    kind: 'explanation',
+    content: dialog.responsibleExplanation,
+  });
+
+  postAiBusMessage({
+    fromAgent: director,
+    toAgentIds: [responsible.id],
+    runId: params.runId,
+    projectId: mem.projectId,
+    taskId: params.task?.id,
+    sceneId: params.scene?.sceneId,
+    content: `[DIRECTOR→${responsible.code} ${inc.code}] ${dialog.directorQuestion}`,
+  });
+  postIncidentChannelMessage({
+    inc,
+    senderId: director.id,
+    senderName: `${director.name} – Điều hành`,
+    roleBadge: 'Điều hành',
+    targetAgentIds: [responsible.id],
+    content: dialog.directorQuestion,
+  });
+  postIncidentChannelMessage({
+    inc,
+    senderId: responsible.id,
+    senderName: `${responsible.name} – Giải trình`,
+    roleBadge: 'Giải trình',
+    targetAgentIds: ['muse-01'],
+    content: dialog.responsibleExplanation,
+  });
+
+  // 3. Check autonomy scope & retry limit
+  const autoEnabled = storeDoc.cloudConfig.autoDirectorIncidentResponse !== false;
+  const run = storeDoc.runs.find((r) => r.id === params.runId);
+  const health = await refreshIntegrationHealth(false);
+  const canExecuteAnyEngine =
+    health.geminiConfigured ||
+    (health.muse2ApiReachable && health.healthyAccounts > 0) ||
+    health.accounts.some((a) => a.enabled);
+
+  if (
+    !autoEnabled ||
+    params.requiresUserApproval ||
+    inc.attemptCount >= maxAttempts ||
+    (category === 'muse_disconnected' && !canExecuteAnyEngine)
+  ) {
+    const reason = params.requiresUserApproval
+      ? 'Thao tác vượt quá phạm vi tự xử lý của AI (nguy cơ xóa dữ liệu chuẩn hoặc phát sinh chi phí lớn).'
+      : !autoEnabled
+      ? 'Chế độ tự động điều hành sự cố của Đạo diễn tổng đang tắt.'
+      : category === 'muse_disconnected' && !canExecuteAnyEngine
+      ? 'Toàn bộ tài khoản Muse2API và Gemini dự phòng đều đang ngoại tuyến/chưa cấu hình, không có engine để khôi phục tự động.'
+      : `Sự cố ${inc.code} tại ${scNum} đã vượt giới hạn ${maxAttempts} vòng tự khắc phục (${inc.attemptCount}/${maxAttempts}).`;
+
+    inc.status = 'escalated_to_user';
+    inc.withinAutonomyScope = false;
+    inc.escalationReason = reason;
+
+    if (params.scene) {
+      commitSessionMemoryUpdate(params.runId, 'muse-01', `Chuyển người dùng xử lý sự cố ${inc.code}`, (m) => {
+        const target = m.scenes.find((s) => s.sceneId === params.scene!.sceneId);
+        if (target) {
+          target.qaStatus = 'escalated';
+          if (params.qaReport) {
+            target.qaScore = params.qaReport.overallScore;
+            target.qaReportId = params.qaReport.id;
+          }
+        }
+      });
+    }
+
+    if (run && !['completed', 'cancelled', 'paused'].includes(run.status)) {
+      run.escalatedScenes = getRunMemory(params.runId).scenes.filter((s) => s.qaStatus === 'escalated').length;
+      run.status = 'needs_attention';
+      run.error = `[${inc.code}] ${reason}`;
+      run.updatedAt = Date.now();
+      emitCommandCenterEvent('run:updated', run);
+    }
+
+    appendIncidentTurn(inc, {
+      actorId: director.id,
+      actorName: `${director.name} (Đạo diễn tổng)`,
+      roleBadge: 'Cần người dùng',
+      kind: 'escalation',
+      content: `${reason}\n• Phân tích của Đạo diễn tổng: ${dialog.directorAnalysis}`,
+    });
+    postIncidentChannelMessage({
+      inc,
+      senderId: director.id,
+      senderName: `${director.name} – Báo cáo khẩn`,
+      roleBadge: 'Cần can thiệp',
+      content: `[CẦN NGƯỜI DÙNG] ${reason}\n• ${dialog.directorAnalysis}`,
+    });
+    appendConversationMessage({
+      channel: 'commander',
+      projectId: mem.projectId,
+      runId: params.runId,
+      sceneId: params.scene?.sceneId,
+      incidentId: inc.id,
+      senderType: 'agent',
+      senderId: director.id,
+      senderName: `${director.name} (Đạo diễn tổng)`,
+      messageKind: 'alert',
+      content: `Sự cố ${inc.code} vượt khả năng tự xử lý: ${reason} Hãy kiểm tra tại tab Trung tâm sự cố hoặc kênh #incident-command.`,
+    });
+    addActivityLog('warn', `Chuyển người dùng xử lý ${inc.code}`, reason, {
+      agentId: 'muse-01',
+      taskId: params.task?.id,
+      runId: params.runId,
+    });
+    saveStateAtomic();
+    emitCommandCenterEvent('incident:updated', inc);
+    return { incident: inc, autonomousFixQueued: false, escalated: true };
+  }
+
+  // 4. Within autonomy scope -> Muse AI 01 issues direct fix command immediately
+  inc.attemptCount += 1;
+  inc.status = 'remediating';
+  inc.withinAutonomyScope = true;
+
+  let fixTargetAgent: MuseAgentId = responsible.id;
+  let routeAdjustmentNote = '';
+
+  // Smart recovery for disconnection / pinned account failure
+  if (category === 'muse_disconnected') {
+    if (responsible.engineMode === 'muse2api' && health.geminiConfigured) {
+      responsible.engineMode = 'muse2api_with_gemini_fallback';
+      routeAdjustmentNote = `Kích hoạt cơ chế Gemini dự phòng cho ${responsible.name}. `;
+    }
+    if (responsible.boundAccountId !== 'auto' && health.healthyAccounts > 0) {
+      responsible.boundAccountId = 'auto';
+      routeAdjustmentNote += `Chuyển ${responsible.name} sang xoay vòng tài khoản Muse2API khỏe mạnh tự động. `;
+    }
+    responsible.reconnectCount = (responsible.reconnectCount || 0) + 1;
+  }
+
+  const shouldRebuildKeyframe =
+    Boolean(params.scene) &&
+    (rule.rebuildKeyframe ||
+      params.qaReport?.targetFixAgentId === 'muse-03' ||
+      inc.attemptCount >= 2);
+
+  const exactFixSummary =
+    params.qaReport?.fixInstruction ||
+    `${rule.directive} ${
+      params.scene
+        ? `Khóa chặt Character ID (${mem.characters.map((c) => `${c.name}:${c.voiceId}`).join(', ')}), lời thoại "${params.scene.dialogue || 'không'}", timeline "${params.scene.videoTimeline || 'chuẩn'}".`
+        : ''
+    }`.trim();
+
+  const directorDirective = `${routeAdjustmentNote}${rule.directive} ${
+    params.scene
+      ? `Chỉ tạo lại RIÊNG Cảnh ${String(params.scene.index).padStart(2, '0')}, giữ nguyên tuyệt đối các phân cảnh đã đạt yêu cầu. Yêu cầu kỹ thuật: ${exactFixSummary}`
+      : `Thực thi lại nhiệm vụ với cấu hình đã hiệu chỉnh.`
+  }`.trim();
+
+  inc.directorPlan = dialog.directorAnalysis;
+  inc.directorCommand = directorDirective;
+
+  // Enqueue ONLY the targeted fix (never whole film!)
+  if (params.scene) {
+    const sc = params.scene;
+    commitSessionMemoryUpdate(params.runId, 'muse-01', `Muse AI 01 chỉ đạo sửa Cảnh ${sc.index} (${inc.code} vòng #${inc.attemptCount})`, (m) => {
+      const target = m.scenes.find((s) => s.sceneId === sc.sceneId);
+      if (target && target.qaStatus !== 'passed') {
+        target.qaStatus = 'rejected';
+        target.retryCount += 1;
+        if (params.qaReport) {
+          target.qaScore = params.qaReport.overallScore;
+          target.qaReportId = params.qaReport.id;
+        }
+      }
+    });
+
+    let fixDepTaskId: string | undefined;
+    if (shouldRebuildKeyframe) {
+      const fixImgOwner = storeDoc.agents.find((a) => a.id === 'muse-03');
+      if (fixImgOwner) fixImgOwner.regenCount = (fixImgOwner.regenCount || 0) + 1;
+      const retryImg = enqueueTask({
+        runId: params.runId,
+        type: 'design_scene_image',
+        title: `[${inc.code} #${inc.attemptCount}] Cảnh ${sc.index}: Tạo lại ảnh keyframe`,
+        instructions: `${sc.actionDetail}. CHỈ ĐẠO ĐẠO DIỄN TỔNG (${inc.code}): ${directorDirective}`,
+        assignedAgentId: 'muse-03',
+        sceneId: sc.sceneId,
+        sceneIndex: sc.index,
+        priority: 10,
+      });
+      inc.remediationTaskIds.push(retryImg.id);
+      fixDepTaskId = retryImg.id;
+      fixTargetAgent = 'muse-03';
+    }
+
+    const fixVidOwner = storeDoc.agents.find((a) => a.id === 'muse-04');
+    if (fixVidOwner) fixVidOwner.regenCount = (fixVidOwner.regenCount || 0) + 1;
+
+    const retryVid = enqueueTask({
+      runId: params.runId,
+      type: 'produce_scene_video',
+      title: `[${inc.code} #${inc.attemptCount}] Cảnh ${sc.index}: Tạo lại video`,
+      instructions: `${sc.actionDetail}. CHỈ ĐẠO ĐẠO DIỄN TỔNG (${inc.code}): ${directorDirective}`,
+      assignedAgentId: 'muse-04',
+      dependsOnTaskIds: fixDepTaskId ? [fixDepTaskId] : [],
+      sceneId: sc.sceneId,
+      sceneIndex: sc.index,
+      priority: 9,
+    });
+    inc.remediationTaskIds.push(retryVid.id);
+    if (!shouldRebuildKeyframe) fixTargetAgent = 'muse-04';
+
+    const retryQa = enqueueTask({
+      runId: params.runId,
+      type: 'qa_inspect_scene',
+      title: `[Kiểm duyệt ${inc.code} #${inc.attemptCount}] Cảnh ${sc.index}: "${sc.title}"`,
+      instructions: `Kiểm tra lại Cảnh ${sc.index} sau chỉ đạo của Đạo diễn tổng (${inc.code}): ${exactFixSummary}`,
+      assignedAgentId: 'muse-05',
+      dependsOnTaskIds: [retryVid.id],
+      sceneId: sc.sceneId,
+      sceneIndex: sc.index,
+      priority: 8,
+    });
+    inc.qaVerificationTaskId = retryQa.id;
+    inc.remediationTaskIds.push(retryQa.id);
+
+    const assembleTask = storeDoc.tasks.find(
+      (t) =>
+        t.runId === params.runId &&
+        t.type === 'assemble_final_film' &&
+        (t.status === 'blocked_by_deps' || t.status === 'queued')
+    );
+    if (assembleTask) {
+      assembleTask.dependsOnTaskIds = [
+        ...assembleTask.dependsOnTaskIds.filter((id) => id !== params.task?.id),
+        retryQa.id,
+      ];
+      assembleTask.status = 'blocked_by_deps';
+    }
+  } else if (params.task) {
+    // Re-queue or reassign non-scene failed task under Muse 01 directive
+    const fixTask = enqueueTask({
+      runId: params.runId,
+      type: params.task.type,
+      title: `[${inc.code} #${inc.attemptCount}] ${params.task.title}`,
+      instructions: `${params.task.instructions}\nCHỈ ĐẠO ĐẠO DIỄN TỔNG (${inc.code}): ${directorDirective}`,
+      assignedAgentId: fixTargetAgent,
+      dependsOnTaskIds: params.task.dependsOnTaskIds,
+      sceneId: params.task.sceneId,
+      sceneIndex: params.task.sceneIndex,
+      characterId: params.task.characterId,
+      priority: Math.max(9, params.task.priority),
+    });
+    inc.remediationTaskIds.push(fixTask.id);
+  } else {
+    const fixTask = enqueueTask({
+      runId: params.runId,
+      type: 'custom_task',
+      title: `[${inc.code} #${inc.attemptCount}] Khắc phục sự cố theo chỉ đạo Muse AI 01`,
+      instructions: `CHỈ ĐẠO ĐẠO DIỄN TỔNG (${inc.code}): ${directorDirective}\nLỗi gốc: ${inc.errorDescription}`,
+      assignedAgentId: fixTargetAgent,
+      priority: 9,
+    });
+    inc.remediationTaskIds.push(fixTask.id);
+  }
+
+  inc.assignedFixAgentId = fixTargetAgent;
+  const fixAgent = storeDoc.agents.find((a) => a.id === fixTargetAgent) || responsible;
+  const qaAgent = storeDoc.agents.find((a) => a.id === 'muse-05') || storeDoc.agents[4];
+
+  // Record Director Directive + Assigned Muse Response + Muse 05 QA standby
+  appendIncidentTurn(inc, {
+    actorId: director.id,
+    actorName: `${director.name} (Đạo diễn tổng)`,
+    roleBadge: 'Chỉ đạo',
+    kind: 'directive',
+    content: directorDirective,
+  });
+  appendIncidentTurn(inc, {
+    actorId: fixAgent.id,
+    actorName: `${fixAgent.name} (${fixAgent.roleTitle})`,
+    roleBadge: 'Phản hồi',
+    kind: 'progress',
+    content: `Đã nhận chỉ đạo từ ${director.name}. Đang sửa thông số và tạo lại ${scNum} (vòng #${inc.attemptCount}/${maxAttempts}).`,
+  });
+  if (params.scene) {
+    appendIncidentTurn(inc, {
+      actorId: qaAgent.id,
+      actorName: `${qaAgent.name} (${qaAgent.roleTitle})`,
+      roleBadge: 'Kiểm duyệt',
+      kind: 'qa_review',
+      content: `Chờ nhận phiên bản mới của ${scNum} để kiểm định lại 8 tiêu chí trước khi cho phép đóng ${inc.code}.`,
+    });
+  }
+
+  postIncidentChannelMessage({
+    inc,
+    senderId: director.id,
+    senderName: `${director.name} – Chỉ đạo`,
+    roleBadge: 'Chỉ đạo',
+    targetAgentIds: [fixAgent.id, 'muse-05'],
+    content: directorDirective,
+  });
+  postIncidentChannelMessage({
+    inc,
+    senderId: fixAgent.id,
+    senderName: `${fixAgent.name} – Phản hồi`,
+    roleBadge: 'Phản hồi',
+    targetAgentIds: ['muse-01'],
+    content: `Đã nhận chỉ đạo. Đang sửa prompt/dữ liệu và thực hiện lại ${scNum} (vòng ${inc.attemptCount}/${maxAttempts}).`,
+  });
+  if (params.scene) {
+    postIncidentChannelMessage({
+      inc,
+      senderId: qaAgent.id,
+      senderName: `${qaAgent.name} – Kiểm duyệt`,
+      roleBadge: 'Kiểm duyệt',
+      targetAgentIds: ['muse-01'],
+      content: `Chờ nhận phiên bản mới của ${scNum} để kiểm tra lại.`,
+    });
+  }
+
+  postAiBusMessage({
+    fromAgent: director,
+    toAgentIds: [fixAgent.id, 'muse-05'],
+    runId: params.runId,
+    projectId: mem.projectId,
+    taskId: inc.remediationTaskIds[inc.remediationTaskIds.length - 1],
+    sceneId: params.scene?.sceneId,
+    content: `[DIRECTOR→FIX ${inc.code} #${inc.attemptCount}] ${directorDirective}`,
+  });
+
+  // Keep run actively producing while Muse 01 self-heals
+  if (run && !['completed', 'cancelled', 'paused'].includes(run.status)) {
+    run.status = 'producing';
+    run.error = undefined;
+    run.updatedAt = Date.now();
+    emitCommandCenterEvent('run:updated', run);
+  }
+
+  addActivityLog('warn', `Đạo diễn chỉ đạo ${inc.code}`, `${director.name} giao ${fixAgent.name} khắc phục ${scNum} (vòng ${inc.attemptCount}/${maxAttempts}).`, {
+    agentId: 'muse-01',
+    taskId: params.task?.id,
+    runId: params.runId,
+  });
+
+  saveStateAtomic();
+  emitCommandCenterEvent('incident:updated', inc);
+  void tickOrchestratorQueue();
+  return { incident: inc, autonomousFixQueued: true, escalated: false };
 }
 
 async function checkFfmpegQuick(): Promise<boolean> {
@@ -1939,138 +2767,44 @@ Trả về DUY NHẤT JSON hợp lệ:
       sceneId: sc.sceneId,
       content: `[QA→PASS] Cảnh ${sc.index} đạt ${overallScore}/100. Đã xác nhận đưa vào hàng đợi ghép phim.`,
     });
+
+    // Resolve any open incident for this scene ONLY after real QA verification passes
+    const openInc = storeDoc.incidents.find(
+      (i) =>
+        i.runId === task.runId &&
+        i.sceneId === sc.sceneId &&
+        !['resolved', 'escalated_to_user'].includes(i.status)
+    );
+    if (openInc) {
+      resolveIncidentRecord(
+        openInc,
+        agent,
+        `Kiểm duyệt ĐẠT Cảnh ${sc.index} "${sc.title}" (${overallScore}/100 ≥ ngưỡng ${threshold}) sau vòng khắc phục #${openInc.attemptCount}.`
+      );
+    }
     return;
   }
 
-  // Failed QA: check retry budget
-  const maxRetries = storeDoc.cloudConfig.maxRetriesPerScene;
-  if (sc.retryCount < maxRetries) {
-    agent.stats.retried += 1;
-    const fixOwner = storeDoc.agents.find((a) => a.id === targetFix);
-    if (fixOwner) {
-      fixOwner.regenCount = (fixOwner.regenCount || 0) + 1;
-    }
+  // Failed QA: Muse 05 MUST report urgently to Muse AI 01 (never silently skip or bypass Director)
+  agent.stats.retried += 1;
+  const failedLabels = report.criteriaResults
+    .filter((c) => !c.passed)
+    .map((c) => `${c.label} (${c.score}đ)`)
+    .join(', ');
 
-    commitSessionMemoryUpdate(task.runId, 'muse-01', `Muse AI 05 trả về sửa Cảnh ${sc.index} (lần ${attemptNumber})`, (m) => {
-      const target = m.scenes.find((s) => s.sceneId === sc.sceneId);
-      if (target) {
-        target.qaStatus = 'rejected';
-        target.qaScore = overallScore;
-        target.qaReportId = report.id;
-        target.retryCount += 1;
-      }
-    });
-
-    let fixDepTaskId: string | undefined;
-    if (targetFix === 'muse-03') {
-      const retryImg = enqueueTask({
-        runId: task.runId,
-        type: 'design_scene_image',
-        title: `[Sửa lỗi QA #${attemptNumber}] Cảnh ${sc.index}: Tạo lại ảnh keyframe`,
-        instructions: `${sc.actionDetail}. YÊU CẦU SỬA LỖI TỪ QA: ${report.fixInstruction}`,
-        assignedAgentId: 'muse-03',
-        sceneId: sc.sceneId,
-        sceneIndex: sc.index,
-        priority: 9,
-      });
-      fixDepTaskId = retryImg.id;
-    }
-
-    const retryVid = enqueueTask({
-      runId: task.runId,
-      type: 'produce_scene_video',
-      title: `[Sửa lỗi QA #${attemptNumber}] Cảnh ${sc.index}: Tạo lại video`,
-      instructions: `${sc.actionDetail}. YÊU CẦU SỬA LỖI TỪ QA: ${report.fixInstruction}`,
-      assignedAgentId: 'muse-04',
-      dependsOnTaskIds: fixDepTaskId ? [fixDepTaskId] : [],
-      sceneId: sc.sceneId,
-      sceneIndex: sc.index,
-      priority: 8,
-    });
-
-    const retryQa = enqueueTask({
-      runId: task.runId,
-      type: 'qa_inspect_scene',
-      title: `[Kiểm định lại #${attemptNumber}] Cảnh ${sc.index}: "${sc.title}"`,
-      instructions: `Kiểm tra lại Cảnh ${sc.index} sau khi đã khắc phục: ${report.fixInstruction}`,
-      assignedAgentId: 'muse-05',
-      dependsOnTaskIds: [retryVid.id],
-      sceneId: sc.sceneId,
-      sceneIndex: sc.index,
-      priority: 7,
-    });
-
-    const assembleTask = storeDoc.tasks.find(
-      (t) =>
-        t.runId === task.runId &&
-        t.type === 'assemble_final_film' &&
-        (t.status === 'blocked_by_deps' || t.status === 'queued')
-    );
-    if (assembleTask) {
-      assembleTask.dependsOnTaskIds = [
-        ...assembleTask.dependsOnTaskIds.filter((id) => id !== task.id),
-        retryQa.id,
-      ];
-      assembleTask.status = 'blocked_by_deps';
-    }
-
-    appendConversationMessage({
-      channel: 'qa',
-      projectId: mem.projectId,
-      runId: task.runId,
-      sceneId: sc.sceneId,
-      senderType: 'agent',
-      senderId: agent.id,
-      senderName: `${agent.name} (${agent.roleTitle})`,
-      targetAgentIds: [targetFix],
-      taskId: task.id,
-      messageKind: 'alert',
-      content: `Phát hiện lỗi QA tại Cảnh ${sc.index} "${sc.title}" (${overallScore}/100 < ${threshold}, mốc ${report.timestampRange}).\n• Giao ${fixOwner?.name || targetFix} tạo lại RIÊNG cảnh này: ${report.fixInstruction}`,
-    });
-
-    postAiBusMessage({
-      fromAgent: agent,
-      toAgentIds: [targetFix],
-      runId: task.runId,
-      projectId: mem.projectId,
-      taskId: retryVid.id,
-      sceneId: sc.sceneId,
-      content: `[QA→RETRY #${attemptNumber}] Cảnh ${sc.index} không đạt (${overallScore}/${threshold}). Chỉ dẫn sửa: ${report.fixInstruction}`,
-    });
-  } else {
-    commitSessionMemoryUpdate(task.runId, 'muse-01', `Cảnh báo vượt số lần thử lại Cảnh ${sc.index}`, (m) => {
-      const target = m.scenes.find((s) => s.sceneId === sc.sceneId);
-      if (target) {
-        target.qaStatus = 'escalated';
-        target.qaScore = overallScore;
-        target.qaReportId = report.id;
-      }
-    });
-    const run = storeDoc.runs.find((r) => r.id === task.runId);
-    if (run) {
-      run.escalatedScenes = getRunMemory(task.runId).scenes.filter((s) => s.qaStatus === 'escalated').length;
-      run.status = 'needs_attention';
-      run.error = `Cảnh ${sc.index} chưa đạt QA sau ${maxRetries} lần tự động sửa (${overallScore}/${threshold}). Cần người dùng kiểm tra hoặc duyệt thủ công.`;
-      run.updatedAt = Date.now();
-    }
-    appendConversationMessage({
-      channel: 'qa',
-      projectId: mem.projectId,
-      runId: task.runId,
-      sceneId: sc.sceneId,
-      senderType: 'agent',
-      senderId: agent.id,
-      senderName: `${agent.name} (${agent.roleTitle})`,
-      taskId: task.id,
-      messageKind: 'alert',
-      content: `Cảnh ${sc.index} "${sc.title}" vượt giới hạn ${maxRetries} lần tự động sửa (${overallScore}/${threshold}). Chuyển Đạo diễn kiểm tra hoặc duyệt thủ công.`,
-    });
-    addActivityLog('warn', 'QA vượt giới hạn thử lại', `Cảnh ${sc.index} đạt ${overallScore}/100, cần người dùng xử lý.`, {
-      agentId: agent.id,
-      taskId: task.id,
-      runId: task.runId,
-    });
-  }
+  await openOrAdvanceDirectorIncident({
+    runId: task.runId,
+    task,
+    scene: sc,
+    qaReport: report,
+    reporterAgentId: 'muse-05',
+    responsibleAgentId: targetFix,
+    errorDescription: `Cảnh ${sc.index} "${sc.title}" không đạt QA (${overallScore}/100 < ngưỡng ${threshold}, mốc ${report.timestampRange}). Tiêu chí lỗi: ${failedLabels || report.summary}`,
+    suspectedRootCause: report.summary,
+    initialProposal: report.fixInstruction,
+    severity: overallScore < 60 ? 'critical' : 'high',
+    artifactUrls: sc.videoUrl ? [sc.videoUrl] : [],
+  });
 }
 
 async function executeAssembleFinalFilmTask(task: CommandTask, agent: MuseAgentConfig): Promise<void> {
@@ -2421,6 +3155,25 @@ async function runSingleTask(task: CommandTask): Promise<void> {
       taskId: task.id,
       runId: task.runId,
     });
+
+    // If this task was a non-scene remediation task inside an open incident, close that incident after real completion
+    if (task.type !== 'qa_inspect_scene' && !task.sceneId) {
+      const matchedInc = storeDoc.incidents.find(
+        (i) =>
+          i.runId === task.runId &&
+          !['resolved', 'escalated_to_user'].includes(i.status) &&
+          i.remediationTaskIds.includes(task.id)
+      );
+      if (matchedInc) {
+        const qaAgent = storeDoc.agents.find((a) => a.id === 'muse-05') || agent;
+        resolveIncidentRecord(
+          matchedInc,
+          qaAgent,
+          `Tác vụ khắc phục ${task.code} (${agent.name}) đã hoàn tất thực tế: ${task.outputText || task.title}`
+        );
+      }
+    }
+
     maybeAutoBackup(`Hoàn tất ${task.code}`, task.runId);
     emitCommandCenterEvent('task:updated', task);
   } catch (err: any) {
@@ -2472,12 +3225,29 @@ async function runSingleTask(task: CommandTask): Promise<void> {
       runId: task.runId,
     });
 
-    const run = storeDoc.runs.find((r) => r.id === task.runId);
-    if (run && !['completed', 'cancelled', 'paused'].includes(run.status)) {
-      run.status = 'needs_attention';
-      run.error = `${task.code} (${agent.name}) gặp lỗi: ${errMsg}`;
-      run.updatedAt = Date.now();
-      emitCommandCenterEvent('run:updated', run);
+    // Report urgently to Muse AI 01 so Director handles recovery autonomously unless escalated
+    const mem = getRunMemory(task.runId);
+    const sc = task.sceneId ? mem.scenes.find((s) => s.sceneId === task.sceneId) : undefined;
+    const outcome = await openOrAdvanceDirectorIncident({
+      runId: task.runId,
+      task,
+      scene: sc,
+      reporterAgentId: agent.id,
+      responsibleAgentId: agent.id,
+      errorDescription: `${task.code} (${agent.name}) gặp lỗi khi thực thi "${task.title}": ${errMsg}`,
+      suspectedRootCause: errMsg,
+      severity: /offline|timeout|mất kết nối|chưa thể thực thi/i.test(errMsg) ? 'critical' : 'high',
+      artifactUrls: task.outputArtifactUrl ? [task.outputArtifactUrl] : [],
+    });
+
+    if (outcome.escalated) {
+      const run = storeDoc.runs.find((r) => r.id === task.runId);
+      if (run && !['completed', 'cancelled', 'paused'].includes(run.status)) {
+        run.status = 'needs_attention';
+        run.error = outcome.incident.escalationReason || `${task.code} (${agent.name}) gặp lỗi: ${errMsg}`;
+        run.updatedAt = Date.now();
+        emitCommandCenterEvent('run:updated', run);
+      }
     }
     emitCommandCenterEvent('task:updated', task);
   } finally {
@@ -2530,6 +3300,19 @@ async function tickOrchestratorQueue(): Promise<void> {
           task.status = 'failed';
           task.completedAt = now;
           task.error = `Tác vụ treo vượt quá giới hạn ${Math.round(limit / 1000)}s.`;
+          const mem = getRunMemory(task.runId);
+          const sc = task.sceneId ? mem.scenes.find((s) => s.sceneId === task.sceneId) : undefined;
+          await openOrAdvanceDirectorIncident({
+            runId: task.runId,
+            task,
+            scene: sc,
+            reporterAgentId: task.assignedAgentId,
+            responsibleAgentId: task.assignedAgentId,
+            explicitCategory: 'muse_disconnected',
+            errorDescription: `${task.code} (${ag?.name || task.assignedAgentId}) bị treo quá ${Math.round(limit / 1000)}s sau ${task.maxRetries} lần thử kết nối lại.`,
+            suspectedRootCause: task.error,
+            severity: 'critical',
+          });
         }
         watchdogChanged = true;
         emitCommandCenterEvent('task:updated', task);
@@ -2595,10 +3378,6 @@ async function tickOrchestratorQueue(): Promise<void> {
         task.status = 'failed';
         task.error = `${agent.name} chưa có kết nối Muse2API/tài khoản khỏe mạnh để thực thi thực tế. Hãy kiểm tra mục Cấu hình Cloud & Tài khoản hoặc bật Gemini dự phòng.`;
         agent.lastError = task.error;
-        if (run && !['completed', 'paused', 'cancelled'].includes(run.status)) {
-          run.status = 'needs_attention';
-          run.error = task.error;
-        }
         pushPerformanceAlert({
           severity: 'error',
           category: 'offline',
@@ -2611,6 +3390,19 @@ async function tickOrchestratorQueue(): Promise<void> {
           agentId: agent.id,
           taskId: task.id,
           runId: task.runId,
+        });
+        const mem = getRunMemory(task.runId);
+        const sc = task.sceneId ? mem.scenes.find((s) => s.sceneId === task.sceneId) : undefined;
+        await openOrAdvanceDirectorIncident({
+          runId: task.runId,
+          task,
+          scene: sc,
+          reporterAgentId: agent.id,
+          responsibleAgentId: agent.id,
+          explicitCategory: 'muse_disconnected',
+          errorDescription: task.error,
+          suspectedRootCause: `${agent.name} mất kết nối Muse2API hoặc chưa bật Gemini dự phòng.`,
+          severity: 'critical',
         });
         saveStateAtomic();
         continue;
@@ -2676,6 +3468,7 @@ export function initCommandCenter(): void {
         runs: loadedRuns,
         tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
         qaReports: Array.isArray(raw.qaReports) ? raw.qaReports : [],
+        incidents: Array.isArray(raw.incidents) ? raw.incidents : [],
         conversations: migratedConversations,
         logs: Array.isArray(raw.logs) ? raw.logs : [],
         backups: Array.isArray(raw.backups) ? raw.backups : [],
@@ -2683,6 +3476,7 @@ export function initCommandCenter(): void {
         fastCommStats: { ...base.fastCommStats, ...(raw.fastCommStats || {}) },
         cloudConfig: { ...base.cloudConfig, ...(raw.cloudConfig || {}), workerBootId: WORKER_BOOT_ID },
         taskSeq: Number(raw.taskSeq) || 1,
+        incidentSeq: Number(raw.incidentSeq) || 1,
       };
     } catch {
       storeDoc = createDefaultDoc();
@@ -2787,6 +3581,8 @@ export async function getCommandCenterState(forceHealth = false): Promise<Comman
     parallelLimit: storeDoc.cloudConfig.parallelLimit,
     qaPassThreshold: storeDoc.cloudConfig.qaPassThreshold,
     maxRetriesPerScene: storeDoc.cloudConfig.maxRetriesPerScene,
+    maxIncidentRetries: storeDoc.cloudConfig.maxIncidentRetries ?? 3,
+    autoDirectorIncidentResponse: storeDoc.cloudConfig.autoDirectorIncidentResponse !== false,
     autoBackupRealtime: storeDoc.cloudConfig.autoBackupRealtime,
     workerHeartbeatAt: Date.now(),
     workerBootId: WORKER_BOOT_ID,
@@ -2803,6 +3599,7 @@ export async function getCommandCenterState(forceHealth = false): Promise<Comman
     runs: enrichedRuns,
     tasks: [...storeDoc.tasks].reverse().slice(0, 160),
     qaReports: storeDoc.qaReports.slice(0, 80),
+    incidents: (storeDoc.incidents || []).slice(0, 100),
     conversations: storeDoc.conversations.slice(-260),
     logs: storeDoc.logs.slice(0, 180),
     backups: storeDoc.backups.slice(0, 30),
@@ -3741,6 +4538,7 @@ export async function uploadCommandCenterAttachment(params: {
 
 const DEFAULT_AGENT_BY_CHANNEL: Record<string, MuseAgentId> = {
   commander: 'muse-01',
+  incident: 'muse-01',
   production: 'muse-01',
   script: 'muse-02',
   visual: 'muse-03',
@@ -3804,6 +4602,7 @@ export async function sendCommandCenterChat(params: {
 
   const channelContextDesc: Record<string, string> = {
     commander: 'Kênh #tổng-chỉ-huy (lệnh điều hành toàn đội 5 Muse AI)',
+    incident: 'Kênh #incident-command (Trung tâm chỉ huy xử lý sự cố — Đạo diễn tổng trực tiếp điều tra nguyên nhân và ra lệnh sửa lỗi)',
     production: 'Kênh #sản-xuất-phim (theo dõi tiến độ và điều phối phiên)',
     script: 'Kênh #kịch-bản (biên kịch, thoại, nhân vật, timeline)',
     visual: 'Kênh #hình-ảnh (thiết kế nhân vật, tạo ảnh keyframe)',
@@ -3812,9 +4611,21 @@ export async function sendCommandCenterChat(params: {
     ai_bus: 'Kênh #trao-đổi-ai (phối hợp trực tiếp giữa các AI)',
   };
 
+  const openIncidentsNote =
+    channel === 'incident'
+      ? (() => {
+          const openList = storeDoc.incidents.filter((i) => i.status !== 'resolved').slice(0, 6);
+          return openList.length > 0
+            ? `\nCác sự cố đang mở (${openList.length}):\n${openList
+                .map((i) => `- [${i.code}] (${i.status}, vòng ${i.attemptCount}/${i.maxAttempts}) ${i.categoryLabel}: ${i.errorDescription.slice(0, 120)}`)
+                .join('\n')}`
+            : '\nHiện không có sự cố tồn đọng.';
+        })()
+      : '';
+
   const sys = `Bạn là ${responder.name} (${responder.roleTitle}) trong Phòng Điều Hành AI Muse.
 Vai trò: ${responder.description}
-Dự án/Phiên hiện tại: "${mem.title}" (Project Memory v${mem.version}, ${mem.characters.length} nhân vật, ${mem.scenes.length} cảnh).${studioDirectiveNote}${memoryScenesNote}
+Dự án/Phiên hiện tại: "${mem.title}" (Project Memory v${mem.version}, ${mem.characters.length} nhân vật, ${mem.scenes.length} cảnh).${studioDirectiveNote}${memoryScenesNote}${openIncidentsNote}
 ${
   isDm
     ? 'Bạn đang trao đổi riêng 1-1 với Đạo diễn. Hãy trả lời bám sát dữ liệu dự án hiện tại.'
@@ -3956,6 +4767,138 @@ export async function restoreProjectMemorySnapshot(snapshotId: string): Promise<
   return getCommandCenterState(false);
 }
 
+export async function reportCommandCenterIncident(params: {
+  runId?: string;
+  sceneId?: string;
+  taskId?: string;
+  reporterAgentId?: MuseAgentId;
+  responsibleAgentId?: MuseAgentId;
+  category?: IncidentCategory;
+  errorDescription: string;
+  suspectedRootCause?: string;
+  initialProposal?: string;
+  severity?: IncidentSeverity;
+  requiresUserApproval?: boolean;
+}): Promise<{ state: CommandCenterState; incident: IncidentRecord }> {
+  const errDesc = String(params.errorDescription || '').trim();
+  if (!errDesc) {
+    throw new Error('Vui lòng nhập mô tả lỗi để báo cáo cho Muse AI 01.');
+  }
+  const runId = params.runId || getEffectiveSelectedRunId() || 'manual_run';
+  const mem = getRunMemory(runId);
+  const sc = params.sceneId ? mem.scenes.find((s) => s.sceneId === params.sceneId) : undefined;
+  const task = params.taskId ? storeDoc.tasks.find((t) => t.id === params.taskId) : undefined;
+
+  const res = await openOrAdvanceDirectorIncident({
+    runId,
+    task,
+    scene: sc,
+    reporterAgentId: params.reporterAgentId || 'muse-04',
+    responsibleAgentId: params.responsibleAgentId,
+    explicitCategory: params.category,
+    errorDescription: errDesc,
+    suspectedRootCause: params.suspectedRootCause,
+    initialProposal: params.initialProposal,
+    severity: params.severity,
+    requiresUserApproval: params.requiresUserApproval,
+  });
+
+  return {
+    state: await getCommandCenterState(false),
+    incident: res.incident,
+  };
+}
+
+export async function commandIncidentAction(params: {
+  incidentId: string;
+  action: 'directive' | 'reopen' | 'escalate' | 'resolve';
+  message?: string;
+  targetAgentId?: MuseAgentId;
+}): Promise<CommandCenterState> {
+  const inc = storeDoc.incidents.find((i) => i.id === params.incidentId);
+  if (!inc) throw new Error('Không tìm thấy hồ sơ sự cố.');
+
+  const director = storeDoc.agents.find((a) => a.id === 'muse-01') || storeDoc.agents[0];
+  const msg = String(params.message || '').trim();
+
+  if (params.action === 'resolve') {
+    const qaAgent = storeDoc.agents.find((a) => a.id === 'muse-05') || storeDoc.agents[4];
+    if (inc.sceneId) {
+      commitSessionMemoryUpdate(inc.runId, 'user', `Nghiệm thu & đóng sự cố ${inc.code}`, (m) => {
+        const sc = m.scenes.find((s) => s.sceneId === inc.sceneId);
+        if (sc) sc.qaStatus = 'passed';
+      });
+    }
+    resolveIncidentRecord(
+      inc,
+      qaAgent,
+      msg || `Đạo diễn / người dùng xác nhận nghiệm thu hoàn tất và đóng sự cố ${inc.code}.`
+    );
+  } else if (params.action === 'escalate') {
+    inc.status = 'escalated_to_user';
+    inc.withinAutonomyScope = false;
+    inc.escalationReason = msg || 'Được đánh dấu cần sự can thiệp trực tiếp của người dùng.';
+    appendIncidentTurn(inc, {
+      actorId: director.id,
+      actorName: `${director.name} (Đạo diễn tổng)`,
+      roleBadge: 'Cần người dùng',
+      kind: 'escalation',
+      content: inc.escalationReason,
+    });
+    postIncidentChannelMessage({
+      inc,
+      senderId: director.id,
+      senderName: `${director.name} – Báo cáo khẩn`,
+      roleBadge: 'Cần can thiệp',
+      content: inc.escalationReason,
+    });
+  } else {
+    // 'directive' or 'reopen': reset attempt budget if escalated and let Muse AI 01 execute a new remediation round
+    if (inc.status === 'escalated_to_user' || params.action === 'reopen') {
+      inc.attemptCount = Math.max(0, inc.maxAttempts - 1);
+      inc.status = 'remediating';
+      inc.escalationReason = undefined;
+    }
+    const mem = getRunMemory(inc.runId);
+    const sc = inc.sceneId ? mem.scenes.find((s) => s.sceneId === inc.sceneId) : undefined;
+    const task = inc.taskId ? storeDoc.tasks.find((t) => t.id === inc.taskId) : undefined;
+    if (msg) {
+      appendIncidentTurn(inc, {
+        actorId: 'user',
+        actorName: 'Đạo diễn (Bạn)',
+        roleBadge: 'Chỉ đạo bổ sung',
+        kind: 'directive',
+        content: msg,
+      });
+      postIncidentChannelMessage({
+        inc,
+        senderId: 'user',
+        senderName: 'Đạo diễn (Bạn)',
+        roleBadge: 'Chỉ đạo',
+        targetAgentIds: ['muse-01', params.targetAgentId || inc.assignedFixAgentId],
+        content: msg,
+      });
+    }
+    await openOrAdvanceDirectorIncident({
+      incidentId: inc.id,
+      runId: inc.runId,
+      task,
+      scene: sc,
+      reporterAgentId: 'muse-01',
+      responsibleAgentId: params.targetAgentId || inc.assignedFixAgentId,
+      explicitCategory: inc.category,
+      errorDescription: msg || inc.errorDescription,
+      suspectedRootCause: inc.analyzedRootCause || inc.suspectedRootCause,
+      initialProposal: msg || inc.directorCommand || inc.initialProposal,
+      severity: inc.severity,
+    });
+  }
+
+  saveStateAtomic();
+  emitCommandCenterEvent('incident:updated', inc);
+  return getCommandCenterState(false);
+}
+
 export async function updateCloudConfig(patch: {
   muse2ApiBaseUrl?: string;
   muse2ApiKey?: string;
@@ -3963,6 +4906,8 @@ export async function updateCloudConfig(patch: {
   parallelLimit?: number;
   qaPassThreshold?: number;
   maxRetriesPerScene?: number;
+  maxIncidentRetries?: number;
+  autoDirectorIncidentResponse?: boolean;
   autoBackupRealtime?: boolean;
 }): Promise<CommandCenterState> {
   if (typeof patch.muse2ApiBaseUrl === 'string') {
@@ -3982,6 +4927,12 @@ export async function updateCloudConfig(patch: {
   if (typeof patch.maxRetriesPerScene === 'number') {
     storeDoc.cloudConfig.maxRetriesPerScene = Math.max(0, Math.min(5, Math.round(patch.maxRetriesPerScene)));
   }
+  if (typeof patch.maxIncidentRetries === 'number') {
+    storeDoc.cloudConfig.maxIncidentRetries = Math.max(1, Math.min(5, Math.round(patch.maxIncidentRetries)));
+  }
+  if (typeof patch.autoDirectorIncidentResponse === 'boolean') {
+    storeDoc.cloudConfig.autoDirectorIncidentResponse = patch.autoDirectorIncidentResponse;
+  }
   if (typeof patch.autoBackupRealtime === 'boolean') {
     storeDoc.cloudConfig.autoBackupRealtime = patch.autoBackupRealtime;
   }
@@ -3994,7 +4945,7 @@ export async function updateCloudConfig(patch: {
   addActivityLog(
     'info',
     'Cập nhật cấu hình Cloud & Điều phối',
-    `Muse2API: ${storeDoc.cloudConfig.muse2ApiBaseUrl || 'mặc định'} · Song song: ${storeDoc.cloudConfig.parallelLimit} · Ngưỡng QA: ${storeDoc.cloudConfig.qaPassThreshold}`
+    `Muse2API: ${storeDoc.cloudConfig.muse2ApiBaseUrl || 'mặc định'} · Song song: ${storeDoc.cloudConfig.parallelLimit} · Ngưỡng QA: ${storeDoc.cloudConfig.qaPassThreshold} · Vòng sự cố tối đa: ${storeDoc.cloudConfig.maxIncidentRetries ?? 3}`
   );
   saveStateAtomic();
   return getCommandCenterState(true);

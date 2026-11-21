@@ -1,5 +1,15 @@
 [
   {
+    "version": "1.0.10",
+    "date": "21/11/2026",
+    "title": "AI Muse Command Center, Giám sát Sản xuất Live & Kết nối GitHub",
+    "changes": [
+      "Bổ sung Trung tâm Điều phối AI Muse Command Center với các vai trò Đạo diễn, Biên kịch, Tạo ảnh/Video, Lồng tiếng và QA",
+      "Đồng bộ trực tiếp dự án từ Studio sang Command Center để điều phối đa tác vụ",
+      "Ra mắt màn hình Giám sát Sản xuất (Production Monitor) theo thời gian thực qua SSE và form kết nối GitHub trực tiếp tại tab Cập nhật"
+    ]
+  },
+  {
     "version": "1.0.9",
     "date": "21/11/2026",
     "title": "Timeline đạo diễn AI theo giây, Đồng bộ 5 thành phần & Tự động tăng phiên bản",
