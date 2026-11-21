@@ -93,6 +93,41 @@ export interface QaCriterionResult {
   note: string;
 }
 
+export interface CostumeMismatchReport {
+  characterId: string;
+  characterName: string;
+  projectId: string;
+  runId: string;
+  sceneId?: string;
+  sceneIndex?: number;
+  targetMediaKind: 'character_image' | 'scene_image' | 'scene_video';
+  referenceImageUrl?: string;
+  expectedCostume: string;
+  faultyArtifactUrl?: string;
+  faultyVideoUrl?: string;
+  observedCostume?: string;
+  mismatchDetails: string;
+  responsibleAgentId: MuseAgentId;
+  restoreRecommendation: string;
+  detectedAt: number;
+}
+
+export interface CostumeVersionSnapshot {
+  version: number;
+  timestamp: number;
+  actorAgentId: MuseAgentId;
+  incidentCode?: string;
+  sceneId?: string;
+  sceneIndex?: number;
+  beforeCostume: string;
+  afterCostume: string;
+  beforeImageUrl?: string;
+  afterImageUrl?: string;
+  beforePrompt?: string;
+  afterPrompt?: string;
+  note: string;
+}
+
 export interface QaInspectionReport {
   id: string;
   sceneId: string;
@@ -109,6 +144,9 @@ export interface QaInspectionReport {
   targetFixAgentId?: 'muse-02' | 'muse-03' | 'muse-04';
   fixInstruction?: string;
   attemptNumber: number;
+  targetMediaKind?: 'character_image' | 'scene_image' | 'scene_video';
+  characterId?: string;
+  costumeMismatch?: CostumeMismatchReport;
 }
 
 export interface CommandMemoryCharacter {
@@ -122,6 +160,10 @@ export interface CommandMemoryCharacter {
   artifactUrl?: string;
   syncProfile: CharacterFivePartProfile;
   approvedVersion: number;
+  confirmedOriginalDataUrl?: string;
+  confirmedOriginalArtifactUrl?: string;
+  confirmedOriginalSyncProfile?: CharacterFivePartProfile;
+  costumeVersionHistory?: CostumeVersionSnapshot[];
 }
 
 export interface CommandMemoryScene {
@@ -205,6 +247,8 @@ export type CommandTaskType =
   | 'analyze_script'
   | 'design_character_ref'
   | 'design_scene_image'
+  | 'qa_inspect_image'
+  | 'restore_costume_and_regen_image'
   | 'produce_scene_video'
   | 'qa_inspect_scene'
   | 'assemble_final_film'
@@ -231,6 +275,13 @@ export interface CommandTask {
   sceneId?: string;
   sceneIndex?: number;
   characterId?: string;
+  costumeRecovery?: {
+    incidentId?: string;
+    characterId?: string;
+    targetMediaKind: 'character_image' | 'scene_image' | 'scene_video';
+    mismatchDetails: string;
+    expectedCostume?: string;
+  };
   status: CommandTaskStatus;
   priority: number;
   retryCount: number;
@@ -520,6 +571,8 @@ export interface IncidentRecord {
   createdAt: number;
   updatedAt: number;
   resolvedAt?: number;
+  costumeMismatch?: CostumeMismatchReport;
+  versionHistory?: CostumeVersionSnapshot[];
   history: IncidentDialogTurn[];
 }
 

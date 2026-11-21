@@ -1785,7 +1785,10 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                   Project Memory — Bộ hồ sơ sản xuất trung tâm (v{memory.version})
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Mọi Muse AI đọc cùng một phiên bản dữ liệu chuẩn; chỉ Muse AI 01 (Tổng đạo diễn) hoặc người dùng mới được khóa thay đổi phiên bản.
+                  Mọi Muse AI đọc cùng một phiên bản dữ liệu chuẩn · Chế độ trang phục:{' '}
+                  <strong className={memory.allowFreeCostumeChange ? 'text-amber-600 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-300'}>
+                    {memory.allowFreeCostumeChange ? 'Được phép tự do đổi theo cảnh' : 'Khóa cứng theo ảnh tham chiếu gốc'}
+                  </strong>
                 </p>
               </div>
               <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
@@ -1836,13 +1839,28 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                         </div>
                       )}
                       <div className="text-xs space-y-0.5 min-w-0">
-                        <div className="font-bold text-slate-900 dark:text-white">
-                          {ch.name} · {ch.ageGroup} · {ch.gender === 'female' ? 'Nữ' : 'Nam'}
+                        <div className="font-bold text-slate-900 dark:text-white flex flex-wrap items-center gap-1.5">
+                          <span>
+                            {ch.name} · {ch.ageGroup} · {ch.gender === 'female' ? 'Nữ' : 'Nam'}
+                          </span>
+                          {!memory.allowFreeCostumeChange && (
+                            <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                              <Lock className="w-3 h-3" />
+                              Khóa gốc
+                            </span>
+                          )}
                         </div>
                         <div className="text-slate-600 dark:text-slate-300 line-clamp-1">1. Mặt: {ch.syncProfile.face}</div>
                         <div className="text-slate-600 dark:text-slate-300 line-clamp-1">2. Dáng: {ch.syncProfile.physique}</div>
-                        <div className="text-slate-600 dark:text-slate-300 line-clamp-1">3. Đồ: {ch.syncProfile.costume}</div>
+                        <div className="text-slate-600 dark:text-slate-300 line-clamp-1">
+                          3. Đồ: {ch.confirmedOriginalSyncProfile?.costume || ch.syncProfile.costume}
+                        </div>
                         <div className="text-slate-600 dark:text-slate-300 line-clamp-1">4. Giọng: {ch.syncProfile.voice}</div>
+                        {ch.costumeVersionHistory && ch.costumeVersionHistory.length > 0 && (
+                          <div className="text-[11px] text-cyan-700 dark:text-cyan-300 pt-0.5">
+                            Đã khôi phục trang phục {ch.costumeVersionHistory.length} lần (giữ nguyên bản gốc)
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1995,7 +2013,13 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
-                          <span>Cảnh {rep.sceneIndex}: {sc?.title || rep.sceneId}</span>
+                          <span>
+                            {rep.targetMediaKind === 'character_image'
+                              ? `Ảnh nhân vật (${rep.characterId || rep.sceneId})`
+                              : rep.targetMediaKind === 'scene_image'
+                              ? `Ảnh Cảnh ${rep.sceneIndex}: ${sc?.title || rep.sceneId}`
+                              : `Cảnh ${rep.sceneIndex}: ${sc?.title || rep.sceneId}`}
+                          </span>
                           <span aria-hidden="true">·</span>
                           <span className={`font-mono tabular-nums ${rep.passed ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                             {rep.overallScore}/100 ({rep.passed ? 'ĐẠT' : 'KHÔNG ĐẠT'})
@@ -2007,6 +2031,30 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                       </div>
 
                       <p className="text-xs text-slate-700 dark:text-slate-200">{rep.summary}</p>
+                      {rep.costumeMismatch && (
+                        <div className="rounded-lg border border-amber-300/70 dark:border-amber-700/60 bg-amber-50/70 dark:bg-amber-950/30 p-2.5 text-xs space-y-1.5">
+                          <div className="font-semibold text-amber-900 dark:text-amber-200">
+                            Sai trang phục: {rep.costumeMismatch.characterName} ({rep.costumeMismatch.characterId}) — Chuẩn gốc: {rep.costumeMismatch.expectedCostume}
+                          </div>
+                          <div className="text-amber-800 dark:text-amber-300">{rep.costumeMismatch.mismatchDetails}</div>
+                          {(rep.costumeMismatch.referenceImageUrl || rep.costumeMismatch.faultyArtifactUrl) && (
+                            <div className="flex flex-wrap gap-3 pt-1">
+                              {rep.costumeMismatch.referenceImageUrl && (
+                                <div className="space-y-0.5">
+                                  <div className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold">Tham chiếu gốc</div>
+                                  <img src={rep.costumeMismatch.referenceImageUrl} alt="Tham chiếu gốc" className="h-16 w-auto rounded border border-emerald-400/50 object-cover" />
+                                </div>
+                              )}
+                              {rep.costumeMismatch.faultyArtifactUrl && (
+                                <div className="space-y-0.5">
+                                  <div className="text-[10px] text-rose-700 dark:text-rose-300 font-semibold">Ảnh/Khung hình lỗi</div>
+                                  <img src={rep.costumeMismatch.faultyArtifactUrl} alt="Ảnh lỗi trang phục" className="h-16 w-auto rounded border border-rose-400/50 object-cover" />
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       {rep.fixInstruction && (
                         <div className="text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 rounded-lg p-2.5">
                           Yêu cầu sửa gửi {rep.targetFixAgentId}: {rep.fixInstruction}
