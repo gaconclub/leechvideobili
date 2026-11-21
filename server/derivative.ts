@@ -976,6 +976,323 @@ function trimTrailingBackslashes(str: string): string {
   return count % 2 === 1 ? str.slice(0, -1) : str;
 }
 
+function extractFirstBalancedJsonObject(str: string): string {
+  const firstBrace = str.indexOf('{');
+  if (firstBrace < 0) return str;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = firstBrace; i < str.length; i += 1) {
+    const ch = str[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return str.slice(firstBrace, i + 1);
+      }
+    }
+  }
+  return str.slice(firstBrace);
+}
+
+function repairJsonOutsideStrings(input: string): string {
+  const out: string[] = [];
+  let i = 0;
+  const len = input.length;
+  let lastSig = '';
+
+  const peekNextNonWs = (startIdx: number): string => {
+    let k = startIdx;
+    while (k < len) {
+      const c = input[k];
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
+        k += 1;
+        continue;
+      }
+      if (c === '/' && input[k + 1] === '/') {
+        const nl = input.indexOf('\n', k + 2);
+        k = nl < 0 ? len : nl + 1;
+        continue;
+      }
+      if (c === '/' && input[k + 1] === '*') {
+        const end = input.indexOf('*/', k + 2);
+        k = end < 0 ? len : end + 2;
+        continue;
+      }
+      return c;
+    }
+    return '';
+  };
+
+  while (i < len) {
+    const ch = input[i];
+
+    // Copy double-quoted string verbatim
+    if (ch === '"') {
+      out.push('"');
+      i += 1;
+      let escaped = false;
+      while (i < len) {
+        const sc = input[i];
+        out.push(sc);
+        i += 1;
+        if (escaped) {
+          escaped = false;
+        } else if (sc === '\\') {
+          escaped = true;
+        } else if (sc === '"') {
+          break;
+        }
+      }
+      lastSig = '"';
+      continue;
+    }
+
+    // Strip // line comments outside strings
+    if (ch === '/' && input[i + 1] === '/') {
+      const nl = input.indexOf('\n', i + 2);
+      i = nl < 0 ? len : nl;
+      continue;
+    }
+
+    // Strip /* block comments */ outside strings
+    if (ch === '/' && input[i + 1] === '*') {
+      const end = input.indexOf('*/', i + 2);
+      i = end < 0 ? len : end + 2;
+      continue;
+    }
+
+    // Convert single-quoted string '...' to "..."
+    if (ch === "'") {
+      out.push('"');
+      i += 1;
+      let escaped = false;
+      while (i < len) {
+        const sc = input[i];
+        i += 1;
+        if (escaped) {
+          escaped = false;
+          if (sc === "'") out.push("'");
+          else out.push('\\' + sc);
+          continue;
+        }
+        if (sc === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (sc === "'") {
+          break;
+        }
+        if (sc === '"') {
+          out.push('\\"');
+        } else if (sc === '\n') {
+          out.push('\\n');
+        } else if (sc === '\r') {
+          out.push('\\r');
+        } else if (sc === '\t') {
+          out.push('\\t');
+        } else {
+          out.push(sc);
+        }
+      }
+      out.push('"');
+      lastSig = '"';
+      continue;
+    }
+
+    // Strip trailing or duplicate commas outside strings
+    if (ch === ',') {
+      const nextSig = peekNextNonWs(i + 1);
+      if (nextSig === '}' || nextSig === ']' || nextSig === ',' || nextSig === '') {
+        i += 1;
+        continue;
+      }
+      out.push(',');
+      lastSig = ',';
+      i += 1;
+      continue;
+    }
+
+    // Quote unquoted object keys after '{' or ','
+    if ((lastSig === '{' || lastSig === ',') && /[A-Za-z_$]/.test(ch)) {
+      let j = i;
+      while (j < len && /[A-Za-z0-9_$-]/.test(input[j])) j += 1;
+      const ident = input.slice(i, j);
+      if (ident !== 'true' && ident !== 'false' && ident !== 'null' && peekNextNonWs(j) === ':') {
+        out.push(`"${ident}"`);
+        lastSig = '"';
+        i = j;
+        continue;
+      }
+    }
+
+    out.push(ch);
+    if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r') {
+      lastSig = ch;
+    }
+    i += 1;
+  }
+
+  return out.join('');
+}
+
+function escapeUnescapedInnerQuotesInStrings(input: string): string {
+  const out: string[] = [];
+  let inString = false;
+  let escaped = false;
+  const len = input.length;
+
+  for (let i = 0; i < len; i += 1) {
+    const ch = input[i];
+    if (!inString) {
+      out.push(ch);
+      if (ch === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      out.push(ch);
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      out.push(ch);
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      // Valid closing quote is followed (ignoring spaces) by ':', ',', '}', ']', or EOF
+      let k = i + 1;
+      while (k < len && (input[k] === ' ' || input[k] === '\t' || input[k] === '\r' || input[k] === '\n')) {
+        k += 1;
+      }
+      const next = k < len ? input[k] : '';
+      if (next === ':' || next === ',' || next === '}' || next === ']' || next === '') {
+        inString = false;
+        out.push('"');
+      } else {
+        out.push('\\"');
+      }
+      continue;
+    }
+    out.push(ch);
+  }
+  return out.join('');
+}
+
+function insertMissingCommasOutsideStrings(input: string): string {
+  const out: string[] = [];
+  const len = input.length;
+  let i = 0;
+  let lastSig = '';
+  let lastWasKey = false;
+  let expectingValueAfterColon = false;
+
+  const peekNext = (idx: number): string => {
+    let k = idx;
+    while (k < len && (input[k] === ' ' || input[k] === '\t' || input[k] === '\r' || input[k] === '\n')) k += 1;
+    return k < len ? input[k] : '';
+  };
+
+  while (i < len) {
+    const ch = input[i];
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
+      out.push(ch);
+      i += 1;
+      continue;
+    }
+
+    const prevClosedValue =
+      (lastSig === '"' && !lastWasKey) ||
+      lastSig === '}' ||
+      lastSig === ']' ||
+      lastSig === 'num' ||
+      lastSig === 'lit';
+
+    if (prevClosedValue && (ch === '"' || ch === '{' || ch === '[')) {
+      out.push(',');
+    }
+
+    if (ch === '"') {
+      const start = i;
+      i += 1;
+      let esc = false;
+      while (i < len) {
+        const sc = input[i];
+        i += 1;
+        if (esc) esc = false;
+        else if (sc === '\\') esc = true;
+        else if (sc === '"') break;
+      }
+      out.push(input.slice(start, i));
+      lastWasKey = peekNext(i) === ':';
+      lastSig = '"';
+      expectingValueAfterColon = false;
+      continue;
+    }
+
+    if (ch === ':') {
+      out.push(ch);
+      lastSig = ':';
+      lastWasKey = false;
+      expectingValueAfterColon = true;
+      i += 1;
+      continue;
+    }
+
+    if ((ch >= '0' && ch <= '9') || (ch === '-' && i + 1 < len && input[i + 1] >= '0' && input[i + 1] <= '9')) {
+      const numMatch = input.slice(i).match(/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+      if (numMatch) {
+        out.push(numMatch[0]);
+        i += numMatch[0].length;
+        lastSig = 'num';
+        lastWasKey = false;
+        expectingValueAfterColon = false;
+        continue;
+      }
+    }
+
+    if (input.startsWith('true', i) || input.startsWith('null', i)) {
+      out.push(input.slice(i, i + 4));
+      i += 4;
+      lastSig = 'lit';
+      lastWasKey = false;
+      expectingValueAfterColon = false;
+      continue;
+    }
+    if (input.startsWith('false', i)) {
+      out.push('false');
+      i += 5;
+      lastSig = 'lit';
+      lastWasKey = false;
+      expectingValueAfterColon = false;
+      continue;
+    }
+
+    out.push(ch);
+    lastSig = ch;
+    lastWasKey = false;
+    if (ch !== ':' && expectingValueAfterColon && (ch === '{' || ch === '[')) {
+      expectingValueAfterColon = false;
+    }
+    i += 1;
+  }
+
+  return out.join('');
+}
+
 export function parseAiBlueprintJsonSafe(rawText: string): any {
   const stripped = String(rawText || '')
     .trim()
@@ -983,22 +1300,56 @@ export function parseAiBlueprintJsonSafe(rawText: string): any {
     .replace(/```\s*$/i, '')
     .trim();
 
-  const firstBrace = stripped.indexOf('{');
-  const candidateBase = firstBrace >= 0 ? stripped.slice(firstBrace) : stripped;
+  const candidateBase = extractFirstBalancedJsonObject(stripped);
   const sanitized = sanitizeJsonControlChars(candidateBase);
 
+  const candidatesToTry = [sanitized];
   try {
     return JSON.parse(sanitized);
   } catch (initialErr) {
-    // Walk structure to track open containers, unclosed trailing string, and clean comma boundaries
+    // Pass 1: string-aware cleanup (trailing commas, comments, single quotes, unquoted keys)
+    const repairedOutside = repairJsonOutsideStrings(sanitized);
+    if (repairedOutside !== sanitized) {
+      candidatesToTry.push(repairedOutside);
+      try {
+        return JSON.parse(repairedOutside);
+      } catch {
+        // continue
+      }
+    }
+
+    // Pass 2: missing commas + outer repair
+    const withCommas = repairJsonOutsideStrings(insertMissingCommasOutsideStrings(repairedOutside));
+    if (withCommas !== repairedOutside) {
+      candidatesToTry.push(withCommas);
+      try {
+        return JSON.parse(withCommas);
+      } catch {
+        // continue
+      }
+    }
+
+    // Pass 3: escape likely unescaped inner double quotes inside dialogue/string values
+    const withEscapedQuotes = repairJsonOutsideStrings(
+      insertMissingCommasOutsideStrings(escapeUnescapedInnerQuotesInStrings(repairedOutside))
+    );
+    candidatesToTry.push(withEscapedQuotes);
+    try {
+      return JSON.parse(withEscapedQuotes);
+    } catch {
+      // continue to truncation recovery below
+    }
+
+    // Strategy 1 & 2: truncation repair on the cleanest repaired candidate
+    const bestBase = withCommas || repairedOutside || sanitized;
     const stack: ('{' | '[')[] = [];
     const safeCommaCuts: { cutPos: number; stack: ('{' | '[')[] }[] = [];
     let inString = false;
     let escaped = false;
     let stringStart = -1;
 
-    for (let i = 0; i < sanitized.length; i += 1) {
-      const ch = sanitized[i];
+    for (let i = 0; i < bestBase.length; i += 1) {
+      const ch = bestBase[i];
       if (!inString) {
         if (ch === '"') {
           inString = true;
@@ -1027,33 +1378,31 @@ export function parseAiBlueprintJsonSafe(rawText: string): any {
       }
     }
 
-    // Strategy 1: If truncated mid-string (e.g. runaway repetition loop on one field), cap tail and close containers
     if (inString && stringStart >= 0 && stack.length > 0) {
-      let head = sanitized;
-      const tailLen = sanitized.length - stringStart - 1;
+      let head = bestBase;
+      const tailLen = bestBase.length - stringStart - 1;
       if (tailLen > 750) {
         let cutAt = stringStart + 650;
-        const spaceIdx = sanitized.lastIndexOf(' ', cutAt);
+        const spaceIdx = bestBase.lastIndexOf(' ', cutAt);
         if (spaceIdx > stringStart + 350) {
           cutAt = spaceIdx;
         }
-        head = sanitized.slice(0, cutAt);
+        head = bestBase.slice(0, cutAt);
       }
       head = trimTrailingBackslashes(head);
       const closedCandidate = `${head}"${closeContainerStack(stack)}`;
       try {
-        return JSON.parse(closedCandidate);
+        return JSON.parse(repairJsonOutsideStrings(closedCandidate));
       } catch {
         // Fall through to Strategy 2
       }
     }
 
-    // Strategy 2: Roll back to the most recent clean comma separator and close open containers
     for (let idx = safeCommaCuts.length - 1; idx >= 0 && idx >= safeCommaCuts.length - 25; idx -= 1) {
       const cut = safeCommaCuts[idx];
-      const repaired = `${sanitized.slice(0, cut.cutPos)}${closeContainerStack(cut.stack)}`;
+      const repaired = `${bestBase.slice(0, cut.cutPos)}${closeContainerStack(cut.stack)}`;
       try {
-        return JSON.parse(repaired);
+        return JSON.parse(repairJsonOutsideStrings(repaired));
       } catch {
         // Keep backing up to an earlier valid cut boundary
       }

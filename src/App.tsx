@@ -26,6 +26,8 @@ import { VideoTransformModal } from './components/VideoTransformModal';
 import { UpdateModal, UpdateStatusInfo } from './components/UpdateModal';
 import { StudioPanel } from './components/StudioPanel';
 import { CommandCenterPanel } from './components/CommandCenterPanel';
+import { ProductionMonitorPanel } from './components/ProductionMonitorPanel';
+import { useCommandCenterLive } from './hooks/useCommandCenterLive';
 import {
   COOKIE_SITES,
   buildCombinedCookiesString,
@@ -62,6 +64,12 @@ export default function App() {
   const [mountedDiscovery, setMountedDiscovery] = useState(false);
   const [mountedStudio, setMountedStudio] = useState(false);
   const [mountedCommandCenter, setMountedCommandCenter] = useState(false);
+  const [mountedProductionMonitor, setMountedProductionMonitor] = useState(false);
+  const [ccSubTabRequest, setCcSubTabRequest] = useState<{
+    subTab: 'overview' | 'chat' | 'tasks' | 'pipeline' | 'qa';
+    nonce: number;
+  } | null>(null);
+  const ccLive = useCommandCenterLive(activeTab === 'command_center' || activeTab === 'production_monitor');
   const [trendingCount, setTrendingCount] = useState<number>(0);
   const [capabilities, setCapabilities] = useState<ServerCapabilitiesStatus | null>(null);
   const [searchQueryRequest, setSearchQueryRequest] = useState<{ query: string; nonce: number } | null>(null);
@@ -1132,6 +1140,7 @@ export default function App() {
       if (tab === 'trending') setMountedDiscovery(true);
       if (tab === 'studio') setMountedStudio(true);
       if (tab === 'command_center') setMountedCommandCenter(true);
+      if (tab === 'production_monitor') setMountedProductionMonitor(true);
       if (tab === 'settings') fetchCapabilities();
       if (tab === 'update') checkSystemUpdate();
     },
@@ -1267,6 +1276,11 @@ export default function App() {
         capabilities={capabilities}
         appVersion={appVersion}
         onRunBatchAction={handleSidebarBatchAction}
+        activeProductionProgressPct={ccLive.state?.activeRun?.overallProgressPct}
+        activeProductionRunning={Boolean(
+          ccLive.state?.activeRun &&
+            ['planning', 'producing', 'inspecting', 'assembling'].includes(ccLive.state.activeRun.status)
+        )}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -1464,7 +1478,31 @@ export default function App() {
             <div className={activeTab === 'command_center' ? 'block' : 'hidden'}>
               <CommandCenterPanel
                 onOpenSettings={() => handleChangeTab('settings')}
+                onOpenProductionMonitor={() => handleChangeTab('production_monitor')}
                 isActiveTab={activeTab === 'command_center'}
+                liveState={ccLive.state}
+                setLiveState={ccLive.setState}
+                liveLoading={ccLive.loading}
+                sseConnected={ccLive.sseConnected}
+                onRefreshLive={ccLive.refreshState}
+                externalSubTabRequest={ccSubTabRequest}
+              />
+            </div>
+          )}
+
+          {/* VIEW 3C: PHIÊN SẢN XUẤT (PRODUCTION MONITOR) */}
+          {mountedProductionMonitor && (
+            <div className={activeTab === 'production_monitor' ? 'block' : 'hidden'}>
+              <ProductionMonitorPanel
+                state={ccLive.state}
+                setState={ccLive.setState}
+                loading={ccLive.loading}
+                sseConnected={ccLive.sseConnected}
+                onRefresh={ccLive.refreshState}
+                onOpenCommandCenter={(subTab) => {
+                  setCcSubTabRequest({ subTab: subTab || 'overview', nonce: Date.now() });
+                  handleChangeTab('command_center');
+                }}
               />
             </div>
           )}

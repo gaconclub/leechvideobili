@@ -6,16 +6,14 @@ import {
   Film,
   Image as ImageIcon,
   Loader2,
-  MessageSquare,
   Pause,
   Play,
   Plus,
   RefreshCw,
   Save,
   Search,
-  Send,
   Square,
-  Users,
+  Upload,
 } from 'lucide-react';
 import type {
   DerivativeAspectRatio,
@@ -26,11 +24,22 @@ import type {
 import type {
   CommandCenterState,
   CommandTask,
+  CommunicationChannelId,
   ConversationMessage,
+  MuseAgentAvatarPreset,
   MuseAgentConfig,
   MuseAgentEngineMode,
   MuseAgentId,
+  ProductionRun,
 } from '../types/commandCenter';
+import {
+  AgentAvatar,
+  MUSE_ACCENT_SWATCHES,
+  MUSE_AVATAR_PRESETS,
+  renderPresetSvgIcon,
+} from './command-center/AgentAvatar';
+import { CommunicationHub } from './command-center/CommunicationHub';
+import { PerformanceMonitorTab } from './command-center/PerformanceMonitorTab';
 
 type CommandCenterSubTab =
   | 'overview'
@@ -39,6 +48,7 @@ type CommandCenterSubTab =
   | 'tasks'
   | 'pipeline'
   | 'qa'
+  | 'perf'
   | 'logs'
   | 'backup'
   | 'cloud';
@@ -50,6 +60,7 @@ const SUB_TABS: { id: CommandCenterSubTab; label: string }[] = [
   { id: 'tasks', label: 'Giao việc & Nhiệm vụ' },
   { id: 'pipeline', label: 'Điều phối & Project Memory' },
   { id: 'qa', label: 'Giám sát chất lượng' },
+  { id: 'perf', label: 'Hiệu năng & Kênh nhanh' },
   { id: 'logs', label: 'Tiến độ & Nhật ký' },
   { id: 'backup', label: 'Backup & Lưu trữ' },
   { id: 'cloud', label: 'Tài khoản & Cloud' },
@@ -139,16 +150,31 @@ async function apiJson<T = any>(url: string, init?: RequestInit): Promise<T> {
 
 interface CommandCenterPanelProps {
   onOpenSettings?: () => void;
+  onOpenProductionMonitor?: () => void;
   isActiveTab?: boolean;
+  liveState: CommandCenterState | null;
+  setLiveState: React.Dispatch<React.SetStateAction<CommandCenterState | null>>;
+  liveLoading: boolean;
+  sseConnected: boolean;
+  onRefreshLive: (forceHealth?: boolean) => Promise<CommandCenterState | null>;
+  externalSubTabRequest?: { subTab: CommandCenterSubTab; nonce: number } | null;
 }
 
-export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActiveTab = false }) => {
+export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
+  onOpenProductionMonitor,
+  isActiveTab = false,
+  liveState: state,
+  setLiveState: setState,
+  liveLoading: loading,
+  sseConnected,
+  onRefreshLive,
+  externalSubTabRequest,
+}) => {
   const [subTab, setSubTab] = useState<CommandCenterSubTab>('overview');
-  const [state, setState] = useState<CommandCenterState | null>(null);
-  const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string>('');
   const [bannerError, setBannerError] = useState('');
   const [bannerNotice, setBannerNotice] = useState('');
+  const [confirmCancelRun, setConfirmCancelRun] = useState<ProductionRun | null>(null);
 
   // Overview / Script Dispatcher form
   const [projectTitle, setProjectTitle] = useState('');
@@ -167,13 +193,14 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
   const [agentDraftDesc, setAgentDraftDesc] = useState('');
   const [agentDraftAccount, setAgentDraftAccount] = useState('auto');
   const [agentDraftEngine, setAgentDraftEngine] = useState<MuseAgentEngineMode>('muse2api');
+  const [agentDraftPreset, setAgentDraftPreset] = useState<MuseAgentAvatarPreset>('director_clapboard');
+  const [agentDraftColor, setAgentDraftColor] = useState('#7C3AED');
+  const [agentDraftAvatarDataUrl, setAgentDraftAvatarDataUrl] = useState<string | undefined>(undefined);
+  const [agentDraftClearAvatar, setAgentDraftClearAvatar] = useState(false);
   const [agentTestReplies, setAgentTestReplies] = useState<Record<string, string>>({});
 
-  // Chat state
-  const [chatChannel, setChatChannel] = useState<'group' | MuseAgentId>('group');
-  const [groupTargetAgent, setGroupTargetAgent] = useState<MuseAgentId>('muse-01');
-  const [chatInput, setChatInput] = useState('');
-  const [isSendingChat, setIsSendingChat] = useState(false);
+  // Chat initial channel deep-link
+  const [chatInitialChannel, setChatInitialChannel] = useState<CommunicationChannelId>('commander');
 
   // Manual Task form
   const [manualAgentId, setManualAgentId] = useState<MuseAgentId>('muse-01');
@@ -233,33 +260,31 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
     []
   );
 
-  const fetchState = useCallback(async (forceHealth = false) => {
-    try {
-      const data = await apiJson<CommandCenterState>(
-        `/api/command-center/state${forceHealth ? '?force=1' : ''}`
-      );
-      setState(data);
-      setBannerError('');
-      if (!cloudSyncedOnce) {
-        setCloudUrl(data.cloudConfig.muse2ApiBaseUrl || '');
-        setParallelLimit(data.cloudConfig.parallelLimit);
-        setQaThreshold(data.cloudConfig.qaPassThreshold);
-        setMaxRetries(data.cloudConfig.maxRetriesPerScene);
-        setAutoBackup(data.cloudConfig.autoBackupRealtime);
-        setCloudSyncedOnce(true);
-      }
-      const dir = data.latestStudioDirective;
-      if (dir && dir.syncedAt > hydratedSyncAtRef.current && (!hasManualFormEdit || !scriptText.trim())) {
-        applySyncedDirectiveToForm(dir, data.projectMemory);
-      } else if (!hasManualFormEdit && !scriptText.trim() && data.projectMemory?.originalScript) {
-        applySyncedDirectiveToForm(null, data.projectMemory);
-      }
-    } catch (err: any) {
-      setBannerError(err?.message || 'Không thể tải trạng thái Phòng Điều Hành.');
-    } finally {
-      setLoading(false);
+  const fetchState = useCallback(
+    async (forceHealth = false) => {
+      const data = await onRefreshLive(forceHealth);
+      return data;
+    },
+    [onRefreshLive]
+  );
+
+  useEffect(() => {
+    if (!state) return;
+    if (!cloudSyncedOnce) {
+      setCloudUrl(state.cloudConfig.muse2ApiBaseUrl || '');
+      setParallelLimit(state.cloudConfig.parallelLimit);
+      setQaThreshold(state.cloudConfig.qaPassThreshold);
+      setMaxRetries(state.cloudConfig.maxRetriesPerScene);
+      setAutoBackup(state.cloudConfig.autoBackupRealtime);
+      setCloudSyncedOnce(true);
     }
-  }, [cloudSyncedOnce, hasManualFormEdit, scriptText, applySyncedDirectiveToForm]);
+    const dir = state.latestStudioDirective;
+    if (dir && dir.syncedAt > hydratedSyncAtRef.current && (!hasManualFormEdit || !scriptText.trim())) {
+      applySyncedDirectiveToForm(dir, state.projectMemory);
+    } else if (!hasManualFormEdit && !scriptText.trim() && state.projectMemory?.originalScript) {
+      applySyncedDirectiveToForm(null, state.projectMemory);
+    }
+  }, [state, cloudSyncedOnce, hasManualFormEdit, scriptText, applySyncedDirectiveToForm]);
 
   const refreshStudioProjects = useCallback(() => {
     fetch('/api/studio/projects')
@@ -271,34 +296,22 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
   }, []);
 
   useEffect(() => {
-    void fetchState(true);
     refreshStudioProjects();
-  }, [fetchState, refreshStudioProjects]);
+  }, [refreshStudioProjects]);
 
   useEffect(() => {
     if (isActiveTab) {
-      void fetchState(false);
       refreshStudioProjects();
     }
-  }, [isActiveTab, fetchState, refreshStudioProjects]);
-
-  const hasActiveProcessing = useMemo(() => {
-    if (!state) return false;
-    return (
-      state.metrics.runningTasks > 0 ||
-      state.metrics.queuedTasks > 0 ||
-      Boolean(state.activeRun && ['planning', 'producing', 'inspecting', 'assembling'].includes(state.activeRun.status))
-    );
-  }, [state]);
+  }, [isActiveTab, refreshStudioProjects]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      void fetchState(false);
-    }, hasActiveProcessing ? 2500 : 8000);
-    return () => clearInterval(interval);
-  }, [fetchState, hasActiveProcessing]);
+    if (externalSubTabRequest) {
+      setSubTab(externalSubTabRequest.subTab);
+    }
+  }, [externalSubTabRequest]);
 
-  const runAction = async (key: string, fn: () => Promise<CommandCenterState | void>, okNotice?: string) => {
+  const runAction = async (key: string, fn: () => Promise<CommandCenterState | null | void>, okNotice?: string) => {
     setBusyAction(key);
     setBannerError('');
     setBannerNotice('');
@@ -372,6 +385,21 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
     setAgentDraftDesc(agent.description);
     setAgentDraftAccount(agent.boundAccountId || 'auto');
     setAgentDraftEngine(agent.engineMode);
+    setAgentDraftPreset(agent.avatarPreset || 'director_clapboard');
+    setAgentDraftColor(agent.accentColor || '#7C3AED');
+    setAgentDraftAvatarDataUrl(undefined);
+    setAgentDraftClearAvatar(false);
+  };
+
+  const handleAgentLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAgentDraftAvatarDataUrl(String(reader.result || ''));
+      setAgentDraftClearAvatar(false);
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleSaveAgentEdit = async (agentId: MuseAgentId) => {
@@ -387,9 +415,13 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
             description: agentDraftDesc,
             boundAccountId: agentDraftAccount,
             engineMode: agentDraftEngine,
+            avatarPreset: agentDraftPreset,
+            accentColor: agentDraftColor,
+            ...(agentDraftAvatarDataUrl ? { avatarDataUrl: agentDraftAvatarDataUrl } : {}),
+            ...(agentDraftClearAvatar ? { avatarUrl: '' } : {}),
           }),
         }),
-      'Đã lưu cấu hình Muse AI.'
+      'Đã lưu cấu hình danh tính & kết nối Muse AI.'
     );
     setEditingAgentId(null);
   };
@@ -411,30 +443,6 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
       setBannerError(err?.message || 'Kiểm tra kết nối thất bại.');
     } finally {
       setBusyAction('');
-    }
-  };
-
-  const handleSendChat = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatInput.trim() || isSendingChat) return;
-    setIsSendingChat(true);
-    setBannerError('');
-    try {
-      const res = await apiJson<{ state: CommandCenterState }>('/api/command-center/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channel: chatChannel,
-          message: chatInput.trim(),
-          targetAgentId: chatChannel === 'group' ? groupTargetAgent : chatChannel,
-        }),
-      });
-      setState(res.state);
-      setChatInput('');
-    } catch (err: any) {
-      setBannerError(err?.message || 'Không thể gửi tin nhắn.');
-    } finally {
-      setIsSendingChat(false);
     }
   };
 
@@ -543,7 +551,6 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
   const memory = state?.projectMemory;
   const activeRun = state?.activeRun || null;
   const health = state?.integrationHealth;
-  const channelMessages = (state?.conversations || []).filter((m) => m.channel === chatChannel);
   const filteredLogs = (state?.logs || []).filter((l) => {
     if (logAgentFilter !== 'all' && l.agentId !== logAgentFilter) return false;
     if (logLevelFilter !== 'all' && l.level !== logLevelFilter) return false;
@@ -733,18 +740,26 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
                   key={ag.id}
                   className="rounded-xl border border-slate-200 dark:border-slate-700/45 bg-white/80 dark:bg-[#0c1021]/85 p-3.5 flex flex-col justify-between gap-3"
                 >
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between gap-2 text-xs">
                       <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">{ag.code}</span>
                       <span className={`font-semibold ${AGENT_STATUS_TEXT_CLASS[ag.status]}`}>
                         {AGENT_STATUS_LABELS[ag.status]}
                       </span>
                     </div>
-                    <div className="font-display font-bold text-sm text-slate-900 dark:text-white truncate">
-                      {ag.name}
-                    </div>
-                    <div className="text-xs font-medium text-violet-700 dark:text-violet-300 truncate">
-                      {ag.roleTitle}
+                    <div className="flex items-center gap-2.5">
+                      <AgentAvatar agent={ag} size="md" showStatusDot />
+                      <div className="min-w-0">
+                        <div className="font-display font-bold text-sm text-slate-900 dark:text-white truncate">
+                          {ag.name}
+                        </div>
+                        <div
+                          className="text-xs font-medium truncate"
+                          style={{ color: ag.accentColor || '#7C3AED' }}
+                        >
+                          {ag.roleTitle}
+                        </div>
+                      </div>
                     </div>
                     <div className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 min-h-[2rem]">
                       {ag.currentTaskSummary || ag.lastError || ag.description}
@@ -778,7 +793,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
                       <button
                         type="button"
                         onClick={() => {
-                          setChatChannel(ag.id);
+                          setChatInitialChannel(ag.id);
                           setSubTab('chat');
                         }}
                         className="py-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 hover:bg-slate-100 dark:hover:bg-slate-800 text-[11px] font-medium text-slate-700 dark:text-slate-200 cursor-pointer whitespace-nowrap"
@@ -991,22 +1006,24 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
                   )}
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {activeRun.status !== 'paused' && activeRun.status !== 'completed' && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runAction('pause_run', () =>
-                            apiJson<CommandCenterState>(`/api/command-center/productions/${activeRun.id}/pause`, {
-                              method: 'POST',
-                            })
-                          )
-                        }
-                        className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700/60 text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <Pause className="w-3.5 h-3.5" />
-                        <span>Tạm dừng phiên</span>
-                      </button>
-                    )}
+                    {activeRun.status !== 'paused' &&
+                      activeRun.status !== 'completed' &&
+                      activeRun.status !== 'cancelled' && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            runAction('pause_run', () =>
+                              apiJson<CommandCenterState>(`/api/command-center/productions/${activeRun.id}/pause`, {
+                                method: 'POST',
+                              })
+                            )
+                          }
+                          className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700/60 text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Pause className="w-3.5 h-3.5" />
+                          <span>Tạm dừng phiên</span>
+                        </button>
+                      )}
 
                     {(activeRun.status === 'paused' || activeRun.status === 'needs_attention') && (
                       <button
@@ -1025,20 +1042,24 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
                       </button>
                     )}
 
-                    {activeRun.status !== 'completed' && (
+                    {activeRun.status !== 'completed' && activeRun.status !== 'cancelled' && (
                       <button
                         type="button"
-                        onClick={() =>
-                          runAction('cancel_run', () =>
-                            apiJson<CommandCenterState>(`/api/command-center/productions/${activeRun.id}/cancel`, {
-                              method: 'POST',
-                            })
-                          )
-                        }
+                        onClick={() => setConfirmCancelRun(activeRun)}
                         className="px-3 py-1.5 rounded-lg border border-rose-300 dark:border-rose-700/60 text-xs font-medium text-rose-700 dark:text-rose-300 inline-flex items-center gap-1.5 cursor-pointer"
                       >
                         <Square className="w-3 h-3" />
-                        <span>Dừng hàng đợi</span>
+                        <span>Hủy phiên</span>
+                      </button>
+                    )}
+
+                    {onOpenProductionMonitor && (
+                      <button
+                        type="button"
+                        onClick={onOpenProductionMonitor}
+                        className="px-3 py-1.5 rounded-lg bg-violet-600/15 hover:bg-violet-600/25 text-violet-700 dark:text-violet-300 text-xs font-medium cursor-pointer"
+                      >
+                        Mở Phiên Sản Xuất ({activeRun.overallProgressPct ?? 0}%) →
                       </button>
                     )}
                   </div>
@@ -1071,16 +1092,16 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
       )}
 
       {/* =========================================================
-          2. AGENTS MANAGEMENT (5 MUSE AI)
+          2. AGENTS MANAGEMENT (5 MUSE AI IDENTITY & PERMISSIONS)
          ========================================================= */}
       {subTab === 'agents' && (
         <section className="glass-card rounded-2xl p-5 space-y-4">
           <div>
             <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-              Quản trị &amp; Phân quyền 5 Muse AI
+              Hồ sơ danh tính, Logo &amp; Phân quyền 5 Muse AI
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Đổi tên, tùy chỉnh vai trò, gán tài khoản Muse2API riêng biệt cho từng AI và kiểm tra kết nối trực tiếp.
+              Đổi tên, tải logo riêng hoặc chọn biểu tượng hệ thống, đặt màu nhận diện, gán tài khoản Muse2API và xem hiệu suất từng AI.
             </p>
           </div>
 
@@ -1093,26 +1114,36 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
                   className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white/75 dark:bg-[#0c1021]/85 p-4 space-y-3"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="space-y-1 flex-1 min-w-[260px]">
-                      <div className="flex flex-wrap items-center gap-2 text-xs">
-                        <span className="font-mono text-slate-500 dark:text-slate-400">{ag.code}</span>
-                        <span aria-hidden="true">·</span>
-                        <span className={`font-semibold ${AGENT_STATUS_TEXT_CLASS[ag.status]}`}>
-                          {AGENT_STATUS_LABELS[ag.status]}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span className="text-slate-500 dark:text-slate-400">
-                          {ag.engineMode === 'muse2api'
-                            ? 'Chỉ chạy Muse2API thực tế'
-                            : 'Muse2API + Gemini Dự phòng'}
-                        </span>
-                      </div>
-                      <div className="text-base font-display font-bold text-slate-900 dark:text-white">
-                        {ag.name} — {ag.roleTitle}
-                      </div>
-                      <p className="text-xs text-slate-600 dark:text-slate-300">{ag.description}</p>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 pt-1">
-                        Phạm vi dữ liệu: <span className="font-mono">{ag.permissions.allowedDataScopes.join(', ')}</span>
+                    <div className="flex items-start gap-3 flex-1 min-w-[260px]">
+                      <AgentAvatar agent={ag} size="lg" showStatusDot />
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="font-mono text-slate-500 dark:text-slate-400">{ag.code}</span>
+                          <span aria-hidden="true">·</span>
+                          <span className={`font-semibold ${AGENT_STATUS_TEXT_CLASS[ag.status]}`}>
+                            {AGENT_STATUS_LABELS[ag.status]}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span className="text-slate-500 dark:text-slate-400">
+                            {ag.engineMode === 'muse2api'
+                              ? 'Chỉ chạy Muse2API thực tế'
+                              : 'Muse2API + Gemini Dự phòng'}
+                          </span>
+                        </div>
+                        <div className="text-base font-display font-bold text-slate-900 dark:text-white">
+                          {ag.name} —{' '}
+                          <span style={{ color: ag.accentColor || '#7C3AED' }}>{ag.roleTitle}</span>
+                        </div>
+                        <p className="text-xs text-slate-600 dark:text-slate-300">{ag.description}</p>
+                        <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400 pt-1 font-mono tabular-nums">
+                          <span>Phạm vi: {ag.permissions.allowedDataScopes.join(', ')}</span>
+                          {typeof ag.avgResponseMs === 'number' && ag.avgResponseMs > 0 && (
+                            <span>TB phản hồi: {(ag.avgResponseMs / 1000).toFixed(1)}s</span>
+                          )}
+                          {typeof ag.successRate === 'number' && (
+                            <span>Thành công: {ag.successRate}%</span>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -1152,7 +1183,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
                         onClick={() => (isEditing ? setEditingAgentId(null) : openAgentEditor(ag))}
                         className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium cursor-pointer whitespace-nowrap"
                       >
-                        {isEditing ? 'Đóng' : 'Cấu hình'}
+                        {isEditing ? 'Đóng' : 'Hồ sơ & Logo'}
                       </button>
                     </div>
                   </div>
@@ -1164,85 +1195,186 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
                   )}
 
                   {isEditing && (
-                    <div className="pt-3 border-t border-slate-200 dark:border-slate-700/45 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                      <div>
-                        <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                          Tên hiển thị AI
-                        </label>
-                        <input
-                          type="text"
-                          value={agentDraftName}
-                          onChange={(e) => setAgentDraftName(e.target.value)}
-                          className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                        />
-                      </div>
+                    <div className="pt-3 border-t border-slate-200 dark:border-slate-700/45 space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                            Tên hiển thị AI
+                          </label>
+                          <input
+                            type="text"
+                            value={agentDraftName}
+                            onChange={(e) => setAgentDraftName(e.target.value)}
+                            className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
+                          />
+                        </div>
 
-                      <div>
-                        <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                          Vai trò phụ trách
-                        </label>
-                        <input
-                          type="text"
-                          value={agentDraftRole}
-                          onChange={(e) => setAgentDraftRole(e.target.value)}
-                          className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                        />
-                      </div>
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                            Vai trò phụ trách
+                          </label>
+                          <input
+                            type="text"
+                            value={agentDraftRole}
+                            onChange={(e) => setAgentDraftRole(e.target.value)}
+                            className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
+                          />
+                        </div>
 
-                      <div>
-                        <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                          Gán tài khoản Muse2API
-                        </label>
-                        <select
-                          value={agentDraftAccount}
-                          onChange={(e) => setAgentDraftAccount(e.target.value)}
-                          className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                        >
-                          <option value="auto">Tự động xoay vòng Pool</option>
-                          {(health?.accounts || []).map((acc) => (
-                            <option key={acc.id} value={acc.id}>
-                              {acc.label} ({acc.id}) {acc.ok === false ? '— Lỗi' : ''}
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                            Gán tài khoản Muse2API
+                          </label>
+                          <select
+                            value={agentDraftAccount}
+                            onChange={(e) => setAgentDraftAccount(e.target.value)}
+                            className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
+                          >
+                            <option value="auto">Tự động xoay vòng Pool</option>
+                            {(health?.accounts || []).map((acc) => (
+                              <option key={acc.id} value={acc.id}>
+                                {acc.label} ({acc.id}) {acc.ok === false ? '— Lỗi' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                            Chế độ thực thi AI
+                          </label>
+                          <select
+                            value={agentDraftEngine}
+                            onChange={(e) => setAgentDraftEngine(e.target.value as MuseAgentEngineMode)}
+                            className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
+                          >
+                            <option value="muse2api">Chỉ Muse2API (Tài khoản Muse.ai thực)</option>
+                            <option value="muse2api_with_gemini_fallback">
+                              Muse2API + Gemini Server Dự phòng
                             </option>
-                          ))}
-                        </select>
+                          </select>
+                        </div>
                       </div>
 
-                      <div>
-                        <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                          Chế độ thực thi AI
-                        </label>
-                        <select
-                          value={agentDraftEngine}
-                          onChange={(e) => setAgentDraftEngine(e.target.value as MuseAgentEngineMode)}
-                          className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                        >
-                          <option value="muse2api">Chỉ Muse2API (Tài khoản Muse.ai thực)</option>
-                          <option value="muse2api_with_gemini_fallback">
-                            Muse2API + Gemini Server Dự phòng
-                          </option>
-                        </select>
+                      {/* Custom Logo Upload, SVG Preset & Accent Color */}
+                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 rounded-xl border border-slate-200 dark:border-slate-700/45 bg-slate-50/70 dark:bg-[#090d1c]/70 p-3.5">
+                        <div className="lg:col-span-4 flex items-center gap-3">
+                          <AgentAvatar
+                            agent={ag}
+                            avatarUrl={agentDraftClearAvatar ? '' : agentDraftAvatarDataUrl ?? ag.avatarUrl}
+                            avatarPreset={agentDraftPreset}
+                            accentColor={agentDraftColor}
+                            size="lg"
+                          />
+                          <div className="space-y-1.5">
+                            <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                              Logo nhận diện
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <label className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#131a35] text-[11px] font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800">
+                                <Upload className="w-3 h-3" />
+                                <span>Tải logo</span>
+                                <input
+                                  type="file"
+                                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                                  onChange={handleAgentLogoUpload}
+                                  className="hidden"
+                                />
+                              </label>
+                              {(ag.avatarUrl || agentDraftAvatarDataUrl) && !agentDraftClearAvatar && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setAgentDraftAvatarDataUrl(undefined);
+                                    setAgentDraftClearAvatar(true);
+                                  }}
+                                  className="px-2 py-1 rounded-lg text-[11px] text-rose-600 dark:text-rose-300 hover:underline cursor-pointer"
+                                >
+                                  Dùng icon hệ thống
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="lg:col-span-4 space-y-1.5">
+                          <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                            Biểu tượng hệ thống (Preset)
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {MUSE_AVATAR_PRESETS.map((p) => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                title={p.label}
+                                onClick={() => {
+                                  setAgentDraftPreset(p.id);
+                                  setAgentDraftClearAvatar(true);
+                                  setAgentDraftAvatarDataUrl(undefined);
+                                }}
+                                className={`w-8 h-8 rounded-lg border flex items-center justify-center cursor-pointer transition ${
+                                  agentDraftPreset === p.id
+                                    ? 'border-violet-500 bg-violet-500/15 text-violet-600 dark:text-violet-300'
+                                    : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                                }`}
+                              >
+                                {renderPresetSvgIcon(p.id, 'w-4 h-4')}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="lg:col-span-4 space-y-1.5">
+                          <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                            Màu nhận diện
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {MUSE_ACCENT_SWATCHES.map((sw) => (
+                              <button
+                                key={sw.hex}
+                                type="button"
+                                title={sw.label}
+                                onClick={() => setAgentDraftColor(sw.hex)}
+                                className={`w-6 h-6 rounded-full border-2 cursor-pointer transition ${
+                                  agentDraftColor.toUpperCase() === sw.hex
+                                    ? 'border-slate-900 dark:border-white scale-110'
+                                    : 'border-transparent'
+                                }`}
+                                style={{ backgroundColor: sw.hex }}
+                              />
+                            ))}
+                            <input
+                              type="color"
+                              value={agentDraftColor}
+                              onChange={(e) => setAgentDraftColor(e.target.value)}
+                              className="w-7 h-6 rounded border border-slate-200 dark:border-slate-700 bg-transparent cursor-pointer"
+                            />
+                          </div>
+                        </div>
                       </div>
 
-                      <div className="md:col-span-2 lg:col-span-3">
-                        <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                          Mô tả nhiệm vụ &amp; chỉ thị mặc định
-                        </label>
-                        <input
-                          type="text"
-                          value={agentDraftDesc}
-                          onChange={(e) => setAgentDraftDesc(e.target.value)}
-                          className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                        />
-                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                        <div className="md:col-span-9">
+                          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                            Mô tả nhiệm vụ &amp; chỉ thị mặc định
+                          </label>
+                          <input
+                            type="text"
+                            value={agentDraftDesc}
+                            onChange={(e) => setAgentDraftDesc(e.target.value)}
+                            className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
+                          />
+                        </div>
 
-                      <div className="flex items-end">
-                        <button
-                          type="button"
-                          onClick={() => handleSaveAgentEdit(ag.id)}
-                          className="w-full h-9 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer"
-                        >
-                          Lưu thay đổi
-                        </button>
+                        <div className="md:col-span-3">
+                          <button
+                            type="button"
+                            onClick={() => handleSaveAgentEdit(ag.id)}
+                            className="w-full h-9 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer"
+                          >
+                            Lưu thay đổi
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -1254,143 +1386,23 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
       )}
 
       {/* =========================================================
-          3. COMMUNICATION CENTER (GROUP + 1-ON-1 CHAT)
+          3. COMMUNICATION HUB (MULTI-CHANNEL SLACK/DISCORD STYLE)
          ========================================================= */}
-      {subTab === 'chat' && (
-        <section className="glass-card rounded-2xl p-5 grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-[540px]">
-          <div className="lg:col-span-3 border-b lg:border-b-0 lg:border-r border-slate-200 dark:border-slate-700/45 pb-3 lg:pb-0 lg:pr-4 space-y-2">
-            <div className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2">Kênh giao tiếp</div>
+      {subTab === 'chat' && state && (
+        <CommunicationHub
+          state={state}
+          setState={setState}
+          initialChannel={chatInitialChannel}
+          onJumpToTask={() => setSubTab('tasks')}
+          onJumpToScene={() => setSubTab('pipeline')}
+        />
+      )}
 
-            <button
-              type="button"
-              onClick={() => setChatChannel('group')}
-              className={`w-full text-left px-3 py-2.5 rounded-xl text-xs font-medium transition cursor-pointer flex items-center justify-between ${
-                chatChannel === 'group'
-                  ? 'bg-violet-600 text-white'
-                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5'
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <Users className="w-3.5 h-3.5" />
-                <span>Chat nhóm 5 Muse AI</span>
-              </span>
-            </button>
-
-            <div className="pt-2 text-[11px] text-slate-500 dark:text-slate-400">Trao đổi riêng 1-1</div>
-            {agents.map((ag) => (
-              <button
-                key={ag.id}
-                type="button"
-                onClick={() => setChatChannel(ag.id)}
-                className={`w-full text-left px-3 py-2 rounded-xl text-xs transition cursor-pointer flex items-center justify-between gap-2 ${
-                  chatChannel === ag.id
-                    ? 'bg-violet-600 text-white font-semibold'
-                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5'
-                }`}
-              >
-                <span className="truncate">{ag.name}</span>
-                <span className="text-[10px] opacity-80 truncate">{ag.roleTitle}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="lg:col-span-9 flex flex-col justify-between gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-slate-700/45">
-              <div>
-                <h2 className="text-sm font-display font-bold text-slate-900 dark:text-white">
-                  {chatChannel === 'group'
-                    ? 'Phòng họp nhóm — Toàn bộ đội ngũ 5 Muse AI'
-                    : `Chat riêng với ${agents.find((a) => a.id === chatChannel)?.name} (${agents.find((a) => a.id === chatChannel)?.roleTitle})`}
-                </h2>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Mọi hội thoại hai chiều, prompt giao việc và tệp kết quả đều được lưu vào kho lưu trữ và backup tự động.
-                </p>
-              </div>
-
-              {chatChannel === 'group' && (
-                <select
-                  value={groupTargetAgent}
-                  onChange={(e) => setGroupTargetAgent(e.target.value as MuseAgentId)}
-                  className="h-8 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-700 dark:text-slate-200"
-                >
-                  {agents.map((ag) => (
-                    <option key={ag.id} value={ag.id}>
-                      Phản hồi bởi: {ag.name} ({ag.roleTitle})
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-
-            <div className="flex-1 overflow-y-auto max-h-[380px] space-y-3 pr-1">
-              {channelMessages.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center py-12 text-xs text-slate-500 dark:text-slate-400">
-                  <MessageSquare className="w-6 h-6 mb-2 opacity-60" />
-                  <span>Chưa có tin nhắn trong kênh này. Gửi chỉ thị hoặc câu hỏi để làm việc trực tiếp với Muse AI.</span>
-                </div>
-              ) : (
-                channelMessages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className={`rounded-xl p-3 text-xs space-y-1.5 border ${
-                      msg.senderType === 'user'
-                        ? 'bg-violet-50/80 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800/50 ml-6'
-                        : 'bg-white dark:bg-[#0c1021] border-slate-200 dark:border-slate-700/50 mr-6'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-                      <span className="font-semibold text-slate-800 dark:text-slate-100">{msg.senderName}</span>
-                      <span className="font-mono tabular-nums">{fmtDateTime(msg.createdAt)}</span>
-                    </div>
-                    <div className="whitespace-pre-wrap text-slate-800 dark:text-slate-200 leading-relaxed">
-                      {msg.content}
-                    </div>
-                    {msg.attachments && msg.attachments.length > 0 && (
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        {msg.attachments.map((att, idx) =>
-                          att.endsWith('.mp4') || att.endsWith('.webm') ? (
-                            <video
-                              key={idx}
-                              src={att}
-                              controls
-                              className="h-32 rounded-lg border border-slate-200 dark:border-slate-700 bg-black"
-                            />
-                          ) : (
-                            <img
-                              key={idx}
-                              src={att}
-                              alt="Attachment"
-                              className="h-24 w-auto rounded-lg border border-slate-200 dark:border-slate-700 object-cover"
-                            />
-                          )
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-
-            <form onSubmit={handleSendChat} className="flex items-center gap-2 pt-2 border-t border-slate-200 dark:border-slate-700/45">
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                disabled={isSendingChat}
-                placeholder="Nhập lệnh hoặc câu hỏi gửi tới Muse AI..."
-                className="flex-1 h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
-              />
-              <button
-                type="submit"
-                disabled={isSendingChat || !chatInput.trim()}
-                className="h-10 px-4 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-              >
-                {isSendingChat ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                <span>Gửi lệnh</span>
-              </button>
-            </form>
-          </div>
-        </section>
+      {/* =========================================================
+          6B. FAST COMMUNICATION & PERFORMANCE MONITOR
+         ========================================================= */}
+      {subTab === 'perf' && state && (
+        <PerformanceMonitorTab state={state} sseConnected={sseConnected} />
       )}
 
       {/* =========================================================
@@ -2335,6 +2347,54 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({ isActive
               </div>
             )}
           </section>
+        </div>
+      )}
+
+      {/* Cancel Session Confirmation Modal (No window.confirm!) */}
+      {confirmCancelRun && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md glass-card rounded-2xl p-5 border border-rose-400/50 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-xl bg-rose-500/15 text-rose-500 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-display font-bold text-slate-900 dark:text-white">
+                  Xác nhận hủy phiên sản xuất?
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Phiên <strong>{confirmCancelRun.title}</strong> ({confirmCancelRun.id}) sẽ hủy các tác vụ đang chờ/đang chạy và lưu vào lịch sử. Cảnh đã hoàn thành và backup không bị xóa.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmCancelRun(null)}
+                className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                Giữ lại
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const targetId = confirmCancelRun.id;
+                  setConfirmCancelRun(null);
+                  await runAction(
+                    'cancel_run',
+                    () =>
+                      apiJson<CommandCenterState>(`/api/command-center/productions/${targetId}/cancel`, {
+                        method: 'POST',
+                      }),
+                    'Đã hủy các tác vụ đang chờ của phiên và giữ nguyên dữ liệu đã hoàn thành.'
+                  );
+                }}
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer"
+              >
+                Xác nhận hủy phiên
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -9,11 +9,20 @@ import {
   Menu,
   X,
   Cpu,
+  Activity,
 } from 'lucide-react';
 import { ServerCapabilitiesStatus } from '../types/bilibili';
 import { APP_VERSION } from '../version';
 
-export type AppNavTab = 'download' | 'trending' | 'search' | 'studio' | 'command_center' | 'settings' | 'update';
+export type AppNavTab =
+  | 'download'
+  | 'trending'
+  | 'search'
+  | 'studio'
+  | 'command_center'
+  | 'production_monitor'
+  | 'settings'
+  | 'update';
 
 interface SidebarProps {
   activeTab: AppNavTab;
@@ -26,6 +35,8 @@ interface SidebarProps {
   capabilities: ServerCapabilitiesStatus | null;
   appVersion?: string;
   onRunBatchAction: () => void;
+  activeProductionProgressPct?: number;
+  activeProductionRunning?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -39,6 +50,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   capabilities,
   appVersion = APP_VERSION,
   onRunBatchAction,
+  activeProductionProgressPct,
+  activeProductionRunning = false,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -172,6 +185,32 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </span>
                   <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-400/25 font-semibold whitespace-nowrap">
                     5 AI
+                  </span>
+                </button>
+              </li>
+
+              <li>
+                <button
+                  type="button"
+                  onClick={() => handleNavClick('production_monitor')}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition cursor-pointer ${
+                    normalizedTab === 'production_monitor'
+                      ? 'bg-gradient-to-r from-violet-600/15 via-violet-500/10 to-cyan-500/10 dark:from-violet-600/35 dark:to-cyan-500/15 text-slate-900 dark:text-white border border-violet-400/45 shadow-sm'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <Activity
+                      className={`w-4 h-4 shrink-0 ${
+                        activeProductionRunning
+                          ? 'text-emerald-500 animate-pulse'
+                          : 'text-emerald-600 dark:text-emerald-300'
+                      }`}
+                    />
+                    <span className="truncate">Phiên Sản Xuất</span>
+                  </span>
+                  <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-400/25 font-semibold whitespace-nowrap">
+                    {typeof activeProductionProgressPct === 'number' ? `${activeProductionProgressPct}%` : 'Live'}
                   </span>
                 </button>
               </li>

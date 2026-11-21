@@ -86,6 +86,7 @@ import {
 import {
   controlProductionRun,
   controlTask,
+  createEmptyProductionSession,
   createManualBackup,
   createManualTask,
   getBackupExportFilePath,
@@ -96,12 +97,15 @@ import {
   restoreBackupById,
   restoreProjectMemorySnapshot,
   searchCommandCenterArchive,
+  selectProductionRun,
   sendCommandCenterChat,
   startProductionOrchestration,
+  subscribeCommandCenterEvents,
   syncStudioDirectiveToCommandCenter,
   testMuseAgentConnection,
   updateCloudConfig,
   updateMuseAgentConfig,
+  uploadCommandCenterAttachment,
 } from './server/commandCenter';
 
 const require = createRequire(import.meta.url);
@@ -5840,6 +5844,52 @@ async function startServer() {
   // ==========================================
   // PHÒNG ĐIỀU HÀNH AI MUSE (AI MUSE COMMAND CENTER)
   // ==========================================
+  app.get('/api/command-center/events', async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof res.flushHeaders === 'function') {
+      res.flushHeaders();
+    }
+
+    let closed = false;
+    const writeEvent = (eventType: string, payload: unknown) => {
+      if (closed || res.writableEnded) return;
+      try {
+        res.write(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`);
+      } catch {
+        // client disconnected
+      }
+    };
+
+    const unsubscribe = subscribeCommandCenterEvents((evt) => {
+      writeEvent(evt.type, evt.data);
+    });
+
+    const keepaliveTimer = setInterval(() => {
+      if (closed || res.writableEnded) return;
+      try {
+        res.write(`: ping ${Date.now()}\n\n`);
+      } catch {
+        // ignore
+      }
+    }, 20000);
+
+    try {
+      const initial = await getCommandCenterState(false);
+      writeEvent('state:sync', initial);
+    } catch {
+      // ignore initial sync error
+    }
+
+    req.on('close', () => {
+      closed = true;
+      clearInterval(keepaliveTimer);
+      unsubscribe();
+    });
+  });
+
   app.get('/api/command-center/state', async (req, res) => {
     try {
       const force = req.query.force === '1' || req.query.force === 'true';
@@ -5898,12 +5948,30 @@ async function startServer() {
     }
   });
 
+  app.post('/api/command-center/productions/create', async (req, res) => {
+    try {
+      const state = await createEmptyProductionSession(req.body?.title);
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tạo phiên sản xuất mới.' });
+    }
+  });
+
   app.post('/api/command-center/productions/start', async (req, res) => {
     try {
       const state = await startProductionOrchestration(req.body || {});
       res.json(state);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không thể khởi động dây chuyền sản xuất.' });
+    }
+  });
+
+  app.post('/api/command-center/productions/:runId/select', async (req, res) => {
+    try {
+      const state = await selectProductionRun(req.params.runId);
+      res.json(state);
+    } catch (err: any) {
+      res.status(404).json({ error: err?.message || 'Không tìm thấy phiên sản xuất.' });
     }
   });
 
@@ -5917,6 +5985,15 @@ async function startServer() {
       res.json(state);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không thể điều khiển phiên sản xuất.' });
+    }
+  });
+
+  app.post('/api/command-center/attachments', async (req, res) => {
+    try {
+      const result = await uploadCommandCenterAttachment(req.body || {});
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tải tệp đính kèm.' });
     }
   });
 

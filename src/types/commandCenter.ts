@@ -27,6 +27,15 @@ export type MuseAgentStatus =
 
 export type MuseAgentEngineMode = 'muse2api' | 'muse2api_with_gemini_fallback';
 
+export type MuseAgentAvatarPreset =
+  | 'director_clapboard'
+  | 'script_feather'
+  | 'visual_palette'
+  | 'video_camera'
+  | 'qa_shield'
+  | 'crown_star'
+  | 'sparkles_orb';
+
 export interface MuseAgentPermissions {
   canModifyProjectMemory: boolean;
   canApproveQa: boolean;
@@ -45,11 +54,20 @@ export interface MuseAgentConfig {
   engineMode: MuseAgentEngineMode;
   status: MuseAgentStatus;
   paused: boolean;
+  avatarUrl?: string;
+  avatarPreset?: MuseAgentAvatarPreset;
+  accentColor: string;
   permissions: MuseAgentPermissions;
   currentTaskId?: string;
   currentTaskSummary?: string;
   lastActiveAt?: number;
   lastError?: string;
+  avgResponseMs?: number;
+  avgAckLatencyMs?: number;
+  reconnectCount?: number;
+  regenCount?: number;
+  hungCount?: number;
+  successRate?: number;
   stats: {
     completed: number;
     failed: number;
@@ -216,14 +234,27 @@ export interface CommandTask {
   retryCount: number;
   maxRetries: number;
   createdAt: number;
+  acknowledgedAt?: number;
   startedAt?: number;
   completedAt?: number;
+  durationMs?: number;
+  timeoutMs?: number;
   executedByProvider?: string;
   boundAccountUsed?: string;
   externalTaskId?: string;
   outputText?: string;
   outputArtifactUrl?: string;
   error?: string;
+}
+
+export interface MuseRunProgress {
+  agentId: MuseAgentId;
+  progressPct: number;
+  completedTasks: number;
+  totalTasks: number;
+  runningTasks: number;
+  failedTasks: number;
+  currentTaskTitle?: string;
 }
 
 export interface ProductionRun {
@@ -239,11 +270,18 @@ export interface ProductionRun {
     | 'assembling'
     | 'completed'
     | 'paused'
+    | 'cancelled'
     | 'failed'
     | 'needs_attention';
   createdAt: number;
+  startedAt?: number;
   updatedAt: number;
+  pausedAt?: number;
+  cancelledAt?: number;
   completedAt?: number;
+  estimatedRemainingSec?: number;
+  overallProgressPct?: number;
+  perMuseProgress?: MuseRunProgress[];
   finalVideoUrl?: string;
   finalVideoArtifactName?: string;
   finalDurationSec?: number;
@@ -251,17 +289,35 @@ export interface ProductionRun {
   completedScenes: number;
   passedQaScenes: number;
   escalatedScenes: number;
+  runningScenes?: number;
+  pendingScenes?: number;
+  failedScenes?: number;
   error?: string;
 }
 
+export type CommunicationChannelId =
+  | 'commander'
+  | 'production'
+  | 'script'
+  | 'visual'
+  | 'video'
+  | 'qa'
+  | 'ai_bus'
+  | MuseAgentId;
+
 export interface ConversationMessage {
   id: string;
-  channel: 'group' | MuseAgentId;
+  channel: CommunicationChannelId;
   projectId: string;
   runId?: string;
+  sessionId?: string;
+  sceneId?: string;
   senderType: 'user' | 'agent' | 'system';
   senderId: string;
   senderName: string;
+  senderAvatarUrl?: string;
+  senderColor?: string;
+  messageKind?: 'chat' | 'ai_bus' | 'ack' | 'alert' | 'deliverable';
   targetAgentIds?: MuseAgentId[];
   content: string;
   promptDelivered?: string;
@@ -291,6 +347,27 @@ export interface CommandBackupRecord {
   messageCount: number;
   taskCount: number;
   memoryVersion: number;
+}
+
+export interface PerformanceAlert {
+  id: string;
+  createdAt: number;
+  severity: 'warn' | 'error';
+  category: 'offline' | 'hung_timeout' | 'slow_response' | 'format_error';
+  agentId?: MuseAgentId;
+  taskId?: string;
+  runId?: string;
+  message: string;
+  resolved?: boolean;
+}
+
+export interface FastCommStats {
+  sseClientsConnected: number;
+  avgDispatchAckMs: number;
+  avgAgentResponseMs: number;
+  aiBusMessageCount: number;
+  hungTaskCount: number;
+  dedupedTaskCount: number;
 }
 
 export interface CloudOrchestratorConfig {
@@ -359,11 +436,21 @@ export interface StudioSyncedDirective {
   hasBlueprint: boolean;
 }
 
+export type CommandCenterSseEventType =
+  | 'state:sync'
+  | 'run:updated'
+  | 'task:updated'
+  | 'message:created'
+  | 'agent:updated'
+  | 'metric:updated'
+  | 'alert:created';
+
 export interface CommandCenterState {
   metrics: CommandCenterSummaryMetrics;
   agents: MuseAgentConfig[];
   projectMemory: ProjectMemory;
   latestStudioDirective?: StudioSyncedDirective | null;
+  selectedRunId?: string | null;
   activeRun: ProductionRun | null;
   runs: ProductionRun[];
   tasks: CommandTask[];
@@ -371,7 +458,8 @@ export interface CommandCenterState {
   conversations: ConversationMessage[];
   logs: CommandActivityLog[];
   backups: CommandBackupRecord[];
+  performanceAlerts: PerformanceAlert[];
+  fastCommStats: FastCommStats;
   cloudConfig: CloudOrchestratorConfig;
   integrationHealth: MuseIntegrationHealth;
 }
-

@@ -3,13 +3,13 @@
     {
       "id": "muse-01",
       "code": "Muse AI 01",
-      "name": "Muse AI 01",
+      "name": "Muse Director",
       "role": "director",
       "roleTitle": "Đạo diễn tổng",
       "description": "AI điều phối trưởng: nhận lệnh sản xuất, phân tích kịch bản tổng thể, chia việc song song, quản lý Project Memory và tổng hợp phim hoàn chỉnh.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
-      "status": "offline",
+      "status": "online",
       "paused": false,
       "permissions": {
         "canModifyProjectMemory": true,
@@ -26,18 +26,20 @@
         "completed": 0,
         "failed": 0,
         "retried": 0
-      }
+      },
+      "accentColor": "#7C3AED",
+      "avatarPreset": "director_clapboard"
     },
     {
       "id": "muse-02",
       "code": "Muse AI 02",
-      "name": "Muse AI 02",
+      "name": "Muse Script",
       "role": "screenwriter",
       "roleTitle": "Biên kịch",
       "description": "Phân tích kịch bản, hồ sơ nhân vật 5 thành phần, giọng nói theo độ tuổi, lời thoại, bối cảnh, timeline theo giây và cấu trúc phân cảnh.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
-      "status": "offline",
+      "status": "online",
       "paused": false,
       "permissions": {
         "canModifyProjectMemory": false,
@@ -53,18 +55,20 @@
         "completed": 0,
         "failed": 0,
         "retried": 0
-      }
+      },
+      "accentColor": "#0891B2",
+      "avatarPreset": "script_feather"
     },
     {
       "id": "muse-03",
       "code": "Muse AI 03",
-      "name": "Muse AI 03",
+      "name": "Muse Visual",
       "role": "image_designer",
       "roleTitle": "Thiết kế hình ảnh",
       "description": "Tạo ảnh tham chiếu nhân vật và ảnh keyframe phân cảnh, giữ đồng bộ gương mặt, vóc dáng, trang phục và bối cảnh.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
-      "status": "offline",
+      "status": "online",
       "paused": false,
       "permissions": {
         "canModifyProjectMemory": false,
@@ -81,18 +85,20 @@
         "completed": 0,
         "failed": 0,
         "retried": 0
-      }
+      },
+      "accentColor": "#DB2777",
+      "avatarPreset": "visual_palette"
     },
     {
       "id": "muse-04",
       "code": "Muse AI 04",
-      "name": "Muse AI 04",
+      "name": "Muse Video",
       "role": "video_director",
       "roleTitle": "Đạo diễn hình ảnh & video",
       "description": "Sản xuất video phân cảnh theo timeline từng giây, chuyển động, góc quay, lời thoại, khẩu hình và nối cảnh liên tục.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
-      "status": "offline",
+      "status": "online",
       "paused": false,
       "permissions": {
         "canModifyProjectMemory": false,
@@ -109,18 +115,20 @@
         "completed": 0,
         "failed": 0,
         "retried": 0
-      }
+      },
+      "accentColor": "#D97706",
+      "avatarPreset": "video_camera"
     },
     {
       "id": "muse-05",
       "code": "Muse AI 05",
-      "name": "Muse AI 05",
+      "name": "Muse Guardian",
       "role": "qa_supervisor",
       "roleTitle": "Giám sát chất lượng",
       "description": "AI kiểm định độc lập: đối chiếu 8 tiêu chí đồng nhất toàn phim, phát hiện sai lệch và yêu cầu tạo lại đúng phân cảnh lỗi.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
-      "status": "offline",
+      "status": "supervising",
       "paused": false,
       "permissions": {
         "canModifyProjectMemory": false,
@@ -138,14 +146,16 @@
         "completed": 0,
         "failed": 0,
         "retried": 0
-      }
+      },
+      "accentColor": "#059669",
+      "avatarPreset": "qa_shield"
     }
   ],
   "projectMemory": {
-    "projectId": "proj_mwq8hxp0",
-    "title": "Dự án sản xuất mới",
+    "projectId": "proj_mwqdvgza",
+    "title": "Smoke Test Session",
     "version": 1,
-    "updatedAt": 1795255039188,
+    "updatedAt": 1795264068790,
     "updatedByAgentId": "system",
     "originalScript": "",
     "productionFormat": "dialogue_film",
@@ -160,6 +170,7 @@
     "scenes": [],
     "snapshots": []
   },
+  "sessionMemories": {},
   "latestStudioDirective": {
     "syncedAt": 1795257203014,
     "sourceAction": "learn_script",
@@ -254,8 +265,77 @@
   "runs": [],
   "tasks": [],
   "qaReports": [],
-  "conversations": [],
+  "conversations": [
+    {
+      "channel": "production",
+      "projectId": "proj_mwqdvgza",
+      "runId": "run_1795264068790_c955",
+      "senderType": "system",
+      "senderId": "system",
+      "senderName": "Phòng Điều Hành",
+      "messageKind": "ack",
+      "content": "Đã khởi tạo phiên sản xuất mới \"Smoke Test Session\". Sẵn sàng nhận kịch bản hoặc phân cảnh từ Studio.",
+      "sessionId": "run_1795264068790_c955",
+      "id": "msg_1795264068790_4d38",
+      "createdAt": 1795264068790
+    },
+    {
+      "channel": "production",
+      "projectId": "proj_mwqdvgza",
+      "runId": "run_1795264068790_c955",
+      "senderType": "system",
+      "senderId": "system",
+      "senderName": "Điều khiển phiên",
+      "messageKind": "alert",
+      "content": "Phiên \"Smoke Test Session\" đã TẠM DỪNG tại điểm an toàn. Ngưng cấp tác vụ mới và bảo toàn trạng thái hiện tại để tiếp tục sau.",
+      "sessionId": "run_1795264068790_c955",
+      "id": "msg_1795264068796_a404",
+      "createdAt": 1795264068796
+    },
+    {
+      "channel": "production",
+      "projectId": "proj_mwqdvgza",
+      "runId": "run_1795264068790_c955",
+      "senderType": "system",
+      "senderId": "system",
+      "senderName": "Điều khiển phiên",
+      "messageKind": "ack",
+      "content": "Phiên \"Smoke Test Session\" đã TIẾP TỤC chạy các tác vụ chưa hoàn thành (giữ nguyên toàn bộ kết quả đã xong).",
+      "sessionId": "run_1795264068790_c955",
+      "id": "msg_1795264068802_f55a",
+      "createdAt": 1795264068802
+    },
+    {
+      "channel": "production",
+      "projectId": "proj_mwqdvgza",
+      "runId": "run_1795264068790_c955",
+      "senderType": "system",
+      "senderId": "system",
+      "senderName": "Điều khiển phiên",
+      "messageKind": "alert",
+      "content": "Phiên \"Smoke Test Session\" đã HỦY. Mọi cảnh hoàn thành và bản backup của phiên vẫn được giữ nguyên trong lịch sử.",
+      "sessionId": "run_1795264068790_c955",
+      "id": "msg_1795264068807_e9c0",
+      "createdAt": 1795264068807
+    }
+  ],
   "logs": [
+    {
+      "id": "log_1795264059626_e33a",
+      "timestamp": 1795264059626,
+      "level": "info",
+      "agentId": "muse-01",
+      "action": "Cập nhật hồ sơ Muse AI 01",
+      "detail": "Muse Director · Vai trò: Đạo diễn tổng · Màu: #7C3AED"
+    },
+    {
+      "id": "log_1795264059621_3d42",
+      "timestamp": 1795264059621,
+      "level": "info",
+      "agentId": "muse-01",
+      "action": "Cập nhật hồ sơ Muse AI 01",
+      "detail": "Muse Director · Vai trò: Đạo diễn tổng · Màu: #2563EB"
+    },
     {
       "id": "log_1795257203023_a646",
       "timestamp": 1795257203023,
@@ -307,6 +387,17 @@
   ],
   "backups": [
     {
+      "id": "bkp_1795264068807_8f09",
+      "createdAt": 1795264068807,
+      "kind": "pre_restore",
+      "projectId": "proj_mwqdvgza",
+      "runId": "run_1795264068790_c955",
+      "summary": "Bảo lưu trước khi hủy phiên \"Smoke Test Session\"",
+      "messageCount": 3,
+      "taskCount": 0,
+      "memoryVersion": 1
+    },
+    {
       "id": "bkp_1795257203023_c618",
       "createdAt": 1795257203023,
       "kind": "pre_restore",
@@ -337,6 +428,13 @@
       "memoryVersion": 1
     }
   ],
+  "performanceAlerts": [],
+  "fastCommStats": {
+    "ackSamplesMs": [],
+    "agentResponseSamplesMs": {},
+    "hungTaskCount": 0,
+    "dedupedTaskCount": 0
+  },
   "cloudConfig": {
     "muse2ApiBaseUrl": "http://127.0.0.1:18610",
     "customMuse2ApiKey": "",
@@ -346,8 +444,8 @@
     "qaPassThreshold": 80,
     "maxRetriesPerScene": 2,
     "autoBackupRealtime": true,
-    "workerHeartbeatAt": 1795257201690,
-    "workerBootId": "worker_mwq9s3sx_6d43",
+    "workerHeartbeatAt": 1795264068803,
+    "workerBootId": "worker_mwqdv4y3_c723",
     "isCloudEndpoint": false
   },
   "taskSeq": 1
