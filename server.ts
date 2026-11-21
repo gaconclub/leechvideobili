@@ -21,9 +21,11 @@ import {
 } from './server/trending';
 import {
   AiProviderId,
+  analyzeSampleVideoAndLearnStyle,
   appendStudioUploadChunk,
   BrollSourceId,
   completeStudioChunkedUpload,
+  deleteLearnedVideoStyle,
   deleteStudioProjectProfile,
   DerivativeAspectRatio,
   DerivativeBlueprint,
@@ -46,6 +48,7 @@ import {
   installAndWarmupVieNeu,
   learnAndCreateIndependentBatch,
   learnVideosAndCreateBlueprint,
+  listLearnedVideoStyles,
   listStudioLibraryVideos,
   listStudioProjectProfiles,
   listVieNeuVoices,
@@ -4794,6 +4797,167 @@ async function startServer() {
     }
   });
 
+  app.get('/api/studio/learned-styles', (_req, res) => {
+    try {
+      res.json({ styles: listLearnedVideoStyles() });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không đọc được danh sách phong cách đã học.' });
+    }
+  });
+
+  app.post('/api/studio/learned-styles/analyze', async (req, res) => {
+    const tempCleanupPaths: string[] = [];
+    try {
+      const {
+        sourceUrl = '',
+        localAssetId = '',
+        styleName = '',
+        aiProvider = 'gemini',
+        useProModel = false,
+        ytCookies = '',
+        sessdata = '',
+      } = (req.body || {}) as {
+        sourceUrl?: string;
+        localAssetId?: string;
+        styleName?: string;
+        aiProvider?: AiProviderId;
+        useProModel?: boolean;
+        ytCookies?: string;
+        sessdata?: string;
+      };
+
+      const trimmedUrl = String(sourceUrl || '').trim();
+      const trimmedAssetId = String(localAssetId || '').trim();
+      let targetVideoPath = '';
+      let sourceLabel = '';
+
+      if (trimmedAssetId) {
+        const asset = getStudioAsset(trimmedAssetId);
+        if (!asset) {
+          return res.status(404).json({ error: 'Video tải lên không tồn tại hoặc đã hết hạn. Vui lòng chọn lại file.' });
+        }
+        targetVideoPath = asset.filePath;
+        sourceLabel = asset.fileName;
+      } else {
+        if (!trimmedUrl || !/^https?:\/\/\S+/i.test(trimmedUrl)) {
+          return res.status(400).json({ error: 'Vui lòng nhập link video mẫu hợp lệ (http/https) hoặc chọn file video trên máy.' });
+        }
+        const ytDlpBin = await ensureYtDlpPath();
+        const sampleWorkDir = path.join(DOWNLOAD_DIR, `style_sample_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
+        fs.mkdirSync(sampleWorkDir, { recursive: true });
+        tempCleanupPaths.push(sampleWorkDir);
+
+        const combinedCookies = ytCookies?.trim() || (sessdata?.trim() ? `SESSDATA=${sessdata.trim()}` : '');
+        const cookiePath = writeYtCookiesFile(`style_${Date.now()}`, combinedCookies);
+        if (cookiePath) tempCleanupPaths.push(cookiePath);
+        const cookieArgs = cookiePath ? ['--cookies', cookiePath] : [];
+
+        const platform = detectPlatformFromUrl(trimmedUrl);
+        const effectiveUrl =
+          platform === 'facebook' ? await resolveFacebookShareUrl(trimmedUrl, combinedCookies) : trimmedUrl;
+
+        const outStem = path.join(sampleWorkDir, 'sample');
+        const ytArgs = [
+          '--no-playlist',
+          '--js-runtimes',
+          'node',
+          '--no-warnings',
+          '--socket-timeout',
+          '25',
+          '--retries',
+          '4',
+          '--max-filesize',
+          '120M',
+          '-f',
+          'bv*[height<=480]+ba/b[height<=480]/b',
+          '--merge-output-format',
+          'mp4',
+          ...cookieArgs,
+          '-o',
+          `${outStem}.%(ext)s`,
+          effectiveUrl,
+        ];
+
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn(ytDlpBin, ytArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+          let stderr = '';
+          const timer = setTimeout(() => {
+            try {
+              proc.kill('SIGKILL');
+            } catch {
+              // ignore
+            }
+            reject(new Error('Quá thời gian tải video mẫu (90s). Hãy thử video ngắn hơn hoặc chọn file trực tiếp từ máy.'));
+          }, 90_000);
+          proc.stderr.on('data', (chunk) => {
+            stderr += chunk.toString();
+            if (stderr.length > 2500) stderr = stderr.slice(-2500);
+          });
+          proc.on('close', (code) => {
+            clearTimeout(timer);
+            if (code === 0) resolve();
+            else reject(new Error(stderr.trim().slice(-240) || `Không tải được video mẫu (yt-dlp mã ${code})`));
+          });
+          proc.on('error', (err) => {
+            clearTimeout(timer);
+            reject(err);
+          });
+        });
+
+        const downloadedFiles = fs
+          .readdirSync(sampleWorkDir)
+          .filter((f) => /\.(mp4|mkv|webm|mov|m4v)$/i.test(f));
+        if (downloadedFiles.length === 0) {
+          throw new Error('Không tìm thấy tệp video sau khi tải về.');
+        }
+        targetVideoPath = path.join(sampleWorkDir, downloadedFiles[0]);
+        try {
+          const u = new URL(trimmedUrl);
+          sourceLabel = `${u.hostname.replace(/^www\./, '')}${u.pathname.slice(0, 32)}`;
+        } catch {
+          sourceLabel = trimmedUrl.slice(0, 60);
+        }
+      }
+
+      const validProvider: AiProviderId =
+        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse2api'
+          ? aiProvider
+          : 'gemini';
+
+      const style = await analyzeSampleVideoAndLearnStyle({
+        videoPath: targetVideoPath,
+        sourceLabel,
+        sourceUrl: trimmedUrl || undefined,
+        styleName: String(styleName || '').trim(),
+        aiProvider: validProvider,
+        useProModel: Boolean(useProModel),
+      });
+
+      res.json({ style, styles: listLearnedVideoStyles() });
+    } catch (err: any) {
+      console.error('Learn video style error:', err);
+      const msg = String(err?.message || 'Không thể phân tích phong cách từ video mẫu.');
+      res.status(msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500).json({ error: msg });
+    } finally {
+      for (const p of tempCleanupPaths) {
+        try {
+          fs.rmSync(p, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+  });
+
+  app.delete('/api/studio/learned-styles/:id', (req, res) => {
+    try {
+      const ok = deleteLearnedVideoStyle(req.params.id);
+      res.json({ ok, styles: listLearnedVideoStyles() });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể xóa phong cách đã học.' });
+    }
+  });
+
   app.post('/api/studio/generate-image', async (req, res) => {
     try {
       const {
@@ -4803,6 +4967,7 @@ async function startServer() {
         quality = 'standard',
         engine = 'gemini',
         videoStyle,
+        customStylePrompt = '',
         characterBible = '',
         settingBible = '',
         visualStyleBible = '',
@@ -4826,6 +4991,7 @@ async function startServer() {
         quality?: 'standard' | 'pro';
         engine?: 'gemini' | 'muse2api';
         videoStyle?: StudioVideoStyle;
+        customStylePrompt?: string;
         characterBible?: string;
         settingBible?: string;
         visualStyleBible?: string;
@@ -4853,6 +5019,7 @@ async function startServer() {
         quality: quality === 'pro' ? 'pro' : 'standard',
         engine: engine === 'muse2api' ? 'muse2api' : 'gemini',
         videoStyle,
+        customStylePrompt: String(customStylePrompt || ''),
         characterBible: String(characterBible || ''),
         settingBible: String(settingBible || ''),
         visualStyleBible: String(visualStyleBible || ''),
@@ -4885,6 +5052,7 @@ async function startServer() {
         durationSec = 8,
         engine = 'gemini',
         videoStyle,
+        customStylePrompt = '',
         characterBible = '',
         settingBible = '',
         visualStyleBible = '',
@@ -4908,6 +5076,7 @@ async function startServer() {
         durationSec?: number;
         engine?: 'gemini' | 'muse2api';
         videoStyle?: StudioVideoStyle;
+        customStylePrompt?: string;
         characterBible?: string;
         settingBible?: string;
         visualStyleBible?: string;
@@ -4935,6 +5104,7 @@ async function startServer() {
         aspectRatio: aspectRatio === '9:16' ? '9:16' : aspectRatio === '1:1' ? '1:1' : '16:9',
         durationSec: Number(durationSec) || 8,
         videoStyle,
+        customStylePrompt: String(customStylePrompt || ''),
         characterBible: String(characterBible || ''),
         settingBible: String(settingBible || ''),
         visualStyleBible: String(visualStyleBible || ''),
@@ -4990,6 +5160,7 @@ async function startServer() {
         seedIdea = '',
         settingHint = '',
         videoStyle = 'cinematic',
+        customStylePrompt = '',
         scriptMode = 'series',
         targetDurationSec = 60,
         outputLanguage = 'vi',
@@ -5000,6 +5171,7 @@ async function startServer() {
         seedIdea?: string;
         settingHint?: string;
         videoStyle?: StudioVideoStyle;
+        customStylePrompt?: string;
         scriptMode?: StudioScriptMode;
         targetDurationSec?: number;
         outputLanguage?: DerivativeOutputLanguage;
@@ -5017,6 +5189,7 @@ async function startServer() {
         seedIdea: String(seedIdea || ''),
         settingHint: String(settingHint || ''),
         videoStyle,
+        customStylePrompt: String(customStylePrompt || ''),
         scriptMode: scriptMode === 'independent_batch' ? 'independent_batch' : 'series',
         targetDurationSec: Number(targetDurationSec || 60),
         outputLanguage,
@@ -5045,6 +5218,7 @@ async function startServer() {
         videos = [],
         stylePreset = 'none',
         videoStyle = 'cinematic',
+        customStylePrompt = '',
         aspectRatio = '9:16',
         targetDurationSec,
         targetDuration = 'short',
@@ -5072,6 +5246,7 @@ async function startServer() {
         videos?: DerivativeSourceInput[];
         stylePreset?: DerivativeStylePreset;
         videoStyle?: StudioVideoStyle;
+        customStylePrompt?: string;
         aspectRatio?: DerivativeAspectRatio;
         targetDurationSec?: number;
         targetDuration?: 'short' | 'medium';
@@ -5136,6 +5311,7 @@ async function startServer() {
           desiredSceneCount: typeof desiredSceneCount === 'number' ? desiredSceneCount : undefined,
           stylePreset,
           videoStyle,
+          customStylePrompt: String(customStylePrompt || ''),
           aspectRatio: resolvedAspectRatio,
           outputLanguage,
           useProModel: Boolean(useProModel),
@@ -5166,6 +5342,7 @@ async function startServer() {
         videos: safeVideos,
         stylePreset,
         videoStyle,
+        customStylePrompt: String(customStylePrompt || ''),
         aspectRatio: resolvedAspectRatio,
         targetDurationSec: typeof targetDurationSec === 'number' ? targetDurationSec : undefined,
         targetDuration: targetDuration === 'medium' ? 'medium' : 'short',

@@ -5,6 +5,7 @@ import {
   DerivativeScene,
   DerivativeStylePreset,
   DerivativeVoiceId,
+  LearnedVideoStyle,
   StudioCharacterRef,
   StudioProductionFormat,
   StudioQcIssue,
@@ -159,7 +160,41 @@ export const VIDEO_STYLE_OPTIONS: {
     desc: 'Góc quay ngang tầm mắt gần gũi, ánh sáng tự nhiên hàng ngày',
     shotDefault: 'Quay Vlog đời thực tự nhiên, cầm tay nhẹ ngang tầm mắt',
   },
+  {
+    value: 'custom',
+    label: 'Tự viết phong cách...',
+    desc: 'Tự nhập mô tả phong cách hình ảnh, nét vẽ, ánh sáng và góc máy theo ý riêng',
+    shotDefault: 'Quay dựng linh hoạt theo phong cách tùy chỉnh của đạo diễn',
+  },
 ];
+
+export function resolveVideoStyleMetaClient(
+  videoStyle?: StudioVideoStyle,
+  learnedStyles: LearnedVideoStyle[] = [],
+  customStylePrompt = ''
+): { label: string; desc: string; shotDefault: string; learned?: LearnedVideoStyle } {
+  if (videoStyle && String(videoStyle).startsWith('learned:')) {
+    const id = String(videoStyle).slice('learned:'.length);
+    const found = learnedStyles.find((s) => s.id === id);
+    if (found) {
+      return {
+        label: found.name,
+        desc: found.visualToneVi || found.promptDirective,
+        shotDefault: found.cameraAndComposition || found.visualToneVi,
+        learned: found,
+      };
+    }
+  }
+  if (videoStyle === 'custom') {
+    const custom = customStylePrompt.trim();
+    return {
+      label: 'Tự viết phong cách',
+      desc: custom || 'Tùy chỉnh phong cách hình ảnh & quay dựng theo mô tả riêng',
+      shotDefault: custom || 'Quay dựng theo mô tả phong cách tùy chỉnh',
+    };
+  }
+  return VIDEO_STYLE_OPTIONS.find((s) => s.value === videoStyle) || VIDEO_STYLE_OPTIONS[1];
+}
 
 export const DURATION_PRESETS: { sec: number; label: string }[] = [
   { sec: 10, label: '10s' },
@@ -311,6 +346,8 @@ export function sanitizeVisualPromptClient(rawPrompt: string): string {
 export function compileScenePromptClient(params: {
   scene: Partial<DerivativeScene>;
   videoStyle?: StudioVideoStyle;
+  learnedStyles?: LearnedVideoStyle[];
+  customStylePrompt?: string;
   characterBible?: string;
   settingBible?: string;
   visualStyleBible?: string;
@@ -323,14 +360,22 @@ export function compileScenePromptClient(params: {
 }): string {
   const sc = params.scene;
   const mediaType = params.mediaType || 'image';
-  const styleMeta = VIDEO_STYLE_OPTIONS.find((s) => s.value === params.videoStyle) || VIDEO_STYLE_OPTIONS[1];
+  const styleMeta = resolveVideoStyleMetaClient(
+    params.videoStyle,
+    params.learnedStyles || [],
+    params.customStylePrompt || ''
+  );
   const segments: string[] = [];
 
   const isMacroShot = CLIENT_MACRO_PATTERN.test(
     `${sc.cameraAngle || ''} ${sc.imagePrompt || ''} ${sc.videoPrompt || ''} ${sc.actionDetail || ''}`
   );
 
-  segments.push(`Visual Style Reference: ${styleMeta.label} (${styleMeta.desc})`);
+  segments.push(
+    styleMeta.learned
+      ? `Learned Sample Video Style (${styleMeta.label}): ${styleMeta.learned.promptDirective}`
+      : `Visual Style Reference: ${styleMeta.label} (${styleMeta.desc})`
+  );
   if (params.visualStyleBible?.trim()) {
     segments.push(`Bảng màu & Phong cách chung: ${params.visualStyleBible.trim()}`);
   }

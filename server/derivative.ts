@@ -37,7 +37,7 @@ export type CharacterAgeGroup =
   | 'middle_aged'
   | 'elderly';
 export type CharacterGenderHint = 'auto' | 'male' | 'female';
-export type StudioVideoStyle =
+export type BuiltInStudioVideoStyle =
   | 'professional'
   | 'cinematic'
   | 'cinematic_filmmaking'
@@ -46,7 +46,28 @@ export type StudioVideoStyle =
   | '3d_animation'
   | 'documentary'
   | 'comic'
-  | 'vlog';
+  | 'vlog'
+  | 'custom';
+
+export type StudioVideoStyle = BuiltInStudioVideoStyle | `learned:${string}`;
+
+export interface LearnedVideoStyle {
+  id: string;
+  name: string;
+  sourceLabel: string;
+  sourceUrl?: string;
+  promptDirective: string;
+  visualToneVi: string;
+  artStyleAndLinework: string;
+  colorPalette: string;
+  lightingStyle: string;
+  cameraAndComposition: string;
+  characterRendering: string;
+  sampleFrames?: string[];
+  usedProvider?: AiProviderId;
+  usedModel?: string;
+  createdAt: number;
+}
 
 export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video';
 export type DerivativeStylePreset = 'none' | 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
@@ -1272,7 +1293,7 @@ const OUTPUT_LANG_LABELS: Record<DerivativeOutputLanguage, string> = {
 };
 
 const STUDIO_VIDEO_STYLE_META: Record<
-  StudioVideoStyle,
+  BuiltInStudioVideoStyle,
   { labelVi: string; promptDirective: string; visualToneVi: string }
 > = {
   professional: {
@@ -1328,11 +1349,397 @@ const STUDIO_VIDEO_STYLE_META: Record<
       'Natural lifestyle creator vlog aesthetic, warm daylight, candid eye-level camera framing, authentic cozy environment, realistic skin and textures',
     visualToneVi: 'Phong cách Vlog đời thực gần gũi, ánh sáng tự nhiên chân thật',
   },
+  custom: {
+    labelVi: 'Tự viết phong cách',
+    promptDirective:
+      'Custom director visual style following the exact aesthetic, color palette, lighting, and camera specifications provided',
+    visualToneVi: 'Phong cách tùy chỉnh theo mô tả riêng của người dùng',
+  },
 };
+
+const LEARNED_STYLES_FILE = path.join(process.cwd(), 'data', 'learned_video_styles.json');
+
+function ensureLearnedStylesFile(): void {
+  const dir = path.dirname(LEARNED_STYLES_FILE);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  if (!fs.existsSync(LEARNED_STYLES_FILE)) {
+    fs.writeFileSync(LEARNED_STYLES_FILE, '[]', 'utf8');
+  }
+}
+
+export function listLearnedVideoStyles(): LearnedVideoStyle[] {
+  try {
+    ensureLearnedStylesFile();
+    const raw = fs.readFileSync(LEARNED_STYLES_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function getLearnedVideoStyleById(idOrValue: string): LearnedVideoStyle | undefined {
+  const cleanId = String(idOrValue || '').replace(/^learned:/, '').trim();
+  if (!cleanId) return undefined;
+  return listLearnedVideoStyles().find((s) => s.id === cleanId);
+}
+
+export function saveLearnedVideoStyle(input: Partial<LearnedVideoStyle>): LearnedVideoStyle {
+  const list = listLearnedVideoStyles();
+  const name = String(input.name || '').trim() || `Phong cách mẫu #${list.length + 1}`;
+  const id = String(input.id || '').trim() || `stl_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
+  const record: LearnedVideoStyle = {
+    id,
+    name: name.slice(0, 80),
+    sourceLabel: String(input.sourceLabel || 'Video mẫu').trim().slice(0, 140),
+    ...(input.sourceUrl ? { sourceUrl: String(input.sourceUrl).trim() } : {}),
+    promptDirective: String(input.promptDirective || '').trim(),
+    visualToneVi: String(input.visualToneVi || '').trim(),
+    artStyleAndLinework: String(input.artStyleAndLinework || '').trim(),
+    colorPalette: String(input.colorPalette || '').trim(),
+    lightingStyle: String(input.lightingStyle || '').trim(),
+    cameraAndComposition: String(input.cameraAndComposition || '').trim(),
+    characterRendering: String(input.characterRendering || '').trim(),
+    sampleFrames: Array.isArray(input.sampleFrames) ? input.sampleFrames.slice(0, 4) : [],
+    usedProvider: input.usedProvider,
+    usedModel: input.usedModel,
+    createdAt: input.createdAt || Date.now(),
+  };
+  const idx = list.findIndex((s) => s.id === id);
+  if (idx >= 0) {
+    list[idx] = record;
+  } else {
+    list.unshift(record);
+  }
+  ensureLearnedStylesFile();
+  fs.writeFileSync(LEARNED_STYLES_FILE, JSON.stringify(list.slice(0, 50), null, 2), 'utf8');
+  return record;
+}
+
+export function deleteLearnedVideoStyle(idOrValue: string): boolean {
+  const cleanId = String(idOrValue || '').replace(/^learned:/, '').trim();
+  const list = listLearnedVideoStyles();
+  const next = list.filter((s) => s.id !== cleanId);
+  if (next.length === list.length) return false;
+  ensureLearnedStylesFile();
+  fs.writeFileSync(LEARNED_STYLES_FILE, JSON.stringify(next, null, 2), 'utf8');
+  return true;
+}
+
+export function resolveVideoStyleMeta(
+  videoStyle?: StudioVideoStyle,
+  customStylePrompt?: string
+): {
+  styleKey: StudioVideoStyle;
+  labelVi: string;
+  promptDirective: string;
+  visualToneVi: string;
+  learnedStyle?: LearnedVideoStyle;
+} {
+  const raw = String(videoStyle || 'cinematic').trim();
+  if (raw.startsWith('learned:')) {
+    const learned = getLearnedVideoStyleById(raw);
+    if (learned) {
+      return {
+        styleKey: `learned:${learned.id}`,
+        labelVi: learned.name,
+        promptDirective: learned.promptDirective || learned.visualToneVi,
+        visualToneVi: learned.visualToneVi || learned.promptDirective,
+        learnedStyle: learned,
+      };
+    }
+  }
+  if (raw === 'custom') {
+    const custom = String(customStylePrompt || '').trim();
+    const base = STUDIO_VIDEO_STYLE_META.custom;
+    return {
+      styleKey: 'custom',
+      labelVi: base.labelVi,
+      promptDirective: custom || base.promptDirective,
+      visualToneVi: custom || base.visualToneVi,
+    };
+  }
+  const builtInKey: BuiltInStudioVideoStyle =
+    raw in STUDIO_VIDEO_STYLE_META ? (raw as BuiltInStudioVideoStyle) : 'cinematic';
+  return {
+    styleKey: builtInKey,
+    ...STUDIO_VIDEO_STYLE_META[builtInKey],
+  };
+}
+
+export async function analyzeSampleVideoAndLearnStyle(params: {
+  videoPath: string;
+  sourceLabel: string;
+  sourceUrl?: string;
+  styleName?: string;
+  aiProvider?: AiProviderId;
+  useProModel?: boolean;
+}): Promise<LearnedVideoStyle> {
+  if (!fs.existsSync(params.videoPath)) {
+    throw new Error('Không tìm thấy tệp video mẫu để phân tích.');
+  }
+  const durationSec = Math.max(0.5, await probeDurationSeconds(params.videoPath, STUDIO_ASSETS_DIR));
+  const workId = `learnstyle_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const tmpDir = path.join(STUDIO_ASSETS_DIR, workId);
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  const frameBuffers: Buffer[] = [];
+  const sampleFrameThumbs: string[] = [];
+  let clipBuffer: Buffer | null = null;
+
+  try {
+    // 1. Extract up to 16 evenly spaced frames across the video
+    const frameCount = durationSec < 3 ? 6 : durationSec < 8 ? 10 : 16;
+    for (let i = 0; i < frameCount; i += 1) {
+      const fraction = 0.05 + (0.9 * i) / Math.max(1, frameCount - 1);
+      const seekSec = Math.max(0.05, Math.min(Math.max(0.1, durationSec - 0.15), durationSec * fraction));
+      const framePath = path.join(tmpDir, `f_${String(i).padStart(2, '0')}.jpg`);
+      const res = await spawnPromise(
+        'ffmpeg',
+        ['-y', '-ss', seekSec.toFixed(2), '-i', params.videoPath, '-vframes', '1', '-vf', 'scale=512:-2', '-q:v', '4', framePath],
+        tmpDir,
+        15_000
+      ).catch(() => ({ code: 1, stdout: '', stderr: '' }));
+      if (res.code === 0 && fs.existsSync(framePath)) {
+        const buf = fs.readFileSync(framePath);
+        if (buf.byteLength > 400) {
+          frameBuffers.push(buf);
+          if (sampleFrameThumbs.length < 4 && (i === 0 || i === Math.floor(frameCount / 3) || i === Math.floor((2 * frameCount) / 3) || i === frameCount - 1)) {
+            const thumbPath = path.join(tmpDir, `th_${i}.jpg`);
+            const thRes = await spawnPromise(
+              'ffmpeg',
+              ['-y', '-i', framePath, '-vf', 'scale=220:-2', '-q:v', '6', thumbPath],
+              tmpDir,
+              8000
+            ).catch(() => ({ code: 1 }));
+            if (thRes.code === 0 && fs.existsSync(thumbPath)) {
+              sampleFrameThumbs.push(`data:image/jpeg;base64,${fs.readFileSync(thumbPath).toString('base64')}`);
+            } else {
+              sampleFrameThumbs.push(`data:image/jpeg;base64,${buf.toString('base64')}`);
+            }
+          }
+        }
+      }
+    }
+
+    if (frameBuffers.length === 0) {
+      throw new Error('Không trích xuất được khung hình từ video mẫu (tệp có thể bị lỗi hoặc thiếu FFmpeg).');
+    }
+
+    // 2. Extract 1 short low-res muted clip (up to 6s) for motion/camera pacing analysis on Gemini
+    if (durationSec >= 2) {
+      const clipStart = Math.max(0, Math.min(durationSec - 2, durationSec * 0.25));
+      const clipDur = Math.min(6, Math.max(2, durationSec - clipStart));
+      const clipPath = path.join(tmpDir, 'sample_clip.mp4');
+      const clipRes = await spawnPromise(
+        'ffmpeg',
+        [
+          '-y',
+          '-ss',
+          clipStart.toFixed(2),
+          '-t',
+          clipDur.toFixed(2),
+          '-i',
+          params.videoPath,
+          '-an',
+          '-vf',
+          'scale=360:-2,fps=12',
+          '-c:v',
+          'libx264',
+          '-preset',
+          'veryfast',
+          '-crf',
+          '31',
+          '-movflags',
+          '+faststart',
+          clipPath,
+        ],
+        tmpDir,
+        35_000
+      ).catch(() => ({ code: 1 }));
+      if (clipRes.code === 0 && fs.existsSync(clipPath)) {
+        const buf = fs.readFileSync(clipPath);
+        if (buf.byteLength > 2000 && buf.byteLength <= 4_200_000) {
+          clipBuffer = buf;
+        }
+      }
+    }
+
+    const userProvidedName = String(params.styleName || '').trim();
+    const analysisPrompt = `Bạn là Chuyên gia Chỉ đạo Nghệ thuật & Phân tích Phong cách Hình ảnh Video (Visual Style Director).
+NHIỆM VỤ: Phân tích kỹ ${frameBuffers.length} khung hình rải đều${clipBuffer ? ' cùng đoạn clip ngắn' : ''} của video mẫu để TRÍCH XUẤT CÔNG THỨC PHONG CÁCH THỊ GIÁC (Visual Style DNA), sao cho khi áp dụng vào các nhân vật & câu chuyện HOÀN TOÀN MỚI sẽ ra đúng chất ảnh/nét vẽ, bảng màu, ánh sáng, tỷ lệ nhân vật và cách quay giống video mẫu.
+
+NGUYÊN TẮC BẮT BUỘC:
+- KHÔNG kể lại nội dung câu chuyện cụ thể hay tên nhân vật riêng của video mẫu vào "promptDirective".
+- CHỈ trích xuất thuần túy: chất liệu hình ảnh (2D vector, hoạt hình đầu tròn tối giản, anime cel-shaded, 3D Pixar/Unreal, điện ảnh 35mm, quay điện thoại vlog...), độ dày nét viền / kết cấu bề mặt, bảng màu & độ tương phản, kiểu ánh sáng & bóng đổ, đặc trưng tỷ lệ đầu-thân/mắt/biểu cảm nhân vật, và góc quay/bố cục/nhịp chuyển động máy.
+${userProvidedName ? `- Tên phong cách người dùng đặt: "${userProvidedName}" (giữ nguyên tên này cho "suggestedName").` : '- Hãy tự đặt "suggestedName" thật ngắn gọn, súc tích bằng Tiếng Việt (2–6 từ, ví dụ: "Hoạt hình đầu tròn tối giản", "Cổ trang Anime huyền ảo", "Điện ảnh Neon tương phản cao").'}
+
+TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không giải thích thừa):
+{
+  "suggestedName": "${userProvidedName || 'Tên phong cách ngắn gọn bằng Tiếng Việt'}",
+  "artStyleAndLinework": "Mô tả chi tiết nét vẽ / chất ảnh / kỹ thuật dựng hình bằng Tiếng Việt (1-2 câu)",
+  "colorPalette": "Mô tả bảng màu chủ đạo, sắc độ và độ tương phản bằng Tiếng Việt (1 câu)",
+  "lightingStyle": "Mô tả ánh sáng, bóng đổ và không khí thị giác bằng Tiếng Việt (1 câu)",
+  "cameraAndComposition": "Mô tả góc máy, bố cục khung hình và chuyển động máy bằng Tiếng Việt (1 câu)",
+  "characterRendering": "Mô tả phong cách tạo hình nhân vật: tỷ lệ đầu/cơ thể, mắt, nét biểu cảm, trang phục bằng Tiếng Việt (1 câu)",
+  "visualToneVi": "Tóm tắt hoàn chỉnh phong cách hình ảnh này bằng Tiếng Việt (2 câu ngắn gọn để hiển thị & đưa vào Visual Style Bible)",
+  "promptDirective": "Detailed, production-ready ENGLISH visual style prompt (65-115 words) specifying exact rendering medium, linework/texture, color grading, lighting setup, character proportions/styling, and cinematography style — strictly style-only, zero specific plot or named characters from the sample video."
+}`;
+
+    let parsed: any = {};
+    let usedProvider: AiProviderId = params.aiProvider || 'gemini';
+    let usedModel = 'gemini-4-hydrogen';
+
+    // Prefer OpenAI Vision only if explicitly requested and OpenAI key exists; otherwise use Gemini multimodal (supports both 16 frames + short MP4 clip)
+    if (usedProvider === 'openai' && process.env.OPENAI_API_KEY?.trim()) {
+      const cfg = resolveOpenAiCompatibleConfig('openai');
+      usedModel = cfg.model;
+      const contentParts: any[] = [{ type: 'text', text: analysisPrompt }];
+      for (const fb of frameBuffers.slice(0, 12)) {
+        contentParts.push({
+          type: 'image_url',
+          image_url: { url: `data:image/jpeg;base64,${fb.toString('base64')}`, detail: 'low' },
+        });
+      }
+      const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+        body: JSON.stringify({
+          model: cfg.model,
+          messages: [
+            { role: 'system', content: 'Return a single valid JSON object matching the requested schema.' },
+            { role: 'user', content: contentParts },
+          ],
+          response_format: { type: 'json_object' },
+        }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        throw new Error(`${cfg.label} lỗi HTTP ${res.status}: ${errBody.slice(0, 180) || res.statusText}`);
+      }
+      const json = (await res.json()) as any;
+      parsed = parseAiBlueprintJsonSafe(String(json?.choices?.[0]?.message?.content || '{}'));
+    } else {
+      usedProvider = 'gemini';
+      const ai = getGeminiClient();
+      const parts: any[] = frameBuffers.map((fb) => ({
+        inlineData: {
+          mimeType: 'image/jpeg',
+          data: fb.toString('base64'),
+        },
+      }));
+      if (clipBuffer) {
+        parts.push({
+          inlineData: {
+            mimeType: 'video/mp4',
+            data: clipBuffer.toString('base64'),
+          },
+        });
+      }
+      parts.push({ text: analysisPrompt });
+
+      const candidateModels = params.useProModel
+        ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
+        : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+      let lastErr: any;
+      for (const candidateModel of candidateModels) {
+        try {
+          const activeParts =
+            candidateModel === 'gemini-3.1-flash-lite'
+              ? [...frameBuffers.slice(0, 8).map((fb) => ({ inlineData: { mimeType: 'image/jpeg', data: fb.toString('base64') } })), { text: analysisPrompt }]
+              : parts;
+          const response = await retryWithGeminiBackoff(
+            () =>
+              ai.models.generateContent({
+                model: candidateModel,
+                contents: { parts: activeParts },
+                config: {
+                  httpOptions: { timeout: 60_000 },
+                  maxOutputTokens: 2048,
+                  ...(candidateModel.startsWith('gemini-4-')
+                    ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                    : {}),
+                  responseMimeType: 'application/json',
+                  responseSchema: {
+                    type: Type.OBJECT,
+                    required: [
+                      'suggestedName',
+                      'artStyleAndLinework',
+                      'colorPalette',
+                      'lightingStyle',
+                      'cameraAndComposition',
+                      'characterRendering',
+                      'visualToneVi',
+                      'promptDirective',
+                    ],
+                    properties: {
+                      suggestedName: { type: Type.STRING },
+                      artStyleAndLinework: { type: Type.STRING },
+                      colorPalette: { type: Type.STRING },
+                      lightingStyle: { type: Type.STRING },
+                      cameraAndComposition: { type: Type.STRING },
+                      characterRendering: { type: Type.STRING },
+                      visualToneVi: { type: Type.STRING },
+                      promptDirective: { type: Type.STRING },
+                    },
+                  },
+                },
+              }),
+            [1200, 2600]
+          );
+          parsed = parseAiBlueprintJsonSafe((response?.text ?? '{}').trim());
+          if (String(parsed?.promptDirective || '').trim()) {
+            usedModel = candidateModel;
+            break;
+          }
+        } catch (err: any) {
+          lastErr = err;
+          if (!shouldFallbackGeminiModel(err) && !(err instanceof SyntaxError)) {
+            throw err;
+          }
+        }
+      }
+      if (!String(parsed?.promptDirective || '').trim() && lastErr) {
+        throw new Error(formatGeminiError(lastErr));
+      }
+    }
+
+    const finalPromptDirective = String(parsed?.promptDirective || '').trim();
+    if (!finalPromptDirective) {
+      throw new Error('AI chưa trích xuất được mô tả phong cách hợp lệ từ video mẫu.');
+    }
+
+    return saveLearnedVideoStyle({
+      name: userProvidedName || String(parsed?.suggestedName || '').trim() || `Phong cách ${params.sourceLabel.slice(0, 28)}`,
+      sourceLabel: params.sourceLabel,
+      sourceUrl: params.sourceUrl,
+      promptDirective: finalPromptDirective,
+      visualToneVi: String(parsed?.visualToneVi || '').trim() || finalPromptDirective,
+      artStyleAndLinework: String(parsed?.artStyleAndLinework || '').trim(),
+      colorPalette: String(parsed?.colorPalette || '').trim(),
+      lightingStyle: String(parsed?.lightingStyle || '').trim(),
+      cameraAndComposition: String(parsed?.cameraAndComposition || '').trim(),
+      characterRendering: String(parsed?.characterRendering || '').trim(),
+      sampleFrames: sampleFrameThumbs,
+      usedProvider,
+      usedModel,
+    });
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup
+    }
+  }
+}
 
 export function compileConsistentScenePrompt(params: {
   scene: Partial<DerivativeScene>;
   videoStyle?: StudioVideoStyle;
+  customStylePrompt?: string;
   characterBible?: string;
   settingBible?: string;
   visualStyleBible?: string;
@@ -1343,14 +1750,22 @@ export function compileConsistentScenePrompt(params: {
   hasAttachedRefs?: boolean;
   targetEngine?: 'muse2api' | 'gemini';
 }): string {
-  const styleKey: StudioVideoStyle =
-    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META ? params.videoStyle : 'cinematic';
-  const styleMeta = STUDIO_VIDEO_STYLE_META[styleKey];
+  const resolvedStyle = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
+  const styleKey = resolvedStyle.styleKey;
+  const styleMeta = resolvedStyle;
   const sc = params.scene;
   const mediaType = params.mediaType || 'image';
   const parts: string[] = [];
 
   parts.push(`Visual Style Reference: ${styleMeta.promptDirective}.`);
+  if (styleMeta.learnedStyle) {
+    if (styleMeta.learnedStyle.characterRendering) {
+      parts.push(`Learned Character Rendering Style: ${styleMeta.learnedStyle.characterRendering}.`);
+    }
+    if (styleMeta.learnedStyle.colorPalette) {
+      parts.push(`Learned Color Palette: ${styleMeta.learnedStyle.colorPalette}.`);
+    }
+  }
   if (params.visualStyleBible?.trim()) {
     parts.push(`Color & Aesthetic Lock: ${params.visualStyleBible.trim()}.`);
   }
@@ -1508,6 +1923,7 @@ export async function expandStudioIdeaWithAi(params: {
   seedIdea: string;
   settingHint?: string;
   videoStyle?: StudioVideoStyle;
+  customStylePrompt?: string;
   scriptMode?: StudioScriptMode;
   targetDurationSec?: number;
   outputLanguage?: DerivativeOutputLanguage;
@@ -1530,9 +1946,7 @@ export async function expandStudioIdeaWithAi(params: {
       ? params.aiProvider
       : 'gemini';
 
-  const videoStyle: StudioVideoStyle =
-    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META ? params.videoStyle : 'cinematic';
-  const styleMeta = STUDIO_VIDEO_STYLE_META[videoStyle];
+  const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
   const durationSec = Math.max(10, Math.min(900, Math.round(Number(params.targetDurationSec || 60))));
   const modeLabel =
@@ -1690,6 +2104,7 @@ export async function learnVideosAndCreateBlueprint(params: {
   videos?: DerivativeSourceInput[];
   stylePreset?: DerivativeStylePreset;
   videoStyle?: StudioVideoStyle;
+  customStylePrompt?: string;
   aspectRatio: DerivativeAspectRatio;
   targetDurationSec?: number;
   targetDuration?: 'short' | 'medium';
@@ -1734,9 +2149,8 @@ export async function learnVideosAndCreateBlueprint(params: {
       ? params.aiProvider
       : 'gemini';
 
-  const videoStyle: StudioVideoStyle =
-    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META ? params.videoStyle : 'cinematic';
-  const videoStyleMeta = STUDIO_VIDEO_STYLE_META[videoStyle];
+  const videoStyleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
+  const videoStyle = videoStyleMeta.styleKey;
 
   const contexts = params.preGatheredContexts
     ? params.preGatheredContexts
@@ -2807,6 +3221,7 @@ export async function learnAndCreateIndependentBatch(params: {
   desiredSceneCount?: number;
   stylePreset?: DerivativeStylePreset;
   videoStyle?: StudioVideoStyle;
+  customStylePrompt?: string;
   aspectRatio: DerivativeAspectRatio;
   outputLanguage?: DerivativeOutputLanguage;
   useProModel?: boolean;
@@ -2842,9 +3257,8 @@ export async function learnAndCreateIndependentBatch(params: {
       ? params.aiProvider
       : 'gemini';
 
-  const videoStyle: StudioVideoStyle =
-    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META ? params.videoStyle : 'cinematic';
-  const videoStyleMeta = STUDIO_VIDEO_STYLE_META[videoStyle];
+  const videoStyleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
+  const videoStyle = videoStyleMeta.styleKey;
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
   const count = Math.max(2, Math.min(15, Math.round(Number(params.videoCount || 3))));
   const defaultDur = Math.max(10, Math.min(900, Math.round(Number(params.targetDurationSec || 30))));
@@ -2907,6 +3321,7 @@ export async function learnAndCreateIndependentBatch(params: {
           videos: videosList,
           stylePreset: activeStylePreset,
           videoStyle,
+          customStylePrompt: params.customStylePrompt,
           aspectRatio: params.aspectRatio,
           targetDurationSec: vidDur,
           desiredSceneCount: params.desiredSceneCount,
@@ -2994,8 +3409,7 @@ export function saveStudioProjectProfile(input: Partial<StudioProjectProfileReco
     throw new Error('Vui lòng nhập tên Hồ sơ Dự án.');
   }
   const id = String(input.id || '').trim() || `proj_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
-  const validStyle: StudioVideoStyle =
-    input.videoStyle && input.videoStyle in STUDIO_VIDEO_STYLE_META ? input.videoStyle : 'cinematic';
+  const validStyle: StudioVideoStyle = resolveVideoStyleMeta(input.videoStyle).styleKey;
 
   const record: StudioProjectProfileRecord = {
     id,
@@ -3308,6 +3722,7 @@ export async function generateStudioImage(params: {
   quality?: 'standard' | 'pro';
   engine?: 'gemini' | 'muse2api';
   videoStyle?: StudioVideoStyle;
+  customStylePrompt?: string;
   characterBible?: string;
   settingBible?: string;
   visualStyleBible?: string;
@@ -3326,13 +3741,16 @@ export async function generateStudioImage(params: {
   characterRefs?: StudioCharacterRefInput[];
 }): Promise<{ dataUrl: string; model: string }> {
   const aspectRatio = params.aspectRatio || (params.mode === 'character' ? '1:1' : '16:9');
-  const styleMeta =
-    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META
-      ? STUDIO_VIDEO_STYLE_META[params.videoStyle]
-      : STUDIO_VIDEO_STYLE_META.cinematic;
+  const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
 
   const consistencyBlock = [
     `Art & Video Style Directive (STRICTLY ENFORCE): ${styleMeta.promptDirective}.`,
+    styleMeta.learnedStyle?.characterRendering
+      ? `Learned Character Design Proportions & Linework: ${styleMeta.learnedStyle.characterRendering}.`
+      : '',
+    styleMeta.learnedStyle?.lightingStyle
+      ? `Learned Lighting & Atmosphere: ${styleMeta.learnedStyle.lightingStyle}.`
+      : '',
     params.visualStyleBible?.trim() ? `Visual Style & Color Palette: ${params.visualStyleBible.trim()}.` : '',
     params.characterBible?.trim()
       ? `Locked Character Reference (MUST keep exact facial features, hair, proportions consistent): ${params.characterBible.trim()}.`
@@ -3474,6 +3892,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
   durationSec?: number;
   engine?: 'gemini' | 'muse2api';
   videoStyle?: StudioVideoStyle;
+  customStylePrompt?: string;
   characterBible?: string;
   settingBible?: string;
   visualStyleBible?: string;
@@ -3493,10 +3912,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
   characterRefs?: StudioCharacterRefInput[];
 }): Promise<{ assetId: string; previewUrl: string; durationSec: number; model: string }> {
   const clampedDur = Math.max(3, Math.min(15, Math.round(params.durationSec || 8)));
-  const styleMeta =
-    params.videoStyle && params.videoStyle in STUDIO_VIDEO_STYLE_META
-      ? STUDIO_VIDEO_STYLE_META[params.videoStyle]
-      : STUDIO_VIDEO_STYLE_META.cinematic;
+  const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
 
   const { selectedRefs, mappingDirective } = await selectAndMapCharacterRefsForScene({
     characterRefs: params.characterRefs,
@@ -3511,6 +3927,9 @@ export async function generateSceneVideoWithOmniFlash(params: {
 
   const anchorLines = [
     `Visual Style: ${styleMeta.promptDirective}.`,
+    styleMeta.learnedStyle?.cameraAndComposition
+      ? `Learned Camera & Motion Style: ${styleMeta.learnedStyle.cameraAndComposition}.`
+      : '',
     params.visualStyleBible?.trim() ? `Visual Style Reference: ${params.visualStyleBible.trim()}.` : '',
     params.characterBible?.trim() ? `Character Reference: ${params.characterBible.trim()}.` : '',
     params.costumeBible?.trim() ? `Costume Reference: ${params.costumeBible.trim()}.` : '',
@@ -5753,9 +6172,11 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         }...`;
         job.progress = 36 + Math.round(((i + 1) / scenes.length) * 20);
         try {
+          const customStyleHint = blueprint.videoStyle === 'custom' ? blueprint.visualStyleBible || '' : '';
           const consistentPrompt = compileConsistentScenePrompt({
             scene: sc,
             videoStyle: blueprint.videoStyle,
+            customStylePrompt: customStyleHint,
             characterBible: blueprint.characterBible,
             settingBible: blueprint.settingBible,
             visualStyleBible: blueprint.visualStyleBible,
@@ -5770,6 +6191,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
             aspectRatio: blueprint.aspectRatio,
             durationSec: Math.min(useMuseVideo ? 12 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
             videoStyle: blueprint.videoStyle,
+            customStylePrompt: customStyleHint,
             characterBible: blueprint.characterBible,
             settingBible: blueprint.settingBible,
             visualStyleBible: blueprint.visualStyleBible,

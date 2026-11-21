@@ -258,7 +258,7 @@ export type CharacterAgeGroup =
   | 'middle_aged'
   | 'elderly';
 export type CharacterGenderHint = 'auto' | 'male' | 'female';
-export type StudioVideoStyle =
+export type BuiltInStudioVideoStyle =
   | 'professional'
   | 'cinematic'
   | 'cinematic_filmmaking'
@@ -267,7 +267,10 @@ export type StudioVideoStyle =
   | '3d_animation'
   | 'documentary'
   | 'comic'
-  | 'vlog';
+  | 'vlog'
+  | 'custom';
+
+export type StudioVideoStyle = BuiltInStudioVideoStyle | `learned:${string}`;
 
 export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video';
 export type DerivativeStylePreset = 'none' | 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
@@ -413,6 +416,24 @@ export interface StudioLibraryVideoItem {
   jobId?: string;
   keyframes?: string[];
   hasAudio?: boolean;
+  createdAt: number;
+}
+
+export interface LearnedVideoStyle {
+  id: string;
+  name: string;
+  sourceLabel: string;
+  sourceUrl?: string;
+  promptDirective: string;
+  visualToneVi: string;
+  artStyleAndLinework: string;
+  colorPalette: string;
+  lightingStyle: string;
+  cameraAndComposition: string;
+  characterRendering: string;
+  sampleFrames?: string[];
+  usedProvider?: AiProviderId;
+  usedModel?: string;
   createdAt: number;
 }
 

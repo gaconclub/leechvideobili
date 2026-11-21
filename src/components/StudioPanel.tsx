@@ -50,6 +50,7 @@ import {
   DerivativeVisualMode,
   DerivativeVoiceId,
   DerivativeVoiceMode,
+  LearnedVideoStyle,
   OfflineTtsVoiceOption,
   ServerCapabilitiesStatus,
   StudioCharacterRef,
@@ -79,13 +80,15 @@ import {
   NORTHERN_VN_ACCENT_BADGE,
   parseJsonSafe,
   PRODUCTION_FORMAT_OPTIONS,
+  resolveVideoStyleMetaClient,
   runClientBlueprintQc,
   STYLE_OPTIONS,
   uploadMediaFileToStudio,
-  VIDEO_STYLE_OPTIONS,
   VOICE_OPTIONS,
 } from './studio/studioConfig';
 import { StudioSceneCard } from './studio/StudioSceneCard';
+import { StudioStylePicker } from './studio/StudioStylePicker';
+import { LearnStyleModal } from './studio/LearnStyleModal';
 
 export interface StudioUploadedSourceItem {
   videoItem: TrendingVideoItem & {
@@ -209,6 +212,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [useProModel, setUseProModel] = useState(false);
   const [outputLanguage, setOutputLanguage] = useState<DerivativeOutputLanguage>('vi');
   const [videoStyle, setVideoStyle] = useState<StudioVideoStyle>('cinematic');
+  const [customStylePrompt, setCustomStylePrompt] = useState('');
+  const [learnedStyles, setLearnedStyles] = useState<LearnedVideoStyle[]>([]);
+  const [isLearnStyleModalOpen, setIsLearnStyleModalOpen] = useState(false);
   const [enableNarrativeStyle, setEnableNarrativeStyle] = useState<boolean>(false);
   const [stylePreset, setStylePreset] = useState<DerivativeStylePreset>(
     studioDefaults.stylePreset && studioDefaults.stylePreset !== 'none'
@@ -416,6 +422,17 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     } catch {
       // ignore
     }
+    try {
+      const sr = await fetch('/api/studio/learned-styles');
+      if (sr.ok) {
+        const sData = await parseJsonSafe<{ styles?: LearnedVideoStyle[] }>(sr);
+        if (Array.isArray(sData.styles)) {
+          setLearnedStyles(sData.styles);
+        }
+      }
+    } catch {
+      // ignore
+    }
   };
 
   const fetchLibraryVideos = async () => {
@@ -507,6 +524,66 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       }
     } catch {
       // ignore
+    }
+  };
+
+  const handleSelectVideoStyle = (nextStyle: StudioVideoStyle, syncBlueprint = false) => {
+    setVideoStyle(nextStyle);
+    const foundLearned = nextStyle.startsWith('learned:')
+      ? learnedStyles.find((s) => `learned:${s.id}` === nextStyle) || null
+      : null;
+    if (foundLearned) {
+      const learnedTone = foundLearned.visualToneVi || foundLearned.promptDirective;
+      if (learnedTone) {
+        setVisualStyleBibleDraft(learnedTone);
+      }
+    }
+    if (syncBlueprint && blueprint) {
+      setBlueprint({
+        ...blueprint,
+        videoStyle: nextStyle,
+        ...(foundLearned?.visualToneVi ? { visualStyleBible: foundLearned.visualToneVi } : {}),
+      });
+    }
+  };
+
+  const handleDeleteLearnedStyle = async (styleId: string) => {
+    try {
+      const res = await fetch(`/api/studio/learned-styles/${encodeURIComponent(styleId)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) return;
+      const data = await parseJsonSafe<{ styles?: LearnedVideoStyle[] }>(res);
+      const nextList = Array.isArray(data.styles)
+        ? data.styles
+        : learnedStyles.filter((s) => s.id !== styleId);
+      setLearnedStyles(nextList);
+      const targetKey = `learned:${styleId}`;
+      if (videoStyle === targetKey) {
+        setVideoStyle('cinematic');
+      }
+      if (blueprint && blueprint.videoStyle === targetKey) {
+        setBlueprint({ ...blueprint, videoStyle: 'cinematic' });
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleStyleLearned = (newStyle: LearnedVideoStyle, allStyles: LearnedVideoStyle[]) => {
+    setLearnedStyles(allStyles);
+    const nextStyleKey = `learned:${newStyle.id}` as StudioVideoStyle;
+    setVideoStyle(nextStyleKey);
+    const learnedTone = newStyle.visualToneVi || newStyle.promptDirective;
+    if (learnedTone) {
+      setVisualStyleBibleDraft(learnedTone);
+    }
+    if (blueprint) {
+      setBlueprint({
+        ...blueprint,
+        videoStyle: nextStyleKey,
+        ...(learnedTone ? { visualStyleBible: learnedTone } : {}),
+      });
     }
   };
 
@@ -807,6 +884,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             quality: imageEngineMode === 'gemini_pro' ? 'pro' : 'standard',
             engine: imageEngineMode === 'muse2api' ? 'muse2api' : 'gemini',
             videoStyle: blueprint?.videoStyle || videoStyle,
+            customStylePrompt: customStylePrompt.trim(),
             characterBible: blueprint?.characterBible || characterBibleDraft || desc,
             settingBible: blueprint?.settingBible || settingBibleDraft,
             visualStyleBible: blueprint?.visualStyleBible || visualStyleBibleDraft,
@@ -865,6 +943,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           seedIdea: seed,
           settingHint: settingBibleDraft.trim(),
           videoStyle,
+          customStylePrompt: customStylePrompt.trim(),
           scriptMode,
           targetDurationSec,
           outputLanguage,
@@ -963,6 +1042,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           videos: studioMode === 'derivative' ? sources : [],
           stylePreset: effectiveStylePreset,
           videoStyle,
+          customStylePrompt: customStylePrompt.trim(),
           aspectRatio,
           targetDurationSec,
           desiredSceneCount: desiredSceneCount === 'auto' ? undefined : desiredSceneCount,
@@ -1013,7 +1093,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       if (first?.costumeBible) setCostumeBibleDraft(first.costumeBible);
       if (first?.continuityBible) setContinuityBibleDraft(first.continuityBible);
 
-      const styleLabel = VIDEO_STYLE_OPTIONS.find((s) => s.value === (first?.videoStyle || videoStyle))?.label || '';
+      const styleLabel = resolveVideoStyleMetaClient(
+        first?.videoStyle || videoStyle,
+        learnedStyles,
+        customStylePrompt
+      ).label;
       if (scriptMode === 'independent_batch') {
         setLearnSuccess(
           `Đã sáng tạo ${returnedList.length} kịch bản video độc lập cùng tinh thần tham chiếu (${styleLabel}).`
@@ -1046,7 +1130,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setBlueprint((prev) => {
       if (!prev || prev.scenes.length >= 24) return prev;
       const idx = prev.scenes.length;
-      const styleMeta = VIDEO_STYLE_OPTIONS.find((s) => s.value === (prev.videoStyle || videoStyle)) || VIDEO_STYLE_OPTIONS[1];
+      const styleMeta = resolveVideoStyleMetaClient(prev.videoStyle || videoStyle, learnedStyles, customStylePrompt);
       const lastScene = prev.scenes[idx - 1];
       const sceneCode = `Scene ${String(idx + 1).padStart(2, '0')}`;
       const newScene: DerivativeScene = {
@@ -1145,6 +1229,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     const compiledPrompt = compileScenePromptClient({
       scene: sc,
       videoStyle: activeStyle,
+      learnedStyles,
+      customStylePrompt,
       characterBible: activeCharBible,
       settingBible: activeSettingBible,
       visualStyleBible: activeVisualStyleBible,
@@ -1170,6 +1256,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             quality: imageEngineMode === 'gemini_pro' ? 'pro' : 'standard',
             engine: imageEngineMode === 'muse2api' ? 'muse2api' : 'gemini',
             videoStyle: activeStyle,
+            customStylePrompt: customStylePrompt.trim(),
             characterBible: activeCharBible,
             settingBible: activeSettingBible,
             visualStyleBible: activeVisualStyleBible,
@@ -1272,6 +1359,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     const compiledPrompt = compileScenePromptClient({
       scene: sc,
       videoStyle: activeStyle,
+      learnedStyles,
+      customStylePrompt,
       characterBible: activeCharBible,
       settingBible: activeSettingBible,
       visualStyleBible: activeVisualStyleBible,
@@ -1298,6 +1387,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           aspectRatio,
           durationSec: Math.min(sceneVideoEngine === 'muse2api' ? 12 : 15, Math.max(4, Math.round(sc.durationSec || 8))),
           videoStyle: activeStyle,
+          customStylePrompt: customStylePrompt.trim(),
           characterBible: activeCharBible,
           settingBible: activeSettingBible,
           visualStyleBible: activeVisualStyleBible,
@@ -3055,14 +3145,19 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     </select>
                   </label>
 
-                  <label className="space-y-1">
+                  <div className="space-y-1">
                     <span className="text-[11px] text-slate-500 dark:text-slate-400">Phong cách hình ảnh</span>
-                    <select value={videoStyle} onChange={(e) => setVideoStyle(e.target.value as StudioVideoStyle)} className={inputCls}>
-                      {VIDEO_STYLE_OPTIONS.map((st) => (
-                        <option key={st.value} value={st.value}>{st.label}</option>
-                      ))}
-                    </select>
-                  </label>
+                    <StudioStylePicker
+                      value={videoStyle}
+                      learnedStyles={learnedStyles}
+                      customStylePrompt={customStylePrompt}
+                      onChange={(nextStyle) => handleSelectVideoStyle(nextStyle, false)}
+                      onOpenLearnModal={() => setIsLearnStyleModalOpen(true)}
+                      onDeleteLearnedStyle={(id) => void handleDeleteLearnedStyle(id)}
+                      triggerClassName={`${inputCls} flex items-center justify-between gap-2 text-left hover:border-violet-400/60 cursor-pointer`}
+                      ariaLabel="Phong cách hình ảnh"
+                    />
+                  </div>
 
                   <label className="space-y-1">
                     <span className="text-[11px] text-slate-500 dark:text-slate-400">Tỷ lệ khung hình</span>
@@ -3130,6 +3225,57 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     )}
                   </div>
                 </div>
+
+                {videoStyle === 'custom' && (
+                  <div className="space-y-1">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Mô tả phong cách tự viết (dùng cho phân cảnh, tạo ảnh &amp; tạo video)
+                    </span>
+                    <input
+                      type="text"
+                      value={customStylePrompt}
+                      onChange={(e) => setCustomStylePrompt(e.target.value)}
+                      placeholder="vd: Hoạt hình 2D màu pastel ấm, nét mực mảnh, ánh sáng chiều tà dịu nhẹ..."
+                      className={inputCls}
+                    />
+                  </div>
+                )}
+
+                {(() => {
+                  const activeLearned = videoStyle.startsWith('learned:')
+                    ? learnedStyles.find((s) => `learned:${s.id}` === videoStyle)
+                    : null;
+                  if (!activeLearned) return null;
+                  return (
+                    <div className="rounded-xl bg-blue-500/8 border border-blue-400/30 p-3 space-y-2 text-[11px]">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-semibold text-blue-700 dark:text-blue-200 truncate">
+                          Đang áp dụng phong cách đã học: {activeLearned.name}
+                        </div>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                          Nguồn: {activeLearned.sourceLabel}
+                        </span>
+                      </div>
+                      {activeLearned.visualToneVi && (
+                        <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
+                          {activeLearned.visualToneVi}
+                        </p>
+                      )}
+                      {activeLearned.sampleFrames && activeLearned.sampleFrames.length > 0 && (
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {activeLearned.sampleFrames.slice(0, 4).map((frame, fIdx) => (
+                            <img
+                              key={fIdx}
+                              src={frame}
+                              alt={`${activeLearned.name} ${fIdx + 1}`}
+                              className="w-full h-11 object-cover rounded-lg border border-slate-200 dark:border-white/10"
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* Unified Single Duration Selector Bar */}
                 <div className="space-y-1.5 pt-2 border-t border-slate-200/80 dark:border-slate-400/15">
@@ -4014,23 +4160,32 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                         className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white resize-y"
                       />
                     </label>
-                    <label className="md:col-span-2 space-y-1">
+                    <div className="md:col-span-2 space-y-1">
                       <span className="text-[11px] text-slate-500 dark:text-slate-400">Phong cách quay / dựng</span>
-                      <select
+                      <StudioStylePicker
                         value={blueprint.videoStyle || videoStyle}
-                        onChange={(e) => {
-                          const nextStyle = e.target.value as StudioVideoStyle;
-                          setVideoStyle(nextStyle);
-                          setBlueprint({ ...blueprint, videoStyle: nextStyle });
-                        }}
-                        className={inputCls}
-                      >
-                        {VIDEO_STYLE_OPTIONS.map((st) => (
-                          <option key={st.value} value={st.value}>{st.label}</option>
-                        ))}
-                      </select>
-                    </label>
+                        learnedStyles={learnedStyles}
+                        customStylePrompt={customStylePrompt}
+                        onChange={(nextStyle) => handleSelectVideoStyle(nextStyle, true)}
+                        onOpenLearnModal={() => setIsLearnStyleModalOpen(true)}
+                        onDeleteLearnedStyle={(id) => void handleDeleteLearnedStyle(id)}
+                        triggerClassName={`${inputCls} flex items-center justify-between gap-2 text-left hover:border-violet-400/60 cursor-pointer`}
+                        ariaLabel="Phong cách quay / dựng"
+                      />
+                    </div>
                   </div>
+                  {(blueprint.videoStyle || videoStyle) === 'custom' && (
+                    <label className="block space-y-1">
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">Mô tả phong cách tự viết</span>
+                      <input
+                        type="text"
+                        value={customStylePrompt}
+                        onChange={(e) => setCustomStylePrompt(e.target.value)}
+                        placeholder="vd: Hoạt hình 2D màu pastel ấm, nét mực mảnh..."
+                        className={inputCls}
+                      />
+                    </label>
+                  )}
                 </div>
               )}
             </div>
@@ -4206,6 +4361,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     mode={studioMode}
                     productionFormat={blueprint.productionFormat || productionFormat}
                     videoStyle={blueprint.videoStyle || videoStyle}
+                    learnedStyles={learnedStyles}
+                    customStylePrompt={customStylePrompt}
                     characterBible={blueprint.characterBible ?? characterBibleDraft}
                     settingBible={blueprint.settingBible ?? settingBibleDraft}
                     visualStyleBible={blueprint.visualStyleBible ?? visualStyleBibleDraft}
@@ -4414,6 +4571,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           </div>
         </div>
       </section>
+
+      <LearnStyleModal
+        isOpen={isLearnStyleModalOpen}
+        aiProvider={aiProvider}
+        useProModel={aiProvider === 'gemini' && useProModel}
+        sessdata={sessdata}
+        ytCookies={ytCookies}
+        onClose={() => setIsLearnStyleModalOpen(false)}
+        onLearned={handleStyleLearned}
+      />
     </div>
   );
 };
