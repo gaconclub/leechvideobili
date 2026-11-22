@@ -42,12 +42,14 @@ import {
   MUSE_AVATAR_PRESETS,
   renderPresetSvgIcon,
 } from './command-center/AgentAvatar';
+import { ChairmanCommandPanel } from './command-center/ChairmanCommandPanel';
 import { CommunicationHub } from './command-center/CommunicationHub';
 import { IncidentCommandTab } from './command-center/IncidentCommandTab';
 import { PerformanceMonitorTab } from './command-center/PerformanceMonitorTab';
 
 type CommandCenterSubTab =
   | 'overview'
+  | 'chairman'
   | 'agents'
   | 'chat'
   | 'incidents'
@@ -61,6 +63,7 @@ type CommandCenterSubTab =
 
 const SUB_TABS: { id: CommandCenterSubTab; label: string }[] = [
   { id: 'overview', label: 'Tổng quan & Lệnh tổng' },
+  { id: 'chairman', label: 'Chủ tịch Điều hành' },
   { id: 'agents', label: 'Đội ngũ 5 Muse AI' },
   { id: 'chat', label: 'Trung tâm giao tiếp' },
   { id: 'incidents', label: 'Trung tâm sự cố' },
@@ -115,12 +118,13 @@ const TASK_STATUS_TEXT_CLASS: Record<CommandTask['status'], string> = {
 
 const RUN_STATUS_LABELS: Record<string, string> = {
   idle: 'Chờ lệnh',
-  planning: 'Tổng đạo diễn đang lập kế hoạch',
-  producing: 'Đang sản xuất song song',
+  planning: 'Gemini AI – Chủ tịch đang lập kế hoạch',
+  producing: '4 Muse đang sản xuất song song',
   inspecting: 'Muse AI 05 đang kiểm định',
   assembling: 'Đang ghép xuất phim',
   completed: 'Đã bàn giao hoàn chỉnh',
   paused: 'Đang tạm dừng',
+  cancelled: 'Đã hủy phiên',
   failed: 'Thất bại',
   needs_attention: 'Cần kiểm tra thủ công',
 };
@@ -1605,6 +1609,22 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
       )}
 
       {/* =========================================================
+          1B. EXECUTIVE CHAIRMAN AI COMMAND DESK
+         ========================================================= */}
+      {subTab === 'chairman' && state && (
+        <ChairmanCommandPanel
+          state={state}
+          busyAction={busyAction}
+          onRunAction={runAction}
+          onOpenIncidentsTab={(incId) => {
+            if (incId) setSelectedIncidentId(incId);
+            setSubTab('incidents');
+          }}
+          apiJson={apiJson}
+        />
+      )}
+
+      {/* =========================================================
           3B. AI DIRECTOR INCIDENT COMMAND CENTER
          ========================================================= */}
       {subTab === 'incidents' && state && (
@@ -1733,14 +1753,19 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-200/70 dark:divide-slate-700/40">
                     {state.tasks.map((t) => {
+                      const isChairmanTask = t.assignedAgentId === 'chairman';
                       const ag = agents.find((a) => a.id === t.assignedAgentId);
                       return (
                         <tr key={t.id} className="hover:bg-slate-50/70 dark:hover:bg-white/[0.02]">
                           <td className="py-2.5 pr-3 font-mono tabular-nums text-slate-600 dark:text-slate-300 whitespace-nowrap">
                             {t.code}
                           </td>
-                          <td className="py-2.5 pr-3 whitespace-nowrap text-slate-800 dark:text-slate-100 font-medium">
-                            {ag?.name || t.assignedAgentId}
+                          <td className="py-2.5 pr-3 whitespace-nowrap font-medium">
+                            <span className={isChairmanTask ? 'text-amber-700 dark:text-amber-300 font-semibold' : 'text-slate-800 dark:text-slate-100'}>
+                              {isChairmanTask
+                                ? state.chairmanConfig?.name || 'Gemini AI – Chủ tịch'
+                                : ag?.name || t.assignedAgentId}
+                            </span>
                           </td>
                           <td className="py-2.5 pr-3 max-w-xs">
                             <div className="font-medium text-slate-900 dark:text-white truncate">{t.title}</div>
@@ -1928,7 +1953,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                     ? producerAgent.name
                     : sc.assignedProducerAgentId
                     ? sc.assignedProducerAgentId.replace('muse-', 'Muse ')
-                    : 'Muse 02–04';
+                    : 'Muse 01–04';
                   const stageLabel = sc.productionStage
                     ? SCENE_STAGE_LABELS[sc.productionStage] || sc.productionStage
                     : null;
@@ -2039,6 +2064,36 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                 </div>
               </div>
             )}
+
+            {memory.coordinationLog && memory.coordinationLog.length > 0 && (
+              <div className="pt-4 border-t border-slate-200 dark:border-slate-700/45 space-y-2">
+                <div className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200">
+                  <span>Nhật ký chỉ đạo Chủ tịch &amp; phối hợp 5 Muse ({memory.coordinationLog.length})</span>
+                </div>
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                  {memory.coordinationLog.slice(0, 12).map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="text-xs py-1.5 px-3 rounded-lg bg-slate-50 dark:bg-[#0c1021] border border-slate-200/70 dark:border-slate-700/40 space-y-0.5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                        <span className="font-semibold text-slate-800 dark:text-slate-100">
+                          {entry.actorName}
+                          {entry.targetAgentIds && entry.targetAgentIds.length > 0
+                            ? ` → ${entry.targetAgentIds.join(', ')}`
+                            : ''}
+                          {entry.sceneId ? ` · ${entry.sceneId}` : ''}
+                        </span>
+                        <span className="font-mono text-slate-400">
+                          {entry.kind} · {fmtDateTime(entry.timestamp)}
+                        </span>
+                      </div>
+                      <div className="text-slate-600 dark:text-slate-300 line-clamp-2">{entry.summary}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -2055,29 +2110,43 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                   Hệ thống AI Muse giám sát đồng nhất (Muse AI 05)
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Kiểm định 8 tiêu chí so sánh liên cảnh. Khi không đạt ngưỡng, Muse 05 tự trả về đúng cảnh lỗi để tạo lại.
+                  Kiểm định độc lập 3 trạng thái (PASS / PASS WITH TOLERANCE / FAIL): ngưỡng tổng ≤ 5% sau khi loại trừ phụ kiện được phép, đồng thời tách riêng kiểm tra lõi khuôn mặt, vóc dáng và trang phục chính. Mọi cảnh FAIL được báo trực tiếp về Gemini AI – Chủ tịch.
                 </p>
               </div>
               <div className="text-xs font-mono tabular-nums text-slate-600 dark:text-slate-300">
-                Ngưỡng duyệt: {state?.cloudConfig.qaPassThreshold}/100 · Tối đa sửa: {state?.cloudConfig.maxRetriesPerScene} lần/cảnh
+                Ngưỡng duyệt: {state?.cloudConfig.qaPassThreshold}/100 · Sai lệch tổng ≤ 5% · Tối đa sửa: {state?.cloudConfig.maxRetriesPerScene} lần/cảnh
               </div>
             </div>
 
             {!state?.qaReports.length ? (
               <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400">
-                Chưa có báo cáo kiểm định nào. Sau khi Muse AI 04 xuất video phân cảnh, Muse AI 05 sẽ tự động kiểm định tại đây.
+                Chưa có báo cáo kiểm định nào. Sau khi 4 Muse sản xuất xuất ảnh hoặc video phân cảnh, Muse AI 05 sẽ tự động kiểm định độc lập tại đây.
               </div>
             ) : (
               <div className="space-y-4">
                 {state.qaReports.map((rep) => {
                   const sc = memory?.scenes.find((s) => s.sceneId === rep.sceneId);
+                  const verdict = rep.verdictStatus || (rep.passed ? 'PASS' : 'FAIL');
+                  const verdictLabel =
+                    verdict === 'PASS'
+                      ? 'PASS'
+                      : verdict === 'PASS_WITH_TOLERANCE'
+                      ? 'PASS WITH TOLERANCE'
+                      : 'FAIL';
+                  const verdictClass =
+                    verdict === 'PASS'
+                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35'
+                      : verdict === 'PASS_WITH_TOLERANCE'
+                      ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35'
+                      : 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/35';
+                  const cm = rep.consistencyMetrics;
                   return (
                     <div
                       key={rep.id}
                       className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] p-4 space-y-3"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+                        <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
                           <span>
                             {rep.targetMediaKind === 'character_image'
                               ? `Ảnh nhân vật (${rep.characterId || rep.sceneId})`
@@ -2087,7 +2156,10 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                           </span>
                           <span aria-hidden="true">·</span>
                           <span className={`font-mono tabular-nums ${rep.passed ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                            {rep.overallScore}/100 ({rep.passed ? 'ĐẠT' : 'KHÔNG ĐẠT'})
+                            {rep.overallScore}/100
+                          </span>
+                          <span className={`px-2 py-0.5 rounded border text-[11px] font-mono font-bold ${verdictClass}`}>
+                            {verdictLabel}
                           </span>
                         </div>
                         <div className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
@@ -2096,6 +2168,56 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                       </div>
 
                       <p className="text-xs text-slate-700 dark:text-slate-200">{rep.summary}</p>
+
+                      {cm && (
+                        <div className="rounded-lg border border-slate-200 dark:border-slate-700/60 bg-slate-50/80 dark:bg-[#131a35]/70 p-3 text-xs space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-slate-800 dark:text-slate-100">
+                            <span>Đối chiếu đồng nhất nhân vật (Ngưỡng ≤ 5% sau loại trừ phụ kiện)</span>
+                            <span
+                              className={`font-mono tabular-nums ${
+                                cm.overallDeviationExcludingAccessoriesPct <= 5
+                                  ? 'text-emerald-600 dark:text-emerald-400'
+                                  : 'text-rose-600 dark:text-rose-400'
+                              }`}
+                            >
+                              Lệch tổng: {cm.overallDeviationExcludingAccessoriesPct.toFixed(1)}%
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono tabular-nums text-[11px]">
+                            <div className="rounded border border-slate-200/80 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] px-2.5 py-1.5 flex items-center justify-between">
+                              <span className="text-slate-600 dark:text-slate-300 font-sans">Khuôn mặt (Lõi)</span>
+                              <span className={cm.faceDeviationPct <= 4 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                                {cm.faceSimilarityScore}/100 (lệch {cm.faceDeviationPct.toFixed(1)}%)
+                              </span>
+                            </div>
+                            <div className="rounded border border-slate-200/80 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] px-2.5 py-1.5 flex items-center justify-between">
+                              <span className="text-slate-600 dark:text-slate-300 font-sans">Vóc dáng (Lõi)</span>
+                              <span className={cm.physiqueDeviationPct <= 5 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                                {cm.physiqueSimilarityScore}/100 (lệch {cm.physiqueDeviationPct.toFixed(1)}%)
+                              </span>
+                            </div>
+                            <div className="rounded border border-slate-200/80 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] px-2.5 py-1.5 flex items-center justify-between">
+                              <span className="text-slate-600 dark:text-slate-300 font-sans">Trang phục chính (Lõi)</span>
+                              <span className={cm.mainCostumeDeviationPct <= 4 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                                {cm.mainCostumeSimilarityScore}/100 (lệch {cm.mainCostumeDeviationPct.toFixed(1)}%)
+                              </span>
+                            </div>
+                          </div>
+                          {cm.allowedAccessoryChanges.length > 0 && (
+                            <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                              <span className="font-semibold">Phụ kiện độc lập được phép (đã loại trừ khỏi lỗi): </span>
+                              {cm.allowedAccessoryChanges.join(', ')}
+                            </div>
+                          )}
+                          {cm.criticalViolationFlags.length > 0 && (
+                            <div className="text-[11px] text-rose-700 dark:text-rose-300">
+                              <span className="font-semibold">Vi phạm thuộc tính lõi (FAIL lập tức): </span>
+                              {cm.criticalViolationFlags.join(' · ')}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       {rep.costumeMismatch && (
                         <div className="rounded-lg border border-amber-300/70 dark:border-amber-700/60 bg-amber-50/70 dark:bg-amber-950/30 p-2.5 text-xs space-y-1.5">
                           <div className="font-semibold text-amber-900 dark:text-amber-200">
@@ -2122,7 +2244,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                       )}
                       {rep.fixInstruction && (
                         <div className="text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 rounded-lg p-2.5">
-                          Yêu cầu sửa gửi {rep.targetFixAgentId}: {rep.fixInstruction}
+                          Báo cáo về Gemini AI – Chủ tịch · Đề xuất giao {rep.targetFixAgentId}: {rep.fixInstruction}
                         </div>
                       )}
 

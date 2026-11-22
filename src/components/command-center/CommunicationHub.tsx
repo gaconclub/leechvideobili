@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Clapperboard,
+  Crown,
   Film,
   Hash,
   Image as ImageIcon,
@@ -28,69 +29,69 @@ import { AgentAvatar } from './AgentAvatar';
 import { commandCenterApiJson } from '../../hooks/useCommandCenterLive';
 
 export const TEAM_CHANNELS: {
-  id: Exclude<CommunicationChannelId, MuseAgentId>;
+  id: Exclude<CommunicationChannelId, MuseAgentId | 'chairman'>;
   slug: string;
   label: string;
   purpose: string;
-  defaultResponder: MuseAgentId;
+  defaultResponder: MuseAgentId | 'chairman';
   highPriority?: boolean;
 }[] = [
   {
     id: 'commander',
     slug: '#tổng-chỉ-huy',
     label: 'Tổng chỉ huy',
-    purpose: 'Người dùng giao lệnh trực tiếp cho cả đội ngũ 5 Muse AI',
-    defaultResponder: 'muse-01',
+    purpose: 'Người dùng giao lệnh trực tiếp cho Gemini AI – Chủ tịch để chỉ đạo cả 5 Muse AI',
+    defaultResponder: 'chairman',
   },
   {
     id: 'incident',
     slug: '#incident-command',
     label: 'INCIDENT COMMAND',
-    purpose: 'Trung tâm chỉ huy xử lý sự cố — Muse AI 01 tiếp nhận báo lỗi, điều tra và ra lệnh sửa ngay',
-    defaultResponder: 'muse-01',
+    purpose: 'Trung tâm xử lý sự cố — Muse AI 05 báo lỗi trực tiếp về Gemini AI – Chủ tịch để chất vấn và ra lệnh sửa',
+    defaultResponder: 'chairman',
     highPriority: true,
   },
   {
     id: 'production',
     slug: '#sản-xuất-phim',
     label: 'Sản xuất phim',
-    purpose: 'Theo dõi và thảo luận tiến trình toàn bộ dây chuyền làm phim',
-    defaultResponder: 'muse-01',
+    purpose: 'Gemini AI – Chủ tịch điều phối tiến độ song song của 4 Muse sản xuất & Muse 05 QA',
+    defaultResponder: 'chairman',
   },
   {
     id: 'script',
     slug: '#kịch-bản',
-    label: 'Kịch bản',
-    purpose: 'Tổng đạo diễn kiêm Phân tích kịch bản (nhân vật, lời thoại, bối cảnh & timeline)',
-    defaultResponder: 'muse-01',
+    label: 'Kịch bản & Khóa nhân vật',
+    purpose: 'Gemini AI – Chủ tịch phân tích kịch bản, khóa cứng nhân vật tham chiếu và phân cảnh',
+    defaultResponder: 'chairman',
   },
   {
     id: 'visual',
     slug: '#hình-ảnh',
     label: 'Hình ảnh',
-    purpose: 'Trao đổi ảnh phân cảnh, nhân vật tham chiếu và trang phục (Muse 02, 03, 04 đa nhiệm)',
+    purpose: 'Nhóm sản xuất (Muse Director 01, Muse 02, 03, 04) trao đổi ảnh phân cảnh & khóa nhân vật',
     defaultResponder: 'muse-02',
   },
   {
     id: 'video',
     slug: '#video',
     label: 'Video',
-    purpose: 'Trao đổi prompt chuyển động, góc quay, khẩu hình và video (Muse 02, 03, 04 đa nhiệm)',
+    purpose: 'Nhóm sản xuất (Muse Director 01, Muse 02, 03, 04) trao đổi prompt chuyển động, góc quay & video',
     defaultResponder: 'muse-04',
   },
   {
     id: 'qa',
     slug: '#kiểm-duyệt',
-    label: 'Kiểm duyệt',
-    purpose: 'Báo cáo chấm điểm QA, lỗi liên tục và yêu cầu tạo lại cảnh',
+    label: 'Kiểm duyệt (Muse 05)',
+    purpose: 'Muse AI 05 kiểm định độc lập theo ngưỡng 5% (sau loại trừ phụ kiện được phép) & báo về Chủ tịch',
     defaultResponder: 'muse-05',
   },
   {
     id: 'ai_bus',
     slug: '#trao-đổi-ai',
     label: 'Trao đổi AI',
-    purpose: 'Các Muse AI bàn giao trực tiếp thông số JSON/prompt qua Bus tốc độ cao',
-    defaultResponder: 'muse-01',
+    purpose: 'Luồng chỉ thị trực tiếp giữa Gemini AI – Chủ tịch và 5 Muse AI qua Bus tốc độ cao',
+    defaultResponder: 'chairman',
   },
 ];
 
@@ -155,7 +156,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
   const [rightOpen, setRightOpen] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [onlyCurrentSession, setOnlyCurrentSession] = useState(false);
-  const [responderAgentId, setResponderAgentId] = useState<MuseAgentId>('muse-01');
+  const [responderAgentId, setResponderAgentId] = useState<MuseAgentId | 'chairman'>('chairman');
   const [selectedSceneId, setSelectedSceneId] = useState('');
   const [composerText, setComposerText] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<{ url: string; fileName: string }[]>([]);
@@ -169,15 +170,18 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
   useEffect(() => {
     setActiveChannel(initialChannel);
     const meta = TEAM_CHANNELS.find((c) => c.id === initialChannel);
-    setResponderAgentId(meta ? meta.defaultResponder : (initialChannel as MuseAgentId));
+    setResponderAgentId(meta ? meta.defaultResponder : (initialChannel as MuseAgentId | 'chairman'));
     setLastSeenByChannel((prev) => ({ ...prev, [initialChannel]: Date.now() }));
   }, [initialChannel]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const agents = state.agents;
+  const chairmanName = state.chairmanConfig?.name || 'Gemini AI – Chủ tịch';
+  const chairmanTitle = state.chairmanConfig?.title || 'Chủ tịch & Tổng chỉ huy toàn bộ hệ thống 5 Muse AI';
   const activeRunId = state.selectedRunId || state.activeRun?.id || '';
   const activeChannelMeta = TEAM_CHANNELS.find((c) => c.id === activeChannel);
+  const isChairmanDm = activeChannel === 'chairman';
   const dmAgent = agents.find((a) => a.id === activeChannel);
   const openIncidents = useMemo(
     () => (state.incidents || []).filter((i) => i.status !== 'resolved'),
@@ -191,7 +195,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
     if (meta) {
       setResponderAgentId(meta.defaultResponder);
     } else {
-      setResponderAgentId(ch as MuseAgentId);
+      setResponderAgentId(ch as MuseAgentId | 'chairman');
     }
   };
 
@@ -263,7 +267,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
         body: JSON.stringify({
           channel: activeChannel,
           message: composerText.trim(),
-          targetAgentId: dmAgent ? dmAgent.id : responderAgentId,
+          targetAgentId: isChairmanDm ? 'chairman' : dmAgent ? dmAgent.id : responderAgentId,
           attachments: pendingAttachments.map((a) => a.url),
           sceneId: selectedSceneId || undefined,
           sessionId: activeRunId || undefined,
@@ -282,10 +286,8 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
 
   const drawerAgents = dmAgent
     ? [dmAgent]
-    : activeChannel === 'script'
-    ? agents.filter((a) => a.id === 'muse-01')
     : activeChannel === 'visual' || activeChannel === 'video'
-    ? agents.filter((a) => ['muse-02', 'muse-03', 'muse-04'].includes(a.id))
+    ? agents.filter((a) => ['muse-01', 'muse-02', 'muse-03', 'muse-04'].includes(a.id))
     : activeChannel === 'qa'
     ? agents.filter((a) => a.id === 'muse-05')
     : agents;
@@ -384,8 +386,31 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
 
           <div className="space-y-1 pt-2 border-t border-slate-200/80 dark:border-slate-700/40">
             <div className="px-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">
-              TIN NHẮN RIÊNG 1-1
+              CHỈ HUY &amp; TIN NHẮN RIÊNG 1-1
             </div>
+            <button
+              type="button"
+              onClick={() => handleSelectChannel('chairman')}
+              className={`w-full px-2 py-2 rounded-xl text-xs flex items-center justify-between gap-2 transition cursor-pointer ${
+                activeChannel === 'chairman'
+                  ? 'bg-amber-600 text-white font-semibold shadow-sm'
+                  : 'text-amber-800 dark:text-amber-200 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/15 font-semibold'
+              }`}
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <AgentAvatar fallbackId="chairman" avatarPreset="crown_star" accentColor="#D97706" size="xs" />
+                <span className="truncate">{chairmanName}</span>
+              </span>
+              {(unreadCounts['chairman'] || 0) > 0 ? (
+                <span className="px-1.5 py-0.5 rounded-md bg-rose-500 text-white text-[10px] font-mono tabular-nums font-bold">
+                  {unreadCounts['chairman']}
+                </span>
+              ) : (
+                <span className={`text-[10px] truncate max-w-[70px] ${activeChannel === 'chairman' ? 'text-white/85' : 'text-amber-700 dark:text-amber-300'}`}>
+                  Tổng chỉ huy
+                </span>
+              )}
+            </button>
             {agents.map((ag) => {
               const unread = unreadCounts[ag.id] || 0;
               const isSelected = activeChannel === ag.id;
@@ -435,17 +460,22 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                 <PanelLeftOpen className="w-4 h-4" />
               </button>
             )}
+            {isChairmanDm && (
+              <AgentAvatar fallbackId="chairman" avatarPreset="crown_star" accentColor="#D97706" size="sm" />
+            )}
             {dmAgent && <AgentAvatar agent={dmAgent} size="sm" showStatusDot />}
             <div className="min-w-0">
               <h2 className="text-sm font-display font-bold text-slate-900 dark:text-white truncate">
                 {activeChannelMeta
                   ? `${activeChannelMeta.slug} — ${activeChannelMeta.label}`
+                  : isChairmanDm
+                  ? `Chỉ huy tối cao: ${chairmanName}`
                   : dmAgent
                   ? `DM: ${dmAgent.name} (${dmAgent.roleTitle})`
                   : activeChannel}
               </h2>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                {activeChannelMeta?.purpose || dmAgent?.description}
+                {activeChannelMeta?.purpose || (isChairmanDm ? chairmanTitle : dmAgent?.description)}
               </p>
             </div>
           </div>
@@ -476,12 +506,13 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
               </button>
             )}
 
-            {!dmAgent && (
+            {!dmAgent && !isChairmanDm && (
               <select
                 value={responderAgentId}
-                onChange={(e) => setResponderAgentId(e.target.value as MuseAgentId)}
+                onChange={(e) => setResponderAgentId(e.target.value as MuseAgentId | 'chairman')}
                 className="h-8 px-2 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-700 dark:text-slate-200"
               >
+                <option value="chairman">Phản hồi: {chairmanName} (Tổng chỉ huy)</option>
                 {agents.map((ag) => (
                   <option key={ag.id} value={ag.id}>
                     Phản hồi: {ag.name}
@@ -511,8 +542,8 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
               </span>
               <span className="text-slate-600 dark:text-slate-300">
                 {openIncidents.length > 0
-                  ? `${openIncidents.length} sự cố đang điều phối bởi Muse AI 01:`
-                  : 'Chưa có sự cố đang mở. Mọi lỗi phát sinh sẽ tự động báo về đây.'}
+                  ? `${openIncidents.length} sự cố đang được ${chairmanName} trực tiếp điều phối:`
+                  : 'Chưa có sự cố đang mở. Mọi báo cáo từ Muse AI 05 hoặc lỗi tác vụ sẽ báo thẳng về Gemini AI – Chủ tịch.'}
               </span>
               {openIncidents.slice(0, 3).map((inc) => (
                 <button
@@ -548,7 +579,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
               <MessageSquare className="w-7 h-7 opacity-50" />
               <div>
                 Chưa có tin nhắn phù hợp trong kênh{' '}
-                <strong>{activeChannelMeta?.slug || dmAgent?.name}</strong>.
+                <strong>{activeChannelMeta?.slug || (isChairmanDm ? chairmanName : dmAgent?.name)}</strong>.
               </div>
               <div className="text-[11px] max-w-sm">
                 Bạn có thể nhắn lệnh trực tiếp, đính kèm ảnh tham chiếu hoặc chọn phân cảnh cần xử lý bên dưới.
@@ -558,6 +589,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
             visibleMessages.map((msg) => {
               const senderAgent = agents.find((a) => a.id === msg.senderId);
               const isUser = msg.senderType === 'user';
+              const isChairman = msg.senderId === 'chairman';
               const isBus = msg.messageKind === 'ai_bus';
               return (
                 <div
@@ -565,6 +597,8 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                   className={`rounded-xl p-3 text-xs border space-y-1.5 ${
                     isUser
                       ? 'bg-violet-50/80 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800/50 ml-6'
+                      : isChairman
+                      ? 'bg-amber-50/75 dark:bg-amber-950/20 border-amber-400/50 mr-2'
                       : isBus
                       ? 'bg-slate-100/90 dark:bg-[#101730] border-cyan-500/35'
                       : 'bg-white dark:bg-[#0c1021] border-slate-200 dark:border-slate-700/50 mr-4'
@@ -576,14 +610,16 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                         <AgentAvatar
                           agent={senderAgent}
                           avatarUrl={msg.senderAvatarUrl}
-                          accentColor={msg.senderColor}
+                          avatarPreset={isChairman ? 'crown_star' : undefined}
+                          fallbackName={isChairman ? 'Chủ tịch Điều hành AI' : undefined}
+                          accentColor={msg.senderColor || (isChairman ? '#D97706' : undefined)}
                           size="xs"
                         />
                       )}
                       <span
                         className="font-bold text-slate-900 dark:text-white truncate"
-                        style={!isUser && (senderAgent?.accentColor || msg.senderColor)
-                          ? { color: senderAgent?.accentColor || msg.senderColor }
+                        style={!isUser && (senderAgent?.accentColor || msg.senderColor || (isChairman ? '#D97706' : undefined))
+                          ? { color: senderAgent?.accentColor || msg.senderColor || (isChairman ? '#D97706' : undefined) }
                           : undefined}
                       >
                         {msg.senderName}
@@ -736,7 +772,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
               value={composerText}
               onChange={(e) => setComposerText(e.target.value)}
               disabled={isSending}
-              placeholder={`Nhắn vào ${activeChannelMeta?.slug || dmAgent?.name || 'kênh'}...`}
+              placeholder={`Nhắn vào ${activeChannelMeta?.slug || (isChairmanDm ? chairmanName : dmAgent?.name) || 'kênh'}...`}
               className="flex-1 min-w-[180px] h-9 px-3 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
             />
 
@@ -765,7 +801,23 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
           </div>
 
           <div className="space-y-2">
-            {drawerAgents.map((ag) => (
+            {(!dmAgent || isChairmanDm) && (
+              <div className="rounded-xl border border-amber-400/50 bg-amber-50/70 dark:bg-amber-950/25 p-2.5 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                    <Crown className="w-4 h-4" />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{chairmanName}</div>
+                    <div className="text-[10px] text-amber-700 dark:text-amber-300 truncate">Chủ tịch &amp; Tổng chỉ huy</div>
+                  </div>
+                </div>
+                <div className="text-[11px] text-slate-600 dark:text-slate-300 line-clamp-2">
+                  Trực tiếp phân công 4 Muse sản xuất Ảnh/Video, tiếp nhận QA từ Muse 05 và chất vấn xử lý sự cố.
+                </div>
+              </div>
+            )}
+            {!isChairmanDm && drawerAgents.map((ag) => (
               <div
                 key={ag.id}
                 className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white/85 dark:bg-[#0c1021] p-2.5 space-y-1.5"

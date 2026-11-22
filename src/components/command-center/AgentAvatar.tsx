@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Clapperboard,
   Crown,
@@ -30,7 +30,8 @@ export const MUSE_ACCENT_SWATCHES: { hex: string; label: string }[] = [
   { hex: '#E11D48', label: 'Đỏ Studio' },
 ];
 
-const DEFAULT_PRESET_BY_ID: Record<MuseAgentId, MuseAgentAvatarPreset> = {
+const DEFAULT_PRESET_BY_ID: Record<MuseAgentId | 'chairman', MuseAgentAvatarPreset> = {
+  chairman: 'crown_star',
   'muse-01': 'director_clapboard',
   'muse-02': 'visual_palette',
   'muse-03': 'visual_palette',
@@ -38,7 +39,8 @@ const DEFAULT_PRESET_BY_ID: Record<MuseAgentId, MuseAgentAvatarPreset> = {
   'muse-05': 'qa_shield',
 };
 
-const DEFAULT_COLOR_BY_ID: Record<MuseAgentId, string> = {
+const DEFAULT_COLOR_BY_ID: Record<MuseAgentId | 'chairman', string> = {
+  chairman: '#D97706',
   'muse-01': '#7C3AED',
   'muse-02': '#0891B2',
   'muse-03': '#DB2777',
@@ -68,7 +70,7 @@ export function renderPresetSvgIcon(preset: MuseAgentAvatarPreset, className = '
 
 interface AgentAvatarProps {
   agent?: Pick<MuseAgentConfig, 'id' | 'name' | 'avatarUrl' | 'avatarPreset' | 'accentColor' | 'status'>;
-  fallbackId?: MuseAgentId;
+  fallbackId?: MuseAgentId | 'chairman';
   fallbackName?: string;
   avatarUrl?: string;
   avatarPreset?: MuseAgentAvatarPreset;
@@ -113,6 +115,10 @@ export const AgentAvatar: React.FC<AgentAvatarProps> = ({
   const resolvedPreset = avatarPreset ?? agent?.avatarPreset ?? DEFAULT_PRESET_BY_ID[id] ?? 'sparkles_orb';
   const resolvedColor = accentColor ?? agent?.accentColor ?? DEFAULT_COLOR_BY_ID[id] ?? '#7C3AED';
   const sz = SIZE_CLASSES[size];
+
+  useEffect(() => {
+    setImgFailed(false);
+  }, [resolvedUrl]);
 
   const showImage = Boolean(resolvedUrl && !imgFailed);
 

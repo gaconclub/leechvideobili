@@ -2588,6 +2588,11 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </span>
                 </div>
 
+                <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 px-3 py-2 text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  <span className="font-semibold text-cyan-700 dark:text-cyan-300">Quy tắc tách bối cảnh khỏi nhân vật: </span>
+                  AI chỉ triển khai không gian, môi trường, ánh sáng, bầu không khí, hành động/tư thế, góc quay và đạo cụ/phụ kiện độc lập (mũ, nhẫn/trang sức, dây chuyền, giày dép, đồng hồ, túi xách, kính, đạo cụ cầm tay) — <strong className="text-slate-800 dark:text-slate-100">tuyệt đối không mô tả lại khuôn mặt, mái tóc, màu da, vóc dáng hay trang phục chính của nhân vật</strong>.
+                </div>
+
                 {expandIdeaError && (
                   <div className="flex items-start gap-2 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
                     <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -3899,56 +3904,74 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </div>
                 </div>
 
-                {/* KHÓA ĐỒNG NHẤT NGOẠI HÌNH & TRANG PHỤC NHÂN VẬT THAM CHIẾU */}
-                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/80 border border-slate-200 dark:border-slate-400/20">
-                  <div className="space-y-0.5 min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 font-bold text-slate-800 dark:text-slate-100">
-                      <Lock
-                        className={`w-3.5 h-3.5 shrink-0 ${
-                          allowFreeCostumeChange
-                            ? 'text-amber-600 dark:text-amber-300'
-                            : 'text-emerald-600 dark:text-emerald-300'
-                        }`}
-                      />
-                      <span>AI ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC NHÂN VẬT</span>
+                {/* KHÓA CỨNG ĐỒNG NHẤT NHÂN VẬT THAM CHIẾU (TỰ ĐỘNG KÍCH HOẠT TẠI BƯỚC 2) */}
+                {(() => {
+                  const syncedCharCount = characters.filter(
+                    (c) => Boolean(c.dataUrl || c.syncProfile?.face || c.syncProfile?.costume)
+                  ).length;
+                  return (
+                    <div className="space-y-2 p-3 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/80 border border-slate-200 dark:border-slate-400/20">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="space-y-0.5 min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5 font-bold text-slate-800 dark:text-slate-100">
+                            <Lock
+                              className={`w-3.5 h-3.5 shrink-0 ${
+                                allowFreeCostumeChange
+                                  ? 'text-amber-600 dark:text-amber-300'
+                                  : 'text-emerald-600 dark:text-emerald-300'
+                              }`}
+                            />
+                            <span>KHÓA CỨNG NHÂN VẬT THAM CHIẾU · TRANG PHỤC CHÍNH</span>
+                            {syncedCharCount > 0 && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-mono">
+                                Đang khóa {syncedCharCount} nhân vật
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
+                            {allowFreeCostumeChange
+                              ? 'Đang BẬT duyệt đổi trang phục theo diễn biến kịch bản — VẪN KHÓA CỨNG 100% khuôn mặt, kiểu tóc, màu da và vóc dáng.'
+                              : 'Đang TẮT (Khóa cứng mặc định): Tự động khóa 100% khuôn mặt, kiểu tóc, màu da, vóc dáng & trang phục chính theo ảnh tham chiếu. Đổi trang phục theo mạch truyện cần bạn bật duyệt thủ công.'}
+                          </p>
+                        </div>
+                        <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-400/20 overflow-hidden bg-white dark:bg-[#131a35] shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAllowFreeCostumeChange(false);
+                              setBlueprint((prev) => (prev ? { ...prev, allowFreeCostumeChange: false } : prev));
+                            }}
+                            className={`px-2.5 py-1 text-[11px] font-bold transition cursor-pointer ${
+                              !allowFreeCostumeChange
+                                ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                                : 'text-slate-500 dark:text-slate-400'
+                            }`}
+                          >
+                            TẮT (Khóa cứng)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAllowFreeCostumeChange(true);
+                              setBlueprint((prev) => (prev ? { ...prev, allowFreeCostumeChange: true } : prev));
+                            }}
+                            className={`px-2.5 py-1 text-[11px] font-bold transition cursor-pointer ${
+                              allowFreeCostumeChange
+                                ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
+                                : 'text-slate-500 dark:text-slate-400'
+                            }`}
+                          >
+                            BẬT (Duyệt đổi đồ)
+                          </button>
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 pt-1.5 border-t border-slate-200/70 dark:border-slate-700/40 leading-relaxed">
+                        <strong className="text-slate-700 dark:text-slate-200">Phụ kiện/đạo cụ độc lập được phép theo cảnh: </strong>
+                        mũ, nhẫn/trang sức, dây chuyền, giày dép, đồng hồ, túi xách, kính, đạo cụ cầm tay (không được làm thay đổi khuôn mặt, vóc dáng hay cấu trúc trang phục chính).
+                      </div>
                     </div>
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-                      {allowFreeCostumeChange
-                        ? 'Đang BẬT: AI được đổi trang phục theo bối cảnh/diễn biến cảnh phim, nhưng VẪN KHÓA 100% khuôn mặt, kiểu tóc, vóc dáng & đặc điểm nhận dạng.'
-                        : 'Đang TẮT (Mặc định): Khóa cứng ngoại hình & trang phục theo ảnh nhân vật tham chiếu. AI tuyệt đối không tự ý đổi, thêm, bớt hay thiết kế lại đồ.'}
-                    </p>
-                  </div>
-                  <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-400/20 overflow-hidden bg-white dark:bg-[#131a35] shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAllowFreeCostumeChange(false);
-                        setBlueprint((prev) => (prev ? { ...prev, allowFreeCostumeChange: false } : prev));
-                      }}
-                      className={`px-2.5 py-1 text-[11px] font-bold transition cursor-pointer ${
-                        !allowFreeCostumeChange
-                          ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
-                          : 'text-slate-500 dark:text-slate-400'
-                      }`}
-                    >
-                      TẮT (Khóa đồ)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAllowFreeCostumeChange(true);
-                        setBlueprint((prev) => (prev ? { ...prev, allowFreeCostumeChange: true } : prev));
-                      }}
-                      className={`px-2.5 py-1 text-[11px] font-bold transition cursor-pointer ${
-                        allowFreeCostumeChange
-                          ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
-                          : 'text-slate-500 dark:text-slate-400'
-                      }`}
-                    >
-                      BẬT (Tự do)
-                    </button>
-                  </div>
-                </div>
+                  );
+                })()}
 
                 {videoStyle === 'custom' && (
                   <div className="space-y-1">

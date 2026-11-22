@@ -18,10 +18,12 @@ import {
   getCinematicShotRoleForScene,
 } from './skills/cinematicFilmmakingSkill';
 import {
+  ALLOWED_ACCESSORIES_LIST_VI,
   auditAndNormalizeBlueprintServer,
   buildReferenceCharacterLockRules,
   buildShortDramaScreenplayRules,
   compileProductionModelPrompt,
+  CREATIVE_CONTEXT_CHARACTER_BOUNDARY_RULES,
   LockedCharacterProfileSeed,
   RuleEngineQcReport,
   SHORT_DRAMA_IDEA_EXPANSION_RULES,
@@ -2579,17 +2581,18 @@ export async function expandStudioIdeaWithAi(params: {
       ? 'Nhiều video độc lập cùng tinh thần/chủ đề'
       : '1 câu chuyện Series liền mạch';
 
-  const expandPrompt = `Bạn là Giám đốc Sáng tạo & Biên kịch Video AI chuyên nghiệp.
-NHIỆM VỤ: Từ "Tóm tắt ý tưởng ban đầu" rất ngắn gọn của người dùng, hãy triển khai thành một BẢN PHÁC THẢO Ý TƯỞNG CHI TIẾT, HẤP DẪN VÀ SẴN SÀNG CHUYỂN THÀNH KỊCH BẢN PHÂN CẢNH.
+  const expandPrompt = `Bạn là Giám đốc Sáng tạo & Biên kịch Bối cảnh Video AI chuyên nghiệp.
+NHIỆM VỤ: Từ "Tóm tắt ý tưởng ban đầu" ngắn gọn của người dùng, hãy triển khai thành một BẢN PHÁC THẢO BỐI CẢNH, HÀNH ĐỘNG & ĐẠO CỤ CHI TIẾT, HẤP DẪN, SẴN SÀNG CHUYỂN THÀNH KỊCH BẢN PHÂN CẢNH.
 
 DỮ LIỆU ĐẦU VÀO:
 - Tóm tắt ý tưởng ban đầu: "${seed}"
 ${params.settingHint?.trim() ? `- Gợi ý bối cảnh từ người dùng: "${params.settingHint.trim()}"` : ''}
-${params.characterSummary?.trim() ? `- Nhân vật tham chiếu đã chọn: ${params.characterSummary.trim()}` : ''}
+${params.characterSummary?.trim() ? `- Danh sách tên nhân vật tham chiếu (CHỈ gọi đúng tên, KHÔNG mô tả lại ngoại hình/trang phục chính): ${params.characterSummary.trim()}` : ''}
 - Phong cách quay & hình ảnh: ${styleMeta.labelVi} (${styleMeta.visualToneVi})
 - Hình thức triển khai: ${modeLabel}
 - Thời lượng dự kiến: khoảng ${durationSec} giây
 - Ngôn ngữ đầu ra: ${OUTPUT_LANG_LABELS[outputLang]}
+${CREATIVE_CONTEXT_CHARACTER_BOUNDARY_RULES}
 ${lockRulesText ? `\n${lockRulesText}` : ''}
 
 YÊU CẦU NỘI DUNG TRIỂN KHAI:
@@ -2597,20 +2600,16 @@ YÊU CẦU NỘI DUNG TRIỂN KHAI:
    - Mở đầu gây tò mò (Hook thị giác / tình huống mở màn).
    - Diễn biến cao trào, xung đột hoặc bước ngoặt cảm xúc chính.
    - Kết thúc đọng lại thông điệp hoặc cảm xúc rõ nét.
-2. ${
-    lockBundle.seeds.length > 0
-      ? allowFreeCostumeChange
-        ? 'Phát huy đúng các nhân vật tham chiếu đã khóa (GIỮ NGUYÊN khuôn mặt, kiểu tóc, vóc dáng & đặc điểm nhận dạng; có thể mô tả chuyển đổi trang phục phù hợp từng tình huống/bối cảnh nếu cần).'
-        : 'Phát huy đúng các nhân vật tham chiếu đã khóa (GIỮ NGUYÊN 100% khuôn mặt, kiểu tóc, vóc dáng, đặc điểm nhận dạng VÀ TRANG PHỤC cố định — TUYỆT ĐỐI KHÔNG tự bịa thêm cảnh nhân vật thay đồ, thêm áo khoác hay đổi trang phục trái hồ sơ tham chiếu).'
-      : `Mô tả cụ thể nhân vật trung tâm (ngoại hình/trang phục/thần thái), bối cảnh không gian, không khí ánh sáng & nhịp quay phù hợp phong cách "${styleMeta.labelVi}".`
-  }
+2. MÔ TẢ CHÍNH XÁC BỐI CẢNH & HÀNH ĐỘNG THEO RANH GIỚI BẮT BUỘC:
+   - Tập trung sâu vào: không gian & kiến trúc, cảnh quan/môi trường/thời tiết, ánh sáng/màu sắc/không khí, vị trí/tư thế/hành động nhân vật, góc máy/bố cục/chuyển động camera và đạo cụ/phụ kiện độc lập được phép (${ALLOWED_ACCESSORIES_LIST_VI}).
+   - NGHIÊM CẤM TỰ MÔ TẢ NGOẠI HÌNH & TRANG PHỤC CHÍNH: Tuyệt đối KHÔNG viết vào văn bản các chi tiết về khuôn mặt, màu da, đường nét nhận dạng, kiểu tóc, màu tóc, chiều cao, vóc dáng, tỷ lệ cơ thể hay quần áo/áo khoác/váy/quần/màu sắc/kiểu dáng trang phục chính của nhân vật.
 3. Viết tự nhiên, súc tích, giàu hình ảnh điện ảnh (khoảng 120–240 chữ), chia đoạn rõ ràng để người dùng đọc xong có thể bấm thẳng sang "AI Lên Kịch Bản" ở Bước 2.
 ${SHORT_DRAMA_IDEA_EXPANSION_RULES}
 
 TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không giải thích thừa):
 {
-  "expandedIdea": "Toàn bộ nội dung ý tưởng đã được AI triển khai chi tiết sẵn sàng dùng để lên kịch bản...",
-  "suggestedSetting": "Mô tả ngắn 1 câu về bối cảnh & tông ánh sáng chủ đạo (để điền vào ô bối cảnh nếu cần)"
+  "expandedIdea": "Toàn bộ nội dung ý tưởng đã được AI triển khai chi tiết (chỉ mô tả bối cảnh, hành động, góc máy, ánh sáng & đạo cụ/phụ kiện được phép — tuyệt đối không mô tả lại ngoại hình hay trang phục chính nhân vật)...",
+  "suggestedSetting": "Mô tả ngắn 1 câu về không gian, kiến trúc & tông ánh sáng chủ đạo (để điền vào ô bối cảnh nếu cần)"
 }`;
 
   let parsed: any = {};
@@ -2996,6 +2995,13 @@ QUY TẮC THỜI LƯỢNG & BỐI CẢNH:
 ${params.characterSummary?.trim() ? `DANH SÁCH NHÂN VẬT THAM CHIẾU ĐÃ KHÓA (BẮT BUỘC dùng ĐÚNG tên nhân vật dưới đây trong "charactersInScene", "dialogue", "characterVoiceProfiles", "imagePrompt" và "videoPrompt" để hệ thống ánh xạ đúng ảnh & giọng nói):\n${params.characterSummary.trim()}\nQUY TẮC GIỌNG NÓI NHÂN VẬT: Tất cả nhân vật dùng giọng đọc tiếng Việt chuẩn miền Bắc Việt Nam (Hà Nội) — lựa chọn cao độ & âm sắc đúng theo ĐỘ TUỔI và GIỚI TÍNH từng nhân vật, giữ nhất quán xuyên suốt.` : ''}
 ${lockedProjectAnchors ? `\nHỒ SƠ DỰ ÁN ĐÃ KHÓA (BẮT BUỘC GIỮ NGUYÊN ĐỒNG BỘ):\n${lockedProjectAnchors}` : ''}
 ${referenceLockRulesBlock ? `\n${referenceLockRulesBlock}` : ''}
+${
+  lockBundle.seeds.length > 0
+    ? `\nCHẾ ĐỘ KHÓA CỨNG NHÂN VẬT BƯỚC 2 ĐANG KÍCH HOẠT TỰ ĐỘNG:
+- Ảnh tham chiếu & hồ sơ nhân vật đồng bộ là DỮ LIỆU CHUẨN BẤT BIẾN (khóa cứng khuôn mặt, kiểu tóc, màu tóc, màu da, vóc dáng, tỷ lệ cơ thể${allowFreeCostumeChange ? '' : ', và trang phục chính'}).
+- Trong "imagePrompt" và "videoPrompt" của từng phân cảnh: TUYỆT ĐỐI KHÔNG tự sáng tạo lại hay ghi đè khuôn mặt, màu da, kiểu tóc, vóc dáng${allowFreeCostumeChange ? '' : ' hay trang phục chính'} đã khóa; chỉ mô tả bối cảnh, hành động, góc máy, ánh sáng và phụ kiện độc lập được phép (${ALLOWED_ACCESSORIES_LIST_VI}).`
+    : ''
+}
 ${videoStyle === 'cinematic_filmmaking' ? buildCinematicFilmmakingScriptDirective(desiredScenes, avgSceneDur) : ''}
 ${buildShortDramaScreenplayRules(productionFormat)}
 ${params.customInstruction?.trim() ? `Yêu cầu bổ sung từ đạo diễn: ${params.customInstruction.trim()}` : ''}

@@ -26,7 +26,9 @@ interface ProductionMonitorPanelProps {
   loading: boolean;
   sseConnected: boolean;
   onRefresh: (forceHealth?: boolean) => Promise<CommandCenterState | null>;
-  onOpenCommandCenter?: (subTab?: 'overview' | 'chat' | 'tasks' | 'pipeline' | 'qa') => void;
+  onOpenCommandCenter?: (
+    subTab?: 'overview' | 'chairman' | 'chat' | 'tasks' | 'pipeline' | 'qa' | 'incidents' | 'perf'
+  ) => void;
 }
 
 const RUN_STATUS_META: Record<
@@ -220,6 +222,22 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
     }
   };
 
+  const sessionTasks = useMemo(() => {
+    if (!state || !selectedRun) return [];
+    return state.tasks.filter((t) => t.runId === selectedRun.id);
+  }, [state, selectedRun]);
+
+  const sessionLogs = useMemo(() => {
+    if (!state || !selectedRun) return [];
+    return state.logs.filter((l) => !l.runId || l.runId === selectedRun.id).slice(0, 80);
+  }, [state, selectedRun]);
+
+  const sessionOpenIncidents = useMemo(() => {
+    if (!state || !selectedRun) return [];
+    const list = Array.isArray(state.incidents) ? state.incidents : [];
+    return list.filter((inc) => inc.runId === selectedRun.id && inc.status !== 'resolved');
+  }, [state, selectedRun]);
+
   if (loading && !state) {
     return (
       <div className="glass-card rounded-2xl p-8 flex items-center justify-center gap-3 text-sm text-slate-600 dark:text-slate-300">
@@ -232,15 +250,6 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
   const runs = state?.runs || [];
   const agents = state?.agents || [];
   const memory = state?.projectMemory;
-  const sessionTasks = useMemo(() => {
-    if (!state || !selectedRun) return [];
-    return state.tasks.filter((t) => t.runId === selectedRun.id);
-  }, [state, selectedRun]);
-
-  const sessionLogs = useMemo(() => {
-    if (!state || !selectedRun) return [];
-    return state.logs.filter((l) => !l.runId || l.runId === selectedRun.id).slice(0, 80);
-  }, [state, selectedRun]);
 
   const perMuse = selectedRun?.perMuseProgress || [];
   const workingMuseCount = perMuse.filter((p) => p.runningTasks > 0).length;
@@ -370,6 +379,33 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
           <button type="button" onClick={() => setNotice('')} className="underline cursor-pointer">
             Đóng
           </button>
+        </div>
+      )}
+
+      {sessionOpenIncidents.length > 0 && onOpenCommandCenter && (
+        <div className="rounded-xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-xs text-amber-900 dark:text-amber-100 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+            <span>
+              Phiên này đang có <strong>{sessionOpenIncidents.length} sự cố</strong> cần Tổng đạo diễn và đội Muse phối hợp xử lý.
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onOpenCommandCenter('chairman')}
+              className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold cursor-pointer whitespace-nowrap"
+            >
+              Gọi Chủ tịch chỉ đạo
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenCommandCenter('incidents')}
+              className="px-3 py-1.5 rounded-lg border border-amber-400/60 text-amber-900 dark:text-amber-100 hover:bg-amber-100/70 dark:hover:bg-amber-900/40 font-medium cursor-pointer whitespace-nowrap"
+            >
+              Xem Trung tâm Sự cố
+            </button>
+          </div>
         </div>
       )}
 
@@ -739,7 +775,11 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                       </div>
                     ) : (
                       sessionTasks.map((t) => {
+                        const isChairmanTask = t.assignedAgentId === 'chairman';
                         const ag = agents.find((a) => a.id === t.assignedAgentId);
+                        const ownerLabel = isChairmanTask
+                          ? state?.chairmanConfig?.name || 'Gemini AI – Chủ tịch'
+                          : ag?.name || t.assignedAgentId;
                         return (
                           <div key={t.id} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
                             <div className="flex items-center gap-2.5 min-w-0">
@@ -750,7 +790,7 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                                   {t.title}
                                 </div>
                                 <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                                  {ag?.name || t.assignedAgentId} · {t.error || t.outputText?.slice(0, 80) || t.status}
+                                  {ownerLabel} · {t.error || t.outputText?.slice(0, 80) || t.status}
                                 </div>
                               </div>
                             </div>

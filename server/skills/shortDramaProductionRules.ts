@@ -33,6 +33,26 @@ export interface RuleEngineQcReport {
   issues: RuleEngineQcIssue[];
 }
 
+export const ALLOWED_ACCESSORIES_LIST_VI =
+  'Mũ, nhẫn vàng/nhẫn trang sức, dây chuyền, giày dép, đồng hồ, túi xách, kính, trang sức và các vũ khí/đạo cụ cầm tay phục vụ hành động kịch bản';
+
+export const ALLOWED_ACCESSORIES_LIST_EN =
+  'hats/caps, gold rings/jewelry rings, necklaces, shoes/footwear, watches, handbags/bags, eyeglasses, small jewelry, and handheld script props';
+
+export const CREATIVE_CONTEXT_CHARACTER_BOUNDARY_RULES = `
+=== QUY TẮC KIỂM SOÁT NHÂN VẬT TẠI STUDIO – BỐI CẢNH SÁNG TẠO (BẮT BUỘC TUYỆT ĐỐI) ===
+1. CHỈ ĐƯỢC PHÉP MÔ TẢ CÁC YẾU TỐ SAU:
+   - Không gian, kiến trúc và bố cục hiện trường.
+   - Cảnh quan, môi trường và thời tiết.
+   - Ánh sáng, màu sắc môi trường và không khí điện ảnh.
+   - Vị trí, tư thế, biểu cảm động và hành động của nhân vật.
+   - Góc máy, bố cục khung hình và chuyển động camera.
+   - Đạo cụ cầm tay, đồ vật tương tác và PHỤ KIỆN ĐỘC LẬP ĐƯỢC PHÉP (${ALLOWED_ACCESSORIES_LIST_VI}).
+2. NGHIÊM CẤM TUYỆT ĐỐI TỰ MÔ TẢ HOẶC SÁNG TẠO LẠI NGOẠI HÌNH & TRANG PHỤC CHÍNH CỦA NHÂN VẬT:
+   - KHÔNG được tự viết vào nội dung triển khai các chi tiết về: khuôn mặt, màu da, đường nét nhận dạng, kiểu tóc, màu tóc, chiều cao, vóc dáng, tỷ lệ cơ thể.
+   - KHÔNG được tự bịa hoặc mô tả: quần áo, áo khoác, váy, quần, màu sắc, chất liệu hay kiểu dáng trang phục chính của nhân vật.
+   - Các phụ kiện độc lập (${ALLOWED_ACCESSORIES_LIST_VI}) được phép sáng tạo phục vụ câu chuyện nhưng TUYỆT ĐỐI KHÔNG được dùng làm lý do để thay đổi trang phục chính hoặc ngoại hình đã khóa.`;
+
 export const SHORT_DRAMA_IDEA_EXPANSION_RULES = `
 BỘ QUY TẮC TRIỂN KHAI Ý TƯỞNG CHUẨN PHIM NGẮN ("LÊN HÌNH & XUNG ĐỘT"):
 1. HOOK 3 GIÂY ĐẦU (Visual Opening): Mở đầu ngay bằng 1 hình ảnh/hành động gây tò mò hoặc đảo ngược tình thế, KHÔNG mở đầu bằng lời giới thiệu dài dòng.
@@ -114,25 +134,26 @@ export function buildReferenceCharacterLockRules(params: {
     .join('\n');
 
   const priorityHeader = `
-=== THỨ TỰ ƯU TIÊN BẮT BUỘC VỀ NHÂN VẬT & TRANG PHỤC ===
-1. ƯU TIÊN CAO NHẤT: Ảnh nhân vật tham chiếu và Hồ sơ nhân vật đồng bộ đã xác nhận bên dưới.
-2. ƯU TIÊN THỨ HAI: Thiết lập khóa ngoại hình & trang phục (AI ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC NHÂN VẬT = ${allowFree ? 'BẬT' : 'TẮT'}).
-3. ƯU TIÊN THỨ BA: Kịch bản & Prompt phân cảnh.
-4. ƯU TIÊN THẤP NHẤT: Sáng tạo thêm của AI (TUYỆT ĐỐI KHÔNG được ghi đè hoặc tự diễn giải lại các trường đã khóa).`;
+=== NGUYÊN TẮC KHÓA CỨNG NHÂN VẬT & THỨ TỰ TRUYỀN DỮ LIỆU BẮT BUỘC ===
+1. ẢNH THAM CHIẾU quyết định nhận dạng & ngoại hình bất biến của nhân vật.
+2. HỒ SƠ NHÂN VẬT ĐỒNG BỘ quyết định toàn bộ thuộc tính cố định (Khuôn mặt, màu da, kiểu tóc, màu tóc, chiều cao, vóc dáng, tỷ lệ cơ thể${allowFree ? '' : ', và TRANG PHỤC CHÍNH'}).
+3. PROMPT KỊCH BẢN & PHÂN CẢNH CHỈ quyết định bối cảnh, không gian, ánh sáng, hành động, góc máy và PHỤ KIỆN ĐỘC LẬP ĐƯỢC PHÉP.
+4. TUYỆT ĐỐI KHÔNG GHI ĐÈ: Prompt phân cảnh không được ghi đè hoặc tự thiết kế lại các thuộc tính đã khóa (Trạng thái cho phép đổi trang phục chính = ${allowFree ? 'BẬT' : 'TẮT — KHÓA CỨNG'}).`;
 
   const modeRule = allowFree
     ? `
-QUY TẮC CHẾ ĐỘ ĐANG BẬT (AI ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC):
-- AI ĐƯỢC PHÉP thay đổi hoặc sáng tạo trang phục phù hợp diễn biến kịch bản, bối cảnh, thời tiết và yêu cầu từng phân cảnh.
-- TUY NHIÊN, VẪN PHẢI KHÓA CỨNG 100% KHUÔN MẶT, KIỂU TÓC, MÀU TÓC, VÓC DÁNG, TỶ LỆ CƠ THỂ VÀ ĐẶC ĐIỂM NHẬN DẠNG theo ảnh tham chiếu & hồ sơ nhân vật.`
+QUY TẮC CHẾ ĐỘ ĐANG BẬT (CHO PHÉP ĐỔI TRANG PHỤC CHÍNH THEO KỊCH BẢN):
+- Được phép đổi trang phục chính phù hợp diễn biến kịch bản, bối cảnh và thời tiết từng phân cảnh.
+- VẪN PHẢI KHÓA CỨNG 100% BẤT BIẾN: Khuôn mặt & nhận dạng, kiểu tóc, màu tóc, màu da, chiều cao, vóc dáng, tỷ lệ cơ thể và đặc điểm nhận diện theo ảnh tham chiếu & hồ sơ nhân vật.
+- PHỤ KIỆN & ĐẠO CỤ ĐƯỢC PHÉP BỔ SUNG: ${ALLOWED_ACCESSORIES_LIST_VI} (không được làm biến đổi nhận dạng hay vóc dáng).`
     : `
-QUY TẮC KHÓA CỨNG ĐANG TẮT (KHÔNG ĐƯỢC THAY ĐỔI TRANG PHỤC — MẶC ĐỊNH):
-- KHÓA TUYỆT ĐỐI ngoại hình (khuôn mặt, kiểu tóc, màu tóc, vóc dáng, tỷ lệ, đặc điểm nhận dạng) VÀ TRANG PHỤC (quần áo, màu sắc, kiểu dáng, chất liệu, phụ kiện) theo ảnh nhân vật tham chiếu & hồ sơ đồng bộ ở trên.
-- CẤM TUYỆT ĐỐI AI tự ý thêm áo khoác, đổi màu áo, bỏ/thêm mũ kính trang sức, thay đồ theo thời tiết (mưa, lạnh, đêm), theo bối cảnh, thời đại hoặc diễn biến câu chuyện.
-- Trong MỌI phân cảnh, trường "costume", "costumeBible", "imagePrompt" và "videoPrompt" PHẢI lặp lại chính xác nguyên trạng bộ trang phục đã khóa của nhân vật xuất hiện trong cảnh đó.
-- Nếu ý tưởng đầu vào có chi tiết yêu cầu đổi trang phục nhưng cấu hình đang TẮT: KHÔNG tự sửa hồ sơ nhân vật hay tự đổi trang phục; hãy giữ nguyên trang phục khóa tham chiếu.`;
+QUY TẮC KHÓA CỨNG NHÂN VẬT ĐANG KÍCH HOẠT (BẤT BIẾN XUYÊN SUỐT):
+- THUỘC TÍNH KHÓA CỨNG TUYỆT ĐỐI (CẤM THAY ĐỔI): Khuôn mặt & nhận dạng, kiểu tóc & màu tóc, màu da, chiều cao, vóc dáng & tỷ lệ cơ thể, TRANG PHỤC CHÍNH (quần áo, áo khoác, váy, quần, màu sắc, chất liệu, kiểu dáng & chi tiết cố định).
+- PHỤ KIỆN & ĐẠO CỤ ĐỘC LẬP ĐƯỢC PHÉP BỔ SUNG/THAY ĐỔI THEO KỊCH BẢN: ${ALLOWED_ACCESSORIES_LIST_VI}. Việc bổ sung phụ kiện này KHÔNG ĐƯỢC làm biến đổi nhận dạng, vóc dáng hoặc cấu trúc trang phục chính đã khóa.
+- Trong MỌI phân cảnh, trường "costume", "costumeBible", "imagePrompt" và "videoPrompt" PHẢI giữ nguyên trang phục chính đã khóa (có thể ghi rõ thêm phụ kiện/đạo cụ được phép nếu kịch bản cần).
+- Nếu kịch bản có tình tiết BẮT BUỘC nhân vật phải thay trang phục chính: Đánh dấu rõ tình tiết đó để yêu cầu người dùng xác nhận cho phép trước, TUYỆT ĐỐI KHÔNG tự ý cập nhật hồ sơ chuẩn hay tự đổi trang phục.`;
 
-  return `${priorityHeader}\n${modeRule}${charBlocks ? `\n\nHỒ SƠ NHÂN VẬT THAM CHIẾU ĐỒNG BỘ:\n${charBlocks}` : ''}`;
+  return `${priorityHeader}\n${modeRule}${charBlocks ? `\n\nHỒ SƠ NHÂN VẬT THAM CHIẾU ĐỒNG BỘ (DỮ LIỆU CHUẨN BẤT BIẾN):\n${charBlocks}` : ''}`;
 }
 
 /**
@@ -239,7 +260,7 @@ export function compileProductionModelPrompt(params: {
       .replace(/Costume\s+in\s+Scene\s*:[^.]*\./gi, '');
   } else if (isSceneMode && params.allowFreeCostumeChange !== true && params.costumeBible?.trim()) {
     if (!text.toLowerCase().includes('strict costume lock')) {
-      text = `${text} STRICT COSTUME LOCK: Keep character face, hairstyle, physique, and exact reference outfit (${params.costumeBible.trim().slice(0, 140)}) 100% unchanged.`;
+      text = `${text} STRICT COSTUME LOCK: Reference image governs face, skin tone, hair, physique & main outfit (${params.costumeBible.trim().slice(0, 140)}) — 100% unchanged; only independent script accessories (${ALLOWED_ACCESSORIES_LIST_EN}) may be added without altering identity or main outfit.`;
     }
   }
 
@@ -776,11 +797,11 @@ export function buildDeterministicMuseDirectorBrief(params: {
   const extra =
     params.mediaType === 'video'
       ? allowFreeCostume
-        ? 'STRICT IDENTITY LOCK: Animate smoothly as ONE continuous real-time shot with zero jump cuts. Keep attached character faces, hairstyles & body proportions 100% identical while adapting wardrobe strictly as directed by the scene prompt. Zero text, subtitles or watermarks.'
-        : 'STRICT COSTUME & IDENTITY LOCK: Animate smoothly as ONE continuous real-time shot with zero jump cuts. Keep Image 1 composition and EVERY attached character face, hairstyle, physique, outfit, colors & accessories 100% IDENTICAL — ZERO unauthorized wardrobe changes. Clean frame: zero text, subtitles or watermarks.'
+        ? `STRICT IDENTITY LOCK: Animate smoothly as ONE continuous real-time shot with zero jump cuts. Reference images lock face, skin tone, hair & body proportions 100% identically; only adapt wardrobe/accessories (${ALLOWED_ACCESSORIES_LIST_EN}) as directed by the script. Zero text, subtitles or watermarks.`
+        : `STRICT COSTUME & IDENTITY LOCK: Animate smoothly as ONE continuous real-time shot with zero jump cuts. Reference images govern face, skin tone, hair, physique & main outfit 100% IDENTICALLY — ZERO unauthorized main-outfit changes; only independent script accessories (${ALLOWED_ACCESSORIES_LIST_EN}) may appear without altering identity or main outfit. Clean frame: zero text, subtitles or watermarks.`
       : allowFreeCostume
-      ? 'STRICT IDENTITY LOCK: Preserve attached character faces, hairstyles & body proportions 100% identically while adapting outfit to the scene prompt. Clean crisp composition with zero text, speech bubbles or watermarks.'
-      : 'STRICT COSTUME & IDENTITY LOCK: Preserve attached character faces, hairstyles, physique, outfits, colors & accessories 100% IDENTICAL to reference — ZERO unauthorized wardrobe changes. Clean crisp composition with zero text, speech bubbles or watermarks.';
+      ? `STRICT IDENTITY LOCK: Reference images lock face, skin tone, hair & body proportions 100% identically while adapting wardrobe/props as directed by the script. Clean crisp composition with zero text, speech bubbles or watermarks.`
+      : `STRICT COSTUME & IDENTITY LOCK: Reference images govern face, skin tone, hair, physique & main outfit 100% IDENTICALLY — ZERO unauthorized main-outfit changes; only independent script accessories (${ALLOWED_ACCESSORIES_LIST_EN}) may be added without altering identity or main outfit. Clean crisp composition with zero text, speech bubbles or watermarks.`;
 
   return { prompt, extra };
 }

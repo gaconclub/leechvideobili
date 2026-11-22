@@ -37,6 +37,7 @@ interface SidebarProps {
   onRunBatchAction: () => void;
   activeProductionProgressPct?: number;
   activeProductionRunning?: boolean;
+  openIncidentsCount?: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -52,6 +53,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onRunBatchAction,
   activeProductionProgressPct,
   activeProductionRunning = false,
+  openIncidentsCount = 0,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -183,9 +185,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <Cpu className="w-4 h-4 text-cyan-600 dark:text-cyan-300 shrink-0" />
                     <span className="truncate">Phòng Điều Hành</span>
                   </span>
-                  <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-400/25 font-semibold whitespace-nowrap">
-                    5 AI
-                  </span>
+                  {openIncidentsCount > 0 ? (
+                    <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-400/35 font-semibold whitespace-nowrap">
+                      {openIncidentsCount} sự cố
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-400/25 font-semibold whitespace-nowrap">
+                      5 AI
+                    </span>
+                  )}
                 </button>
               </li>
 

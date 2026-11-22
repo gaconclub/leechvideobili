@@ -66,7 +66,7 @@ export default function App() {
   const [mountedCommandCenter, setMountedCommandCenter] = useState(false);
   const [mountedProductionMonitor, setMountedProductionMonitor] = useState(false);
   const [ccSubTabRequest, setCcSubTabRequest] = useState<{
-    subTab: 'overview' | 'chat' | 'tasks' | 'pipeline' | 'qa';
+    subTab: 'overview' | 'chairman' | 'chat' | 'tasks' | 'pipeline' | 'qa' | 'incidents' | 'perf';
     nonce: number;
   } | null>(null);
   const ccLive = useCommandCenterLive(activeTab === 'command_center' || activeTab === 'production_monitor');
@@ -1281,6 +1281,9 @@ export default function App() {
           ccLive.state?.activeRun &&
             ['planning', 'producing', 'inspecting', 'assembling'].includes(ccLive.state.activeRun.status)
         )}
+        openIncidentsCount={
+          (ccLive.state?.incidents || []).filter((inc) => inc.status !== 'resolved').length
+        }
       />
 
       <div className="flex-1 flex flex-col min-w-0">

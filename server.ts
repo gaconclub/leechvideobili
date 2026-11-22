@@ -84,12 +84,14 @@ import {
   testMuse2ApiAccount,
 } from './server/muse2api';
 import {
+  analyzeAndDirectWithChairman,
   commandIncidentAction,
   controlProductionRun,
   controlTask,
   createEmptyProductionSession,
   createManualBackup,
   createManualTask,
+  executeChairmanPlanOption,
   getBackupExportFilePath,
   getCommandCenterState,
   initCommandCenter,
@@ -103,6 +105,7 @@ import {
   sendCommandCenterChat,
   startProductionOrchestration,
   subscribeCommandCenterEvents,
+  updateChairmanConfig,
   syncStudioDirectiveToCommandCenter,
   testMuseAgentConnection,
   updateCloudConfig,
@@ -4153,47 +4156,141 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '50mb' }));
 
-  // Proxy Bilibili & multi-platform thumbnails safely
-  app.get('/api/bilibili/proxy-image', async (req, res) => {
-    const rawUrl = String(req.query.url || '');
-    if (!rawUrl.startsWith('http')) {
-      return res.status(400).send('Invalid URL');
-    }
+  const ALLOWED_IMAGE_PROXY_SUFFIXES = [
+    'hdslb.com',
+    'bilibili.com',
+    'douyinpic.com',
+    'douyin.com',
+    'byteimg.com',
+    'bytedance.com',
+    'ibyteimg.com',
+    'byteoversea.com',
+    'ibytedtos.com',
+    'pstatp.com',
+    'snssdk.com',
+    'yximgs.com',
+    'kwimgs.com',
+    'kuaishou.com',
+    'sinaimg.cn',
+    'weibo.com',
+    'xhscdn.com',
+    'xiaohongshu.com',
+    'tiktokcdn.com',
+    'tiktokcdn-us.com',
+    'tiktokcdn-eu.com',
+    'tiktokv.com',
+    'ttwstatic.com',
+    'tiktok.com',
+    'fbcdn.net',
+    'fbsbx.com',
+    'facebook.com',
+    'ytimg.com',
+    'ggpht.com',
+    'googleusercontent.com',
+    'vimeocdn.com',
+    'twimg.com',
+    'cdninstagram.com',
+    'instagram.com',
+    'muscdn.com',
+    'akamaized.net',
+    'cloudfront.net',
+  ];
+
+  const validateAllowedImageUrl = (raw: string): { ok: true; url: URL; referer: string } | { ok: false } => {
     try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return { ok: false };
+      if (parsed.username || parsed.password) return { ok: false };
+      const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
+      if (!host || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) {
+        return { ok: false };
+      }
+      // Reject IPv4/IPv6 literals directly
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':')) {
+        return { ok: false };
+      }
+      const allowed = ALLOWED_IMAGE_PROXY_SUFFIXES.some(
+        (suffix) => host === suffix || host.endsWith(`.${suffix}`)
+      );
+      if (!allowed) return { ok: false };
+
       let referer = '';
-      if (rawUrl.includes('hdslb.com') || rawUrl.includes('bilibili.com')) {
+      if (host.endsWith('hdslb.com') || host.endsWith('bilibili.com')) {
         referer = 'https://www.bilibili.com/';
-      } else if (rawUrl.includes('douyinpic.com') || rawUrl.includes('douyin.com') || rawUrl.includes('byteimg.com')) {
+      } else if (
+        host.endsWith('douyinpic.com') ||
+        host.endsWith('douyin.com') ||
+        host.endsWith('byteimg.com') ||
+        host.endsWith('ibyteimg.com')
+      ) {
         referer = 'https://www.douyin.com/';
-      } else if (rawUrl.includes('yximgs.com') || rawUrl.includes('kwimgs.com') || rawUrl.includes('kuaishou.com')) {
+      } else if (host.endsWith('yximgs.com') || host.endsWith('kwimgs.com') || host.endsWith('kuaishou.com')) {
         referer = 'https://www.kuaishou.com/';
-      } else if (rawUrl.includes('sinaimg.cn') || rawUrl.includes('weibo.com')) {
+      } else if (host.endsWith('sinaimg.cn') || host.endsWith('weibo.com')) {
         referer = 'https://weibo.com/';
-      } else if (rawUrl.includes('xhscdn.com') || rawUrl.includes('xiaohongshu.com')) {
+      } else if (host.endsWith('xhscdn.com') || host.endsWith('xiaohongshu.com')) {
         referer = 'https://www.xiaohongshu.com/';
       } else if (
-        rawUrl.includes('tiktokcdn') ||
-        rawUrl.includes('tiktokv.com') ||
-        rawUrl.includes('ttwstatic.com') ||
-        rawUrl.includes('tiktok.com')
+        host.includes('tiktokcdn') ||
+        host.endsWith('tiktokv.com') ||
+        host.endsWith('ttwstatic.com') ||
+        host.endsWith('tiktok.com')
       ) {
         referer = 'https://www.tiktok.com/';
-      } else if (rawUrl.includes('fbcdn.net') || rawUrl.includes('fbsbx.com') || rawUrl.includes('facebook.com')) {
+      } else if (host.endsWith('fbcdn.net') || host.endsWith('fbsbx.com') || host.endsWith('facebook.com')) {
         referer = 'https://www.facebook.com/';
       }
+      return { ok: true, url: parsed, referer };
+    } catch {
+      return { ok: false };
+    }
+  };
 
-      const response = await fetch(rawUrl, {
-        headers: {
-          'User-Agent': USER_AGENT,
-          ...(referer ? { Referer: referer } : {}),
-        },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!response.ok || !response.body) {
-        return res.status(response.status).send('Image fetch failed');
+  // Proxy Bilibili & multi-platform thumbnails safely
+  app.get('/api/bilibili/proxy-image', async (req, res) => {
+    const rawUrl = String(req.query.url || '').trim();
+    const initialCheck = validateAllowedImageUrl(rawUrl);
+    if (!initialCheck.ok) {
+      return res.status(400).send('Invalid or unsupported image URL');
+    }
+    try {
+      let current = initialCheck;
+      let response: globalThis.Response | null = null;
+      for (let hop = 0; hop < 3; hop++) {
+        const resp = await fetch(current.url.toString(), {
+          headers: {
+            'User-Agent': USER_AGENT,
+            ...(current.referer ? { Referer: current.referer } : {}),
+          },
+          redirect: 'manual',
+          signal: AbortSignal.timeout(8000),
+        });
+        if (resp.status >= 300 && resp.status < 400) {
+          const loc = resp.headers.get('location');
+          if (!loc) {
+            return res.status(502).send('Invalid redirect');
+          }
+          const nextAbs = new URL(loc, current.url).toString();
+          const nextCheck = validateAllowedImageUrl(nextAbs);
+          if (!nextCheck.ok) {
+            return res.status(403).send('Redirect target not allowed');
+          }
+          current = nextCheck;
+          continue;
+        }
+        response = resp;
+        break;
       }
-      const contentType = response.headers.get('content-type') || 'image/jpeg';
-      res.setHeader('Content-Type', contentType);
+
+      if (!response || !response.ok || !response.body) {
+        return res.status(response?.status || 502).send('Image fetch failed');
+      }
+      const rawContentType = (response.headers.get('content-type') || '').toLowerCase().split(';')[0].trim();
+      if (!rawContentType.startsWith('image/')) {
+        return res.status(415).send('Unsupported content type');
+      }
+      res.setHeader('Content-Type', rawContentType);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Cache-Control', 'public, max-age=86400');
       await pipeline(Readable.fromWeb(response.body as any), res);
     } catch {
@@ -6100,6 +6197,50 @@ async function startServer() {
     }
   });
 
+  app.post('/api/command-center/chairman/config', async (req, res) => {
+    try {
+      const state = await updateChairmanConfig(req.body || {});
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể lưu cấu hình Chủ tịch Điều hành AI.' });
+    }
+  });
+
+  app.post('/api/command-center/chairman/analyze', async (req, res) => {
+    try {
+      const incidentId = typeof req.body?.incidentId === 'string' ? req.body.incidentId.trim() : undefined;
+      const runId = typeof req.body?.runId === 'string' ? req.body.runId.trim() : undefined;
+      const userRequest = typeof req.body?.userRequest === 'string' ? req.body.userRequest.trim() : undefined;
+      const result = await analyzeAndDirectWithChairman({
+        incidentId: incidentId || undefined,
+        runId: runId || undefined,
+        userRequest: userRequest || undefined,
+        trigger: incidentId ? 'incident_analysis' : 'executive_order',
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Chủ tịch Điều hành AI chưa thể lập phương án lúc này.' });
+    }
+  });
+
+  app.post('/api/command-center/chairman/execute', async (req, res) => {
+    try {
+      const optionId = typeof req.body?.optionId === 'string' ? req.body.optionId.trim() : '';
+      if (!optionId) {
+        return res.status(400).json({ error: 'Thiếu mã phương án cần thực thi.' });
+      }
+      const result = await executeChairmanPlanOption({
+        briefingId: typeof req.body?.briefingId === 'string' ? req.body.briefingId.trim() : undefined,
+        incidentId: typeof req.body?.incidentId === 'string' ? req.body.incidentId.trim() : undefined,
+        optionId,
+        customNote: typeof req.body?.customNote === 'string' ? req.body.customNote.trim() : undefined,
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể thực thi phương án của Chủ tịch AI.' });
+    }
+  });
+
   app.get('/api/command-center/search', (req, res) => {
     try {
       const results = searchCommandCenterArchive({
@@ -6136,7 +6277,7 @@ async function startServer() {
   app.get('/api/command-center/backups/:backupId/export', (req, res) => {
     const fp = getBackupExportFilePath(req.params.backupId);
     if (!fp) return res.status(404).json({ error: 'Không tìm thấy file backup.' });
-    res.download(fp, `${req.params.backupId}.json`);
+    res.download(fp, path.basename(fp));
   });
 
   app.post('/api/command-center/project-memory/snapshots/:snapshotId/restore', async (req, res) => {
@@ -7278,6 +7419,75 @@ async function startServer() {
         recentUpdates,
         supervisorActive,
         reason: err?.message || 'Không thể kiểm tra trạng thái Git',
+      });
+    }
+  });
+
+  app.post('/api/system/connect-github', async (req, res) => {
+    try {
+      const rawRepoUrl = String(req.body?.repoUrl || '').trim();
+      const rawBranch = String(req.body?.branch || '').trim() || 'main';
+
+      if (!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(rawRepoUrl)) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Địa chỉ kho GitHub không hợp lệ. Vui lòng nhập dạng https://github.com/ten-tai-khoan/ten-repo',
+        });
+      }
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/.test(rawBranch) || rawBranch.includes('..')) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Tên nhánh Git không hợp lệ (ví dụ: main hoặc master).',
+        });
+      }
+
+      const normalizedUrl = rawRepoUrl.replace(/\/+$/, '').replace(/\.git$/, '') + '.git';
+      const cwd = process.cwd();
+
+      if (!fs.existsSync(path.join(cwd, '.git'))) {
+        const initRes = await runExec('git', ['init'], 10_000);
+        if (initRes.code !== 0) {
+          return res.status(500).json({
+            ok: false,
+            error: initRes.stderr || 'Không thể khởi tạo Git trong thư mục dự án.',
+          });
+        }
+      }
+
+      const existingOrigin = await runExec('git', ['remote', 'get-url', 'origin'], 8000).catch(() => null);
+      const remoteCmd =
+        existingOrigin && existingOrigin.code === 0
+          ? ['remote', 'set-url', 'origin', normalizedUrl]
+          : ['remote', 'add', 'origin', normalizedUrl];
+      const setRemoteRes = await runExec('git', remoteCmd, 8000);
+      if (setRemoteRes.code !== 0) {
+        return res.status(400).json({
+          ok: false,
+          error: setRemoteRes.stderr || 'Không thể cấu hình remote origin cho GitHub.',
+        });
+      }
+
+      const fetchRes = await runExec('git', ['fetch', 'origin', rawBranch, '--quiet'], 18_000).catch(
+        (err: any) => ({ code: 1, stdout: '', stderr: err?.message || 'Không thể kết nối GitHub' })
+      );
+      if (fetchRes.code !== 0) {
+        return res.status(400).json({
+          ok: false,
+          error:
+            fetchRes.stderr ||
+            `Không thể tải thông tin từ kho GitHub (nhánh ${rawBranch}). Vui lòng kiểm tra lại link repo và tên nhánh.`,
+        });
+      }
+
+      res.json({
+        ok: true,
+        remoteUrl: normalizedUrl,
+        branch: rawBranch,
+      });
+    } catch (err: any) {
+      res.status(500).json({
+        ok: false,
+        error: err?.message || 'Không thể kết nối kho GitHub.',
       });
     }
   });

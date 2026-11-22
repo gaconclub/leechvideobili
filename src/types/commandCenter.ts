@@ -133,6 +133,29 @@ export interface CostumeVersionSnapshot {
   note: string;
 }
 
+export type QaVerdictStatus = 'PASS' | 'PASS_WITH_TOLERANCE' | 'FAIL';
+
+export type QaDeviationClass =
+  | 'type_a_allowed_accessory'
+  | 'type_b_minor_tolerance'
+  | 'type_c_exceeds_limit';
+
+export interface QaCharacterConsistencyMetrics {
+  verdictStatus: QaVerdictStatus;
+  deviationClass: QaDeviationClass;
+  faceSimilarityScore: number; // 0-100
+  faceDeviationPct: number; // 0-100
+  physiqueSimilarityScore: number; // 0-100
+  physiqueDeviationPct: number; // 0-100
+  mainCostumeSimilarityScore: number; // 0-100
+  mainCostumeDeviationPct: number; // 0-100
+  overallDeviationExcludingAccessoriesPct: number; // 0-100 (must be <= 5% for tolerance pass)
+  allowedAccessoryChanges: string[];
+  criticalViolationFlags: string[];
+  environmentalContextNote: string;
+  accessoryDistortsIdentityOrCostume: boolean;
+}
+
 export interface QaInspectionReport {
   id: string;
   sceneId: string;
@@ -142,11 +165,14 @@ export interface QaInspectionReport {
   checkedAt: number;
   overallScore: number;
   passed: boolean;
+  verdictStatus?: QaVerdictStatus;
+  deviationClass?: QaDeviationClass;
+  consistencyMetrics?: QaCharacterConsistencyMetrics;
   threshold: number;
   criteriaResults: QaCriterionResult[];
   timestampRange: string;
   summary: string;
-  targetFixAgentId?: 'muse-02' | 'muse-03' | 'muse-04';
+  targetFixAgentId?: 'muse-01' | 'muse-02' | 'muse-03' | 'muse-04';
   fixInstruction?: string;
   attemptNumber: number;
   targetMediaKind?: 'character_image' | 'scene_image' | 'scene_video';
@@ -242,6 +268,21 @@ export interface ProjectMemorySnapshot {
   };
 }
 
+export interface ProjectCoordinationEntry {
+  id: string;
+  timestamp: number;
+  actorId: MuseAgentId | 'chairman' | 'user' | 'system';
+  actorName: string;
+  targetAgentIds?: MuseAgentId[];
+  kind: 'directive' | 'response' | 'qa_report' | 'incident' | 'remediation' | 'delivery';
+  projectId: string;
+  runId?: string;
+  taskId?: string;
+  sceneId?: string;
+  incidentId?: string;
+  summary: string;
+}
+
 export interface ProjectMemory {
   projectId: string;
   title: string;
@@ -261,6 +302,7 @@ export interface ProjectMemory {
   characters: CommandMemoryCharacter[];
   scenes: CommandMemoryScene[];
   snapshots: ProjectMemorySnapshot[];
+  coordinationLog?: ProjectCoordinationEntry[];
 }
 
 export type CommandTaskType =
@@ -291,7 +333,7 @@ export interface CommandTask {
   type: CommandTaskType;
   title: string;
   instructions: string;
-  assignedAgentId: MuseAgentId;
+  assignedAgentId: MuseAgentId | 'chairman';
   dependsOnTaskIds: string[];
   sceneId?: string;
   sceneIndex?: number;
@@ -380,6 +422,7 @@ export type CommunicationChannelId =
   | 'video'
   | 'qa'
   | 'ai_bus'
+  | 'chairman'
   | MuseAgentId;
 
 export interface ConversationMessage {
@@ -409,7 +452,7 @@ export interface CommandActivityLog {
   id: string;
   timestamp: number;
   level: 'info' | 'success' | 'warn' | 'error';
-  agentId?: MuseAgentId | 'system';
+  agentId?: MuseAgentId | 'system' | 'chairman';
   taskId?: string;
   runId?: string;
   action: string;
@@ -544,7 +587,7 @@ export type IncidentStatus =
 export interface IncidentDialogTurn {
   id: string;
   timestamp: number;
-  actorId: MuseAgentId | 'system' | 'user';
+  actorId: MuseAgentId | 'system' | 'user' | 'chairman';
   actorName: string;
   roleBadge: string;
   kind:
@@ -570,6 +613,62 @@ export interface IncidentTechnicalDiagnosis {
   excerpt?: string;
   rootCauseDetail: string;
   directorRemediationPlan: string;
+}
+
+export type ChairmanActionType =
+  | 'patch_and_retry'
+  | 'switch_engine_and_retry'
+  | 'reassign_muse'
+  | 'fix_scene_memory_and_regen'
+  | 'adjust_qa_and_approve'
+  | 'reset_stuck_run'
+  | 'direct_briefing';
+
+export interface ChairmanScenePatch {
+  dialogue?: string;
+  costume?: string;
+  actionDetail?: string;
+  settingDetail?: string;
+}
+
+export interface ChairmanPlanOption {
+  id: string;
+  label: string;
+  recommended?: boolean;
+  riskLevel: 'low' | 'medium' | 'high';
+  summary: string;
+  actionType: ChairmanActionType;
+  targetAgentId: MuseAgentId;
+  executionCommand: string;
+  scenePatch?: ChairmanScenePatch;
+  estimatedOutcome: string;
+  executedAt?: number;
+}
+
+export interface ChairmanBriefing {
+  id: string;
+  createdAt: number;
+  incidentId?: string;
+  incidentCode?: string;
+  runId?: string;
+  trigger: 'auto_takeover' | 'incident_analysis' | 'executive_order';
+  userRequest?: string;
+  rootCauseDiagnosis: string;
+  critiqueOfMuseTeam: string;
+  executiveSummary: string;
+  options: ChairmanPlanOption[];
+  selectedOptionId?: string;
+  autoExecuted?: boolean;
+  executionLog?: string;
+}
+
+export interface ChairmanConfig {
+  enabled: boolean;
+  name: string;
+  title: string;
+  autoInterveneOnIncident: boolean;
+  autoExecuteRecommended: boolean;
+  strictOversightMode: boolean;
 }
 
 export interface IncidentRecord {
@@ -611,6 +710,8 @@ export interface IncidentRecord {
   costumeMismatch?: CostumeMismatchReport;
   versionHistory?: CostumeVersionSnapshot[];
   technicalDiagnosis?: IncidentTechnicalDiagnosis;
+  chairmanBriefingId?: string;
+  chairmanOptions?: ChairmanPlanOption[];
   history: IncidentDialogTurn[];
 }
 
@@ -627,6 +728,8 @@ export type CommandCenterSseEventType =
 export interface CommandCenterState {
   metrics: CommandCenterSummaryMetrics;
   agents: MuseAgentConfig[];
+  chairmanConfig: ChairmanConfig;
+  chairmanBriefings: ChairmanBriefing[];
   projectMemory: ProjectMemory;
   latestStudioDirective?: StudioSyncedDirective | null;
   selectedRunId?: string | null;

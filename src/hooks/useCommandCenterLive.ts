@@ -59,16 +59,16 @@ export function useCommandCenterLive(isActive: boolean) {
     }
   }, []);
 
-  // Initial load & active-tab focus sync
+  // Lightweight initial hydrate & active-tab focus sync (avoid heavy force health checks until requested)
   useEffect(() => {
-    void refreshState(true);
+    void refreshState(false);
   }, [refreshState]);
 
   useEffect(() => {
-    if (isActive) {
+    if (isActive && !sseConnected) {
       void refreshState(false);
     }
-  }, [isActive, refreshState]);
+  }, [isActive, sseConnected, refreshState]);
 
   // Real-time SSE connection with immediate event merging + reconnect recovery
   useEffect(() => {
@@ -190,10 +190,10 @@ export function useCommandCenterLive(isActive: boolean) {
     };
   }, []);
 
-  // Low-frequency fallback sync only if SSE is temporarily disconnected
+  // Fallback polling ONLY when SSE is temporarily disconnected
   useEffect(() => {
-    if (sseConnected && !isActive) return;
-    const ms = sseConnected ? 15000 : isActive ? 3500 : 12000;
+    if (sseConnected) return;
+    const ms = isActive ? 4000 : 15000;
     const timer = setInterval(() => {
       void refreshState(false);
     }, ms);

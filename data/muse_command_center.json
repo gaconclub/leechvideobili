@@ -4,9 +4,9 @@
       "id": "muse-01",
       "code": "Muse AI 01",
       "name": "Muse Director",
-      "role": "director",
+      "role": "director_script",
       "roleTitle": "Đạo diễn tổng",
-      "description": "AI điều phối trưởng: nhận lệnh sản xuất, phân tích kịch bản tổng thể, chia việc song song, quản lý Project Memory và tổng hợp phim hoàn chỉnh.",
+      "description": "Tổng đạo diễn kiêm Phân tích kịch bản: trực tiếp phân tích kịch bản gốc, nhân vật 5 thành phần, lời thoại, bối cảnh, timeline từng giây, phân công song song/nối tiếp, xử lý sự cố và tổng hợp phim.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
       "status": "online",
@@ -19,7 +19,8 @@
           "project_memory:rw",
           "tasks:dispatch",
           "runs:control",
-          "chat:all"
+          "chat:all",
+          "script:analyze"
         ]
       },
       "stats": {
@@ -28,44 +29,18 @@
         "retried": 0
       },
       "accentColor": "#7C3AED",
-      "avatarPreset": "director_clapboard"
+      "avatarPreset": "director_clapboard",
+      "activeTaskIds": [],
+      "activeTaskCount": 0,
+      "maxConcurrentTasks": 2
     },
     {
       "id": "muse-02",
       "code": "Muse AI 02",
-      "name": "Muse Script",
-      "role": "screenwriter",
-      "roleTitle": "Biên kịch",
-      "description": "Phân tích kịch bản, hồ sơ nhân vật 5 thành phần, giọng nói theo độ tuổi, lời thoại, bối cảnh, timeline theo giây và cấu trúc phân cảnh.",
-      "boundAccountId": "auto",
-      "engineMode": "muse2api_with_gemini_fallback",
-      "status": "online",
-      "paused": false,
-      "permissions": {
-        "canModifyProjectMemory": false,
-        "canApproveQa": false,
-        "canExecuteMedia": false,
-        "allowedDataScopes": [
-          "project_memory:propose_script",
-          "chat:screenwriter",
-          "chat:group"
-        ]
-      },
-      "stats": {
-        "completed": 0,
-        "failed": 0,
-        "retried": 0
-      },
-      "accentColor": "#0891B2",
-      "avatarPreset": "script_feather"
-    },
-    {
-      "id": "muse-03",
-      "code": "Muse AI 03",
-      "name": "Muse Visual",
-      "role": "image_designer",
-      "roleTitle": "Thiết kế hình ảnh",
-      "description": "Tạo ảnh tham chiếu nhân vật và ảnh keyframe phân cảnh, giữ đồng bộ gương mặt, vóc dáng, trang phục và bối cảnh.",
+      "name": "Muse Producer 02",
+      "role": "production_media",
+      "roleTitle": "Thiết kế Hình ảnh & Sản xuất Video",
+      "description": "AI Sản xuất đa nhiệm (nhận việc ngay khi đủ dữ liệu): thiết kế ảnh nhân vật/phân cảnh và nối tiếp ngay sang tạo video theo timeline, lời thoại, khẩu hình mà không chờ AI khác.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
       "status": "online",
@@ -77,7 +52,9 @@
         "allowedDataScopes": [
           "project_memory:read",
           "artifacts:write_image",
+          "artifacts:write_video",
           "chat:image",
+          "chat:video",
           "chat:group"
         ]
       },
@@ -86,16 +63,19 @@
         "failed": 0,
         "retried": 0
       },
-      "accentColor": "#DB2777",
-      "avatarPreset": "visual_palette"
+      "accentColor": "#0891B2",
+      "avatarPreset": "visual_palette",
+      "activeTaskIds": [],
+      "activeTaskCount": 0,
+      "maxConcurrentTasks": 2
     },
     {
-      "id": "muse-04",
-      "code": "Muse AI 04",
-      "name": "Muse Video",
-      "role": "video_director",
-      "roleTitle": "Đạo diễn hình ảnh & video",
-      "description": "Sản xuất video phân cảnh theo timeline từng giây, chuyển động, góc quay, lời thoại, khẩu hình và nối cảnh liên tục.",
+      "id": "muse-03",
+      "code": "Muse AI 03",
+      "name": "Muse Producer 03",
+      "role": "production_media",
+      "roleTitle": "Thiết kế Hình ảnh & Sản xuất Video",
+      "description": "AI Sản xuất đa nhiệm & khôi phục trang phục chuẩn: thiết kế ảnh tham chiếu/phân cảnh, chuyển thẳng sang dựng video của cảnh đó ngay khi ảnh hoàn tất.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
       "status": "online",
@@ -106,7 +86,44 @@
         "canExecuteMedia": true,
         "allowedDataScopes": [
           "project_memory:read",
+          "artifacts:write_image",
           "artifacts:write_video",
+          "chat:image",
+          "chat:video",
+          "chat:group"
+        ]
+      },
+      "stats": {
+        "completed": 0,
+        "failed": 0,
+        "retried": 0
+      },
+      "accentColor": "#DB2777",
+      "avatarPreset": "visual_palette",
+      "activeTaskIds": [],
+      "activeTaskCount": 0,
+      "maxConcurrentTasks": 2
+    },
+    {
+      "id": "muse-04",
+      "code": "Muse AI 04",
+      "name": "Muse Producer 04",
+      "role": "production_media",
+      "roleTitle": "Đạo diễn hình ảnh & video",
+      "description": "AI Sản xuất đa nhiệm: thiết kế keyframe phân cảnh và sản xuất trực tiếp video theo timeline từng giây, chuyển động, góc quay và lip-sync đồng bộ.",
+      "boundAccountId": "auto",
+      "engineMode": "muse2api_with_gemini_fallback",
+      "status": "online",
+      "paused": false,
+      "permissions": {
+        "canModifyProjectMemory": false,
+        "canApproveQa": false,
+        "canExecuteMedia": true,
+        "allowedDataScopes": [
+          "project_memory:read",
+          "artifacts:write_image",
+          "artifacts:write_video",
+          "chat:image",
           "chat:video",
           "chat:group"
         ]
@@ -117,7 +134,10 @@
         "retried": 0
       },
       "accentColor": "#D97706",
-      "avatarPreset": "video_camera"
+      "avatarPreset": "video_camera",
+      "activeTaskIds": [],
+      "activeTaskCount": 0,
+      "maxConcurrentTasks": 2
     },
     {
       "id": "muse-05",
@@ -148,16 +168,28 @@
         "retried": 0
       },
       "accentColor": "#059669",
-      "avatarPreset": "qa_shield"
+      "avatarPreset": "qa_shield",
+      "activeTaskIds": [],
+      "activeTaskCount": 0,
+      "maxConcurrentTasks": 2
     }
   ],
+  "chairmanConfig": {
+    "enabled": true,
+    "name": "Chủ tịch Điều hành AI",
+    "title": "Chủ tịch Hội đồng Điều hành · Trực tiếp chỉ đạo 5 Muse AI",
+    "autoInterveneOnIncident": true,
+    "autoExecuteRecommended": false,
+    "strictOversightMode": true
+  },
+  "chairmanBriefings": [],
   "projectMemory": {
     "projectId": "proj_mwqdvgza",
-    "title": "__test_costume_lock_default__",
-    "version": 3,
-    "updatedAt": 1795276219628,
+    "title": "Smoke Test Session",
+    "version": 1,
+    "updatedAt": 1795264068790,
     "updatedByAgentId": "system",
-    "originalScript": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
+    "originalScript": "",
     "productionFormat": "dialogue_film",
     "aspectRatio": "16:9",
     "videoStyle": "cinematic",
@@ -168,88 +200,100 @@
     "timelineSummary": "",
     "characters": [],
     "scenes": [],
-    "snapshots": [
-      {
-        "id": "memsnap_v2_mwql3wmj",
-        "version": 2,
-        "createdAt": 1795276219627,
-        "authorAgentId": "system",
-        "summary": "Bản lưu trước cập nhật (Đồng bộ chỉ thị từ Studio (save_project): __test_costume_lock_default__)",
-        "data": {
-          "title": "__test_costume_lock_default__",
-          "originalScript": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
-          "productionFormat": "dialogue_film",
-          "aspectRatio": "16:9",
-          "videoStyle": "cinematic",
-          "allowFreeCostumeChange": false,
-          "visualBible": "",
-          "settingBible": "",
-          "costumeBible": "",
-          "continuityBible": "",
-          "timelineSummary": "",
-          "characters": [],
-          "scenes": []
-        }
-      },
-      {
-        "id": "memsnap_v1_mwql3wly",
-        "version": 1,
-        "createdAt": 1795276219606,
-        "authorAgentId": "system",
-        "summary": "Bản lưu trước cập nhật (Đồng bộ chỉ thị từ Studio (save_project): __test_costume_lock_default__)",
-        "data": {
-          "title": "Smoke Test Session",
-          "originalScript": "",
-          "productionFormat": "dialogue_film",
-          "aspectRatio": "16:9",
-          "videoStyle": "cinematic",
-          "allowFreeCostumeChange": false,
-          "visualBible": "",
-          "settingBible": "",
-          "costumeBible": "",
-          "continuityBible": "",
-          "timelineSummary": "",
-          "characters": [],
-          "scenes": []
-        }
-      }
-    ],
-    "allowFreeCostumeChange": true
+    "snapshots": []
   },
   "sessionMemories": {},
   "selectedRunId": null,
   "latestStudioDirective": {
-    "syncedAt": 1795276219627,
-    "sourceAction": "save_project",
+    "syncedAt": 1795257203014,
+    "sourceAction": "learn_script",
     "mode": "creative",
-    "title": "__test_costume_lock_default__",
-    "scriptOrCommand": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
+    "title": "Test Studio Sync",
+    "scriptOrCommand": "Lệnh test đồng bộ từ Studio sang Phòng Điều Hành\n\nTiêu đề kịch bản Studio: Test Studio Sync\n\nTóm tắt kịch bản:\nTóm tắt kịch bản thử nghiệm\n\nNhân vật đồng bộ (1):\n1. Minh: Chàng trai trẻ\n\nDanh sách 2 phân cảnh:\n- Cảnh 1 (6s) [Cảnh 1]: Nhân vật bước ra | Thoại: \"Xin chào\"\n- Cảnh 2 (6s) [Cảnh 2]: Nhân vật quay đi | Thoại: \"Đi thôi\"",
     "productionFormat": "dialogue_film",
     "aspectRatio": "16:9",
     "videoStyle": "cinematic",
-    "allowFreeCostumeChange": true,
     "visualBible": "",
     "settingBible": "",
     "costumeBible": "",
     "continuityBible": "",
-    "characterCount": 0,
-    "sceneCount": 0,
-    "hasBlueprint": false
+    "characterCount": 1,
+    "sceneCount": 2,
+    "hasBlueprint": true
   },
   "latestStudioBlueprint": {
-    "syncedAt": 1795276219627,
-    "title": "__test_costume_lock_default__",
-    "scriptOrCommand": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
+    "syncedAt": 1795257203014,
+    "title": "Test Studio Sync",
+    "scriptOrCommand": "Lệnh test đồng bộ từ Studio sang Phòng Điều Hành\n\nTiêu đề kịch bản Studio: Test Studio Sync\n\nTóm tắt kịch bản:\nTóm tắt kịch bản thử nghiệm\n\nNhân vật đồng bộ (1):\n1. Minh: Chàng trai trẻ\n\nDanh sách 2 phân cảnh:\n- Cảnh 1 (6s) [Cảnh 1]: Nhân vật bước ra | Thoại: \"Xin chào\"\n- Cảnh 2 (6s) [Cảnh 2]: Nhân vật quay đi | Thoại: \"Đi thôi\"",
     "productionFormat": "dialogue_film",
     "aspectRatio": "16:9",
     "videoStyle": "cinematic",
-    "allowFreeCostumeChange": true,
     "visualBible": "",
     "settingBible": "",
     "costumeBible": "",
     "continuityBible": "",
-    "characters": [],
-    "scenes": []
+    "characters": [
+      {
+        "id": "c1",
+        "name": "Minh",
+        "ageGroup": "youth",
+        "gender": "male",
+        "voiceId": "Kore",
+        "description": "Chàng trai trẻ",
+        "syncProfile": {
+          "face": "Chàng trai trẻ",
+          "physique": "Tỷ lệ cân đối tự nhiên",
+          "costume": "Trang phục đồng bộ xuyên suốt",
+          "voice": "Giọng đọc tự nhiên theo độ tuổi",
+          "distinguishingMarks": "Đặc điểm nhận dạng ổn định"
+        },
+        "approvedVersion": 1
+      }
+    ],
+    "scenes": [
+      {
+        "sceneId": "scene_1",
+        "index": 1,
+        "title": "Cảnh 1",
+        "durationSec": 6,
+        "narration": "",
+        "dialogue": "Xin chào",
+        "speakerName": "",
+        "actionDetail": "Nhân vật bước ra",
+        "settingDetail": "Phố đêm",
+        "costume": "",
+        "cameraAngle": "Trung cảnh",
+        "cameraMovement": "Đẩy máy chậm",
+        "lighting": "Ánh sáng điện ảnh tự nhiên",
+        "vfxNotes": "",
+        "videoTimeline": "",
+        "dependsOnSceneIds": [],
+        "qaStatus": "pending",
+        "retryCount": 0,
+        "lastModifiedBy": "studio"
+      },
+      {
+        "sceneId": "scene_2",
+        "index": 2,
+        "title": "Cảnh 2",
+        "durationSec": 6,
+        "narration": "",
+        "dialogue": "Đi thôi",
+        "speakerName": "",
+        "actionDetail": "Nhân vật quay đi",
+        "settingDetail": "Phố đêm",
+        "costume": "",
+        "cameraAngle": "Trung cảnh",
+        "cameraMovement": "Đẩy máy chậm",
+        "lighting": "Ánh sáng điện ảnh tự nhiên",
+        "vfxNotes": "",
+        "videoTimeline": "",
+        "dependsOnSceneIds": [],
+        "qaStatus": "pending",
+        "retryCount": 0,
+        "lastModifiedBy": "studio"
+      }
+    ]
   },
   "runs": [],
   "tasks": [],
@@ -307,42 +351,24 @@
       "sessionId": "run_1795264068790_c955",
       "id": "msg_1795264068807_e9c0",
       "createdAt": 1795264068807
-    },
-    {
-      "channel": "commander",
-      "projectId": "proj_mwqdvgza",
-      "senderType": "system",
-      "senderId": "studio_sync",
-      "senderName": "Đồng bộ Studio → Muse Director",
-      "targetAgentIds": [
-        "muse-01",
-        "muse-02",
-        "muse-03",
-        "muse-04",
-        "muse-05"
-      ],
-      "messageKind": "ack",
-      "content": "Chỉ thị từ Studio [Lưu dự án Studio]: \"__test_costume_lock_default__\" (0 nhân vật, 0 phân cảnh · 16:9). Đã nạp sẵn vào Trung tâm giao nhiệm vụ tổng & Project Memory để đội 5 Muse AI tiếp nhận.",
-      "id": "msg_1795276219607_21d0",
-      "createdAt": 1795276219607
     }
   ],
   "logs": [
     {
-      "id": "log_1795276219628_1feb",
-      "timestamp": 1795276219629,
+      "id": "log_1795361738900_bae2",
+      "timestamp": 1795361738900,
       "level": "info",
-      "agentId": "muse-01",
-      "action": "Đồng bộ chỉ thị từ Studio",
-      "detail": "Lưu dự án Studio: \"__test_costume_lock_default__\" (0 cảnh, 0 nhân vật)."
+      "agentId": "chairman",
+      "action": "Cập nhật quyền hạn Chủ tịch Điều hành AI",
+      "detail": "Kích hoạt: Bật · Tự tiếp quản sự cố: Bật · Tự thực thi phương án an toàn: Tắt"
     },
     {
-      "id": "log_1795276219607_4200",
-      "timestamp": 1795276219607,
+      "id": "log_1795361738893_3a6a",
+      "timestamp": 1795361738893,
       "level": "info",
-      "agentId": "muse-01",
-      "action": "Đồng bộ chỉ thị từ Studio",
-      "detail": "Lưu dự án Studio: \"__test_costume_lock_default__\" (0 cảnh, 0 nhân vật)."
+      "agentId": "chairman",
+      "action": "Cập nhật quyền hạn Chủ tịch Điều hành AI",
+      "detail": "Kích hoạt: Bật · Tự tiếp quản sự cố: Bật · Tự thực thi phương án an toàn: Bật"
     },
     {
       "id": "log_1795264059626_e33a",
@@ -465,13 +491,14 @@
     "hasCustomMuse2ApiKey": false,
     "maskedMuse2ApiKey": "",
     "parallelLimit": 2,
+    "perAgentConcurrencyLimit": 2,
     "qaPassThreshold": 80,
     "maxRetriesPerScene": 2,
     "maxIncidentRetries": 3,
     "autoDirectorIncidentResponse": true,
     "autoBackupRealtime": true,
-    "workerHeartbeatAt": 1795276217759,
-    "workerBootId": "worker_mwql2qoi_e36b",
+    "workerHeartbeatAt": 1795361737798,
+    "workerBootId": "worker_mws00l9y_b579",
     "isCloudEndpoint": false
   },
   "taskSeq": 1,

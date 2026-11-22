@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
+import { Type } from '@google/genai';
 import {
   chatWithMuse2ApiSpark,
   getMuse2ApiStatus,
@@ -24,6 +25,7 @@ import {
   shouldFallbackGeminiModel,
 } from './derivative';
 import {
+  ALLOWED_ACCESSORIES_LIST_VI,
   buildReferenceCharacterLockRules,
   EXPLICIT_WARDROBE_CHANGE_REQUEST_RE,
 } from './skills/shortDramaProductionRules';
@@ -35,6 +37,11 @@ import type {
   StudioVideoStyle,
 } from '../src/types/bilibili';
 import type {
+  ChairmanActionType,
+  ChairmanBriefing,
+  ChairmanConfig,
+  ChairmanPlanOption,
+  ChairmanScenePatch,
   CloudOrchestratorConfig,
   CommandActivityLog,
   CommandBackupRecord,
@@ -66,11 +73,15 @@ import type {
   MuseRunProgress,
   PerformanceAlert,
   ProductionRun,
+  ProjectCoordinationEntry,
   ProjectMemory,
   ProjectMemorySnapshot,
+  QaCharacterConsistencyMetrics,
   QaCriterionId,
   QaCriterionResult,
+  QaDeviationClass,
   QaInspectionReport,
+  QaVerdictStatus,
   SceneProductionStage,
   StudioSyncedDirective,
 } from '../src/types/commandCenter';
@@ -103,6 +114,8 @@ interface StoredStudioBlueprintCache {
 
 interface PersistedCommandCenterDoc {
   agents: MuseAgentConfig[];
+  chairmanConfig: ChairmanConfig;
+  chairmanBriefings: ChairmanBriefing[];
   projectMemory: ProjectMemory;
   sessionMemories: Record<string, ProjectMemory>;
   selectedRunId?: string | null;
@@ -127,17 +140,17 @@ interface PersistedCommandCenterDoc {
   incidentSeq: number;
 }
 
-const PRODUCTION_AGENT_IDS: MuseAgentId[] = ['muse-02', 'muse-03', 'muse-04'];
+const PRODUCTION_AGENT_IDS: MuseAgentId[] = ['muse-01', 'muse-02', 'muse-03', 'muse-04'];
 
 const DEFAULT_AGENTS: MuseAgentConfig[] = [
   {
     id: 'muse-01',
     code: 'Muse AI 01',
     name: 'Muse Director',
-    role: 'director_script',
-    roleTitle: 'Tổng đạo diễn & Phân tích kịch bản',
+    role: 'production_media',
+    roleTitle: 'Nhân viên Sản xuất Hình ảnh & Video',
     description:
-      'Tổng đạo diễn kiêm Phân tích kịch bản: trực tiếp phân tích kịch bản gốc, nhân vật 5 thành phần, lời thoại, bối cảnh, timeline từng giây, phân công song song/nối tiếp, xử lý sự cố và tổng hợp phim.',
+      'Nhân viên chuyên môn thuộc bộ phận sản xuất hình ảnh & video dưới quyền chỉ huy của Gemini AI: tiếp nhận phân cảnh, phân tích yêu cầu hình ảnh/video, tạo & chỉnh sửa ảnh, dựng video tuân thủ khóa nhân vật và báo cáo tiến độ về Gemini AI.',
     boundAccountId: 'auto',
     engineMode: 'muse2api_with_gemini_fallback',
     status: 'offline',
@@ -145,10 +158,10 @@ const DEFAULT_AGENTS: MuseAgentConfig[] = [
     avatarPreset: 'director_clapboard',
     accentColor: '#7C3AED',
     permissions: {
-      canModifyProjectMemory: true,
+      canModifyProjectMemory: false,
       canApproveQa: false,
-      canExecuteMedia: false,
-      allowedDataScopes: ['project_memory:rw', 'script:analyze', 'tasks:dispatch', 'runs:control', 'chat:all'],
+      canExecuteMedia: true,
+      allowedDataScopes: ['project_memory:read', 'artifacts:write_image', 'artifacts:write_video', 'chat:image', 'chat:video', 'chat:group'],
     },
     stats: { completed: 0, failed: 0, retried: 0 },
   },
@@ -262,6 +275,7 @@ function createEmptyProjectMemory(): ProjectMemory {
     characters: [],
     scenes: [],
     snapshots: [],
+    coordinationLog: [],
   };
 }
 
@@ -275,10 +289,237 @@ function isLocalhostUrl(urlStr: string): boolean {
   }
 }
 
+function createDefaultChairmanConfig(): ChairmanConfig {
+  return {
+    enabled: true,
+    name: 'Gemini AI – Chủ tịch',
+    title: 'Chủ tịch & Tổng chỉ huy toàn bộ hệ thống 5 Muse AI',
+    autoInterveneOnIncident: true,
+    autoExecuteRecommended: false,
+    strictOversightMode: true,
+  };
+}
+
+function getChairmanDisplayName(): string {
+  return storeDoc.chairmanConfig?.name?.trim() || 'Gemini AI – Chủ tịch';
+}
+
+function getChairmanVirtualAgent(): MuseAgentConfig {
+  return {
+    id: 'muse-01',
+    code: 'Gemini AI',
+    name: getChairmanDisplayName(),
+    role: 'director_script',
+    roleTitle: storeDoc.chairmanConfig?.title || 'Chủ tịch & Tổng chỉ huy',
+    description: 'Chủ tịch & Tổng chỉ huy tối cao điều phối 5 Muse AI thông qua Gemini API.',
+    boundAccountId: 'auto',
+    engineMode: 'muse2api_with_gemini_fallback',
+    status: 'supervising',
+    paused: false,
+    avatarPreset: 'crown_star',
+    accentColor: '#D97706',
+    permissions: {
+      canModifyProjectMemory: true,
+      canApproveQa: false,
+      canExecuteMedia: false,
+      allowedDataScopes: ['project_memory:rw', 'script:analyze', 'tasks:dispatch', 'runs:control', 'chat:all'],
+    },
+    stats: { completed: 0, failed: 0, retried: 0 },
+  };
+}
+
+function appendProjectCoordinationLog(
+  runId: string | undefined,
+  entry: Omit<ProjectCoordinationEntry, 'id' | 'timestamp' | 'projectId'>
+): void {
+  const mem = getRunMemory(runId);
+  if (!Array.isArray(mem.coordinationLog)) mem.coordinationLog = [];
+  const rec: ProjectCoordinationEntry = {
+    id: `coord_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+    timestamp: Date.now(),
+    projectId: mem.projectId,
+    ...entry,
+  };
+  mem.coordinationLog.unshift(rec);
+  if (mem.coordinationLog.length > 250) {
+    mem.coordinationLog = mem.coordinationLog.slice(0, 250);
+  }
+  if (mem !== storeDoc.projectMemory && storeDoc.projectMemory.projectId === mem.projectId) {
+    if (!Array.isArray(storeDoc.projectMemory.coordinationLog)) {
+      storeDoc.projectMemory.coordinationLog = [];
+    }
+    storeDoc.projectMemory.coordinationLog.unshift(rec);
+    if (storeDoc.projectMemory.coordinationLog.length > 250) {
+      storeDoc.projectMemory.coordinationLog = storeDoc.projectMemory.coordinationLog.slice(0, 250);
+    }
+  }
+}
+
+/**
+ * Evaluates Muse AI 05 measurable character & costume consistency metrics.
+ * Enforces the strict 5% rule:
+ * - Allowed independent accessories (hat, gold ring, necklace, shoes, watch, bag, glasses, props) are excluded from overall deviation.
+ * - Critical locked attributes (face/identity, physique, main outfit when locked, or accessory distorting identity/outfit)
+ *   trigger an immediate FAIL even if overallDeviationExcludingAccessoriesPct <= 5%.
+ */
+function evaluateMuse05CharacterConsistency(params: {
+  parsed: any;
+  allowFreeCostumeChange: boolean;
+  fallbackCharScore: number;
+  fallbackCostumeScore: number;
+}): {
+  metrics: QaCharacterConsistencyMetrics;
+  passed: boolean;
+  verdictStatus: QaVerdictStatus;
+  deviationClass: QaDeviationClass;
+  costumeViolated: boolean;
+  characterViolated: boolean;
+} {
+  const p = params.parsed || {};
+  const clampPct = (v: any, def: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n * 10) / 10)) : def;
+  };
+  const clampScore = (v: any, def: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : def;
+  };
+
+  const faceSimilarityScore = clampScore(p.faceSimilarityScore ?? p.characterScore, params.fallbackCharScore);
+  const faceDeviationPct = clampPct(
+    p.faceDeviationPct,
+    Math.max(0, Math.round((100 - faceSimilarityScore) * 10) / 10)
+  );
+
+  const physiqueSimilarityScore = clampScore(p.physiqueSimilarityScore ?? p.characterScore, params.fallbackCharScore);
+  const physiqueDeviationPct = clampPct(
+    p.physiqueDeviationPct,
+    Math.max(0, Math.round((100 - physiqueSimilarityScore) * 10) / 10)
+  );
+
+  const mainCostumeSimilarityScore = clampScore(
+    p.mainCostumeSimilarityScore ?? p.costumeScore,
+    params.fallbackCostumeScore
+  );
+  const mainCostumeDeviationPct = clampPct(
+    p.mainCostumeDeviationPct,
+    Math.max(0, Math.round((100 - mainCostumeSimilarityScore) * 10) / 10)
+  );
+
+  const allowedAccessoryChanges: string[] = Array.isArray(p.allowedAccessoryChanges)
+    ? p.allowedAccessoryChanges.map((x: any) => String(x || '').trim()).filter(Boolean).slice(0, 10)
+    : [];
+
+  const accessoryDistortsIdentityOrCostume = Boolean(p.accessoryDistortsIdentityOrCostume);
+
+  const computedOverallDev = params.allowFreeCostumeChange
+    ? Math.round(((faceDeviationPct + physiqueDeviationPct) / 2) * 10) / 10
+    : Math.round(((faceDeviationPct + physiqueDeviationPct + mainCostumeDeviationPct) / 3) * 10) / 10;
+
+  const overallDeviationExcludingAccessoriesPct = clampPct(
+    p.overallDeviationExcludingAccessoriesPct,
+    computedOverallDev
+  );
+
+  const criticalViolationFlags: string[] = [];
+  if (p.criticalFaceError === true || faceDeviationPct > 5 || faceSimilarityScore < 90 || p.characterPassed === false) {
+    criticalViolationFlags.push(
+      `Sai lệch khuôn mặt/nhận dạng (${faceDeviationPct}% > ngưỡng an toàn, tương đồng ${faceSimilarityScore}/100)`
+    );
+  }
+  if (p.criticalPhysiqueError === true || physiqueDeviationPct > 5 || physiqueSimilarityScore < 90) {
+    criticalViolationFlags.push(
+      `Biến đổi vóc dáng/tỷ lệ cơ thể (${physiqueDeviationPct}%, tương đồng ${physiqueSimilarityScore}/100)`
+    );
+  }
+  const costumeViolated =
+    !params.allowFreeCostumeChange &&
+    (p.criticalMainCostumeError === true ||
+      p.costumePassed === false ||
+      mainCostumeDeviationPct > 5 ||
+      mainCostumeSimilarityScore < 90);
+  if (costumeViolated) {
+    criticalViolationFlags.push(
+      `Thay đổi trang phục chính trái phép (${mainCostumeDeviationPct}%, tương đồng ${mainCostumeSimilarityScore}/100)`
+    );
+  }
+  if (accessoryDistortsIdentityOrCostume) {
+    criticalViolationFlags.push('Phụ kiện làm biến đổi nhận dạng hoặc cấu trúc trang phục chính đã khóa');
+  }
+  if (overallDeviationExcludingAccessoriesPct > 5) {
+    criticalViolationFlags.push(
+      `Sai lệch tổng thể sau loại trừ phụ kiện được phép là ${overallDeviationExcludingAccessoriesPct}% (> ngưỡng tối đa 5%)`
+    );
+  }
+
+  const characterViolated =
+    p.criticalFaceError === true ||
+    p.criticalPhysiqueError === true ||
+    p.characterPassed === false ||
+    faceDeviationPct > 5 ||
+    physiqueDeviationPct > 5 ||
+    faceSimilarityScore < 90 ||
+    physiqueSimilarityScore < 90;
+
+  let verdictStatus: QaVerdictStatus;
+  let deviationClass: QaDeviationClass;
+  if (criticalViolationFlags.length > 0 || String(p.verdictStatus || '').toUpperCase() === 'FAIL') {
+    verdictStatus = 'FAIL';
+    deviationClass = 'type_c_exceeds_limit';
+    if (criticalViolationFlags.length === 0) {
+      criticalViolationFlags.push('Muse AI 05 đánh dấu FAIL theo đối chiếu trực tiếp với ảnh tham chiếu.');
+    }
+  } else if (allowedAccessoryChanges.length > 0 && overallDeviationExcludingAccessoriesPct <= 1) {
+    verdictStatus = 'PASS_WITH_TOLERANCE';
+    deviationClass = 'type_a_allowed_accessory';
+  } else if (
+    overallDeviationExcludingAccessoriesPct > 0 ||
+    allowedAccessoryChanges.length > 0 ||
+    String(p.verdictStatus || '').toUpperCase() === 'PASS_WITH_TOLERANCE'
+  ) {
+    verdictStatus = 'PASS_WITH_TOLERANCE';
+    deviationClass = allowedAccessoryChanges.length > 0 && overallDeviationExcludingAccessoriesPct <= 1.5
+      ? 'type_a_allowed_accessory'
+      : 'type_b_minor_tolerance';
+  } else {
+    verdictStatus = 'PASS';
+    deviationClass = 'type_b_minor_tolerance';
+  }
+
+  const metrics: QaCharacterConsistencyMetrics = {
+    verdictStatus,
+    deviationClass,
+    faceSimilarityScore,
+    faceDeviationPct,
+    physiqueSimilarityScore,
+    physiqueDeviationPct,
+    mainCostumeSimilarityScore,
+    mainCostumeDeviationPct,
+    overallDeviationExcludingAccessoriesPct,
+    allowedAccessoryChanges,
+    criticalViolationFlags,
+    environmentalContextNote: String(
+      p.environmentalContextNote || 'Đã xét điều kiện góc máy, ánh sáng, tư thế và độ che khuất khi đối chiếu.'
+    ).trim(),
+    accessoryDistortsIdentityOrCostume,
+  };
+
+  return {
+    metrics,
+    passed: verdictStatus === 'PASS' || verdictStatus === 'PASS_WITH_TOLERANCE',
+    verdictStatus,
+    deviationClass,
+    costumeViolated,
+    characterViolated,
+  };
+}
+
 function createDefaultDoc(): PersistedCommandCenterDoc {
   const cfg = resolveMuse2ApiConfig();
   return {
     agents: structuredClone(DEFAULT_AGENTS),
+    chairmanConfig: createDefaultChairmanConfig(),
+    chairmanBriefings: [],
     projectMemory: createEmptyProjectMemory(),
     sessionMemories: {},
     selectedRunId: null,
@@ -391,7 +632,7 @@ function addActivityLog(
   level: CommandActivityLog['level'],
   action: string,
   detail: string,
-  extra?: { agentId?: MuseAgentId | 'system'; taskId?: string; runId?: string }
+  extra?: { agentId?: MuseAgentId | 'system' | 'chairman'; taskId?: string; runId?: string }
 ): void {
   const entry: CommandActivityLog = {
     id: `log_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
@@ -420,6 +661,7 @@ function mapLegacyChannel(ch?: string): CommunicationChannelId {
     ch === 'video' ||
     ch === 'qa' ||
     ch === 'ai_bus' ||
+    ch === 'chairman' ||
     ch === 'muse-01' ||
     ch === 'muse-02' ||
     ch === 'muse-03' ||
@@ -694,7 +936,7 @@ function enqueueTask(input: {
   type: CommandTaskType;
   title: string;
   instructions: string;
-  assignedAgentId: MuseAgentId;
+  assignedAgentId: MuseAgentId | 'chairman';
   dependsOnTaskIds?: string[];
   sceneId?: string;
   sceneIndex?: number;
@@ -1048,7 +1290,7 @@ function appendIncidentTurn(
 
 function postIncidentChannelMessage(params: {
   inc: IncidentRecord;
-  senderId: MuseAgentId | 'user' | 'system';
+  senderId: MuseAgentId | 'user' | 'system' | 'chairman';
   senderName: string;
   roleBadge: string;
   content: string;
@@ -1069,7 +1311,13 @@ function postIncidentChannelMessage(params: {
     senderId: params.senderId,
     senderName: params.senderName,
     senderAvatarUrl: senderAgent?.avatarUrl,
-    senderColor: senderAgent?.accentColor || (params.senderId === 'system' ? '#F59E0B' : undefined),
+    senderColor:
+      senderAgent?.accentColor ||
+      (params.senderId === 'chairman'
+        ? '#D97706'
+        : params.senderId === 'system'
+        ? '#F59E0B'
+        : undefined),
     targetAgentIds: params.targetAgentIds,
     messageKind: 'incident',
     attachments: params.attachments,
@@ -1124,18 +1372,20 @@ function classifyIncidentCategory(params: {
 
 function inferAgentFromCategory(category: IncidentCategory, task?: CommandTask, qaReport?: QaInspectionReport, scene?: CommandMemoryScene): MuseAgentId {
   if (category === 'wrong_costume') return 'muse-03';
-  if (category === 'ai_output_format_error' && task?.assignedAgentId) {
-    return task.assignedAgentId;
+  const taskMuseId: MuseAgentId | undefined =
+    task?.assignedAgentId && task.assignedAgentId !== 'chairman' ? task.assignedAgentId : undefined;
+  if (category === 'ai_output_format_error' && taskMuseId) {
+    return taskMuseId;
   }
   if (task && ['plan_production', 'analyze_script', 'assemble_final_film', 'qa_inspect_scene', 'qa_inspect_image'].includes(task.type)) {
-    return task.assignedAgentId;
+    return taskMuseId || 'muse-01';
   }
   if (qaReport?.targetFixAgentId) return qaReport.targetFixAgentId;
-  if (task?.assignedAgentId && PRODUCTION_AGENT_IDS.includes(task.assignedAgentId)) return task.assignedAgentId;
+  if (taskMuseId && PRODUCTION_AGENT_IDS.includes(taskMuseId)) return taskMuseId;
   if (scene?.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(scene.assignedProducerAgentId)) {
     return scene.assignedProducerAgentId;
   }
-  if (task?.assignedAgentId) return task.assignedAgentId;
+  if (taskMuseId) return taskMuseId;
   if (category === 'wrong_character' || category === 'wrong_setting') {
     return 'muse-03';
   }
@@ -1314,21 +1564,21 @@ async function generateQuickDirectorDialogPair(params: {
   scene?: CommandMemoryScene;
   mem: ProjectMemory;
 }): Promise<{ directorQuestion: string; responsibleExplanation: string; directorAnalysis: string }> {
+  const chairmanName = getChairmanDisplayName();
   const scLabel = params.scene
     ? `Cảnh ${String(params.scene.index).padStart(2, '0')} "${params.scene.title}"`
     : params.inc.taskId || 'Nhiệm vụ sản xuất';
   const cm = params.inc.costumeMismatch;
   const fallbackQuestion = cm
-    ? `${params.responsible.name}, kiểm tra ngay sai lệch trang phục nhân vật "${cm.characterName}" (ID: ${cm.characterId}) tại ${scLabel}! Trang phục chuẩn bắt buộc: "${cm.expectedCostume}". Điểm không khớp: ${cm.mismatchDetails}. Giải trình tại sao prompt/khung hình bị lệch khỏi ảnh tham chiếu gốc?`
-    : `${params.responsible.name}, kiểm tra gấp ${scLabel} (${params.inc.timestampRange || 'toàn cảnh'}). Báo cáo ghi nhận "${params.inc.categoryLabel}": ${params.inc.errorDescription}. Giải trình nguyên nhân sai lệch so với Project Memory v${params.mem.version} (nhân vật: ${params.mem.characters.map((c) => c.name).join(', ') || 'theo kịch bản'}).`;
+    ? `[${chairmanName} → ${params.responsible.name}] Kiểm tra ngay sai lệch trang phục nhân vật "${cm.characterName}" (ID: ${cm.characterId}) tại ${scLabel}! Trang phục chuẩn bắt buộc: "${cm.expectedCostume}". Điểm không khớp: ${cm.mismatchDetails}. Giải trình rõ lỗi phát sinh từ prompt, ảnh tham chiếu, hồ sơ nhân vật hay quá trình render?`
+    : `[${chairmanName} → ${params.responsible.name}] Kiểm tra gấp ${scLabel} (${params.inc.timestampRange || 'toàn cảnh'}). Báo cáo ghi nhận "${params.inc.categoryLabel}": ${params.inc.errorDescription}. Giải trình nguyên nhân sai lệch so với Project Memory v${params.mem.version}.`;
   const fallbackExplanation = cm
-    ? `Đã đối chiếu ảnh lỗi với ảnh tham chiếu gốc của "${cm.characterName}" (${cm.characterId}): quá trình sinh hình ảnh/prompt đã bị trôi trang phục (${cm.observedCostume || 'sai chi tiết so với bản gốc'}). Cần khôi phục nguyên bản từ hồ sơ gốc.`
-    : `Đã đối chiếu dữ liệu gốc ${scLabel}: nguyên nhân dự kiến do ${params.inc.suspectedRootCause || 'prompt/ràng buộc tham chiếu chưa khóa chặt theo đúng phân vai và mốc thời gian kịch bản'}.`;
+    ? `${params.responsible.name} báo cáo ${chairmanName}: đã đối chiếu ảnh lỗi với ảnh tham chiếu gốc của "${cm.characterName}" (${cm.characterId}) — quá trình sinh hình ảnh/prompt đã bị trôi trang phục (${cm.observedCostume || 'sai chi tiết so với bản gốc'}). Sẵn sàng nhận lệnh khôi phục và tạo lại.`
+    : `${params.responsible.name} báo cáo ${chairmanName}: đã rà soát dữ liệu ${scLabel}, nguyên nhân do ${params.inc.suspectedRootCause || 'prompt/ràng buộc tham chiếu chưa khóa chặt theo đúng hồ sơ nhân vật và timeline kịch bản'}.`;
   const fallbackAnalysis = cm
-    ? `Sai lệch trang phục khi khóa tham chiếu đang TẮT (${cm.characterName} - ${cm.characterId}): ${cm.mismatchDetails}. Phương án bắt buộc: Giao Muse AI 03 khôi phục 100% trang phục theo ảnh tham chiếu gốc, làm sạch prompt nguồn, tạo lại đúng ảnh lỗi rồi gửi Muse AI 05 kiểm định độc lập trước khi quay lại video.`
-    : `Nguyên nhân gốc: ${params.inc.suspectedRootCause}. Phương án xử lý: ${params.ruleDirective}`;
+    ? `Chẩn đoán của ${chairmanName}: Sai lệch thuộc về dữ liệu khóa trang phục/prompt khi khóa cứng đang bật (${cm.characterName}). Chỉ đạo: giao ${params.responsible.name} khôi phục nguyên bản từ ảnh tham chiếu gốc, tạo lại đúng phần lỗi rồi gửi Muse AI 05 kiểm định lại.`
+    : `Chẩn đoán của ${chairmanName}: ${params.inc.suspectedRootCause}. Phương án xử lý: ${params.ruleDirective}`;
 
-  // Fast non-blocking AI synthesis (8s cap) so Director always speaks smartly without stalling on offline APIs
   if (params.inc.category === 'muse_disconnected') {
     return {
       directorQuestion: fallbackQuestion,
@@ -1339,44 +1589,48 @@ async function generateQuickDirectorDialogPair(params: {
 
   try {
     const health = await refreshIntegrationHealth(false);
-    const hasEngine = health.geminiConfigured || (health.muse2ApiReachable && health.healthyAccounts > 0);
-    if (!hasEngine) {
-      return {
-        directorQuestion: fallbackQuestion,
-        responsibleExplanation: fallbackExplanation,
-        directorAnalysis: fallbackAnalysis,
-      };
-    }
-
-    const cmContext = cm
-      ? `\nCHI TIẾT SAI TRANG PHỤC: Nhân vật "${cm.characterName}" (${cm.characterId}) · Trang phục chuẩn: "${cm.expectedCostume}" · Điểm sai lệch: "${cm.mismatchDetails}" · AI tạo lỗi: ${cm.responsibleAgentId}.`
-      : '';
-
-    const res = await Promise.race([
-      runAgentJsonInference({
-        agent: params.director,
-        systemPrompt: `Bạn là ${params.director.name} (Đạo diễn tổng) đang trực tiếp trao đổi với ${params.responsible.name} (${params.responsible.roleTitle}) về sự cố sản xuất phim.
-Trả về DUY NHẤT JSON ngắn gọn bằng tiếng Việt:
-{
-  "directorQuestion": "Câu hỏi trực tiếp sắc bén của Đạo diễn tổng yêu cầu Muse gây lỗi giải trình (1-2 câu)",
-  "responsibleExplanation": "Lời giải trình ngắn gọn thực tế của ${params.responsible.name} sau khi kiểm tra lại prompt/dữ liệu (1-2 câu)",
-  "directorAnalysis": "Phân tích nguyên nhân gốc & phương án khắc phục cụ thể (1-2 câu)"
-}`,
-        userPrompt: `Sự cố ${params.inc.code} [${params.inc.categoryLabel}] tại ${scLabel} (mốc ${params.inc.timestampRange || '0s'}).
-Mô tả lỗi: ${params.inc.errorDescription}${cmContext}
+    if (health.geminiConfigured) {
+      const ai = getGeminiClient();
+      const cmContext = cm
+        ? `\nCHI TIẾT SAI TRANG PHỤC: Nhân vật "${cm.characterName}" (${cm.characterId}) · Trang phục chuẩn: "${cm.expectedCostume}" · Điểm sai lệch: "${cm.mismatchDetails}" · AI tạo lỗi: ${cm.responsibleAgentId}.`
+        : '';
+      const resp = await Promise.race([
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: `Sự cố ${params.inc.code} [${params.inc.categoryLabel}] tại ${scLabel} (mốc ${params.inc.timestampRange || '0s'}).
+Mô tả lỗi từ Muse AI 05 / hệ thống: ${params.inc.errorDescription}${cmContext}
 Dữ liệu tham chiếu: ${params.inc.referenceDataSummary}
 Quy tắc xử lý gợi ý: ${params.ruleDirective}`,
-      }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8500)),
-    ]);
-
-    if (res && (res as any).parsed) {
-      const p = (res as any).parsed;
-      return {
-        directorQuestion: String(p.directorQuestion || fallbackQuestion).trim(),
-        responsibleExplanation: String(p.responsibleExplanation || fallbackExplanation).trim(),
-        directorAnalysis: String(p.directorAnalysis || fallbackAnalysis).trim(),
-      };
+          config: {
+            systemInstruction: `Bạn là ${chairmanName} — Chủ tịch & Tổng chỉ huy toàn bộ đội ngũ 5 Muse AI (Muse Director + Muse 02/03/04 trực tiếp sản xuất hình ảnh/video; Muse 05 kiểm định độc lập).
+Bạn đang trực tiếp chất vấn ${params.responsible.name} (${params.responsible.roleTitle}) về lỗi vừa phát hiện.
+Xác định rõ lỗi thuộc về: prompt, ảnh tham chiếu, dữ liệu nhân vật hay quá trình tạo video.
+Trả về JSON ngắn gọn bằng tiếng Việt.`,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                directorQuestion: { type: Type.STRING },
+                responsibleExplanation: { type: Type.STRING },
+                directorAnalysis: { type: Type.STRING },
+              },
+              required: ['directorQuestion', 'responsibleExplanation', 'directorAnalysis'],
+            },
+          },
+        }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 9500)),
+      ]);
+      const rawText = (resp as any)?.text ? String((resp as any).text).trim() : '';
+      if (rawText) {
+        const p = parseAiBlueprintJsonSafe(rawText);
+        if (p) {
+          return {
+            directorQuestion: String(p.directorQuestion || fallbackQuestion).trim(),
+            responsibleExplanation: String(p.responsibleExplanation || fallbackExplanation).trim(),
+            directorAnalysis: String(p.directorAnalysis || fallbackAnalysis).trim(),
+          };
+        }
+      }
     }
   } catch {
     // Fallback immediately if AI inference throws during incident triage
@@ -1395,7 +1649,7 @@ function resolveIncidentRecord(
   summary: string
 ): void {
   if (inc.status === 'resolved') return;
-  const director = storeDoc.agents.find((a) => a.id === 'muse-01') || storeDoc.agents[0];
+  const chairmanName = getChairmanDisplayName();
   inc.status = 'resolved';
   inc.resolvedAt = Date.now();
   inc.resolutionSummary = summary;
@@ -1403,41 +1657,44 @@ function resolveIncidentRecord(
   appendIncidentTurn(inc, {
     actorId: resolverAgent.id,
     actorName: `${resolverAgent.name} (${resolverAgent.roleTitle})`,
-    roleBadge: 'Kiểm duyệt',
+    roleBadge: 'Kiểm định · ĐẠT',
     kind: 'qa_review',
     content: summary,
   });
   appendIncidentTurn(inc, {
-    actorId: director.id,
-    actorName: `${director.name} (Đạo diễn tổng)`,
-    roleBadge: 'Đóng sự cố',
+    actorId: 'chairman',
+    actorName: chairmanName,
+    roleBadge: 'Chủ tịch đóng sự cố',
     kind: 'resolution',
-    content: `Xác nhận kết quả sửa chữa đạt yêu cầu. Đóng sự cố ${inc.code}, giữ nguyên toàn bộ các phân cảnh đã duyệt và tiếp tục dây chuyền sản xuất.`,
+    content: `Đã nhận xác nhận kiểm định đạt yêu cầu từ ${resolverAgent.name}. Chính thức đóng sự cố ${inc.code}, giữ nguyên các phân cảnh đạt chuẩn và tiếp tục dây chuyền sản xuất.`,
   });
 
   postIncidentChannelMessage({
     inc,
     senderId: resolverAgent.id,
     senderName: `${resolverAgent.name} (${resolverAgent.roleTitle})`,
-    roleBadge: 'Kiểm duyệt · ĐẠT',
-    targetAgentIds: ['muse-01'],
-    content: `[${inc.code}] ${summary}`,
+    roleBadge: 'Kiểm định · ĐẠT',
+    targetAgentIds: [inc.assignedFixAgentId],
+    content: `[${inc.code} → ${chairmanName}] ${summary}`,
   });
   postIncidentChannelMessage({
     inc,
-    senderId: director.id,
-    senderName: `${director.name} (Đạo diễn tổng)`,
+    senderId: 'chairman',
+    senderName: `${chairmanName} – Tổng chỉ huy`,
     roleBadge: 'Đóng sự cố',
-    content: `[${inc.code}] Đã nghiệm thu kết quả sửa lỗi và đóng sự cố. Không làm gián đoạn các cảnh khác.`,
+    targetAgentIds: [inc.assignedFixAgentId, resolverAgent.id],
+    content: `[ĐÃ KHẮC PHỤC ${inc.code}] ${summary} — Chính thức đóng sự cố và tiếp tục sản xuất.`,
   });
-  postAiBusMessage({
-    fromAgent: director,
-    toAgentIds: [inc.assignedFixAgentId, 'muse-05'],
+  appendProjectCoordinationLog(inc.runId, {
+    actorId: 'chairman',
+    actorName: chairmanName,
+    targetAgentIds: [inc.assignedFixAgentId, resolverAgent.id],
+    kind: 'remediation',
     runId: inc.runId,
-    projectId: inc.projectId,
     taskId: inc.taskId,
     sceneId: inc.sceneId,
-    content: `[DIRECTOR→RESOLVED ${inc.code}] Đã kiểm định đạt và đóng sự cố.`,
+    incidentId: inc.id,
+    summary: `Đóng sự cố ${inc.code} sau xác nhận của ${resolverAgent.name}: ${summary}`,
   });
 
   // Clear escalated error on run if no remaining unresolved escalated incidents exist
@@ -1618,17 +1875,18 @@ async function openOrAdvanceDirectorIncident(params: {
     inc.taskId = params.task?.id || inc.taskId;
   }
 
-  // 1. Report to Muse AI 01 (Urgent)
+  // 1. Report directly to Gemini AI – Chairman & Supreme Commander (Urgent)
+  const chairmanName = getChairmanDisplayName();
   const cm = inc.costumeMismatch;
   const reportText = cm
-    ? `[Báo cáo sai trang phục khẩn → Muse AI 01] ${inc.code} · ${scNum}
+    ? `[Báo cáo sai trang phục khẩn → ${chairmanName}] ${inc.code} · ${scNum}
 • Nhân vật: ${cm.characterName} (ID: ${cm.characterId})
 • Dự án / Phiên / Cảnh: ${cm.projectId} · ${cm.runId} · ${cm.sceneId ? `Cảnh ${cm.sceneIndex} (${cm.sceneId})` : 'Ảnh tham chiếu nhân vật'}
 • AI tạo lỗi: ${storeDoc.agents.find((a) => a.id === cm.responsibleAgentId)?.name || cm.responsibleAgentId}
 • Trang phục gốc chuẩn: ${cm.expectedCostume}
 • Điểm sai lệch cụ thể: ${cm.mismatchDetails}
 • Đề xuất bắt buộc: ${cm.restoreRecommendation}`
-    : `[Báo cáo khẩn → Muse AI 01] ${inc.code} · ${scNum}${tsRange ? ` (${tsRange})` : ''}
+    : `[Báo cáo khẩn → ${chairmanName}] ${inc.code} · ${scNum}${tsRange ? ` (${tsRange})` : ''}
 • Muse phát hiện: ${reporter.name} | Phụ trách: ${responsible.name} | Loại: ${inc.categoryLabel}
 • Lỗi cụ thể: ${inc.errorDescription}
 • Nguyên nhân dự kiến: ${inc.suspectedRootCause}
@@ -1645,16 +1903,27 @@ async function openOrAdvanceDirectorIncident(params: {
   postIncidentChannelMessage({
     inc,
     senderId: reporter.id,
-    senderName: `${reporter.name} – Báo cáo lỗi`,
+    senderName: `${reporter.name} – Báo cáo → ${chairmanName}`,
     roleBadge: cm ? 'Sai trang phục' : 'Báo cáo lỗi',
-    targetAgentIds: ['muse-01'],
+    targetAgentIds: [responsible.id],
     attachments: artifacts.slice(0, 3),
     content: cm
       ? `${scNum} — Nhân vật ${cm.characterName} (${cm.characterId}): ${cm.mismatchDetails}\n• Chuẩn gốc: ${cm.expectedCostume}\n• Khôi phục: ${cm.restoreRecommendation}`
       : `${scNum}: ${inc.errorDescription}\n(Task: ${params.task?.code || inc.taskId || 'N/A'} · Mức độ: ${severity.toUpperCase()})`,
   });
+  appendProjectCoordinationLog(params.runId, {
+    actorId: reporter.id,
+    actorName: reporter.name,
+    targetAgentIds: [responsible.id],
+    kind: 'incident',
+    runId: params.runId,
+    taskId: params.task?.id,
+    sceneId: params.scene?.sceneId,
+    incidentId: inc.id,
+    summary: `Báo cáo sự cố ${inc.code} tới ${chairmanName}: ${inc.errorDescription}`,
+  });
 
-  // 2. Muse AI 01 directly investigates & dialogues with Responsible Muse
+  // 2. Gemini AI – Chairman directly investigates & interrogates Responsible Muse
   inc.status = 'investigating';
   const dialog = await generateQuickDirectorDialogPair({
     inc,
@@ -1668,9 +1937,9 @@ async function openOrAdvanceDirectorIncident(params: {
   inc.analyzedRootCause = dialog.directorAnalysis;
 
   appendIncidentTurn(inc, {
-    actorId: director.id,
-    actorName: `${director.name} (Đạo diễn tổng)`,
-    roleBadge: 'Điều hành',
+    actorId: 'chairman',
+    actorName: chairmanName,
+    roleBadge: 'Chủ tịch chất vấn',
     kind: 'question',
     content: dialog.directorQuestion,
   });
@@ -1682,20 +1951,11 @@ async function openOrAdvanceDirectorIncident(params: {
     content: dialog.responsibleExplanation,
   });
 
-  postAiBusMessage({
-    fromAgent: director,
-    toAgentIds: [responsible.id],
-    runId: params.runId,
-    projectId: mem.projectId,
-    taskId: params.task?.id,
-    sceneId: params.scene?.sceneId,
-    content: `[DIRECTOR→${responsible.code} ${inc.code}] ${dialog.directorQuestion}`,
-  });
   postIncidentChannelMessage({
     inc,
-    senderId: director.id,
-    senderName: `${director.name} – Điều hành`,
-    roleBadge: 'Điều hành',
+    senderId: 'chairman',
+    senderName: `${chairmanName} – Tổng chỉ huy`,
+    roleBadge: 'Chủ tịch chỉ đạo',
     targetAgentIds: [responsible.id],
     content: dialog.directorQuestion,
   });
@@ -1704,8 +1964,25 @@ async function openOrAdvanceDirectorIncident(params: {
     senderId: responsible.id,
     senderName: `${responsible.name} – Giải trình`,
     roleBadge: 'Giải trình',
-    targetAgentIds: ['muse-01'],
+    targetAgentIds: [responsible.id],
     content: dialog.responsibleExplanation,
+  });
+  appendConversationMessage({
+    channel: responsible.id,
+    projectId: mem.projectId,
+    runId: params.runId,
+    sessionId: params.runId,
+    sceneId: params.scene?.sceneId,
+    taskId: params.task?.id,
+    incidentId: inc.id,
+    senderType: 'agent',
+    senderId: 'chairman',
+    senderName: chairmanName,
+    senderColor: '#D97706',
+    roleBadge: `Chất vấn ${inc.code}`,
+    targetAgentIds: [responsible.id],
+    messageKind: 'incident',
+    content: dialog.directorQuestion,
   });
 
   // 3. Check autonomy scope & retry limit
@@ -1789,6 +2066,9 @@ async function openOrAdvanceDirectorIncident(params: {
     });
     saveStateAtomic();
     emitCommandCenterEvent('incident:updated', inc);
+    if (storeDoc.chairmanConfig?.enabled && storeDoc.chairmanConfig?.autoInterveneOnIncident) {
+      void triggerChairmanAutoBriefing(inc.id);
+    }
     return { incident: inc, autonomousFixQueued: false, escalated: true };
   }
 
@@ -2708,15 +2988,20 @@ async function runAgentJsonInference(params: {
 async function executePlanProductionTask(task: CommandTask, agent: MuseAgentConfig): Promise<void> {
   const mem = getRunMemory(task.runId);
   throwIfRunStopped(task.runId);
-  const sys = `Bạn là ${agent.name} (${agent.roleTitle}) — Tổng đạo diễn kiêm Phân tích kịch bản trong Phòng Điều Hành AI Muse.
-Nhiệm vụ: Nhận kịch bản/lệnh của đạo diễn, lập kế hoạch sản xuất đa nhiệm không nghẽn cổ chai cho đội 5 AI (Muse 01 Tổng đạo diễn & Phân tích kịch bản, Muse 02/03/04 Thiết kế Hình ảnh & Sản xuất Video nối tiếp tự động từng cảnh, Muse 05 QA độc lập).
-Hãy trả về đúng JSON hợp lệ (không markdown) với cấu trúc:
+  const chairmanName = getChairmanDisplayName();
+  const isChairmanTask = task.assignedAgentId === 'chairman';
+  const sys = `Bạn là ${chairmanName} — Chủ tịch & Tổng chỉ huy toàn bộ hệ thống 5 Muse AI.
+Cơ cấu đội ngũ thực tế:
+- Chủ tịch & Tổng chỉ huy (Bạn - Gemini AI): phân tích kịch bản, khóa Project Memory, giao nhiệm vụ và giám sát sự cố.
+- Bộ phận sản xuất Hình ảnh & Video (4 nhân viên chạy song song độc lập): Muse Director (Muse AI 01), Muse Producer 02 (Muse AI 02), Muse Producer 03 (Muse AI 03), Muse Producer 04 (Muse AI 04). Mỗi Muse tự làm trọn ảnh phân cảnh -> nối tiếp tạo video phân cảnh đó mà không phải chờ Muse khác.
+- Kiểm định độc lập: Muse Guardian (Muse AI 05) — kiểm duyệt khóa nhân vật (ngưỡng <= 5% sau loại trừ phụ kiện được phép) và báo lỗi trực tiếp về Chủ tịch.
+Trả về đúng JSON hợp lệ (không markdown) với cấu trúc:
 {
   "projectTitle": "Tên phim ngắn gọn",
-  "productionStrategyVi": "Tóm tắt kế hoạch phân công đa nhiệm song song vs nối tiếp cho cả đội (3-5 câu tiếng Việt)",
+  "productionStrategyVi": "Tóm tắt kế hoạch phân công đa nhiệm cho 4 Muse sản xuất (Muse 01–04) và kiểm định Muse 05 (3-5 câu tiếng Việt)",
   "estimatedScenes": 4,
-  "parallelGroupsNote": "Giải thích nhóm phân cảnh nào có thể chạy song song và cảnh nào phải nối tiếp giữ nhân vật/bối cảnh",
-  "continuityLockNotes": "Quy tắc đồng bộ nhân vật, trang phục, bối cảnh cốt lõi cần khóa vào Project Memory"
+  "parallelGroupsNote": "Giải thích nhóm phân cảnh nào chạy song song và cảnh nào nối tiếp giữ nhân vật/bối cảnh",
+  "continuityLockNotes": "Quy tắc khóa cứng nhân vật (mặt, tóc, vóc dáng, trang phục chính) & phụ kiện được phép cần khóa vào Project Memory"
 }`;
 
   const allowFree = mem.allowFreeCostumeChange === true;
@@ -2727,23 +3012,49 @@ Thông số dự án:
 - Hình thức: ${mem.productionFormat === 'dialogue_film' ? 'Phim có lời thoại (đồng bộ nhân vật + khẩu hình)' : 'Phim thuyết minh kể chuyện'}
 - Khung hình: ${mem.aspectRatio}
 - Phong cách: ${mem.videoStyle}
-- Khóa trang phục nhân vật tham chiếu: ${allowFree ? 'BẬT (cho phép đổi trang phục theo cảnh, vẫn khóa gương mặt/vóc dáng)' : 'TẮT (KHÓA TUYỆT ĐỐI ngoại hình VÀ trang phục theo ảnh/hồ sơ tham chiếu)'}`;
+- Khóa trang phục nhân vật tham chiếu: ${allowFree ? 'BẬT (cho phép đổi trang phục chính theo cảnh, vẫn khóa gương mặt/tóc/vóc dáng)' : `TẮT (KHÓA CỨNG ngoại hình & trang phục chính; chỉ cho phép bổ sung phụ kiện độc lập: ${ALLOWED_ACCESSORIES_LIST_VI})`}`;
 
-  const res = await runAgentJsonInference({
-    agent,
-    systemPrompt: sys,
-    userPrompt: user,
-  });
+  let parsed: any = {};
+  let rawText = '';
+  let usedProvider = 'gemini';
+  let usedAccount = 'Gemini API (Chủ tịch)';
+
+  if (isChairmanTask) {
+    const ai = getGeminiClient();
+    const resp = await retryWithGeminiBackoff(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: user,
+          config: {
+            systemInstruction: sys,
+            responseMimeType: 'application/json',
+          },
+        }),
+      [1500, 3200]
+    );
+    rawText = (resp.text || '').trim();
+    parsed = parseAiBlueprintJsonSafe(rawText) || {};
+  } else {
+    const res = await runAgentJsonInference({
+      agent,
+      systemPrompt: sys,
+      userPrompt: user,
+    });
+    parsed = res.parsed || {};
+    rawText = res.rawText;
+    usedProvider = res.provider;
+    usedAccount = res.accountUsed || '';
+  }
 
   throwIfRunStopped(task.runId);
 
-  const parsed = res.parsed || {};
   const projectTitle = String(parsed.projectTitle || mem.title || 'Dự án phim AI Muse').trim();
-  const strategy = String(parsed.productionStrategyVi || res.rawText.slice(0, 500)).trim();
+  const strategy = String(parsed.productionStrategyVi || rawText.slice(0, 500)).trim();
   const continuityLock = String(parsed.continuityLockNotes || '').trim();
   const estScenes = Math.max(2, Math.min(10, Number(parsed.estimatedScenes) || 4));
 
-  const newMemVer = commitSessionMemoryUpdate(task.runId, agent.id, 'Tổng đạo diễn lập kế hoạch sản xuất', (m) => {
+  const newMemVer = commitSessionMemoryUpdate(task.runId, 'chairman', `${chairmanName} lập kế hoạch sản xuất`, (m) => {
     m.title = projectTitle;
     if (continuityLock) m.continuityBible = continuityLock;
     m.timelineSummary = strategy;
@@ -2756,16 +3067,16 @@ Thông số dự án:
     run.updatedAt = Date.now();
   }
 
-  task.executedByProvider = res.provider;
-  task.boundAccountUsed = res.accountUsed;
+  task.executedByProvider = usedProvider;
+  task.boundAccountUsed = usedAccount;
   task.outputText = strategy;
 
   const analyzeTask = enqueueTask({
     runId: task.runId,
     type: 'analyze_script',
-    title: `Tổng đạo diễn phân tích kịch bản & bóc tách ${estScenes} phân cảnh`,
-    instructions: `Trực tiếp phân tích kịch bản "${projectTitle}" (${estScenes} phân cảnh), tách nhân vật 5 thành phần, giọng nói theo độ tuổi, timeline từng giây và phân công song song cho Muse AI 02, 03, 04.`,
-    assignedAgentId: 'muse-01',
+    title: `${chairmanName} phân tích kịch bản & chia ${estScenes} phân cảnh cho 4 Muse sản xuất`,
+    instructions: `Trực tiếp phân tích kịch bản "${projectTitle}" (${estScenes} phân cảnh), khóa hồ sơ nhân vật 5 thành phần, lời thoại, timeline và giao song song cho Muse AI 01, 02, 03, 04.`,
+    assignedAgentId: 'chairman',
     dependsOnTaskIds: [task.id],
     priority: 9,
   });
@@ -2774,22 +3085,26 @@ Thông số dự án:
     channel: 'commander',
     projectId: mem.projectId,
     runId: task.runId,
+    sessionId: task.runId,
     senderType: 'agent',
-    senderId: agent.id,
-    senderName: `${agent.name} (${agent.roleTitle})`,
-    targetAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
+    senderId: 'chairman',
+    senderName: chairmanName,
+    senderColor: '#D97706',
+    roleBadge: 'Kế hoạch Chủ tịch',
+    targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
     taskId: task.id,
     messageKind: 'deliverable',
-    content: `Đã lập kế hoạch sản xuất đa nhiệm "${projectTitle}" (~${estScenes} phân cảnh).\n• Chiến lược: ${strategy}\n• Đã khóa Project Memory v${newMemVer} và bắt đầu trực tiếp bước bóc tách kịch bản & phân vai cho đội Muse AI 02, 03, 04.`,
+    content: `Đã lập kế hoạch sản xuất "${projectTitle}" (~${estScenes} phân cảnh).\n• Chiến lược: ${strategy}\n• Đã khóa Project Memory v${newMemVer} và bắt đầu bóc tách phân cảnh giao cho 4 nhân viên sản xuất (Muse AI 01, 02, 03, 04) + kiểm định độc lập Muse AI 05.`,
   });
 
-  postAiBusMessage({
-    fromAgent: agent,
-    toAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
+  appendProjectCoordinationLog(task.runId, {
+    actorId: 'chairman',
+    actorName: chairmanName,
+    targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+    kind: 'directive',
     runId: task.runId,
-    projectId: mem.projectId,
-    taskId: analyzeTask.id,
-    content: `[ACK ${analyzeTask.code}] Khóa Memory v${newMemVer} cho "${projectTitle}". ${agent.name} đang bóc tách ~${estScenes} phân cảnh để phân phối thẳng sang Muse 02, 03, 04.`,
+    taskId: task.id,
+    summary: `Lập kế hoạch sản xuất "${projectTitle}" (~${estScenes} cảnh), khóa Project Memory v${newMemVer}.`,
   });
 }
 
@@ -2973,11 +3288,12 @@ Lưu ý:
     };
   });
 
-  // Director (Muse AI 01) validates & locks Project Memory version
+  // Gemini AI – Chairman validates & locks Project Memory version
+  const chairmanName = getChairmanDisplayName();
   const newVer = commitSessionMemoryUpdate(
     task.runId,
-    'muse-01',
-    `Khóa kịch bản từ ${agent.name} (${normalizedScenes.length} cảnh, ${normalizedChars.length} nhân vật)`,
+    'chairman',
+    `${chairmanName} khóa kịch bản (${normalizedScenes.length} cảnh, ${normalizedChars.length} nhân vật)`,
     (m) => {
       if (parsed.projectTitle && (!m.title || m.title === 'Dự án sản xuất mới')) {
         m.title = String(parsed.projectTitle).trim();
@@ -3000,9 +3316,9 @@ Lưu ý:
 
   task.executedByProvider = res.provider;
   task.boundAccountUsed = res.accountUsed;
-  task.outputText = `Muse AI 01 đã trực tiếp bóc tách ${normalizedChars.length} nhân vật (5 thành phần) và ${normalizedScenes.length} phân cảnh. Khóa Project Memory v${newVer}.`;
+  task.outputText = `${chairmanName} đã bóc tách ${normalizedChars.length} nhân vật (5 thành phần) và ${normalizedScenes.length} phân cảnh, khóa Project Memory v${newVer} và phân công cho 4 Muse sản xuất (Muse AI 01–04).`;
 
-  // Character Reference Sheet Tasks (ONLY for characters lacking confirmed ref images, distributed across Muse 02, 03, 04)
+  // Character Reference Sheet Tasks (ONLY for characters lacking confirmed ref images, distributed across Muse 01, 02, 03, 04)
   const charTaskIds: string[] = [];
   const charQaDeps: string[] = [];
   const charsToGenerate = normalizedChars.slice(0, 4);
@@ -3028,8 +3344,8 @@ Lưu ý:
       const charQa = enqueueTask({
         runId: task.runId,
         type: 'qa_inspect_image',
-        title: `Kiểm tra trang phục ảnh nhân vật: ${ch.name}`,
-        instructions: `Đối chiếu ảnh nhân vật ${ch.name} với hồ sơ trang phục gốc "${getCharacterCanonicalCostume(ch)}" trước khi tạo keyframe phân cảnh.`,
+        title: `Kiểm tra đồng nhất ảnh nhân vật: ${ch.name}`,
+        instructions: `Đối chiếu ảnh nhân vật ${ch.name} với hồ sơ gốc "${getCharacterCanonicalCostume(ch)}" theo ngưỡng 5% trước khi tạo keyframe phân cảnh.`,
         assignedAgentId: 'muse-05',
         dependsOnTaskIds: [ct.id],
         characterId: ch.id,
@@ -3039,9 +3355,7 @@ Lưu ý:
     }
   }
 
-  // Non-blocking Per-Scene Multitasking Pipeline:
-  // Each scene is assigned to ONE producer (Muse 02 / 03 / 04) who creates Stage 2 (keyframe image)
-  // and immediately continues to Stage 3 (scene video) without waiting for other scenes or another AI.
+  // Non-blocking Per-Scene Multitasking Pipeline across ALL 4 production Muses (Muse Director 01, Muse 02, 03, 04):
   const sceneVideoTaskBySceneId = new Map<string, string>();
   const qaTaskIds: string[] = [];
   const sceneImgDeps = !allowFree && charQaDeps.length > 0 ? charQaDeps : charTaskIds.length > 0 ? charTaskIds : [task.id];
@@ -3084,8 +3398,8 @@ Lưu ý:
     const qaTask = enqueueTask({
       runId: task.runId,
       type: 'qa_inspect_scene',
-      title: `Kiểm định 8 tiêu chí Cảnh ${sc.index}: "${sc.title}"`,
-      instructions: `Đối chiếu Cảnh ${sc.index} với Project Memory v${newVer} và các cảnh lân cận.`,
+      title: `Kiểm định 8 tiêu chí & ngưỡng 5% Cảnh ${sc.index}: "${sc.title}"`,
+      instructions: `Đối chiếu Cảnh ${sc.index} với ảnh tham chiếu & Project Memory v${newVer} (tách phụ kiện được phép, kiểm tra ngưỡng <= 5%).`,
       assignedAgentId: 'muse-05',
       dependsOnTaskIds: [vidTask.id],
       sceneId: sc.sceneId,
@@ -3099,10 +3413,20 @@ Lưu ý:
     runId: task.runId,
     type: 'assemble_final_film',
     title: `Ghép xuất phim hoàn chỉnh (${normalizedScenes.length} phân cảnh)`,
-    instructions: `Tổng hợp toàn bộ phân cảnh đã đạt QA thành video MP4 hoàn chỉnh và bàn giao.`,
-    assignedAgentId: 'muse-01',
+    instructions: `Tổng hợp toàn bộ phân cảnh đã đạt kiểm định Muse AI 05 thành video MP4 hoàn chỉnh và bàn giao.`,
+    assignedAgentId: 'chairman',
     dependsOnTaskIds: qaTaskIds,
     priority: 1,
+  });
+
+  appendProjectCoordinationLog(task.runId, {
+    actorId: 'chairman',
+    actorName: chairmanName,
+    targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+    kind: 'directive',
+    runId: task.runId,
+    taskId: task.id,
+    summary: `Bóc tách xong ${normalizedScenes.length} cảnh & ${normalizedChars.length} nhân vật (Memory v${newVer}), phân công song song cho 4 Muse sản xuất (Muse AI 01–04).`,
   });
 
   appendConversationMessage({
@@ -3676,39 +4000,55 @@ async function executeQaInspectImageTask(task: CommandTask, agent: MuseAgentConf
       })
       .join('\n') || '  (Đối chiếu mô tả nhân vật & trang phục gốc)';
 
-  const sys = `Bạn là ${agent.name} (${agent.roleTitle}) — AI kiểm định độc lập trong Phòng Điều Hành AI Muse.
-Nhiệm vụ: Kiểm tra TRỰC TIẾP HÌNH ẢNH (${targetKind === 'scene_image' ? `Ảnh keyframe Cảnh ${sc?.index}` : `Ảnh nhân vật "${ch?.name}"`}) so với ảnh tham chiếu gốc & hồ sơ nhân vật gốc trong Project Memory v${mem.version}.
+  const sys = `Bạn là ${agent.name} (${agent.roleTitle}) — AI kiểm định độc lập dưới quyền Chủ tịch & Tổng chỉ huy Gemini AI.
+Nhiệm vụ: Kiểm định ĐO LƯỜNG ĐƯỢC hình ảnh (${targetKind === 'scene_image' ? `Ảnh keyframe Cảnh ${sc?.index}` : `Ảnh nhân vật "${ch?.name}"`}) so với ảnh tham chiếu gốc & hồ sơ nhân vật bất biến trong Project Memory v${mem.version}.
 ${
   refDataUrls.length > 0
-    ? `CHÚ Ý THỨ TỰ ẢNH ĐÍNH KÈM: ${refDataUrls.length} ảnh đầu là ẢNH THAM CHIẾU GỐC CHUẨN; ảnh CUỐI CÙNG là ảnh mới tạo cần kiểm tra.`
+    ? `THỨ TỰ ẢNH ĐÍNH KÈM: ${refDataUrls.length} ảnh đầu là ẢNH THAM CHIẾU GỐC CHUẨN; ảnh CUỐI CÙNG là ảnh mới tạo cần kiểm tra.`
     : 'Ảnh đính kèm là ảnh cần đối chiếu chặt chẽ với hồ sơ nhân vật gốc bên dưới.'
 }
-QUY TẮC KIỂM ĐỊNH NGHIÊM NGẶT:
-- Chế độ AI ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC đang ${allowFreeCostumeChange ? 'BẬT' : 'TẮT (KHÓA CỨNG)'}.
-- ${
-    allowFreeCostumeChange
-      ? 'Trang phục có thể linh hoạt theo cảnh nhưng mặt, tóc, vóc dáng phải khớp 100%.'
-      : 'PHẢI đánh FAIL NGAY LẬP TỨC (costumePassed: false, score < 70) nếu có BẤT KỲ sai lệch nào về trang phục (sai màu, sai kiểu áo/quần/váy, tự thêm áo khoác/mũ/kính/phụ kiện hoặc bỏ phụ kiện gốc).'
-  }
+QUY TẮC KIỂM ĐỊNH 3 LOẠI SAI LỆCH & NGƯỠNG 5% (BẮT BUỘC):
+- Chế độ cho phép đổi trang phục chính đang: ${allowFreeCostumeChange ? 'BẬT' : 'TẮT (KHÓA CỨNG)'}.
+- LOẠI A — Thay đổi phụ kiện độc lập được phép (${ALLOWED_ACCESSORIES_LIST_VI}): ĐƯỢC PHÉP thông qua (PASS_WITH_TOLERANCE) nếu KHÔNG làm biến đổi nhận dạng, khuôn mặt, vóc dáng hay cấu trúc trang phục chính.
+- LOẠI B — Sai lệch tổng thể nhỏ <= 5% SAU KHI LOẠI TRỪ phụ kiện được phép: Cho phép thông qua (PASS_WITH_TOLERANCE) CHỈ KHI không có lỗi nghiêm trọng về khuôn mặt, vóc dáng hay trang phục chính (tách riêng từng thuộc tính!).
+- LOẠI C — Sai lệch vượt giới hạn (BẮT BUỘC đánh FAIL ngay lập tức):
+  1) Sai lệch tổng thể sau loại trừ phụ kiện được phép > 5%.
+  2) Khuôn mặt / nhận dạng nhân vật bị thay đổi rõ rệt (faceDeviationPct > 5 hoặc criticalFaceError = true).
+  3) Vóc dáng / tỷ lệ cơ thể bị biến đổi đáng kể (physiqueDeviationPct > 5 hoặc criticalPhysiqueError = true).
+  4) ${allowFreeCostumeChange ? '(Chế độ đổi đồ đang BẬT)' : 'Trang phục chính bị thay đổi trái phép (mainCostumeDeviationPct > 5 hoặc criticalMainCostumeError = true).'}
+  5) Phụ kiện làm biến đổi thiết kế trang phục chính hoặc nhận dạng nhân vật (accessoryDistortsIdentityOrCostume = true).
+  LƯU Ý CHỐT KỸ THUẬT: Ngưỡng 5% là sai lệch tổng thể sau khi loại trừ phụ kiện được phép — KHÔNG phải quyền thay đổi 5% khuôn mặt hoặc trang phục chính; lỗi nghiêm trọng ở thuộc tính quan trọng PHẢI đánh FAIL kể cả khi điểm tổng thể <= 5%.
 Trả về DUY NHẤT JSON:
 {
-  "overallScore": 90,
+  "verdictStatus": "PASS | PASS_WITH_TOLERANCE | FAIL",
+  "overallScore": 96,
+  "faceSimilarityScore": 97,
+  "faceDeviationPct": 2.5,
+  "physiqueSimilarityScore": 96,
+  "physiqueDeviationPct": 2.0,
+  "mainCostumeSimilarityScore": 97,
+  "mainCostumeDeviationPct": 1.5,
+  "overallDeviationExcludingAccessoriesPct": 2.0,
+  "allowedAccessoryChanges": ["nhẫn vàng", "mũ"],
+  "criticalFaceError": false,
+  "criticalPhysiqueError": false,
+  "criticalMainCostumeError": false,
+  "accessoryDistortsIdentityOrCostume": false,
+  "environmentalContextNote": "Đánh giá ảnh hưởng của góc máy, ánh sáng, tư thế, độ che khuất",
   "characterPassed": true,
   "costumePassed": true,
-  "characterScore": 92,
-  "costumeScore": 90,
-  "summary": "Nhận xét ngắn gọn bằng tiếng Việt",
+  "summary": "Nhận xét ngắn gọn bằng tiếng Việt (nêu rõ PASS / PASS WITH TOLERANCE / FAIL và tỷ lệ sai lệch %)",
   "affectedCharacterId": "${ch?.id || 'char_1'}",
   "affectedCharacterName": "${ch?.name || 'Nhân vật chính'}",
   "expectedCostume": "${getCharacterCanonicalCostume(ch) || mem.costumeBible}",
   "observedCostume": "Mô tả trang phục thực tế thấy trong ảnh kiểm tra",
-  "mismatchDetails": "Mô tả cụ thể mọi điểm không khớp giữa ảnh kiểm tra và ảnh tham chiếu gốc (rỗng nếu khớp 100%)",
-  "fixInstruction": "Chỉ dẫn sửa nếu không đạt"
+  "mismatchDetails": "Mô tả cụ thể điểm sai lệch (rỗng nếu đạt)",
+  "fixInstruction": "Chỉ dẫn khắc phục cụ thể nếu FAIL"
 }`;
 
   const user = `THÔNG SỐ ĐỐI CHIẾU GỐC:
-- Tùy chọn cho phép đổi trang phục: ${allowFreeCostumeChange ? 'BẬT' : 'TẮT (BẮT BUỘC GIỮ NGUYÊN 100%)'}
-- Hồ sơ nhân vật gốc:\n${charChecklist}
+- Khóa trang phục chính: ${allowFreeCostumeChange ? 'BẬT (cho phép đổi theo cảnh, vẫn khóa mặt/tóc/vóc dáng)' : 'KHÓA CỨNG (chỉ loại trừ phụ kiện được phép)'}
+- Hồ sơ nhân vật gốc bất biến:\n${charChecklist}
 ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động: ${sc.actionDetail} — Trang phục chuẩn cảnh: ${sc.costume}` : `- Kiểm tra ảnh nhân vật "${ch?.name}" (${ch?.id})`}`;
 
   const res = await runAgentJsonInference({
@@ -3722,17 +4062,23 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
 
   const parsed = res.parsed || {};
   const threshold = storeDoc.cloudConfig.qaPassThreshold;
-  const charScore = Math.max(0, Math.min(100, Number(parsed.characterScore ?? parsed.overallScore ?? 85)));
-  const costumeScore = Math.max(0, Math.min(100, Number(parsed.costumeScore ?? parsed.overallScore ?? 85)));
+  const rawCharScore = Math.max(0, Math.min(100, Number(parsed.faceSimilarityScore ?? parsed.characterScore ?? parsed.overallScore ?? 92)));
+  const rawCostumeScore = Math.max(0, Math.min(100, Number(parsed.mainCostumeSimilarityScore ?? parsed.costumeScore ?? parsed.overallScore ?? 92)));
+  const consistency = evaluateMuse05CharacterConsistency({
+    parsed,
+    allowFreeCostumeChange,
+    fallbackCharScore: rawCharScore,
+    fallbackCostumeScore: rawCostumeScore,
+  });
+  const charScore = Math.round((consistency.metrics.faceSimilarityScore + consistency.metrics.physiqueSimilarityScore) / 2);
+  const costumeScore = consistency.metrics.mainCostumeSimilarityScore;
   const overallScore = Number.isFinite(Number(parsed.overallScore))
     ? Math.max(0, Math.min(100, Math.round(Number(parsed.overallScore))))
-    : Math.round((charScore + costumeScore) / 2);
-  const characterPassed = typeof parsed.characterPassed === 'boolean' ? parsed.characterPassed : charScore >= threshold;
-  const costumePassed = typeof parsed.costumePassed === 'boolean' ? parsed.costumePassed : costumeScore >= threshold;
-
-  const passed = allowFreeCostumeChange
-    ? characterPassed && overallScore >= threshold
-    : costumePassed && characterPassed && overallScore >= threshold;
+    : Math.max(0, Math.min(100, Math.round(100 - consistency.metrics.overallDeviationExcludingAccessoriesPct)));
+  const characterPassed = !consistency.characterViolated;
+  const costumePassed = allowFreeCostumeChange ? true : !consistency.costumeViolated;
+  const passed = consistency.passed && overallScore >= threshold;
+  const finalVerdict: QaVerdictStatus = passed ? consistency.verdictStatus : 'FAIL';
 
   const matchedChar = matchCharacterForScene(
     mem,
@@ -3740,7 +4086,10 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
     String(parsed.affectedCharacterId || parsed.affectedCharacterName || ch?.id || '')
   );
   const mismatchText = String(
-    parsed.mismatchDetails || parsed.summary || 'Trang phục trên ảnh chưa khớp với ảnh tham chiếu gốc.'
+    parsed.mismatchDetails ||
+      consistency.metrics.criticalViolationFlags.join('; ') ||
+      parsed.summary ||
+      'Ảnh kiểm tra vượt ngưỡng sai lệch 5% hoặc vi phạm thuộc tính nhân vật đã khóa.'
   ).trim();
   const responsibleProducerId: MuseAgentId =
     sc?.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(sc.assignedProducerAgentId)
@@ -3770,6 +4119,9 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
     checkedAt: Date.now(),
     overallScore,
     passed,
+    verdictStatus: finalVerdict,
+    deviationClass: passed ? consistency.deviationClass : 'type_c_exceeds_limit',
+    consistencyMetrics: { ...consistency.metrics, verdictStatus: finalVerdict },
     threshold,
     targetMediaKind: targetKind,
     characterId: matchedChar?.id || ch?.id,
@@ -3777,32 +4129,48 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
     criteriaResults: [
       {
         criterion: 'character',
-        label: 'Nhân vật (Gương mặt, vóc dáng, độ tuổi)',
+        label: 'Nhân vật (Khuôn mặt, tóc, vóc dáng)',
         passed: characterPassed,
         score: charScore,
-        note: String(parsed.summary || 'Đối chiếu gương mặt & tỷ lệ tham chiếu').trim(),
+        note: `Mặt ${consistency.metrics.faceSimilarityScore}/100 (lệch ${consistency.metrics.faceDeviationPct}%) · Vóc dáng ${consistency.metrics.physiqueSimilarityScore}/100 (lệch ${consistency.metrics.physiqueDeviationPct}%)`,
       },
       {
         criterion: 'costume',
-        label: 'Trang phục (Màu sắc, kiểu dáng, phụ kiện)',
+        label: 'Trang phục chính & Phụ kiện được phép',
         passed: costumePassed,
         score: costumeScore,
-        note: passed
-          ? 'Trang phục khớp 100% ảnh & hồ sơ tham chiếu gốc'
-          : mismatchText,
+        note: `Trang phục chính ${costumeScore}/100 (lệch ${consistency.metrics.mainCostumeDeviationPct}%) · Tổng sai lệch sau loại trừ phụ kiện: ${consistency.metrics.overallDeviationExcludingAccessoriesPct}%${consistency.metrics.allowedAccessoryChanges.length > 0 ? ` · Phụ kiện hợp lệ: ${consistency.metrics.allowedAccessoryChanges.join(', ')}` : ''}`,
       },
     ],
     timestampRange: sc ? `Keyframe 0s` : 'Ảnh tham chiếu',
-    summary: String(
+    summary: `[${finalVerdict.replace(/_/g, ' ')} · lệch ${consistency.metrics.overallDeviationExcludingAccessoriesPct}%] ${String(
       parsed.summary ||
         (passed
-          ? `Ảnh ${sc ? `Cảnh ${sc.index}` : matchedChar?.name || 'nhân vật'} đạt chuẩn trang phục tham chiếu gốc`
-          : `Phát hiện sai lệch trang phục trên ảnh: ${mismatchText}`)
-    ).trim(),
-    targetFixAgentId: passed ? undefined : 'muse-03',
+          ? `Ảnh ${sc ? `Cảnh ${sc.index}` : matchedChar?.name || 'nhân vật'} đạt chuẩn khóa nhân vật`
+          : `Phát hiện sai lệch vượt ngưỡng hoặc vi phạm khóa nhân vật: ${mismatchText}`)
+    ).trim()}`,
+    targetFixAgentId: passed
+      ? undefined
+      : responsibleProducerId === 'muse-01' ||
+          responsibleProducerId === 'muse-02' ||
+          responsibleProducerId === 'muse-03' ||
+          responsibleProducerId === 'muse-04'
+        ? responsibleProducerId
+        : 'muse-03',
     fixInstruction: passed ? undefined : String(parsed.fixInstruction || costumeMismatch?.restoreRecommendation || mismatchText).trim(),
     attemptNumber: (sc?.retryCount || 0) + 1,
   };
+
+  appendProjectCoordinationLog(task.runId, {
+    actorId: 'muse-05',
+    actorName: agent.name,
+    targetAgentIds: [responsibleProducerId],
+    kind: 'qa_report',
+    runId: task.runId,
+    taskId: task.id,
+    sceneId: sc?.sceneId,
+    summary: `QA Ảnh ${sc ? `Cảnh ${sc.index}` : matchedChar?.name || ''}: ${finalVerdict} (${overallScore}/100, lệch ${consistency.metrics.overallDeviationExcludingAccessoriesPct}%).`,
+  });
 
   storeDoc.qaReports.unshift(report);
   if (storeDoc.qaReports.length > 200) {
@@ -4195,45 +4563,62 @@ async function executeQaInspectSceneTask(task: CommandTask, agent: MuseAgentConf
           .join('\n')
       : '  (Kiểm tra khớp mô tả nhân vật & trang phục trong kịch bản)';
 
-  const sys = `Bạn là ${agent.name} (${agent.roleTitle}) — AI kiểm định độc lập trong Phòng Điều Hành AI Muse.
-Nhiệm vụ: Kiểm tra video đầu ra của Cảnh ${sc.index} dựa trên các khung hình trích xuất thực tế, ảnh tham chiếu nhân vật và Project Memory v${mem.version}.
-QUY TẮC KIỂM ĐỊNH ĐỒNG NHẤT NHÂN VẬT & TRANG PHỤC (BẮT BUỘC):
-1. Khuôn mặt, kiểu tóc, màu tóc phải khớp ảnh tham chiếu & hồ sơ nhân vật.
-2. Vóc dáng, chiều cao, tỷ lệ cơ thể phải đồng nhất.
-3. ${
-    allowFreeCostumeChange
-      ? 'Chế độ ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC đang BẬT — trang phục được phép đổi theo kịch bản cảnh, nhưng khuôn mặt/tóc/vóc dáng vẫn PHẢI khóa đồng nhất 100%.'
-      : 'Chế độ ĐƯỢC PHÉP TỰ DO THAY ĐỔI TRANG PHỤC đang TẮT (KHÓA CỨNG) — trang phục, màu sắc vải & phụ kiện PHẢI khớp 100% ảnh tham chiếu & Costume Reference.'
-  }
-4. ${
-    allowFreeCostumeChange
-      ? 'Không kiểm lỗi nếu nhân vật mặc trang phục hợp lý theo cảnh.'
-      : 'Cảnh báo & đánh FAIL tiêu chí "costume" (score < 70, passed: false) NGAY LẬP TỨC nếu phát hiện AI tự thêm áo khoác, đổi màu/kiểu áo quần, thêm/bớt phụ kiện trái phép — và BẮT BUỘC điền đầy đủ object "costumeMismatch".'
-  }
-5. Kiểm tra đồng nhất giữa ảnh tham chiếu nhân vật, keyframe cảnh và Cảnh trước đó (nếu có).
+  const sys = `Bạn là ${agent.name} (${agent.roleTitle}) — AI kiểm định độc lập dưới quyền Chủ tịch & Tổng chỉ huy Gemini AI.
+Nhiệm vụ: Kiểm định ĐO LƯỜNG ĐƯỢC video đầu ra của Cảnh ${sc.index} dựa trên các khung hình trích xuất thực tế, ảnh tham chiếu nhân vật gốc và Project Memory v${mem.version}.
+QUY TẮC KIỂM ĐỊNH 3 LOẠI SAI LỆCH & NGƯỠNG 5% (BẮT BUỘC):
+1. TÁCH RIÊNG CÁC THUỘC TÍNH QUAN TRỌNG:
+   - Độ tương đồng & % sai lệch khuôn mặt/nhận dạng (faceSimilarityScore, faceDeviationPct).
+   - Độ tương đồng & % sai lệch vóc dáng/tỷ lệ cơ thể (physiqueSimilarityScore, physiqueDeviationPct).
+   - Độ tương đồng & % sai lệch trang phục chính (mainCostumeSimilarityScore, mainCostumeDeviationPct).
+   - Mức sai lệch tổng thể SAU KHI LOẠI TRỪ phụ kiện độc lập được phép (overallDeviationExcludingAccessoriesPct).
+   - Xét điều kiện góc máy, ánh sáng, tư thế, độ che khuất (environmentalContextNote).
+2. PHÂN LOẠI 3 LOẠI THAY ĐỔI:
+   - LOẠI A — Phụ kiện độc lập được phép (${ALLOWED_ACCESSORIES_LIST_VI}): ĐƯỢC PHÉP thông qua (PASS_WITH_TOLERANCE) nếu KHÔNG làm biến đổi nhận dạng, ngoại hình hay cấu trúc trang phục chính.
+   - LOẠI B — Sai lệch tổng thể nhỏ <= 5% sau loại trừ phụ kiện được phép: Thông qua (PASS_WITH_TOLERANCE) CHỈ KHI không có lỗi nghiêm trọng ở khuôn mặt, vóc dáng hoặc trang phục chính.
+   - LOẠI C — Sai lệch vượt giới hạn (FAIL ngay lập tức, báo thẳng Chủ tịch Gemini AI):
+     • overallDeviationExcludingAccessoriesPct > 5%.
+     • Khuôn mặt / nhận dạng thay đổi rõ rệt (faceDeviationPct > 5 hoặc criticalFaceError = true).
+     • Vóc dáng / tỷ lệ cơ thể biến đổi đáng kể (physiqueDeviationPct > 5 hoặc criticalPhysiqueError = true).
+     • ${allowFreeCostumeChange ? '(Chế độ đổi trang phục chính đang BẬT)' : 'Trang phục chính bị thay đổi trái phép (mainCostumeDeviationPct > 5 hoặc criticalMainCostumeError = true) — bắt buộc điền object "costumeMismatch".'}
+     • Phụ kiện làm biến đổi nhận dạng hoặc thiết kế trang phục chính (accessoryDistortsIdentityOrCostume = true).
+   CHỐT KỸ THUẬT: Ngưỡng 5% KHÔNG cho phép tự ý đổi 5% khuôn mặt hoặc trang phục chính; bất kỳ lỗi nghiêm trọng nào ở thuộc tính khóa đều phải đánh FAIL kể cả khi điểm tổng thể <= 5%.
 Trả về DUY NHẤT JSON hợp lệ:
 {
-  "overallScore": 85,
+  "verdictStatus": "PASS | PASS_WITH_TOLERANCE | FAIL",
+  "overallScore": 92,
+  "faceSimilarityScore": 96,
+  "faceDeviationPct": 2.5,
+  "physiqueSimilarityScore": 96,
+  "physiqueDeviationPct": 2.0,
+  "mainCostumeSimilarityScore": 97,
+  "mainCostumeDeviationPct": 1.5,
+  "overallDeviationExcludingAccessoriesPct": 2.0,
+  "allowedAccessoryChanges": [],
+  "criticalFaceError": false,
+  "criticalPhysiqueError": false,
+  "criticalMainCostumeError": false,
+  "accessoryDistortsIdentityOrCostume": false,
+  "environmentalContextNote": "Nhận xét về góc máy, ánh sáng, tư thế, độ che khuất",
   "timestampRange": "0s-${sc.durationSec}s",
   "summary": "Nhận xét ngắn gọn kết quả kiểm định",
   "targetFixAgentId": "muse-04",
-  "fixInstruction": "Chỉ dẫn cụ thể để sửa lỗi nếu điểm < ${storeDoc.cloudConfig.qaPassThreshold}",
+  "fixInstruction": "Chỉ dẫn cụ thể để sửa lỗi nếu FAIL",
   "costumeMismatch": null,
   "criteria": [
-    { "criterion": "character", "score": 88, "passed": true, "note": "..." },
-    { "criterion": "costume", "score": 86, "passed": true, "note": "..." },
-    { "criterion": "voice", "score": 85, "passed": true, "note": "..." },
-    { "criterion": "dialogue", "score": 85, "passed": true, "note": "..." },
-    { "criterion": "setting", "score": 88, "passed": true, "note": "..." },
-    { "criterion": "motion", "score": 84, "passed": true, "note": "..." },
-    { "criterion": "continuity", "score": 85, "passed": true, "note": "..." },
-    { "criterion": "audio", "score": 82, "passed": true, "note": "..." }
+    { "criterion": "character", "score": 95, "passed": true, "note": "..." },
+    { "criterion": "costume", "score": 96, "passed": true, "note": "..." },
+    { "criterion": "voice", "score": 88, "passed": true, "note": "..." },
+    { "criterion": "dialogue", "score": 88, "passed": true, "note": "..." },
+    { "criterion": "setting", "score": 90, "passed": true, "note": "..." },
+    { "criterion": "motion", "score": 88, "passed": true, "note": "..." },
+    { "criterion": "continuity", "score": 88, "passed": true, "note": "..." },
+    { "criterion": "audio", "score": 86, "passed": true, "note": "..." }
   ]
 }
-(Khi phát hiện sai trang phục lúc đang khóa, đặt "costumeMismatch": { "characterId": "...", "characterName": "...", "expectedCostume": "...", "observedCostume": "...", "mismatchDetails": "mô tả chi tiết điểm sai khác" })`;
+(Khi phát hiện sai trang phục chính lúc đang khóa, đặt "costumeMismatch": { "characterId": "...", "characterName": "...", "expectedCostume": "...", "observedCostume": "...", "mismatchDetails": "mô tả chi tiết điểm sai khác" })`;
 
   const user = `THÔNG SỐ CHUẨN PROJECT MEMORY v${mem.version}:
-- Thiết lập khóa trang phục: ${allowFreeCostumeChange ? 'TỰ DO ĐỔI THEO CẢNH (vẫn khóa mặt/vóc dáng)' : 'KHÓA CỨNG TRANG PHỤC THEO ẢNH THAM CHIẾU (tuyệt đối không tự đổi)'}
+- Thiết lập khóa trang phục: ${allowFreeCostumeChange ? 'TỰ DO ĐỔI THEO CẢNH (vẫn khóa mặt/tóc/vóc dáng)' : 'KHÓA CỨNG TRANG PHỤC CHÍNH THEO ẢNH THAM CHIẾU (chỉ loại trừ phụ kiện độc lập được phép)'}
 - Hồ sơ đối chiếu nhân vật chi tiết:
 ${canonicalCharChecklist}
 - Trang phục tổng thể (Costume Bible): ${mem.costumeBible || sc.costume || '(Theo ảnh tham chiếu)'}
@@ -4261,7 +4646,7 @@ ${canonicalCharChecklist}
   const rawCriteria: any[] = Array.isArray(parsed.criteria) ? parsed.criteria : [];
   const criteriaResults: QaCriterionResult[] = QA_CRITERIA_META.map((meta) => {
     const found = rawCriteria.find((c) => c?.criterion === meta.id);
-    const score = Math.max(0, Math.min(100, Number(found?.score ?? parsed.overallScore ?? 78)));
+    const score = Math.max(0, Math.min(100, Number(found?.score ?? parsed.overallScore ?? 85)));
     return {
       criterion: meta.id,
       label: meta.label,
@@ -4276,44 +4661,59 @@ ${canonicalCharChecklist}
     ? Math.max(0, Math.min(100, Math.round(Number(parsed.overallScore))))
     : avgScore;
 
-  // Hard lock gate: character consistency ALWAYS must pass; costume MUST pass whenever allowFreeCostumeChange is OFF
   const charCrit = criteriaResults.find((c) => c.criterion === 'character');
   const costumeCrit = criteriaResults.find((c) => c.criterion === 'costume');
-  const charFailed = Boolean(charCrit && (!charCrit.passed || charCrit.score < threshold));
-  const costumeLockedFailed = Boolean(
-    !allowFreeCostumeChange && costumeCrit && (!costumeCrit.passed || costumeCrit.score < threshold)
-  );
-  const hardLockFailed = charFailed || costumeLockedFailed;
+  const consistency = evaluateMuse05CharacterConsistency({
+    parsed,
+    allowFreeCostumeChange,
+    fallbackCharScore: charCrit?.score ?? overallScore,
+    fallbackCostumeScore: costumeCrit?.score ?? overallScore,
+  });
+
+  if (charCrit) {
+    charCrit.passed = !consistency.characterViolated && charCrit.passed;
+    charCrit.note = `${charCrit.note} · Mặt ${consistency.metrics.faceSimilarityScore}/100 (lệch ${consistency.metrics.faceDeviationPct}%) · Dáng ${consistency.metrics.physiqueSimilarityScore}/100 (lệch ${consistency.metrics.physiqueDeviationPct}%)`;
+  }
+  if (costumeCrit) {
+    costumeCrit.passed = allowFreeCostumeChange ? true : !consistency.costumeViolated && costumeCrit.passed;
+    costumeCrit.note = `${costumeCrit.note} · Trang phục chính ${consistency.metrics.mainCostumeSimilarityScore}/100 (lệch ${consistency.metrics.mainCostumeDeviationPct}%) · Tổng lệch sau loại trừ phụ kiện: ${consistency.metrics.overallDeviationExcludingAccessoriesPct}%`;
+  }
+
+  const costumeLockedFailed = !allowFreeCostumeChange && (consistency.costumeViolated || Boolean(costumeCrit && !costumeCrit.passed));
+  const hardLockFailed = !consistency.passed || consistency.characterViolated || costumeLockedFailed;
 
   const passed =
     !hardLockFailed &&
     overallScore >= threshold &&
     criteriaResults.filter((c) => !c.passed).length <= 1;
+  const finalVerdict: QaVerdictStatus = passed ? consistency.verdictStatus : 'FAIL';
 
   const attemptNumber = sc.retryCount + 1;
-  const sceneProducer: 'muse-02' | 'muse-03' | 'muse-04' =
+  const sceneProducer: 'muse-01' | 'muse-02' | 'muse-03' | 'muse-04' =
     sc.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(sc.assignedProducerAgentId)
-      ? (sc.assignedProducerAgentId as 'muse-02' | 'muse-03' | 'muse-04')
+      ? (sc.assignedProducerAgentId as 'muse-01' | 'muse-02' | 'muse-03' | 'muse-04')
       : 'muse-04';
-  const targetFix: 'muse-02' | 'muse-03' | 'muse-04' =
+  const targetFix: 'muse-01' | 'muse-02' | 'muse-03' | 'muse-04' =
     costumeLockedFailed
-      ? 'muse-03'
-      : parsed.targetFixAgentId === 'muse-03' || parsed.targetFixAgentId === 'muse-02' || parsed.targetFixAgentId === 'muse-04'
+      ? sceneProducer
+      : parsed.targetFixAgentId === 'muse-01' ||
+        parsed.targetFixAgentId === 'muse-02' ||
+        parsed.targetFixAgentId === 'muse-03' ||
+        parsed.targetFixAgentId === 'muse-04'
       ? parsed.targetFixAgentId
-      : hardLockFailed
-      ? 'muse-03'
       : sceneProducer;
 
   const baseFixInstr = String(
     parsed.fixInstruction ||
-      'Bám sát gương mặt nhân vật tham chiếu, trang phục và timeline hành động trong Project Memory.'
+      consistency.metrics.criticalViolationFlags.join('; ') ||
+      'Bám sát ảnh tham chiếu nhân vật, khóa cứng khuôn mặt/vóc dáng/trang phục chính và timeline hành động trong Project Memory.'
   ).trim();
   const lockFixSuffix = hardLockFailed
-    ? ` [KHÓA THAM CHIẾU BẮT BUỘC: Giữ nguyên 100% ngoại hình & ${allowFreeCostumeChange ? 'nhân dạng' : 'trang phục tham chiếu'}: ${mem.characters.map((c) => `${c.name} (${c.syncProfile.face}; ${getCharacterCanonicalCostume(c) || c.syncProfile.costume})`).join(' | ') || mem.costumeBible}]`
+    ? ` [KHÓA THAM CHIẾU <=5% BẮT BUỘC: ${consistency.metrics.criticalViolationFlags.join('; ') || 'Giữ nguyên nhân dạng & trang phục chính'}]`
     : '';
 
   let extractedFaultFrameUrl: string | undefined;
-  if (costumeLockedFailed && extractedFrames[0]) {
+  if ((costumeLockedFailed || hardLockFailed) && extractedFrames[0]) {
     const savedFault = saveDataUrlArtifact(`qa_scene_${sc.index}_costume_fault`, extractedFrames[0]);
     if (savedFault) extractedFaultFrameUrl = savedFault.url;
   }
@@ -4334,9 +4734,10 @@ ${canonicalCharChecklist}
         observedCostume: String(parsedCm?.observedCostume || '').trim() || undefined,
         mismatchDetails: String(
           parsedCm?.mismatchDetails ||
+            consistency.metrics.criticalViolationFlags.join('; ') ||
             costumeCrit?.note ||
             parsed.summary ||
-            `Trang phục trên video Cảnh ${sc.index} không khớp với ảnh tham chiếu gốc.`
+            `Trang phục chính trên video Cảnh ${sc.index} sai lệch vượt ngưỡng cho phép so với ảnh tham chiếu gốc.`
         ).trim(),
       })
     : undefined;
@@ -4350,17 +4751,20 @@ ${canonicalCharChecklist}
     checkedAt: Date.now(),
     overallScore,
     passed,
+    verdictStatus: finalVerdict,
+    deviationClass: passed ? consistency.deviationClass : 'type_c_exceeds_limit',
+    consistencyMetrics: { ...consistency.metrics, verdictStatus: finalVerdict },
     threshold,
     criteriaResults,
     timestampRange: String(parsed.timestampRange || `0s-${sc.durationSec}s`),
-    summary: String(
+    summary: `[${finalVerdict.replace(/_/g, ' ')} · lệch ${consistency.metrics.overallDeviationExcludingAccessoriesPct}%] ${String(
       parsed.summary ||
         (passed
-          ? 'Đạt chuẩn đồng nhất'
+          ? 'Đạt chuẩn đồng nhất nhân vật & kịch bản'
           : hardLockFailed
-          ? 'Sai lệch ngoại hình hoặc trang phục so với nhân vật tham chiếu đang khóa'
+          ? 'Vi phạm khóa nhân vật hoặc sai lệch vượt ngưỡng 5%'
           : 'Cần chỉnh sửa lại phân cảnh')
-    ).trim(),
+    ).trim()}`,
     targetFixAgentId: passed ? undefined : targetFix,
     fixInstruction: passed ? undefined : `${baseFixInstr}${lockFixSuffix}`,
     attemptNumber,
@@ -4368,6 +4772,17 @@ ${canonicalCharChecklist}
     characterId: costumeMismatchReport?.characterId,
     costumeMismatch: costumeMismatchReport,
   };
+
+  appendProjectCoordinationLog(task.runId, {
+    actorId: 'muse-05',
+    actorName: agent.name,
+    targetAgentIds: [sceneProducer],
+    kind: 'qa_report',
+    runId: task.runId,
+    taskId: task.id,
+    sceneId: sc.sceneId,
+    summary: `QA Video Cảnh ${sc.index}: ${finalVerdict} (${overallScore}/100, lệch ${consistency.metrics.overallDeviationExcludingAccessoriesPct}%).`,
+  });
 
   storeDoc.qaReports.unshift(report);
   if (storeDoc.qaReports.length > 200) {
@@ -4750,7 +5165,10 @@ function enrichProductionRun(run: ProductionRun): ProductionRun {
 }
 
 async function runSingleTask(task: CommandTask): Promise<void> {
-  const agent = storeDoc.agents.find((a) => a.id === task.assignedAgentId);
+  const isChairmanTask = task.assignedAgentId === 'chairman';
+  const agent = isChairmanTask
+    ? getChairmanVirtualAgent()
+    : storeDoc.agents.find((a) => a.id === task.assignedAgentId);
   if (!agent) return;
 
   activeTaskIds.add(task.id);
@@ -4770,10 +5188,12 @@ async function runSingleTask(task: CommandTask): Promise<void> {
     }
   }
 
-  agent.lastActiveAt = now;
-  agent.lastError = undefined;
+  if (!isChairmanTask) {
+    agent.lastActiveAt = now;
+    agent.lastError = undefined;
+  }
   addActivityLog('info', `Bắt đầu ${task.code}`, `${agent.name} đang thực thi: ${task.title}`, {
-    agentId: agent.id,
+    agentId: isChairmanTask ? 'chairman' : agent.id,
     taskId: task.id,
     runId: task.runId,
   });
@@ -4810,12 +5230,14 @@ async function runSingleTask(task: CommandTask): Promise<void> {
     }
     task.completedAt = doneAt;
     task.durationMs = Math.max(1, doneAt - (task.startedAt || doneAt));
-    agent.stats.completed += 1;
-    agent.lastActiveAt = doneAt;
-    recordAgentSample(agent.id, task.durationMs, ackLatencyMs);
+    if (!isChairmanTask) {
+      agent.stats.completed += 1;
+      agent.lastActiveAt = doneAt;
+      recordAgentSample(agent.id, task.durationMs, ackLatencyMs);
+    }
 
     const isTextTask = ['plan_production', 'analyze_script', 'qa_inspect_scene', 'qa_inspect_image', 'custom_task'].includes(task.type);
-    if (isTextTask && task.durationMs > SLOW_TEXT_THRESHOLD_MS) {
+    if (!isChairmanTask && isTextTask && task.durationMs > SLOW_TEXT_THRESHOLD_MS) {
       pushPerformanceAlert({
         severity: 'warn',
         category: 'slow_response',
@@ -4831,7 +5253,7 @@ async function runSingleTask(task: CommandTask): Promise<void> {
       isQaRejected ? `QA trả về ${task.code}` : `Hoàn tất ${task.code}`,
       task.outputText || task.title,
       {
-        agentId: agent.id,
+        agentId: isChairmanTask ? 'chairman' : agent.id,
         taskId: task.id,
         runId: task.runId,
       }
@@ -4978,13 +5400,15 @@ async function tickOrchestratorQueue(): Promise<void> {
           ag.hungCount = (ag.hungCount || 0) + 1;
         }
         storeDoc.fastCommStats.hungTaskCount += 1;
+        const watchdogMuseId: MuseAgentId =
+          task.assignedAgentId === 'chairman' ? 'muse-01' : task.assignedAgentId;
         pushPerformanceAlert({
           severity: 'error',
           category: 'hung_timeout',
-          agentId: task.assignedAgentId,
+          agentId: task.assignedAgentId === 'chairman' ? undefined : task.assignedAgentId,
           taskId: task.id,
           runId: task.runId,
-          message: `Tác vụ ${task.code} (${ag?.name || task.assignedAgentId}) bị treo quá ${Math.round(limit / 1000)}s.`,
+          message: `Tác vụ ${task.code} (${ag?.name || getChairmanDisplayName()}) bị treo quá ${Math.round(limit / 1000)}s.`,
         });
 
         if (task.retryCount < task.maxRetries) {
@@ -4994,7 +5418,7 @@ async function tickOrchestratorQueue(): Promise<void> {
           task.acknowledgedAt = now;
           task.error = undefined;
           if (ag) ag.reconnectCount = (ag.reconnectCount || 0) + 1;
-          addActivityLog('warn', `Tự kết nối lại ${task.code}`, `${ag?.name || task.assignedAgentId} vượt timeout, đã xếp hàng chạy lại lần #${task.retryCount}.`, {
+          addActivityLog('warn', `Tự kết nối lại ${task.code}`, `${ag?.name || getChairmanDisplayName()} vượt timeout, đã xếp hàng chạy lại lần #${task.retryCount}.`, {
             agentId: task.assignedAgentId,
             taskId: task.id,
             runId: task.runId,
@@ -5010,10 +5434,10 @@ async function tickOrchestratorQueue(): Promise<void> {
             runId: task.runId,
             task,
             scene: sc,
-            reporterAgentId: task.assignedAgentId,
-            responsibleAgentId: task.assignedAgentId,
+            reporterAgentId: watchdogMuseId,
+            responsibleAgentId: watchdogMuseId,
             explicitCategory: 'muse_disconnected',
-            errorDescription: `${task.code} (${ag?.name || task.assignedAgentId}) bị treo quá ${Math.round(limit / 1000)}s sau ${task.maxRetries} lần thử kết nối lại.`,
+            errorDescription: `${task.code} (${ag?.name || getChairmanDisplayName()}) bị treo quá ${Math.round(limit / 1000)}s sau ${task.maxRetries} lần thử kết nối lại.`,
             suspectedRootCause: task.error,
             severity: 'critical',
           });
@@ -5058,14 +5482,16 @@ async function tickOrchestratorQueue(): Promise<void> {
 
     const health = await refreshIntegrationHealth();
     const busyPinnedAccounts = new Set<string>();
-    const activeByAgent = new Map<MuseAgentId, number>();
+    const activeByAgent = new Map<MuseAgentId | 'chairman', number>();
     for (const activeId of activeTaskIds) {
       const at = storeDoc.tasks.find((t) => t.id === activeId);
       if (!at) continue;
       activeByAgent.set(at.assignedAgentId, (activeByAgent.get(at.assignedAgentId) || 0) + 1);
-      const ag = storeDoc.agents.find((a) => a.id === at.assignedAgentId);
-      if (ag?.boundAccountId && ag.boundAccountId !== 'auto') {
-        busyPinnedAccounts.add(ag.boundAccountId);
+      if (at.assignedAgentId !== 'chairman') {
+        const ag = storeDoc.agents.find((a) => a.id === at.assignedAgentId);
+        if (ag?.boundAccountId && ag.boundAccountId !== 'auto') {
+          busyPinnedAccounts.add(ag.boundAccountId);
+        }
       }
     }
 
@@ -5075,13 +5501,34 @@ async function tickOrchestratorQueue(): Promise<void> {
       const run = storeDoc.runs.find((r) => r.id === task.runId);
       if (run && ['paused', 'cancelled'].includes(run.status)) continue;
 
+      if (task.assignedAgentId === 'chairman') {
+        const currentChairmanActive = activeByAgent.get('chairman') || 0;
+        if (currentChairmanActive >= 2) continue;
+        if (task.type !== 'assemble_final_film' && !health.geminiConfigured) {
+          task.status = 'failed';
+          task.error =
+            'Gemini AI – Chủ tịch cần cấu hình GEMINI_API_KEY để phân tích kịch bản và điều phối 5 Muse AI. Vui lòng kiểm tra Settings > Secrets.';
+          addActivityLog('error', `Không thể chạy ${task.code}`, task.error, {
+            agentId: 'chairman',
+            taskId: task.id,
+            runId: task.runId,
+          });
+          saveStateAtomic();
+          continue;
+        }
+        activeByAgent.set('chairman', currentChairmanActive + 1);
+        slotsLeft -= 1;
+        void runSingleTask(task);
+        continue;
+      }
+
       let agent = storeDoc.agents.find((a) => a.id === task.assignedAgentId);
       if (!agent) continue;
 
       let currentAgentActive = activeByAgent.get(agent.id) || 0;
       let agentMax = getAgentEffectiveMaxConcurrency(agent, health);
 
-      // Dynamic load-balancing across production pool (Muse 02, 03, 04) if assigned agent is full or paused
+      // Dynamic load-balancing across ALL 4 production Muses (Muse Director 01, Muse 02, 03, 04) if assigned agent is full or paused
       const isRebalanceableMedia =
         PRODUCTION_AGENT_IDS.includes(agent.id) &&
         (task.type === 'design_scene_image' ||
@@ -5132,8 +5579,8 @@ async function tickOrchestratorQueue(): Promise<void> {
           addActivityLog(
             'info',
             `Cân bằng tải ${task.code}`,
-            `Muse AI 01 điều chuyển ${task.code} từ ${prevAgentId} sang ${alternate.name} đang rảnh để không chờ đợi.`,
-            { agentId: 'muse-01', taskId: task.id, runId: task.runId }
+            `${getChairmanDisplayName()} điều chuyển ${task.code} từ ${prevAgentId} sang ${alternate.name} đang rảnh để sản xuất song song.`,
+            { agentId: 'chairman', taskId: task.id, runId: task.runId }
           );
         }
       }
@@ -5215,19 +5662,26 @@ export function initCommandCenter(): void {
         if (!ag.accentColor) ag.accentColor = def.accentColor;
         if (!ag.avatarPreset) ag.avatarPreset = def.avatarPreset;
 
-        // Migrate legacy 5-role pipeline -> Multitasking Production Model
-        if (ag.id === 'muse-01' && (ag.role === 'director' || ag.role === 'director_script')) {
-          ag.role = 'director_script';
-          if (!ag.roleTitle || ag.roleTitle === 'Tổng đạo diễn') ag.roleTitle = def.roleTitle;
-          if (!ag.description || ag.description.includes('AI điều phối trưởng: nhận lệnh')) {
+        // Migrate legacy hierarchy -> Gemini AI Chairman + 4 Production Muses (Muse 01–04) + Independent QA (Muse 05)
+        if (ag.id === 'muse-01') {
+          ag.role = 'production_media';
+          if (
+            !ag.roleTitle ||
+            /đạo diễn tổng|tổng đạo diễn/i.test(ag.roleTitle)
+          ) {
+            ag.roleTitle = def.roleTitle;
+          }
+          if (
+            !ag.description ||
+            /điều phối trưởng|tổng đạo diễn|đạo diễn tổng/i.test(ag.description)
+          ) {
             ag.description = def.description;
           }
           ag.permissions = {
             ...def.permissions,
-            ...(ag.permissions || {}),
-            canModifyProjectMemory: true,
-            canExecuteMedia: false,
-            allowedDataScopes: Array.from(new Set([...(ag.permissions?.allowedDataScopes || []), ...def.permissions.allowedDataScopes])),
+            canModifyProjectMemory: false,
+            canApproveQa: false,
+            canExecuteMedia: true,
           };
         } else if (
           PRODUCTION_AGENT_IDS.includes(ag.id) &&
@@ -5291,10 +5745,27 @@ export function initCommandCenter(): void {
         loadedSessionMemories[firstRun.id] = loadedMem;
       }
 
+      const rawChairman = raw.chairmanConfig || ({} as Partial<ChairmanConfig>);
+      const defaultChairman = createDefaultChairmanConfig();
+      const migratedChairman: ChairmanConfig = {
+        ...defaultChairman,
+        ...rawChairman,
+        name:
+          !rawChairman.name || rawChairman.name === 'Chủ tịch Điều hành AI'
+            ? defaultChairman.name
+            : rawChairman.name,
+        title:
+          !rawChairman.title || rawChairman.title.includes('Chủ tịch Hội đồng Điều hành')
+            ? defaultChairman.title
+            : rawChairman.title,
+      };
+
       storeDoc = {
         ...base,
         ...raw,
         agents: loadedAgents,
+        chairmanConfig: migratedChairman,
+        chairmanBriefings: Array.isArray(raw.chairmanBriefings) ? raw.chairmanBriefings.slice(0, 40) : [],
         projectMemory: loadedMem,
         sessionMemories: loadedSessionMemories,
         selectedRunId: raw.selectedRunId || firstRun?.id || null,
@@ -5471,6 +5942,8 @@ export async function getCommandCenterState(forceHealth = false): Promise<Comman
   return {
     metrics,
     agents: agentsWithMetrics,
+    chairmanConfig: storeDoc.chairmanConfig || createDefaultChairmanConfig(),
+    chairmanBriefings: (storeDoc.chairmanBriefings || []).slice(0, 30),
     projectMemory: selectedMemory,
     latestStudioDirective: storeDoc.latestStudioDirective || null,
     selectedRunId: activeRun?.id || null,
@@ -6037,24 +6510,25 @@ export async function startProductionOrchestration(params: {
     content: script || title,
   });
 
+  const chairmanName = getChairmanDisplayName();
   if (hasPreSeededScenes) {
-    // Bypass redundant re-scripting: Muse AI 01 locks the Studio Blueprint & dispatches parallel production immediately!
+    // Gemini AI – Chairman locks Studio Blueprint & dispatches parallel production across all 4 production Muses (Muse 01–04)!
     const planTask = enqueueTask({
       runId,
       type: 'plan_production',
-      title: `Tổng đạo diễn tiếp nhận kịch bản Studio (${preSeededScenes.length} phân cảnh)`,
+      title: `${chairmanName} tiếp nhận kịch bản Studio (${preSeededScenes.length} phân cảnh)`,
       instructions: script || title,
-      assignedAgentId: 'muse-01',
+      assignedAgentId: 'chairman',
       priority: 10,
     });
     planTask.status = 'completed';
     planTask.completedAt = Date.now();
     planTask.executedByProvider = 'studio-blueprint';
-    planTask.outputText = `Đã tiếp nhận kịch bản hoàn chỉnh từ Studio (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh) và lập hàng đợi song song.`;
+    planTask.outputText = `${chairmanName} đã tiếp nhận kịch bản hoàn chỉnh từ Studio (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh), khóa dữ liệu nhân vật và phân công song song cho 4 Muse sản xuất (Muse AI 01–04).`;
 
     preSeededChars.forEach(ensureCharacterOriginalAnchors);
 
-    // Character Reference Tasks (ONLY for characters lacking confirmed images, distributed across Muse 02, 03, 04)
+    // Character Reference Tasks (ONLY for characters lacking confirmed images, distributed across Muse 01, 02, 03, 04)
     const charTaskIds: string[] = [];
     const charQaDeps: string[] = [];
     const charsList = preSeededChars.slice(0, 4);
@@ -6077,8 +6551,8 @@ export async function startProductionOrchestration(params: {
           const cqa = enqueueTask({
             runId,
             type: 'qa_inspect_image',
-            title: `Kiểm tra trang phục ảnh nhân vật: ${ch.name}`,
-            instructions: `Đối chiếu ảnh nhân vật ${ch.name} với hồ sơ gốc "${getCharacterCanonicalCostume(ch)}" trước khi tạo keyframe.`,
+            title: `Kiểm tra đồng nhất ảnh nhân vật: ${ch.name}`,
+            instructions: `Đối chiếu ảnh nhân vật ${ch.name} với hồ sơ gốc "${getCharacterCanonicalCostume(ch)}" theo ngưỡng 5% trước khi tạo keyframe.`,
             assignedAgentId: 'muse-05',
             dependsOnTaskIds: [ct.id],
             characterId: ch.id,
@@ -6124,13 +6598,12 @@ export async function startProductionOrchestration(params: {
         if (sceneImgDeps.length > 0) {
           videoDeps.push(...sceneImgDeps);
         }
-        // Dispatch parallel non-blocking costume inspection on pre-seeded image if lock is active
         if (!resolvedAllowFreeCostumeChange) {
           enqueueTask({
             runId,
             type: 'qa_inspect_image',
-            title: `Kiểm tra trang phục ảnh Cảnh ${sc.index}: "${sc.title}"`,
-            instructions: `Kiểm tra trang phục trên ảnh keyframe Cảnh ${sc.index} so với ảnh tham chiếu & hồ sơ gốc.`,
+            title: `Kiểm tra đồng nhất ảnh Cảnh ${sc.index}: "${sc.title}"`,
+            instructions: `Kiểm tra ảnh keyframe Cảnh ${sc.index} theo ngưỡng 5% (loại trừ phụ kiện hợp lệ) so với ảnh tham chiếu & hồ sơ gốc.`,
             assignedAgentId: 'muse-05',
             sceneId: sc.sceneId,
             sceneIndex: sc.index,
@@ -6161,8 +6634,8 @@ export async function startProductionOrchestration(params: {
       const qaTask = enqueueTask({
         runId,
         type: 'qa_inspect_scene',
-        title: `Kiểm định 8 tiêu chí Cảnh ${sc.index}: "${sc.title}"`,
-        instructions: `Đối chiếu Cảnh ${sc.index} với Project Memory v${freshMemory.version} và các cảnh lân cận.`,
+        title: `Kiểm định 8 tiêu chí & ngưỡng 5% Cảnh ${sc.index}: "${sc.title}"`,
+        instructions: `Đối chiếu Cảnh ${sc.index} với ảnh tham chiếu & Project Memory v${freshMemory.version}.`,
         assignedAgentId: 'muse-05',
         dependsOnTaskIds: [vidTask.id],
         sceneId: sc.sceneId,
@@ -6176,8 +6649,8 @@ export async function startProductionOrchestration(params: {
       runId,
       type: 'assemble_final_film',
       title: `Ghép xuất phim hoàn chỉnh (${preSeededScenes.length} phân cảnh)`,
-      instructions: `Tổng hợp toàn bộ phân cảnh đã đạt QA thành video MP4 hoàn chỉnh và bàn giao.`,
-      assignedAgentId: 'muse-01',
+      instructions: `Tổng hợp toàn bộ phân cảnh đã đạt kiểm định Muse AI 05 thành video MP4 hoàn chỉnh và bàn giao.`,
+      assignedAgentId: 'chairman',
       dependsOnTaskIds: qaTaskIds,
       priority: 1,
     });
@@ -6186,46 +6659,61 @@ export async function startProductionOrchestration(params: {
       channel: 'commander',
       projectId: freshMemory.projectId,
       runId,
+      sessionId: runId,
       senderType: 'agent',
-      senderId: 'muse-01',
-      senderName: `${storeDoc.agents[0]?.name || 'Muse Director'} (${storeDoc.agents[0]?.roleTitle || 'Tổng đạo diễn & Phân tích kịch bản'})`,
-      targetAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
+      senderId: 'chairman',
+      senderName: chairmanName,
+      senderColor: '#D97706',
+      roleBadge: 'Lệnh Chủ tịch',
+      targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
       taskId: planTask.id,
       messageKind: 'ack',
-      content: `Đã tiếp nhận kịch bản & phân cảnh đồng bộ từ Studio cho "${title}" (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh). Đã khóa Project Memory v${freshMemory.version} và phân công đa nhiệm song song cho Muse AI 02, 03, 04 (mỗi AI làm trọn Ảnh → Video cho cảnh phụ trách).`,
+      content: `Đã tiếp nhận kịch bản đồng bộ từ Studio cho "${title}" (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh). Đã khóa Project Memory v${freshMemory.version} và phân công song song cho 4 nhân viên sản xuất (Muse Director 01, Muse 02, Muse 03, Muse 04 — mỗi AI chủ động Ảnh → Video). Muse AI 05 kiểm định độc lập theo ngưỡng 5% và báo cáo trực tiếp về Chủ tịch.`,
     });
 
-    postAiBusMessage({
-      fromAgent: storeDoc.agents[0],
-      toAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
+    appendProjectCoordinationLog(runId, {
+      actorId: 'chairman',
+      actorName: chairmanName,
+      targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+      kind: 'directive',
       runId,
-      projectId: freshMemory.projectId,
       taskId: planTask.id,
-      content: `[STUDIO-BLUEPRINT] Khởi chạy đa nhiệm ${preSeededScenes.length} phân cảnh của "${title}" trên pool Muse 02–04.`,
+      summary: `Tiếp nhận kịch bản Studio "${title}" (${preSeededScenes.length} cảnh) và phân công cho 4 Muse sản xuất (Muse 01–04).`,
     });
 
     addActivityLog(
       'info',
-      'Tiếp nhận kịch bản từ Studio',
-      `${storeDoc.agents[0]?.name || 'Muse Director'} đã phân công ${preSeededScenes.length} phân cảnh của "${title}" cho Muse 02, 03, 04 xử lý đa nhiệm.`,
-      { agentId: 'muse-01', runId }
+      'Chủ tịch tiếp nhận kịch bản Studio',
+      `${chairmanName} đã phân công ${preSeededScenes.length} phân cảnh của "${title}" cho 4 Muse sản xuất (Muse AI 01–04).`,
+      { agentId: 'chairman', runId }
     );
   } else {
-    // Muse AI 01 directly handles script analysis & breakdown (eliminating Muse 02 handoff bottleneck)
+    // Gemini AI – Chairman directly analyzes script & dispatches tasks to Muse 01–04 + Muse 05
     enqueueTask({
       runId,
       type: 'analyze_script',
-      title: `Tổng đạo diễn phân tích kịch bản & phân công sản xuất: ${title}`,
-      instructions: `Trực tiếp phân tích kịch bản "${title}", bóc tách nhân vật 5 thành phần, lời thoại, timeline từng giây, phân cảnh và phân công song song cho Muse AI 02, 03, 04.\n\nKịch bản gốc:\n${script}`,
-      assignedAgentId: 'muse-01',
+      title: `${chairmanName} phân tích kịch bản & chia việc cho 5 Muse AI: ${title}`,
+      instructions: `Trực tiếp phân tích kịch bản "${title}", khóa nhân vật 5 thành phần, lời thoại, timeline từng giây và phân công song song cho 4 Muse sản xuất (Muse AI 01, 02, 03, 04) cùng kiểm định Muse AI 05.\n\nKịch bản gốc:\n${script}`,
+      assignedAgentId: 'chairman',
       expectedMemoryVersion: freshMemory.version,
       priority: 10,
     });
 
-    addActivityLog('info', 'Khởi động dây chuyền đa nhiệm', `Phiên "${title}" đã được giao trực tiếp cho ${storeDoc.agents[0]?.name || 'Muse Director'} phân tích kịch bản & phân phối ngay.`, {
-      agentId: 'muse-01',
+    appendProjectCoordinationLog(runId, {
+      actorId: 'chairman',
+      actorName: chairmanName,
+      targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+      kind: 'directive',
       runId,
+      summary: `Tiếp nhận lệnh sản xuất "${title}", khởi động bước phân tích kịch bản & phân công cho 4 Muse sản xuất.`,
     });
+
+    addActivityLog(
+      'info',
+      'Khởi động dây chuyền dưới quyền Chủ tịch Gemini AI',
+      `Phiên "${title}" đã được ${chairmanName} tiếp nhận phân tích kịch bản và điều phối cho 5 Muse AI.`,
+      { agentId: 'chairman', runId }
+    );
   }
 
   saveStateAtomic();
@@ -6241,8 +6729,15 @@ export async function controlProductionRun(
   const run = storeDoc.runs.find((r) => r.id === runId);
   if (!run) throw new Error('Không tìm thấy phiên sản xuất.');
   const mem = getRunMemory(runId);
+  const runTasks = storeDoc.tasks.filter((t) => t.runId === runId);
 
   if (action === 'pause') {
+    if (run.status === 'completed' || run.status === 'cancelled') {
+      throw new Error('Phiên sản xuất đã kết thúc nên không thể tạm dừng.');
+    }
+    if (run.status === 'idle') {
+      throw new Error('Phiên sản xuất chưa chạy tác vụ nào nên chưa cần tạm dừng.');
+    }
     run.status = 'paused';
     run.pausedAt = Date.now();
     appendConversationMessage({
@@ -6256,11 +6751,49 @@ export async function controlProductionRun(
       content: `Phiên "${run.title}" đã TẠM DỪNG tại điểm an toàn. Ngưng cấp tác vụ mới và bảo toàn trạng thái hiện tại để tiếp tục sau.`,
     });
   } else if (action === 'resume') {
-    run.status = storeDoc.tasks.some((t) => t.runId === runId && t.type === 'plan_production' && t.status !== 'completed')
-      ? 'planning'
-      : 'producing';
-    run.pausedAt = undefined;
-    run.error = undefined;
+    if (run.status === 'completed' || run.status === 'cancelled') {
+      throw new Error('Phiên sản xuất đã kết thúc hoặc đã hủy; hãy tạo phiên mới để chạy lại.');
+    }
+    if (runTasks.length === 0) {
+      run.status = 'idle';
+      run.pausedAt = undefined;
+      run.error = undefined;
+    } else if (runTasks.every((t) => t.status === 'completed')) {
+      run.status = 'completed';
+      run.pausedAt = undefined;
+      run.error = undefined;
+      run.completedAt = run.completedAt || Date.now();
+    } else {
+      // If resuming from failed / needs_attention, requeue failed tasks so execution actually continues
+      if (run.status === 'failed' || run.status === 'needs_attention') {
+        for (const t of runTasks) {
+          if (t.status === 'failed' || t.status === 'qa_rejected') {
+            t.status = 'queued';
+            t.error = undefined;
+            t.acknowledgedAt = Date.now();
+          }
+        }
+      }
+      const hasIncompletePlanning = runTasks.some(
+        (t) =>
+          (t.type === 'analyze_script' || t.type === 'plan_production') &&
+          t.status !== 'completed' &&
+          t.status !== 'cancelled'
+      );
+      const onlyAssemblyLeft =
+        !hasIncompletePlanning &&
+        runTasks.every(
+          (t) =>
+            t.type === 'assemble_final_film' ||
+            t.status === 'completed' ||
+            t.status === 'cancelled'
+        ) &&
+        runTasks.some((t) => t.type === 'assemble_final_film' && t.status !== 'completed');
+
+      run.status = hasIncompletePlanning ? 'planning' : onlyAssemblyLeft ? 'assembling' : 'producing';
+      run.pausedAt = undefined;
+      run.error = undefined;
+    }
     appendConversationMessage({
       channel: 'production',
       projectId: mem.projectId,
@@ -6269,15 +6802,22 @@ export async function controlProductionRun(
       senderId: 'system',
       senderName: 'Điều khiển phiên',
       messageKind: 'ack',
-      content: `Phiên "${run.title}" đã TIẾP TỤC chạy các tác vụ chưa hoàn thành (giữ nguyên toàn bộ kết quả đã xong).`,
+      content:
+        run.status === 'idle'
+          ? `Phiên "${run.title}" chưa có tác vụ nào — đang ở trạng thái sẵn sàng chờ giao kịch bản.`
+          : `Phiên "${run.title}" đã TIẾP TỤC chạy các tác vụ chưa hoàn thành (giữ nguyên toàn bộ kết quả đã xong).`,
     });
   } else if (action === 'cancel') {
+    if (run.status === 'completed' || run.status === 'cancelled') {
+      throw new Error('Phiên sản xuất đã hoàn thành hoặc đã hủy trước đó.');
+    }
     run.status = 'cancelled';
     run.cancelledAt = Date.now();
     run.error = 'Phiên sản xuất đã bị hủy theo yêu cầu người dùng. Dữ liệu đã hoàn thành & backup vẫn được bảo toàn.';
-    for (const t of storeDoc.tasks) {
-      if (t.runId === runId && ['queued', 'blocked_by_deps'].includes(t.status)) {
+    for (const t of runTasks) {
+      if (t.status === 'queued' || t.status === 'blocked_by_deps' || t.status === 'running') {
         t.status = 'cancelled';
+        t.completedAt = Date.now();
       }
     }
     createBackupSnapshot('pre_restore', `Bảo lưu trước khi hủy phiên "${run.title}"`, runId);
@@ -6298,7 +6838,9 @@ export async function controlProductionRun(
   });
   saveStateAtomic();
   emitCommandCenterEvent('run:updated', enrichProductionRun(run));
-  if (action === 'resume') void tickOrchestratorQueue();
+  if (action === 'resume' && run.status !== 'idle' && run.status !== 'completed') {
+    void tickOrchestratorQueue();
+  }
   return getCommandCenterState(false);
 }
 
@@ -6505,21 +7047,22 @@ export async function uploadCommandCenterAttachment(params: {
   return { url: saved.url, fileName: saved.fileName };
 }
 
-const DEFAULT_AGENT_BY_CHANNEL: Record<string, MuseAgentId> = {
-  commander: 'muse-01',
-  incident: 'muse-01',
-  production: 'muse-01',
-  script: 'muse-01',
+const DEFAULT_AGENT_BY_CHANNEL: Record<string, MuseAgentId | 'chairman'> = {
+  commander: 'chairman',
+  chairman: 'chairman',
+  incident: 'chairman',
+  production: 'chairman',
+  script: 'chairman',
   visual: 'muse-02',
   video: 'muse-04',
   qa: 'muse-05',
-  ai_bus: 'muse-01',
+  ai_bus: 'chairman',
 };
 
 export async function sendCommandCenterChat(params: {
   channel: CommunicationChannelId | 'group';
   message: string;
-  targetAgentId?: MuseAgentId;
+  targetAgentId?: MuseAgentId | 'chairman';
   attachments?: string[];
   sceneId?: string;
   sessionId?: string;
@@ -6533,10 +7076,9 @@ export async function sendCommandCenterChat(params: {
   const mem = getRunMemory(runId);
 
   const isDm = channel.startsWith('muse-');
-  const responderId: MuseAgentId = isDm
+  const responderId: MuseAgentId | 'chairman' = isDm
     ? (channel as MuseAgentId)
-    : params.targetAgentId || DEFAULT_AGENT_BY_CHANNEL[channel] || 'muse-01';
-  const responder = storeDoc.agents.find((a) => a.id === responderId) || storeDoc.agents[0];
+    : params.targetAgentId || DEFAULT_AGENT_BY_CHANNEL[channel] || 'chairman';
 
   appendConversationMessage({
     channel,
@@ -6546,7 +7088,7 @@ export async function sendCommandCenterChat(params: {
     sceneId: params.sceneId,
     senderType: 'user',
     senderId: 'user',
-    senderName: 'Đạo diễn (Bạn)',
+    senderName: 'Người dùng (Chỉ đạo)',
     targetAgentIds: isDm ? [channel as MuseAgentId] : ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
     attachments,
     content: text || '(Đã gửi tệp đính kèm)',
@@ -6554,62 +7096,320 @@ export async function sendCommandCenterChat(params: {
 
   const recentHistory = storeDoc.conversations
     .filter((m) => m.channel === channel)
-    .slice(-8)
+    .slice(-10)
     .map((m) => `${m.senderName}: ${m.content}`)
     .join('\n');
 
   const studioDirectiveNote = storeDoc.latestStudioDirective
-    ? `\nChỉ thị mới nhất đồng bộ từ Studio (${storeDoc.latestStudioDirective.sourceAction}): "${storeDoc.latestStudioDirective.title}" · ${storeDoc.latestStudioDirective.characterCount} nhân vật, ${storeDoc.latestStudioDirective.sceneCount} phân cảnh.\nNội dung chỉ thị Studio:\n${storeDoc.latestStudioDirective.scriptOrCommand.slice(0, 1400)}`
+    ? `\nChỉ thị mới nhất đồng bộ từ Studio (${storeDoc.latestStudioDirective.sourceAction}): "${storeDoc.latestStudioDirective.title}" · ${storeDoc.latestStudioDirective.characterCount} nhân vật, ${storeDoc.latestStudioDirective.sceneCount} phân cảnh.\nNội dung chỉ thị Studio:\n${storeDoc.latestStudioDirective.scriptOrCommand.slice(0, 1200)}`
     : '';
   const memoryScenesNote =
     mem.scenes.length > 0
-      ? `\nCác phân cảnh trong Project Memory:\n${mem.scenes
-          .slice(0, 8)
-          .map((s) => `- Cảnh ${s.index}: ${s.title} (${s.qaStatus}) — ${s.actionDetail.slice(0, 100)}`)
+      ? `\nCác phân cảnh trong Project Memory v${mem.version}:\n${mem.scenes
+          .slice(0, 10)
+          .map(
+            (s) =>
+              `- [${s.sceneId}] Cảnh ${s.index}: ${s.title} (stage: ${s.productionStage || 'pending'}, QA: ${s.qaStatus}, phụ trách: ${s.assignedProducerAgentId || 'chưa giao'}) — ${s.actionDetail.slice(0, 90)}`
+          )
           .join('\n')}`
       : '';
-
-  const channelContextDesc: Record<string, string> = {
-    commander: 'Kênh #tổng-chỉ-huy (lệnh điều hành toàn đội 5 Muse AI)',
-    incident: 'Kênh #incident-command (Trung tâm chỉ huy xử lý sự cố — Đạo diễn tổng trực tiếp điều tra nguyên nhân và ra lệnh sửa lỗi)',
-    production: 'Kênh #sản-xuất-phim (theo dõi tiến độ và điều phối phiên)',
-    script: 'Kênh #kịch-bản (biên kịch, thoại, nhân vật, timeline)',
-    visual: 'Kênh #hình-ảnh (thiết kế nhân vật, tạo ảnh keyframe)',
-    video: 'Kênh #video (dựng video phân cảnh, prompt chuyển động)',
-    qa: 'Kênh #kiểm-duyệt (báo cáo lỗi, kiểm định chất lượng)',
-    ai_bus: 'Kênh #trao-đổi-ai (phối hợp trực tiếp giữa các AI)',
-  };
-
+  const openIncidentsList = storeDoc.incidents.filter((i) => i.status !== 'resolved').slice(0, 6);
   const openIncidentsNote =
-    channel === 'incident'
-      ? (() => {
-          const openList = storeDoc.incidents.filter((i) => i.status !== 'resolved').slice(0, 6);
-          return openList.length > 0
-            ? `\nCác sự cố đang mở (${openList.length}):\n${openList
-                .map((i) => `- [${i.code}] (${i.status}, vòng ${i.attemptCount}/${i.maxAttempts}) ${i.categoryLabel}: ${i.errorDescription.slice(0, 120)}`)
-                .join('\n')}`
-            : '\nHiện không có sự cố tồn đọng.';
-        })()
-      : '';
-
-  const sys = `Bạn là ${responder.name} (${responder.roleTitle}) trong Phòng Điều Hành AI Muse.
-Vai trò: ${responder.description}
-Dự án/Phiên hiện tại: "${mem.title}" (Project Memory v${mem.version}, ${mem.characters.length} nhân vật, ${mem.scenes.length} cảnh).${studioDirectiveNote}${memoryScenesNote}${openIncidentsNote}
-${
-  isDm
-    ? 'Bạn đang trao đổi riêng 1-1 với Đạo diễn. Hãy trả lời bám sát dữ liệu dự án hiện tại.'
-    : `Bạn đang phản hồi trong ${channelContextDesc[channel] || channel}. Hãy trả lời ngắn gọn, bám sát đúng chuyên môn kênh và dữ liệu thực tế của phiên.`
-}`;
+    openIncidentsList.length > 0
+      ? `\nSự cố đang mở (${openIncidentsList.length}):\n${openIncidentsList
+          .map(
+            (i) =>
+              `- [${i.code}] (${i.status}, vòng ${i.attemptCount}/${i.maxAttempts}, phụ trách: ${i.assignedFixAgentId}) ${i.categoryLabel}: ${i.errorDescription.slice(0, 130)}`
+          )
+          .join('\n')}`
+      : '\nHiện không có sự cố tồn đọng.';
 
   const inlineImageAttachments = attachments
     .map((att) => (att.startsWith('data:image/') ? att : artifactUrlToDataUrl(att)))
     .filter((x): x is string => Boolean(x && x.startsWith('data:image/')));
 
+  // === TWO-WAY COMMAND EXECUTION BY GEMINI AI – CHAIRMAN & SUPREME COMMANDER ===
+  if (responderId === 'chairman') {
+    const chairmanName = getChairmanDisplayName();
+    const health = await refreshIntegrationHealth(false);
+    if (!health.geminiConfigured) {
+      throw new Error(
+        'Chưa cấu hình GEMINI_API_KEY nên Gemini AI – Chủ tịch chưa thể điều hành qua Chat Room. Hãy kiểm tra Settings > Secrets.'
+      );
+    }
+
+    const teamStatusText = storeDoc.agents
+      .map(
+        (a) =>
+          `- ${a.id} (${a.name} · ${a.roleTitle}): status=${a.status}, completed=${a.stats.completed}, failed=${a.stats.failed}, task=${a.currentTaskSummary || 'rảnh'}`
+      )
+      .join('\n');
+
+    const startedAt = Date.now();
+    const ai = getGeminiClient();
+    const parts: any[] = [];
+    for (const dataUrl of inlineImageAttachments.slice(0, 3)) {
+      const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (m) parts.push({ inlineData: { mimeType: m[1], data: m[2] } });
+    }
+    parts.push({
+      text: `Lịch sử kênh #${channel} gần đây:\n${recentHistory}\n\nTrạng thái 5 Muse AI:\n${teamStatusText}${memoryScenesNote}${openIncidentsNote}${studioDirectiveNote}\n\nChỉ đạo mới nhất từ người dùng:\n${text || 'Xem tệp đính kèm và chỉ đạo 5 Muse AI.'}`,
+    });
+
+    const resp = await retryWithGeminiBackoff(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: [{ role: 'user', parts }],
+          config: {
+            systemInstruction: `Bạn là ${chairmanName} — Chủ tịch & Tổng chỉ huy toàn bộ hệ thống 5 Muse AI.
+Cơ cấu nhân sự thực tế:
+- Muse AI 01 (muse-01 · Muse Director): Nhân viên Sản xuất Hình ảnh & Video.
+- Muse AI 02, 03, 04 (muse-02, muse-03, muse-04): Nhân viên Sản xuất Hình ảnh & Video song song.
+- Muse AI 05 (muse-05 · Muse Guardian): Kiểm định độc lập (ngưỡng sai lệch tổng thể <= 5% sau loại trừ phụ kiện được phép).
+
+Bạn có quyền THỰC SỰ điều phối trong Chat Room:
+1. Trả lời trực tiếp, sắc bén cho người dùng trong "replyToUser".
+2. Khi cần giao việc, hỏi tiến độ, chất vấn lỗi, yêu cầu sửa prompt/ảnh/video hoặc chỉ đạo kiểm định lại: thêm danh sách "museDirectives" (tối đa 3 lệnh). Hệ thống sẽ gửi thật chỉ thị xuống kênh riêng của từng Muse, tự tạo Task nếu có "enqueueTaskType", và gọi Muse trả lời thật nếu "askMuseToReply": true.
+3. Không giả lập kết quả nếu chưa chạy. Trả về JSON đúng schema.`,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                replyToUser: { type: Type.STRING },
+                museDirectives: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      targetAgentId: { type: Type.STRING },
+                      directiveMessage: { type: Type.STRING },
+                      askMuseToReply: { type: Type.BOOLEAN },
+                      enqueueTaskType: { type: Type.STRING },
+                      taskTitle: { type: Type.STRING },
+                      taskInstructions: { type: Type.STRING },
+                      sceneId: { type: Type.STRING },
+                    },
+                    required: ['targetAgentId', 'directiveMessage'],
+                  },
+                },
+              },
+              required: ['replyToUser'],
+            },
+          },
+        }),
+      [1200, 2600]
+    );
+
+    const parsed = parseAiBlueprintJsonSafe((resp.text || '').trim()) || {};
+    const replyText = String(parsed.replyToUser || resp.text || '').trim();
+    if (!replyText) {
+      throw new Error('Gemini AI – Chủ tịch không trả về nội dung phản hồi. Vui lòng thử lại.');
+    }
+
+    const directives: any[] = Array.isArray(parsed.museDirectives) ? parsed.museDirectives.slice(0, 3) : [];
+    const createdTaskCodes: string[] = [];
+    const targetedMuseIds: MuseAgentId[] = [];
+    const activeRunIdForTasks = runId || storeDoc.runs[0]?.id || 'manual_run';
+
+    for (const d of directives) {
+      const targetId = normalizeMuseId(d?.targetAgentId, 'muse-01');
+      const targetAgent = storeDoc.agents.find((a) => a.id === targetId);
+      const dirMsg = String(d?.directiveMessage || '').trim();
+      if (!targetAgent || !dirMsg) continue;
+      targetedMuseIds.push(targetId);
+
+      let createdTask: CommandTask | undefined;
+      const rawTaskType = String(d?.enqueueTaskType || '').trim() as CommandTaskType;
+      const allowedTaskTypes: CommandTaskType[] = [
+        'design_character_ref',
+        'design_scene_image',
+        'restore_costume_and_regen_image',
+        'produce_scene_video',
+        'qa_inspect_image',
+        'qa_inspect_scene',
+        'custom_task',
+      ];
+      if (rawTaskType && allowedTaskTypes.includes(rawTaskType)) {
+        const effectiveAgent: MuseAgentId =
+          rawTaskType === 'qa_inspect_image' || rawTaskType === 'qa_inspect_scene'
+            ? 'muse-05'
+            : targetId === 'muse-05'
+            ? 'muse-03'
+            : targetId;
+        const matchedSc = d?.sceneId
+          ? mem.scenes.find((s) => s.sceneId === d.sceneId)
+          : params.sceneId
+          ? mem.scenes.find((s) => s.sceneId === params.sceneId)
+          : undefined;
+        createdTask = enqueueTask({
+          runId: activeRunIdForTasks,
+          type: rawTaskType,
+          title: String(d?.taskTitle || `[Lệnh Chủ tịch] ${dirMsg.slice(0, 68)}`).trim(),
+          instructions: String(d?.taskInstructions || dirMsg).trim(),
+          assignedAgentId: effectiveAgent,
+          sceneId: matchedSc?.sceneId,
+          sceneIndex: matchedSc?.index,
+          expectedMemoryVersion: mem.version,
+          allowMultipleVariants: rawTaskType === 'custom_task',
+          priority: 9,
+        });
+        createdTaskCodes.push(`${createdTask.code}→${effectiveAgent}`);
+      }
+
+      // Deliver official Chairman directive directly into the target Muse's DM channel
+      appendConversationMessage({
+        channel: targetId,
+        projectId: mem.projectId,
+        runId,
+        sessionId: runId,
+        sceneId: d?.sceneId || params.sceneId,
+        taskId: createdTask?.id,
+        senderType: 'agent',
+        senderId: 'chairman',
+        senderName: chairmanName,
+        senderColor: '#D97706',
+        roleBadge: createdTask ? `Giao ${createdTask.code}` : 'Chỉ thị Chủ tịch',
+        targetAgentIds: [targetId],
+        content: `[CHỈ THỊ TỪ ${chairmanName.toUpperCase()}${createdTask ? ` · ${createdTask.code}` : ''}]\n${dirMsg}`,
+      });
+
+      appendProjectCoordinationLog(runId, {
+        actorId: 'chairman',
+        actorName: chairmanName,
+        targetAgentIds: [targetId],
+        kind: 'directive',
+        runId,
+        taskId: createdTask?.id,
+        sceneId: d?.sceneId || params.sceneId,
+        summary: `Chỉ đạo ${targetAgent.name}: ${dirMsg.slice(0, 200)}`,
+      });
+
+      // Live two-way response from the directed Muse AI (no fake response if unreachable)
+      if (d?.askMuseToReply) {
+        try {
+          const museInf = await runAgentTextInference({
+            agent: targetAgent,
+            systemPrompt: `Bạn là ${targetAgent.name} (${targetAgent.roleTitle}) thuộc đội 5 Muse AI dưới quyền chỉ huy trực tiếp của ${chairmanName}. Trả lời ngắn gọn (2-4 câu tiếng Việt), xác nhận hoặc giải trình rõ ràng theo dữ liệu thật của dự án "${mem.title}" (Memory v${mem.version}).`,
+            userPrompt: `Chỉ thị từ ${chairmanName}:\n${dirMsg}${createdTask ? `\nMã nhiệm vụ được giao: ${createdTask.code}` : ''}`,
+          });
+          targetAgent.lastActiveAt = Date.now();
+          appendConversationMessage({
+            channel: targetId,
+            projectId: mem.projectId,
+            runId,
+            sessionId: runId,
+            sceneId: d?.sceneId || params.sceneId,
+            taskId: createdTask?.id,
+            senderType: 'agent',
+            senderId: targetAgent.id,
+            senderName: `${targetAgent.name} (${targetAgent.roleTitle})`,
+            roleBadge: 'Phản hồi Chủ tịch',
+            content: museInf.text,
+          });
+          if (channel !== targetId) {
+            appendConversationMessage({
+              channel,
+              projectId: mem.projectId,
+              runId,
+              sessionId: runId,
+              sceneId: d?.sceneId || params.sceneId,
+              taskId: createdTask?.id,
+              senderType: 'agent',
+              senderId: targetAgent.id,
+              senderName: `${targetAgent.name} (${targetAgent.roleTitle})`,
+              roleBadge: 'Báo cáo Chủ tịch',
+              content: museInf.text,
+            });
+          }
+          appendProjectCoordinationLog(runId, {
+            actorId: targetAgent.id,
+            actorName: targetAgent.name,
+            kind: 'response',
+            runId,
+            taskId: createdTask?.id,
+            sceneId: d?.sceneId || params.sceneId,
+            summary: `${targetAgent.name} phản hồi Chủ tịch: ${museInf.text.slice(0, 180)}`,
+          });
+        } catch (museErr: any) {
+          const errNote = String(museErr?.message || museErr || 'Không thể kết nối Muse AI.');
+          appendConversationMessage({
+            channel: targetId,
+            projectId: mem.projectId,
+            runId,
+            sessionId: runId,
+            taskId: createdTask?.id,
+            senderType: 'system',
+            senderId: 'system',
+            senderName: 'Hệ thống giám sát',
+            roleBadge: 'Cảnh báo kết nối',
+            content: `${targetAgent.name} chưa phản hồi chỉ thị của ${chairmanName}: ${errNote}`,
+          });
+        }
+      }
+    }
+
+    if (createdTaskCodes.length > 0) {
+      void tickOrchestratorQueue();
+    }
+
+    const respMs = Math.max(1, Date.now() - startedAt);
+    const footerNote =
+      targetedMuseIds.length > 0
+        ? `\n\n— Đã chuyển chỉ thị trực tiếp tới: ${Array.from(new Set(targetedMuseIds)).map((id) => id.toUpperCase()).join(', ')}${createdTaskCodes.length > 0 ? ` · Tạo nhiệm vụ: ${createdTaskCodes.join(', ')}` : ''}.`
+        : '';
+
+    const reply = appendConversationMessage({
+      channel,
+      projectId: mem.projectId,
+      runId,
+      sessionId: runId,
+      sceneId: params.sceneId,
+      senderType: 'agent',
+      senderId: 'chairman',
+      senderName: chairmanName,
+      senderColor: '#D97706',
+      roleBadge: 'Chủ tịch · Tổng chỉ huy',
+      targetAgentIds: targetedMuseIds.length > 0 ? Array.from(new Set(targetedMuseIds)) : undefined,
+      promptDelivered: text,
+      content: `${replyText}${footerNote}`,
+    });
+
+    addActivityLog('info', `Chủ tịch chỉ đạo #${channel}`, `${chairmanName} phản hồi (${respMs}ms)${createdTaskCodes.length > 0 ? ` · giao ${createdTaskCodes.join(', ')}` : ''}.`, {
+      agentId: 'chairman',
+      runId,
+    });
+    saveStateAtomic();
+    return { state: await getCommandCenterState(false), reply };
+  }
+
+  // === DIRECT MUSE AI RESPONSE ===
+  const responder = storeDoc.agents.find((a) => a.id === responderId) || storeDoc.agents[0];
+  const channelContextDesc: Record<string, string> = {
+    commander: 'Kênh #tổng-chỉ-huy (lệnh điều hành toàn đội dưới quyền Chủ tịch Gemini AI)',
+    incident: 'Kênh #incident-command (Trung tâm sự cố — báo cáo trực tiếp cho Chủ tịch Gemini AI)',
+    production: 'Kênh #sản-xuất-phim (theo dõi tiến độ 4 Muse sản xuất & kiểm định Muse 05)',
+    script: 'Kênh #kịch-bản (kịch bản, nhân vật khóa cứng, thoại & timeline)',
+    visual: 'Kênh #hình-ảnh (thiết kế nhân vật, tạo ảnh keyframe)',
+    video: 'Kênh #video (dựng video phân cảnh, prompt chuyển động)',
+    qa: 'Kênh #kiểm-duyệt (kiểm định 5% & báo cáo lỗi về Chủ tịch Gemini AI)',
+    ai_bus: 'Kênh #trao-đổi-ai (phối hợp giữa các AI)',
+  };
+
+  const sys = `Bạn là ${responder.name} (${responder.roleTitle}) trong Phòng Điều Hành AI Muse dưới quyền chỉ huy trực tiếp của ${getChairmanDisplayName()}.
+Vai trò: ${responder.description}
+Dự án/Phiên hiện tại: "${mem.title}" (Project Memory v${mem.version}, ${mem.characters.length} nhân vật, ${mem.scenes.length} cảnh).${studioDirectiveNote}${memoryScenesNote}${openIncidentsNote}
+${
+  isDm
+    ? 'Bạn đang trao đổi riêng 1-1 trong Chat Room. Hãy trả lời bám sát dữ liệu dự án hiện tại và tuân thủ khóa nhân vật.'
+    : `Bạn đang phản hồi trong ${channelContextDesc[channel] || channel}. Hãy trả lời ngắn gọn, bám sát đúng chuyên môn và dữ liệu thực tế của phiên.`
+}`;
+
   const startedAt = Date.now();
   const inf = await runAgentTextInference({
     agent: responder,
     systemPrompt: sys,
-    userPrompt: `Lịch sử kênh gần đây:\n${recentHistory}\n\nYêu cầu mới nhất của Đạo diễn:\n${text || 'Xem tệp đính kèm và phản hồi.'}`,
+    userPrompt: `Lịch sử kênh gần đây:\n${recentHistory}\n\nYêu cầu mới nhất:\n${text || 'Xem tệp đính kèm và phản hồi.'}`,
     attachments: inlineImageAttachments,
   });
   const respMs = Math.max(1, Date.now() - startedAt);
@@ -6627,6 +7427,15 @@ ${
     senderName: `${responder.name} (${responder.roleTitle})`,
     promptDelivered: text,
     content: inf.text,
+  });
+
+  appendProjectCoordinationLog(runId, {
+    actorId: responder.id,
+    actorName: responder.name,
+    kind: 'response',
+    runId,
+    sceneId: params.sceneId,
+    summary: `Phản hồi tại #${channel}: ${inf.text.slice(0, 180)}`,
   });
 
   addActivityLog('info', `Chat #${channel}`, `${responder.name} phản hồi trong ${respMs}ms qua ${inf.provider}.`, {
@@ -6689,13 +7498,27 @@ export async function createManualBackup(summary?: string): Promise<CommandCente
   return getCommandCenterState(false);
 }
 
+function resolveSafeFileInDir(baseDir: string, rawName: string, extSuffix = ''): string | null {
+  const baseName = path.basename(String(rawName || '')).replace(/[^a-zA-Z0-9._-]/g, '');
+  if (!baseName || baseName === '.' || baseName === '..' || baseName.includes('..')) {
+    return null;
+  }
+  const finalName = extSuffix && !baseName.endsWith(extSuffix) ? `${baseName}${extSuffix}` : baseName;
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedTarget = path.resolve(resolvedBase, finalName);
+  if (!resolvedTarget.startsWith(resolvedBase + path.sep)) {
+    return null;
+  }
+  return resolvedTarget;
+}
+
 export async function restoreBackupById(backupId: string): Promise<CommandCenterState> {
-  const fp = path.join(BACKUPS_DIR, `${backupId.replace(/[^a-zA-Z0-9._-]/g, '')}.json`);
-  if (!fs.existsSync(fp)) {
+  const fp = resolveSafeFileInDir(BACKUPS_DIR, backupId, '.json');
+  if (!fp || !fs.existsSync(fp)) {
     throw new Error('Không tìm thấy tệp sao lưu để khôi phục.');
   }
   const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
-  createBackupSnapshot('pre_restore', `Sao lưu tự động trước khi khôi phục ${backupId}`);
+  createBackupSnapshot('pre_restore', `Sao lưu tự động trước khi khôi phục ${path.basename(fp, '.json')}`);
 
   if (Array.isArray(data.agents) && data.agents.length === 5) storeDoc.agents = data.agents;
   if (data.projectMemory) storeDoc.projectMemory = data.projectMemory;
@@ -6704,14 +7527,14 @@ export async function restoreBackupById(backupId: string): Promise<CommandCenter
   if (Array.isArray(data.qaReports)) storeDoc.qaReports = data.qaReports;
   if (Array.isArray(data.conversations)) storeDoc.conversations = data.conversations;
 
-  addActivityLog('warn', 'Khôi phục từ Backup', `Đã khôi phục toàn bộ trạng thái từ ${backupId}.`);
+  addActivityLog('warn', 'Khôi phục từ Backup', `Đã khôi phục toàn bộ trạng thái từ ${path.basename(fp, '.json')}.`);
   saveStateAtomic();
   return getCommandCenterState(false);
 }
 
 export function getBackupExportFilePath(backupId: string): string | null {
-  const fp = path.join(BACKUPS_DIR, `${backupId.replace(/[^a-zA-Z0-9._-]/g, '')}.json`);
-  return fs.existsSync(fp) ? fp : null;
+  const fp = resolveSafeFileInDir(BACKUPS_DIR, backupId, '.json');
+  return fp && fs.existsSync(fp) ? fp : null;
 }
 
 export async function restoreProjectMemorySnapshot(snapshotId: string): Promise<CommandCenterState> {
@@ -6926,8 +7749,903 @@ export async function updateCloudConfig(patch: {
 }
 
 export function resolveArtifactDiskPath(filename: string): string | null {
-  const safe = String(filename || '').replace(/[^a-zA-Z0-9._-]/g, '');
-  if (!safe) return null;
-  const fp = path.join(ARTIFACTS_DIR, safe);
-  return fs.existsSync(fp) ? fp : null;
+  const fp = resolveSafeFileInDir(ARTIFACTS_DIR, filename);
+  return fp && fs.existsSync(fp) ? fp : null;
+}
+
+// ==========================================
+// EXECUTIVE CHAIRMAN AI — SUPREME COMMAND OVER 5 MUSE AI
+// ==========================================
+
+const chairmanAnalyzingIncidents = new Set<string>();
+
+const VALID_CHAIRMAN_ACTIONS: ChairmanActionType[] = [
+  'patch_and_retry',
+  'switch_engine_and_retry',
+  'reassign_muse',
+  'fix_scene_memory_and_regen',
+  'adjust_qa_and_approve',
+  'reset_stuck_run',
+  'direct_briefing',
+];
+
+const VALID_MUSE_IDS: MuseAgentId[] = ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'];
+
+function normalizeMuseId(val: any, fallback: MuseAgentId = 'muse-01'): MuseAgentId {
+  const s = String(val || '').trim().toLowerCase() as MuseAgentId;
+  return VALID_MUSE_IDS.includes(s) ? s : fallback;
+}
+
+function normalizeChairmanAction(val: any): ChairmanActionType {
+  const s = String(val || '').trim() as ChairmanActionType;
+  return VALID_CHAIRMAN_ACTIONS.includes(s) ? s : 'patch_and_retry';
+}
+
+export async function updateChairmanConfig(patch: Partial<ChairmanConfig>): Promise<CommandCenterState> {
+  if (!storeDoc.chairmanConfig) {
+    storeDoc.chairmanConfig = createDefaultChairmanConfig();
+  }
+  if (typeof patch.enabled === 'boolean') storeDoc.chairmanConfig.enabled = patch.enabled;
+  if (typeof patch.autoInterveneOnIncident === 'boolean') {
+    storeDoc.chairmanConfig.autoInterveneOnIncident = patch.autoInterveneOnIncident;
+  }
+  if (typeof patch.autoExecuteRecommended === 'boolean') {
+    storeDoc.chairmanConfig.autoExecuteRecommended = patch.autoExecuteRecommended;
+  }
+  if (typeof patch.strictOversightMode === 'boolean') {
+    storeDoc.chairmanConfig.strictOversightMode = patch.strictOversightMode;
+  }
+  if (typeof patch.name === 'string' && patch.name.trim()) {
+    storeDoc.chairmanConfig.name = patch.name.trim().slice(0, 80);
+  }
+  if (typeof patch.title === 'string' && patch.title.trim()) {
+    storeDoc.chairmanConfig.title = patch.title.trim().slice(0, 140);
+  }
+
+  addActivityLog(
+    'info',
+    'Cập nhật quyền hạn Chủ tịch Điều hành AI',
+    `Kích hoạt: ${storeDoc.chairmanConfig.enabled ? 'Bật' : 'Tắt'} · Tự tiếp quản sự cố: ${
+      storeDoc.chairmanConfig.autoInterveneOnIncident ? 'Bật' : 'Tắt'
+    } · Tự thực thi phương án an toàn: ${storeDoc.chairmanConfig.autoExecuteRecommended ? 'Bật' : 'Tắt'}`,
+    { agentId: 'chairman' }
+  );
+  saveStateAtomic();
+  return getCommandCenterState(false);
+}
+
+function buildChairmanContextDigest(params: {
+  inc?: IncidentRecord;
+  run?: ProductionRun | null;
+  health: MuseIntegrationHealth;
+  userRequest?: string;
+}): string {
+  const runId = params.inc?.runId || params.run?.id || getEffectiveSelectedRunId();
+  const mem = runId ? getRunMemory(runId) : storeDoc.projectMemory;
+  const runTasks = runId ? storeDoc.tasks.filter((t) => t.runId === runId) : storeDoc.tasks.slice(-25);
+  const failedOrActiveTasks = runTasks
+    .filter((t) => ['failed', 'qa_rejected', 'running', 'queued', 'blocked_by_deps'].includes(t.status))
+    .slice(-16)
+    .map((t) => ({
+      code: t.code,
+      type: t.type,
+      agent: t.assignedAgentId,
+      status: t.status,
+      sceneIndex: t.sceneIndex,
+      retries: `${t.retryCount}/${t.maxRetries}`,
+      error: t.error?.slice(0, 260),
+      title: t.title,
+    }));
+
+  const openIncidents = storeDoc.incidents
+    .filter((i) => i.status !== 'resolved')
+    .slice(0, 8)
+    .map((i) => ({
+      code: i.code,
+      status: i.status,
+      severity: i.severity,
+      category: i.categoryLabel,
+      responsible: i.responsibleAgentId,
+      assignedFix: i.assignedFixAgentId,
+      sceneIndex: i.sceneIndex,
+      attempts: `${i.attemptCount}/${i.maxAttempts}`,
+      errorDescription: i.errorDescription.slice(0, 280),
+      escalationReason: i.escalationReason?.slice(0, 220),
+    }));
+
+  const agentsSummary = storeDoc.agents.map((a) => ({
+    id: a.id,
+    name: a.name,
+    roleTitle: a.roleTitle,
+    status: a.status,
+    paused: a.paused,
+    engineMode: a.engineMode,
+    boundAccountId: a.boundAccountId,
+    completed: a.stats.completed,
+    failed: a.stats.failed,
+    lastError: a.lastError?.slice(0, 200),
+    currentTask: a.currentTaskSummary?.slice(0, 120),
+  }));
+
+  const targetScene = params.inc?.sceneId
+    ? mem.scenes.find((s) => s.sceneId === params.inc!.sceneId)
+    : undefined;
+
+  const payload = {
+    userRequest: params.userRequest || null,
+    integrationHealth: {
+      muse2ApiStatus: params.health.muse2ApiStatus,
+      healthyAccounts: params.health.healthyAccounts,
+      accountsCount: params.health.accountsCount,
+      geminiConfigured: params.health.geminiConfigured,
+      ffmpegAvailable: params.health.ffmpegAvailable,
+      warnings: params.health.warnings,
+    },
+    activeRun: params.run
+      ? {
+          id: params.run.id,
+          title: params.run.title,
+          status: params.run.status,
+          sceneCount: params.run.sceneCount,
+          completedScenes: params.run.completedScenes,
+          failedScenes: params.run.failedScenes,
+          escalatedScenes: params.run.escalatedScenes,
+          error: params.run.error,
+        }
+      : null,
+    agents: agentsSummary,
+    openIncidents,
+    failedOrActiveTasks,
+    projectMemory: {
+      title: mem.title,
+      version: mem.version,
+      allowFreeCostumeChange: Boolean(mem.allowFreeCostumeChange),
+      characters: mem.characters.slice(0, 6).map((c) => ({
+        id: c.id,
+        name: c.name,
+        voiceId: c.voiceId,
+        costume: c.syncProfile?.costume?.slice(0, 140) || c.description?.slice(0, 140),
+      })),
+      totalScenes: mem.scenes.length,
+    },
+    targetIncident: params.inc
+      ? {
+          code: params.inc.code,
+          status: params.inc.status,
+          severity: params.inc.severity,
+          category: params.inc.category,
+          categoryLabel: params.inc.categoryLabel,
+          reporter: params.inc.reporterAgentId,
+          responsible: params.inc.responsibleAgentId,
+          assignedFix: params.inc.assignedFixAgentId,
+          attempts: `${params.inc.attemptCount}/${params.inc.maxAttempts}`,
+          errorDescription: params.inc.errorDescription,
+          suspectedRootCause: params.inc.suspectedRootCause,
+          technicalDiagnosis: params.inc.technicalDiagnosis,
+          costumeMismatch: params.inc.costumeMismatch
+            ? {
+                characterName: params.inc.costumeMismatch.characterName,
+                expectedCostume: params.inc.costumeMismatch.expectedCostume,
+                observedCostume: params.inc.costumeMismatch.observedCostume,
+                mismatchDetails: params.inc.costumeMismatch.mismatchDetails,
+              }
+            : null,
+          recentHistory: params.inc.history.slice(-6).map((h) => ({
+            actor: h.actorName,
+            kind: h.kind,
+            content: h.content.slice(0, 300),
+          })),
+        }
+      : null,
+    targetScene: targetScene
+      ? {
+          sceneId: targetScene.sceneId,
+          index: targetScene.index,
+          title: targetScene.title,
+          dialogue: targetScene.dialogue,
+          speakerName: targetScene.speakerName,
+          costume: targetScene.costume,
+          actionDetail: targetScene.actionDetail,
+          settingDetail: targetScene.settingDetail,
+          qaStatus: targetScene.qaStatus,
+          qaScore: targetScene.qaScore,
+          retryCount: targetScene.retryCount,
+        }
+      : null,
+  };
+
+  return JSON.stringify(payload, null, 2);
+}
+
+export async function analyzeAndDirectWithChairman(params: {
+  incidentId?: string;
+  runId?: string;
+  userRequest?: string;
+  trigger?: ChairmanBriefing['trigger'];
+}): Promise<{ state: CommandCenterState; briefing: ChairmanBriefing }> {
+  const health = await refreshIntegrationHealth(false);
+  const inc = params.incidentId
+    ? storeDoc.incidents.find((i) => i.id === params.incidentId)
+    : undefined;
+  const runId = inc?.runId || params.runId || getEffectiveSelectedRunId() || undefined;
+  const run = runId ? storeDoc.runs.find((r) => r.id === runId) || null : storeDoc.runs[0] || null;
+  const chairmanName = storeDoc.chairmanConfig?.name || 'Chủ tịch Điều hành AI';
+
+  const contextJson = buildChairmanContextDigest({
+    inc,
+    run,
+    health,
+    userRequest: params.userRequest?.trim(),
+  });
+
+  const systemInstruction = `Bạn là "${chairmanName}" — Chủ tịch & Tổng chỉ huy đứng TRÊN toàn bộ đội ngũ 5 Muse AI:
+- Muse AI 01 (Muse Director), Muse AI 02, Muse AI 03, Muse AI 04: Bộ phận sản xuất Hình ảnh & Video trực tiếp (chạy song song từng phân cảnh, Ảnh → Video).
+- Muse AI 05 (Muse Guardian): Kiểm định độc lập (ngưỡng sai lệch tổng thể <= 5% sau loại trừ phụ kiện được phép; tách riêng thuộc tính quan trọng khuôn mặt, vóc dáng, trang phục chính).
+Nhiệm vụ của bạn:
+1. Chẩn đoán sắc bén, thẳng thắn NGUYÊN NHÂN GỐC RỄ (không nói chung chung, không lặp lại mẫu câu máy móc của Muse 01).
+2. Chỉ thẳng chỗ xử lý kém / sai hướng / lặp lỗi của đội ngũ 5 Muse AI hiện tại.
+3. Đưa ra ĐÚNG 3 PHƯƠNG ÁN GIẢI QUYẾT THỰC THI ĐƯỢC NGAY (options), phân hóa rõ ràng theo chiến lược:
+   - Phương án 1 (recommended=true): Tối ưu nhất, giải quyết tận gốc vấn đề.
+   - Phương án 2: Dự phòng an toàn (ví dụ đổi engine dự phòng, điều chuyển Muse khỏe hơn, hoặc gỡ kẹt dây chuyền).
+   - Phương án 3: Dứt điểm / thông chốt nhanh hoặc chỉ đạo trực tiếp xuống đội Muse.
+4. Mỗi phương án phải chọn đúng actionType trong danh sách hợp lệ:
+   - "switch_engine_and_retry": Bật chế độ dự phòng thông minh + tự chọn tài khoản khỏe + chạy lại tác vụ/sự cố.
+   - "patch_and_retry": Vá trực tiếp chỉ thị/prompt lỗi + xóa lỗi cũ + chạy lại ngay.
+   - "reassign_muse": Chuyển việc sang một Muse AI khác khỏe hơn + chạy lại.
+   - "fix_scene_memory_and_regen": Sửa trực tiếp thoại/trang phục/bối cảnh/hành động của cảnh lỗi trong Project Memory và tạo lại cảnh.
+   - "adjust_qa_and_approve": Phê duyệt thông chốt QA cho cảnh bị kẹt để dây chuyền đi tiếp.
+   - "reset_stuck_run": Gỡ kẹt toàn bộ tác vụ lỗi/treo của phiên hiện tại và khởi động lại hàng đợi.
+   - "direct_briefing": Phát chỉ thị chiến lược trực tiếp cho Muse AI mục tiêu (tạo nhiệm vụ ưu tiên nếu cần).
+5. Toàn bộ nội dung viết bằng tiếng Việt tự nhiên, sắc bén, quyết đoán như một Chủ tịch điều hành thực thụ. Không bịa tên mô hình hay thông số giả.`;
+
+  const userPrompt = `Dưới đây là toàn bộ tình hình thực tế của Phòng Điều Hành AI Muse:\n${contextJson}\n\nHãy phân tích sâu, chỉ rõ điểm chưa ổn của đội 5 Muse AI và lập 3 phương án hành động thực thi được ngay.`;
+
+  const ai = getGeminiClient();
+  let responseText = '';
+  try {
+    const resp = await retryWithGeminiBackoff(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: userPrompt,
+          config: {
+            systemInstruction,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                rootCauseDiagnosis: {
+                  type: Type.STRING,
+                  description: 'Chẩn đoán nguyên nhân gốc rễ cụ thể bằng tiếng Việt.',
+                },
+                critiqueOfMuseTeam: {
+                  type: Type.STRING,
+                  description: 'Nhận xét thẳng thắn chỗ xử lý kém hoặc sai hướng của Muse 01-05.',
+                },
+                executiveSummary: {
+                  type: Type.STRING,
+                  description: 'Kết luận và chỉ đạo trọng tâm của Chủ tịch Điều hành.',
+                },
+                options: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      label: { type: Type.STRING },
+                      recommended: { type: Type.BOOLEAN },
+                      riskLevel: { type: Type.STRING, description: 'low | medium | high' },
+                      summary: { type: Type.STRING },
+                      actionType: { type: Type.STRING },
+                      targetAgentId: { type: Type.STRING, description: 'muse-01..muse-05' },
+                      executionCommand: { type: Type.STRING },
+                      estimatedOutcome: { type: Type.STRING },
+                      scenePatch: {
+                        type: Type.OBJECT,
+                        properties: {
+                          dialogue: { type: Type.STRING },
+                          costume: { type: Type.STRING },
+                          actionDetail: { type: Type.STRING },
+                          settingDetail: { type: Type.STRING },
+                        },
+                      },
+                    },
+                    required: [
+                      'label',
+                      'riskLevel',
+                      'summary',
+                      'actionType',
+                      'targetAgentId',
+                      'executionCommand',
+                      'estimatedOutcome',
+                    ],
+                  },
+                },
+              },
+              required: ['rootCauseDiagnosis', 'critiqueOfMuseTeam', 'executiveSummary', 'options'],
+            },
+          },
+        }),
+      [1500, 3200]
+    );
+    responseText = (resp.text || '').trim();
+  } catch (err: any) {
+    throw new Error(formatGeminiError(err));
+  }
+
+  if (!responseText) {
+    throw new Error('Chủ tịch Điều hành AI không nhận được phản hồi phân tích. Vui lòng thử lại.');
+  }
+
+  const parsed = parseAiBlueprintJsonSafe(responseText);
+  if (!parsed || !Array.isArray(parsed.options) || parsed.options.length === 0) {
+    throw new Error('Dữ liệu phương án từ Chủ tịch AI chưa đúng cấu trúc. Vui lòng thử lại.');
+  }
+
+  const normalizedOptions: ChairmanPlanOption[] = parsed.options.slice(0, 3).map((opt: any, idx: number) => {
+    const riskRaw = String(opt?.riskLevel || 'low').toLowerCase();
+    const riskLevel: 'low' | 'medium' | 'high' =
+      riskRaw === 'high' ? 'high' : riskRaw === 'medium' ? 'medium' : 'low';
+    const rawPatch = opt?.scenePatch && typeof opt.scenePatch === 'object' ? opt.scenePatch : undefined;
+    const cleanPatch: ChairmanScenePatch | undefined = rawPatch
+      ? {
+          ...(typeof rawPatch.dialogue === 'string' && rawPatch.dialogue.trim()
+            ? { dialogue: rawPatch.dialogue.trim() }
+            : {}),
+          ...(typeof rawPatch.costume === 'string' && rawPatch.costume.trim()
+            ? { costume: rawPatch.costume.trim() }
+            : {}),
+          ...(typeof rawPatch.actionDetail === 'string' && rawPatch.actionDetail.trim()
+            ? { actionDetail: rawPatch.actionDetail.trim() }
+            : {}),
+          ...(typeof rawPatch.settingDetail === 'string' && rawPatch.settingDetail.trim()
+            ? { settingDetail: rawPatch.settingDetail.trim() }
+            : {}),
+        }
+      : undefined;
+
+    return {
+      id: `copt_${Date.now().toString(36)}_${idx + 1}`,
+      label: String(opt?.label || `Phương án ${idx + 1}`).trim(),
+      recommended: idx === 0 ? opt?.recommended !== false : Boolean(opt?.recommended),
+      riskLevel,
+      summary: String(opt?.summary || '').trim(),
+      actionType: normalizeChairmanAction(opt?.actionType),
+      targetAgentId: normalizeMuseId(opt?.targetAgentId, inc?.assignedFixAgentId || 'muse-01'),
+      executionCommand: String(opt?.executionCommand || opt?.summary || '').trim(),
+      scenePatch: cleanPatch && Object.keys(cleanPatch).length > 0 ? cleanPatch : undefined,
+      estimatedOutcome: String(opt?.estimatedOutcome || 'Khôi phục tiến độ và giảm lặp lỗi.').trim(),
+    };
+  });
+
+  const briefing: ChairmanBriefing = {
+    id: `chb_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+    createdAt: Date.now(),
+    incidentId: inc?.id,
+    incidentCode: inc?.code,
+    runId: run?.id,
+    trigger: params.trigger || (inc ? 'incident_analysis' : 'executive_order'),
+    userRequest: params.userRequest?.trim() || undefined,
+    rootCauseDiagnosis: String(parsed.rootCauseDiagnosis || '').trim(),
+    critiqueOfMuseTeam: String(parsed.critiqueOfMuseTeam || '').trim(),
+    executiveSummary: String(parsed.executiveSummary || '').trim(),
+    options: normalizedOptions,
+  };
+
+  if (!Array.isArray(storeDoc.chairmanBriefings)) {
+    storeDoc.chairmanBriefings = [];
+  }
+  storeDoc.chairmanBriefings.unshift(briefing);
+  if (storeDoc.chairmanBriefings.length > 40) {
+    storeDoc.chairmanBriefings = storeDoc.chairmanBriefings.slice(0, 40);
+  }
+
+  const optionsText = normalizedOptions
+    .map(
+      (o, i) =>
+        `${i + 1}. ${o.label}${o.recommended ? ' [Khuyến nghị]' : ''}: ${o.summary}\n   → Giao ${o.targetAgentId.toUpperCase()}: ${o.executionCommand}`
+    )
+    .join('\n');
+
+  const briefingMsgContent = `[CHỈ ĐẠO CHỦ TỊCH${inc ? ` · ${inc.code}` : ''}]
+• Chẩn đoán gốc: ${briefing.rootCauseDiagnosis}
+• Đánh giá đội 5 Muse AI: ${briefing.critiqueOfMuseTeam}
+• Phương án đề xuất:
+${optionsText}`;
+
+  const mem = run?.id ? getRunMemory(run.id) : storeDoc.projectMemory;
+
+  if (inc) {
+    inc.chairmanBriefingId = briefing.id;
+    inc.chairmanOptions = normalizedOptions;
+    inc.updatedAt = Date.now();
+    appendIncidentTurn(inc, {
+      actorId: 'chairman',
+      actorName: chairmanName,
+      roleBadge: 'Chủ tịch chẩn đoán',
+      kind: 'directive',
+      content: briefingMsgContent,
+    });
+    postIncidentChannelMessage({
+      inc,
+      senderId: 'chairman',
+      senderName: chairmanName,
+      roleBadge: 'Chủ tịch AI',
+      targetAgentIds: Array.from(new Set(['muse-01', inc.assignedFixAgentId])),
+      content: briefingMsgContent,
+    });
+    emitCommandCenterEvent('incident:updated', inc);
+  }
+
+  appendConversationMessage({
+    channel: 'commander',
+    projectId: mem.projectId,
+    runId: run?.id,
+    sceneId: inc?.sceneId,
+    incidentId: inc?.id,
+    senderType: 'agent',
+    senderId: 'chairman',
+    senderName: chairmanName,
+    senderColor: '#D97706',
+    roleBadge: 'Chủ tịch AI',
+    messageKind: inc ? 'incident' : 'chat',
+    targetAgentIds: Array.from(new Set(normalizedOptions.map((o) => o.targetAgentId))),
+    content: briefingMsgContent,
+  });
+
+  addActivityLog(
+    'info',
+    `Chủ tịch AI lập ${normalizedOptions.length} phương án${inc ? ` (${inc.code})` : ''}`,
+    briefing.executiveSummary,
+    { agentId: 'chairman', runId: run?.id }
+  );
+
+  saveStateAtomic();
+
+  // Auto-execute low-risk recommended plan when autoExecuteRecommended is turned on during auto_takeover
+  if (
+    params.trigger === 'auto_takeover' &&
+    storeDoc.chairmanConfig?.autoExecuteRecommended &&
+    normalizedOptions[0] &&
+    normalizedOptions[0].riskLevel === 'low'
+  ) {
+    const autoRes = await executeChairmanPlanOption({
+      briefingId: briefing.id,
+      optionId: normalizedOptions[0].id,
+      customNote: 'Tự động thực thi phương án khuyến nghị rủi ro thấp theo ủy quyền của bạn.',
+    });
+    briefing.autoExecuted = true;
+    saveStateAtomic();
+    return { state: autoRes.state, briefing };
+  }
+
+  return {
+    state: await getCommandCenterState(false),
+    briefing,
+  };
+}
+
+async function triggerChairmanAutoBriefing(incidentId: string): Promise<void> {
+  if (!process.env.GEMINI_API_KEY?.trim()) return;
+  if (chairmanAnalyzingIncidents.has(incidentId)) return;
+  chairmanAnalyzingIncidents.add(incidentId);
+  try {
+    await analyzeAndDirectWithChairman({
+      incidentId,
+      trigger: 'auto_takeover',
+    });
+  } catch {
+    // Background auto-takeover fails silently so core orchestrator loop is never disrupted
+  } finally {
+    chairmanAnalyzingIncidents.delete(incidentId);
+  }
+}
+
+export async function executeChairmanPlanOption(params: {
+  briefingId?: string;
+  incidentId?: string;
+  optionId: string;
+  customNote?: string;
+}): Promise<{ state: CommandCenterState; briefing: ChairmanBriefing; executedSummary: string }> {
+  const briefings = storeDoc.chairmanBriefings || [];
+  let briefing = params.briefingId
+    ? briefings.find((b) => b.id === params.briefingId)
+    : undefined;
+  if (!briefing && params.incidentId) {
+    briefing = briefings.find((b) => b.incidentId === params.incidentId);
+  }
+  if (!briefing) {
+    throw new Error('Không tìm thấy hồ sơ phương án của Chủ tịch AI.');
+  }
+
+  const option = briefing.options.find((o) => o.id === params.optionId);
+  if (!option) {
+    throw new Error('Không tìm thấy phương án được chọn.');
+  }
+
+  const chairmanName = storeDoc.chairmanConfig?.name || 'Chủ tịch Điều hành AI';
+  const inc = briefing.incidentId
+    ? storeDoc.incidents.find((i) => i.id === briefing!.incidentId)
+    : params.incidentId
+    ? storeDoc.incidents.find((i) => i.id === params.incidentId)
+    : undefined;
+
+  const runId = inc?.runId || briefing.runId || getEffectiveSelectedRunId() || 'manual_run';
+  const run = storeDoc.runs.find((r) => r.id === runId);
+  const mem = getRunMemory(runId);
+  const targetAgent = storeDoc.agents.find((a) => a.id === option.targetAgentId) || storeDoc.agents[0];
+  const noteSuffix = params.customNote?.trim() ? `\nGhi chú bổ sung: ${params.customNote.trim()}` : '';
+  const fullDirective = `[LỆNH CHỦ TỊCH — ${option.label}] ${option.executionCommand}${noteSuffix}`;
+
+  let executedSummary = '';
+
+  const reviveRunIfNeeded = () => {
+    if (run && ['failed', 'needs_attention', 'paused', 'idle'].includes(run.status)) {
+      const runTasks = storeDoc.tasks.filter((t) => t.runId === run.id);
+      const hasIncompletePlanning = runTasks.some(
+        (t) =>
+          (t.type === 'analyze_script' || t.type === 'plan_production') &&
+          t.status !== 'completed' &&
+          t.status !== 'cancelled'
+      );
+      run.status = hasIncompletePlanning ? 'planning' : 'producing';
+      run.error = undefined;
+      run.pausedAt = undefined;
+      run.updatedAt = Date.now();
+      emitCommandCenterEvent('run:updated', enrichProductionRun(run));
+    }
+  };
+
+  const linkedTask = inc?.taskId
+    ? storeDoc.tasks.find((t) => t.id === inc.taskId)
+    : storeDoc.tasks.find(
+        (t) => t.runId === runId && (t.status === 'failed' || t.status === 'qa_rejected')
+      );
+
+  if (option.actionType === 'switch_engine_and_retry') {
+    targetAgent.engineMode = 'muse2api_with_gemini_fallback';
+    targetAgent.boundAccountId = 'auto';
+    targetAgent.paused = false;
+    targetAgent.lastError = undefined;
+    emitCommandCenterEvent('agent:updated', hydrateAgentComputedMetrics(targetAgent));
+
+    if (linkedTask) {
+      const retryTask = enqueueTask({
+        runId,
+        type: linkedTask.type,
+        title: `[Chủ tịch điều phối] ${linkedTask.title}`,
+        instructions: `${linkedTask.instructions}\n${fullDirective}`,
+        assignedAgentId: targetAgent.id,
+        dependsOnTaskIds: linkedTask.dependsOnTaskIds.filter((depId) => {
+          const dep = storeDoc.tasks.find((x) => x.id === depId);
+          return dep && dep.status !== 'failed' && dep.status !== 'cancelled';
+        }),
+        sceneId: linkedTask.sceneId,
+        sceneIndex: linkedTask.sceneIndex,
+        characterId: linkedTask.characterId,
+        priority: 10,
+      });
+      if (inc) {
+        inc.remediationTaskIds.push(retryTask.id);
+        inc.status = 'remediating';
+        inc.assignedFixAgentId = targetAgent.id;
+        inc.escalationReason = undefined;
+        inc.directorCommand = fullDirective;
+      }
+      executedSummary = `Đã chuyển ${targetAgent.name} sang chế độ dự phòng thông minh (auto account) và xếp lại tác vụ ${retryTask.code} vào hàng đợi ưu tiên cao nhất.`;
+    } else {
+      const task = enqueueTask({
+        runId,
+        type: 'custom_task',
+        title: `[Lệnh Chủ tịch] ${option.label}`,
+        instructions: fullDirective,
+        assignedAgentId: targetAgent.id,
+        sceneId: inc?.sceneId,
+        sceneIndex: inc?.sceneIndex,
+        priority: 10,
+      });
+      if (inc) {
+        inc.remediationTaskIds.push(task.id);
+        inc.status = 'remediating';
+        inc.assignedFixAgentId = targetAgent.id;
+        inc.escalationReason = undefined;
+      }
+      executedSummary = `Đã chuyển ${targetAgent.name} sang chế độ dự phòng thông minh và phát tác vụ ${task.code}.`;
+    }
+    reviveRunIfNeeded();
+  } else if (option.actionType === 'reassign_muse') {
+    targetAgent.paused = false;
+    targetAgent.lastError = undefined;
+    if (targetAgent.engineMode === 'muse2api') {
+      targetAgent.engineMode = 'muse2api_with_gemini_fallback';
+    }
+    emitCommandCenterEvent('agent:updated', hydrateAgentComputedMetrics(targetAgent));
+
+    if (linkedTask) {
+      const movedTask = enqueueTask({
+        runId,
+        type: linkedTask.type,
+        title: `[Chủ tịch điều chuyển → ${targetAgent.name}] ${linkedTask.title}`,
+        instructions: `${linkedTask.instructions}\n${fullDirective}`,
+        assignedAgentId: targetAgent.id,
+        dependsOnTaskIds: linkedTask.dependsOnTaskIds.filter((depId) => {
+          const dep = storeDoc.tasks.find((x) => x.id === depId);
+          return dep && dep.status !== 'failed' && dep.status !== 'cancelled';
+        }),
+        sceneId: linkedTask.sceneId,
+        sceneIndex: linkedTask.sceneIndex,
+        characterId: linkedTask.characterId,
+        priority: 10,
+      });
+      if (inc) {
+        inc.remediationTaskIds.push(movedTask.id);
+        inc.assignedFixAgentId = targetAgent.id;
+        inc.status = 'remediating';
+        inc.escalationReason = undefined;
+        inc.directorCommand = fullDirective;
+      }
+      executedSummary = `Đã điều chuyển tác vụ lỗi sang ${targetAgent.name} (${movedTask.code}) với chỉ thị trực tiếp từ Chủ tịch.`;
+    } else {
+      const task = enqueueTask({
+        runId,
+        type: 'custom_task',
+        title: `[Chủ tịch giao → ${targetAgent.name}] ${option.label}`,
+        instructions: fullDirective,
+        assignedAgentId: targetAgent.id,
+        sceneId: inc?.sceneId,
+        sceneIndex: inc?.sceneIndex,
+        priority: 10,
+      });
+      if (inc) {
+        inc.remediationTaskIds.push(task.id);
+        inc.assignedFixAgentId = targetAgent.id;
+        inc.status = 'remediating';
+        inc.escalationReason = undefined;
+      }
+      executedSummary = `Đã giao trực tiếp nhiệm vụ ${task.code} cho ${targetAgent.name}.`;
+    }
+    reviveRunIfNeeded();
+  } else if (option.actionType === 'fix_scene_memory_and_regen') {
+    const sc = inc?.sceneId ? mem.scenes.find((s) => s.sceneId === inc.sceneId) : undefined;
+    if (sc && option.scenePatch) {
+      commitSessionMemoryUpdate(runId, 'user', `Chủ tịch AI chỉnh sửa trực tiếp Cảnh ${sc.index}`, (m) => {
+        const targetSc = m.scenes.find((s) => s.sceneId === sc.sceneId);
+        if (!targetSc) return;
+        if (option.scenePatch?.dialogue) targetSc.dialogue = option.scenePatch.dialogue;
+        if (option.scenePatch?.costume) targetSc.costume = option.scenePatch.costume;
+        if (option.scenePatch?.actionDetail) targetSc.actionDetail = option.scenePatch.actionDetail;
+        if (option.scenePatch?.settingDetail) targetSc.settingDetail = option.scenePatch.settingDetail;
+        targetSc.qaStatus = 'pending';
+        targetSc.productionStage = 'needs_regen';
+        targetSc.lastModifiedBy = 'chairman';
+      });
+    }
+    const regenType: CommandTaskType =
+      sc && (option.targetAgentId === 'muse-03' || inc?.category === 'wrong_costume' || inc?.category === 'wrong_character')
+        ? 'design_scene_image'
+        : sc
+        ? 'produce_scene_video'
+        : 'custom_task';
+
+    const regenTask = enqueueTask({
+      runId,
+      type: regenType,
+      title: sc
+        ? `[Chủ tịch sửa & tạo lại] Cảnh ${String(sc.index).padStart(2, '0')} (${targetAgent.name})`
+        : `[Chủ tịch sửa & tạo lại] ${option.label}`,
+      instructions: fullDirective,
+      assignedAgentId: targetAgent.id,
+      sceneId: sc?.sceneId,
+      sceneIndex: sc?.index,
+      priority: 10,
+    });
+    if (inc) {
+      inc.remediationTaskIds.push(regenTask.id);
+      inc.status = 'remediating';
+      inc.assignedFixAgentId = targetAgent.id;
+      inc.escalationReason = undefined;
+      inc.directorCommand = fullDirective;
+    }
+    reviveRunIfNeeded();
+    executedSummary = sc
+      ? `Đã cập nhật dữ liệu Cảnh ${String(sc.index).padStart(2, '0')} trong Project Memory và giao ${targetAgent.name} tạo lại (${regenTask.code}).`
+      : `Đã giao ${targetAgent.name} chạy lại nhiệm vụ ${regenTask.code} với thông số đã sửa.`;
+  } else if (option.actionType === 'adjust_qa_and_approve') {
+    if (inc?.sceneId) {
+      commitSessionMemoryUpdate(runId, 'user', `Chủ tịch AI phê duyệt thông chốt Cảnh ${inc.sceneIndex || ''}`, (m) => {
+        const sc = m.scenes.find((s) => s.sceneId === inc.sceneId);
+        if (sc) {
+          sc.qaStatus = 'passed';
+          sc.productionStage = 'completed';
+          sc.lastModifiedBy = 'chairman';
+        }
+      });
+    }
+    if (inc) {
+      const qaAgent = storeDoc.agents.find((a) => a.id === 'muse-05') || storeDoc.agents[4];
+      resolveIncidentRecord(
+        inc,
+        qaAgent,
+        `${chairmanName} phê duyệt thông chốt & đóng sự cố ${inc.code}: ${option.executionCommand}`
+      );
+    }
+    reviveRunIfNeeded();
+    executedSummary = inc
+      ? `Chủ tịch đã phê duyệt thông chốt và đóng sự cố ${inc.code} để dây chuyền tiếp tục chạy.`
+      : `Chủ tịch đã phê duyệt thông chốt QA cho phiên hiện tại.`;
+  } else if (option.actionType === 'reset_stuck_run') {
+    let requeuedCount = 0;
+    for (const a of storeDoc.agents) {
+      if (a.paused || a.status === 'error') {
+        a.paused = false;
+        a.lastError = undefined;
+      }
+      if (a.engineMode === 'muse2api') {
+        a.engineMode = 'muse2api_with_gemini_fallback';
+      }
+      emitCommandCenterEvent('agent:updated', hydrateAgentComputedMetrics(a));
+    }
+    for (const t of storeDoc.tasks) {
+      if (t.runId === runId && (t.status === 'failed' || t.status === 'qa_rejected')) {
+        t.status = 'queued';
+        t.error = undefined;
+        t.acknowledgedAt = Date.now();
+        t.instructions = `${t.instructions}\n${fullDirective}`;
+        requeuedCount += 1;
+        emitCommandCenterEvent('task:updated', t);
+      }
+    }
+    if (inc && inc.status !== 'resolved') {
+      inc.status = 'remediating';
+      inc.escalationReason = undefined;
+      inc.directorCommand = fullDirective;
+    }
+    reviveRunIfNeeded();
+    executedSummary = `Đã gỡ kẹt ${requeuedCount} tác vụ lỗi/treo, mở khóa toàn bộ 5 Muse AI và bật chế độ dự phòng thông minh để tiếp tục chạy.`;
+  } else if (option.actionType === 'patch_and_retry') {
+    targetAgent.paused = false;
+    targetAgent.lastError = undefined;
+    if (linkedTask) {
+      const patchedTask = enqueueTask({
+        runId,
+        type: linkedTask.type,
+        title: `[Chủ tịch vá lệnh] ${linkedTask.title}`,
+        instructions: `${linkedTask.instructions}\n${fullDirective}`,
+        assignedAgentId: targetAgent.id,
+        dependsOnTaskIds: linkedTask.dependsOnTaskIds.filter((depId) => {
+          const dep = storeDoc.tasks.find((x) => x.id === depId);
+          return dep && dep.status !== 'failed' && dep.status !== 'cancelled';
+        }),
+        sceneId: linkedTask.sceneId,
+        sceneIndex: linkedTask.sceneIndex,
+        characterId: linkedTask.characterId,
+        priority: 10,
+      });
+      if (inc) {
+        inc.remediationTaskIds.push(patchedTask.id);
+        inc.status = 'remediating';
+        inc.assignedFixAgentId = targetAgent.id;
+        inc.escalationReason = undefined;
+        inc.directorCommand = fullDirective;
+      }
+      executedSummary = `Đã vá chỉ thị thực thi và tạo tác vụ ưu tiên ${patchedTask.code} cho ${targetAgent.name}.`;
+    } else {
+      const task = enqueueTask({
+        runId,
+        type: 'custom_task',
+        title: `[Chủ tịch chỉ đạo] ${option.label}`,
+        instructions: fullDirective,
+        assignedAgentId: targetAgent.id,
+        sceneId: inc?.sceneId,
+        sceneIndex: inc?.sceneIndex,
+        priority: 10,
+      });
+      if (inc) {
+        inc.remediationTaskIds.push(task.id);
+        inc.status = 'remediating';
+        inc.assignedFixAgentId = targetAgent.id;
+        inc.escalationReason = undefined;
+      }
+      executedSummary = `Đã phát chỉ thị đã vá (${task.code}) cho ${targetAgent.name}.`;
+    }
+    reviveRunIfNeeded();
+  } else {
+    // direct_briefing
+    const task = enqueueTask({
+      runId,
+      type: 'custom_task',
+      title: `[Chỉ thị Chủ tịch] ${option.label}`,
+      instructions: fullDirective,
+      assignedAgentId: targetAgent.id,
+      sceneId: inc?.sceneId,
+      sceneIndex: inc?.sceneIndex,
+      priority: 10,
+    });
+    if (inc && inc.status !== 'resolved') {
+      inc.remediationTaskIds.push(task.id);
+      inc.status = 'remediating';
+      inc.assignedFixAgentId = targetAgent.id;
+      inc.escalationReason = undefined;
+      inc.directorCommand = fullDirective;
+    }
+    reviveRunIfNeeded();
+    executedSummary = `Đã phát chỉ thị trực tiếp (${task.code}) từ Chủ tịch xuống ${targetAgent.name}.`;
+  }
+
+  option.executedAt = Date.now();
+  briefing.selectedOptionId = option.id;
+  briefing.executionLog = executedSummary;
+
+  if (inc) {
+    if (inc.chairmanOptions) {
+      inc.chairmanOptions = inc.chairmanOptions.map((o) =>
+        o.id === option.id ? { ...o, executedAt: option.executedAt } : o
+      );
+    }
+    inc.updatedAt = Date.now();
+    appendIncidentTurn(inc, {
+      actorId: 'chairman',
+      actorName: chairmanName,
+      roleBadge: 'Lệnh thực thi',
+      kind: 'directive',
+      content: `Đã phê duyệt & thực thi "${option.label}" → ${targetAgent.name}.\n• Lệnh giao: ${option.executionCommand}\n• Kết quả điều phối: ${executedSummary}`,
+    });
+    postIncidentChannelMessage({
+      inc,
+      senderId: 'chairman',
+      senderName: `${chairmanName} – Thực thi`,
+      roleBadge: 'Lệnh Chủ tịch',
+      targetAgentIds: [targetAgent.id, 'muse-01'],
+      content: `[THỰC THI ${option.label}] ${executedSummary}\n• Chỉ thị: ${option.executionCommand}`,
+    });
+    emitCommandCenterEvent('incident:updated', inc);
+  }
+
+  // Broadcast to commander channel AND direct channel of target Muse AI
+  appendConversationMessage({
+    channel: 'commander',
+    projectId: mem.projectId,
+    runId: run?.id,
+    sceneId: inc?.sceneId,
+    incidentId: inc?.id,
+    senderType: 'agent',
+    senderId: 'chairman',
+    senderName: chairmanName,
+    senderColor: '#D97706',
+    roleBadge: 'Chủ tịch AI',
+    messageKind: 'deliverable',
+    targetAgentIds: [targetAgent.id, 'muse-01'],
+    content: `[ĐÃ THỰC THI] ${option.label}\n• Giao cho: ${targetAgent.name}\n• ${executedSummary}`,
+  });
+
+  appendConversationMessage({
+    channel: targetAgent.id,
+    projectId: mem.projectId,
+    runId: run?.id,
+    sceneId: inc?.sceneId,
+    incidentId: inc?.id,
+    senderType: 'agent',
+    senderId: 'chairman',
+    senderName: chairmanName,
+    senderColor: '#D97706',
+    roleBadge: 'Lệnh Chủ tịch',
+    messageKind: 'deliverable',
+    targetAgentIds: [targetAgent.id],
+    content: fullDirective,
+  });
+
+  addActivityLog(
+    'success',
+    `Chủ tịch thực thi: ${option.label}`,
+    executedSummary,
+    { agentId: 'chairman', runId: run?.id }
+  );
+
+  saveStateAtomic();
+  void tickOrchestratorQueue();
+
+  return {
+    state: await getCommandCenterState(false),
+    briefing,
+    executedSummary,
+  };
 }

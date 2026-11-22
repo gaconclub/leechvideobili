@@ -4,8 +4,10 @@ import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  Crown,
   Loader2,
   MessageSquareWarning,
+  Play,
   Plus,
   RefreshCw,
   Send,
@@ -14,6 +16,8 @@ import {
   Siren,
 } from 'lucide-react';
 import type {
+  ChairmanBriefing,
+  ChairmanPlanOption,
   CommandCenterState,
   IncidentCategory,
   IncidentRecord,
@@ -37,11 +41,11 @@ const INCIDENT_CATEGORY_OPTIONS: { id: IncidentCategory; label: string }[] = [
 ];
 
 const STATUS_LABELS: Record<IncidentStatus, string> = {
-  reported: 'Mới báo cáo',
-  investigating: 'Muse 01 đang điều tra',
-  remediating: 'Đang sửa chữa',
-  verifying: 'Muse 05 kiểm duyệt lại',
-  resolved: 'Đã đóng (QA đạt)',
+  reported: 'Mới báo cáo về Chủ tịch',
+  investigating: 'Gemini AI – Chủ tịch đang chất vấn',
+  remediating: 'Muse đang sửa theo lệnh',
+  verifying: 'Muse 05 kiểm định lại',
+  resolved: 'Đã đóng (Muse 05 QA đạt)',
   escalated_to_user: 'Cần bạn can thiệp',
 };
 
@@ -201,7 +205,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
         setRepRequireApproval(false);
         return res.state;
       },
-      'Đã gửi báo cáo sự cố khẩn tới Muse AI 01 — Đạo diễn tổng.'
+      'Đã gửi báo cáo sự cố khẩn trực tiếp tới Gemini AI – Chủ tịch.'
     );
   };
 
@@ -232,9 +236,64 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
         ? `Đã nghiệm thu và đóng sự cố ${selectedIncident.code}.`
         : action === 'escalate'
         ? `Đã chuyển sự cố ${selectedIncident.code} sang chế độ chờ bạn quyết định.`
-        : `Muse AI 01 đã gửi chỉ đạo xử lý trực tiếp cho ${selectedIncident.code}.`
+        : `Gemini AI – Chủ tịch đã gửi chỉ đạo xử lý trực tiếp cho ${selectedIncident.code}.`
     );
   };
+
+  const handleChairmanAnalyzeIncident = async () => {
+    if (!selectedIncident) return;
+    await onRunAction(
+      `chairman_inc_analyze_${selectedIncident.id}`,
+      async () => {
+        const res = await apiJson<{ state: CommandCenterState; briefing: ChairmanBriefing }>(
+          '/api/command-center/chairman/analyze',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              incidentId: selectedIncident.id,
+              runId: selectedIncident.runId,
+            }),
+          }
+        );
+        return res.state;
+      },
+      `Chủ tịch Điều hành AI đã lập phương án xử lý cho ${selectedIncident.code}.`
+    );
+  };
+
+  const handleChairmanExecuteOption = async (opt: ChairmanPlanOption, briefingId?: string) => {
+    if (!selectedIncident) return;
+    await onRunAction(
+      `chairman_inc_exec_${opt.id}`,
+      async () => {
+        const res = await apiJson<{ state: CommandCenterState; executedSummary: string }>(
+          '/api/command-center/chairman/execute',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              briefingId,
+              incidentId: selectedIncident.id,
+              optionId: opt.id,
+            }),
+          }
+        );
+        return res.state;
+      },
+      `Chủ tịch đã thực thi "${opt.label}" cho sự cố ${selectedIncident.code}.`
+    );
+  };
+
+  const selectedIncidentBriefing = useMemo(() => {
+    if (!selectedIncident) return undefined;
+    const list = state.chairmanBriefings || [];
+    if (selectedIncident.chairmanBriefingId) {
+      const exact = list.find((b) => b.id === selectedIncident.chairmanBriefingId);
+      if (exact) return exact;
+    }
+    return list.find((b) => b.incidentId === selectedIncident.id);
+  }, [selectedIncident, state.chairmanBriefings]);
 
   const findAgent = (id: string) => agents.find((a) => a.id === id);
 
@@ -246,13 +305,13 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
           <div className="space-y-1">
             <div className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400">
               <Siren className="w-3.5 h-3.5" />
-              <span>AI Director Command &amp; Incident Response</span>
+              <span>Gemini AI Chairman · Incident Command</span>
             </div>
             <h2 className="text-base sm:text-lg font-display font-bold text-slate-900 dark:text-white">
-              Trung tâm chỉ huy xử lý sự cố tập trung (Muse AI 01)
+              Trung tâm xử lý sự cố tập trung ({state.chairmanConfig?.name || 'Gemini AI – Chủ tịch'})
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 max-w-2xl">
-              Mọi lỗi từ Muse AI 02–05 đều báo cáo khẩn về Muse AI 01 (Đạo diễn tổng) để trực tiếp tra hỏi nguyên nhân, ra lệnh sửa đúng phân cảnh lỗi và yêu cầu Muse AI 05 kiểm duyệt lại.
+              Mọi báo cáo FAIL từ Muse AI 05 và lỗi tác vụ từ 4 Muse sản xuất (Muse Director 01, Muse 02, 03, 04) đều gửi trực tiếp về Gemini AI – Chủ tịch để chất vấn, chỉ đạo sửa và chỉ đóng sau khi Muse AI 05 kiểm định đạt.
             </p>
           </div>
 
@@ -271,7 +330,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
               className="px-3.5 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>{showReportForm ? 'Đóng biểu mẫu' : 'Báo cáo sự cố tới Muse 01'}</span>
+              <span>{showReportForm ? 'Đóng biểu mẫu' : 'Báo cáo sự cố về Chủ tịch'}</span>
             </button>
           </div>
         </div>
@@ -284,7 +343,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
             </div>
           </div>
           <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3">
-            <div className="text-[11px] text-slate-500 dark:text-slate-400">Muse 01 đang tự xử lý</div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">Chủ tịch đang chỉ đạo xử lý</div>
             <div className="mt-1 text-xl font-display font-bold font-mono tabular-nums text-cyan-600 dark:text-cyan-400">
               {counts.active}
             </div>
@@ -296,7 +355,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
             </div>
           </div>
           <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3">
-            <div className="text-[11px] text-slate-500 dark:text-slate-400">Đã sửa &amp; QA duyệt đóng</div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">Đã sửa &amp; Muse 05 duyệt đóng</div>
             <div className="mt-1 text-xl font-display font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
               {counts.resolved}
             </div>
@@ -309,7 +368,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
         <form onSubmit={handleCreateReport} className="glass-card rounded-2xl p-5 space-y-4 border border-rose-400/40">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-display font-bold text-slate-900 dark:text-white">
-              Gửi báo cáo sự cố khẩn tới Muse AI 01 — Đạo diễn tổng
+              Gửi báo cáo sự cố khẩn trực tiếp tới Gemini AI – Chủ tịch
             </h3>
             <span className="text-[11px] text-slate-500 dark:text-slate-400">
               Giới hạn tự xử lý hiện tại: {state.cloudConfig.maxIncidentRetries ?? 3} vòng
@@ -339,7 +398,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
                 onChange={(e) => setRepResponsible(e.target.value as MuseAgentId)}
                 className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
               >
-                {agents.filter((a) => a.id !== 'muse-01').map((a) => (
+                {agents.filter((a) => a.id !== 'muse-05').map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.name} ({a.roleTitle})
                   </option>
@@ -443,7 +502,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
               ) : (
                 <Siren className="w-3.5 h-3.5" />
               )}
-              <span>Báo cáo khẩn tới Muse AI 01</span>
+              <span>Báo cáo khẩn tới Gemini AI – Chủ tịch</span>
             </button>
           </div>
         </form>
@@ -558,7 +617,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
                       Vòng {selectedIncident.attemptCount}/{selectedIncident.maxAttempts}
                     </span>
                     <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                      · {selectedIncident.withinAutonomyScope ? 'Trong quyền tự xử lý AI 01' : 'Cần xác nhận người dùng'}
+                      · {selectedIncident.withinAutonomyScope ? 'Trong quyền tự xử lý của Chủ tịch AI' : 'Cần xác nhận người dùng'}
                     </span>
                   </div>
                   <h3 className="text-base font-display font-bold text-slate-900 dark:text-white">
@@ -657,7 +716,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
 
                 <div className="rounded-xl border border-slate-200 dark:border-slate-700/45 bg-slate-50/70 dark:bg-[#0c1021]/75 p-3 space-y-1.5">
                   <div className="font-semibold text-slate-800 dark:text-slate-100">
-                    Chẩn đoán gốc &amp; Chỉ đạo Muse AI 01
+                    Chẩn đoán gốc &amp; Chỉ đạo Gemini AI – Chủ tịch
                   </div>
                   <div className="text-slate-600 dark:text-slate-300 space-y-1.5">
                     <div>
@@ -864,6 +923,104 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
                 )}
               </div>
 
+              {/* Executive Chairman Direct Intervention Block */}
+              <div className="rounded-xl border border-amber-400/45 bg-amber-50/50 dark:bg-amber-950/20 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs">
+                    <Crown className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span className="font-semibold text-slate-900 dark:text-white">
+                      {state.chairmanConfig?.name || 'Chủ tịch Điều hành AI'} — Trực tiếp chỉ đạo xử lý
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={Boolean(busyAction)}
+                    onClick={handleChairmanAnalyzeIncident}
+                    className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    {busyAction === `chairman_inc_analyze_${selectedIncident.id}` ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Crown className="w-3.5 h-3.5" />
+                    )}
+                    <span>
+                      {selectedIncidentBriefing ? 'Chủ tịch chẩn đoán lại' : 'Mời Chủ tịch lập phương án'}
+                    </span>
+                  </button>
+                </div>
+
+                {selectedIncidentBriefing ? (
+                  <div className="space-y-3 text-xs">
+                    <div className="space-y-1 text-slate-700 dark:text-slate-200">
+                      <div>
+                        <span className="font-semibold text-slate-900 dark:text-white">Chẩn đoán gốc: </span>
+                        {selectedIncidentBriefing.rootCauseDiagnosis}
+                      </div>
+                      <div>
+                        <span className="font-semibold text-slate-900 dark:text-white">Đánh giá đội Muse: </span>
+                        {selectedIncidentBriefing.critiqueOfMuseTeam}
+                      </div>
+                    </div>
+
+                    <div className="divide-y divide-amber-200/70 dark:divide-amber-800/40 rounded-lg border border-amber-300/60 dark:border-amber-800/50 bg-white dark:bg-[#0c1021]">
+                      {selectedIncidentBriefing.options.map((opt, idx) => {
+                        const isExec = busyAction === `chairman_inc_exec_${opt.id}`;
+                        const done = Boolean(opt.executedAt || selectedIncidentBriefing.selectedOptionId === opt.id);
+                        return (
+                          <div key={opt.id} className="p-3 flex flex-wrap items-start justify-between gap-3">
+                            <div className="space-y-1 flex-1 min-w-[220px]">
+                              <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">
+                                  0{idx + 1}
+                                </span>
+                                {opt.recommended && (
+                                  <>
+                                    <span aria-hidden="true">·</span>
+                                    <span className="font-semibold text-amber-600 dark:text-amber-400">Khuyến nghị</span>
+                                  </>
+                                )}
+                                <span aria-hidden="true">·</span>
+                                <span>Giao {findAgent(opt.targetAgentId)?.name || opt.targetAgentId}</span>
+                              </div>
+                              <div className="font-semibold text-slate-900 dark:text-white">{opt.label}</div>
+                              <div className="text-slate-600 dark:text-slate-300">{opt.summary}</div>
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                                Lệnh: {opt.executionCommand}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={Boolean(busyAction)}
+                              onClick={() => handleChairmanExecuteOption(opt, selectedIncidentBriefing.id)}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+                                done
+                                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                                  : opt.recommended
+                                  ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                                  : 'border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+                              }`}
+                            >
+                              {isExec ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : done ? (
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                              ) : (
+                                <Play className="w-3.5 h-3.5" />
+                              )}
+                              <span>{done ? 'Chạy lại' : 'Thực thi ngay'}</span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-600 dark:text-slate-300">
+                    Bấm <strong>Mời Chủ tịch lập phương án</strong> để Gemini AI – Chủ tịch chẩn đoán sâu nguyên nhân lỗi và xuất 3 phương án chỉ đạo thực thi trực tiếp xuống Muse phụ trách.
+                  </p>
+                )}
+              </div>
+
               {/* Chronological Director-Muse Investigation & Fix Thread */}
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between text-xs font-semibold text-slate-800 dark:text-slate-100">
@@ -876,23 +1033,40 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
                 <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
                   {selectedIncident.history.map((turn) => {
                     const ag = findAgent(turn.actorId);
+                    const isChairman = turn.actorId === 'chairman';
                     return (
                       <div
                         key={turn.id}
-                        className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] p-3 text-xs space-y-1.5"
+                        className={`rounded-xl border p-3 text-xs space-y-1.5 ${
+                          isChairman
+                            ? 'border-amber-400/50 bg-amber-50/40 dark:bg-amber-950/20'
+                            : 'border-slate-200 dark:border-slate-700/50 bg-white dark:bg-[#0c1021]'
+                        }`}
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
-                            {ag && <AgentAvatar agent={ag} size="xs" />}
+                            {isChairman ? (
+                              <span className="w-6 h-6 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                                <Crown className="w-3.5 h-3.5" />
+                              </span>
+                            ) : (
+                              ag && <AgentAvatar agent={ag} size="xs" />
+                            )}
                             <span
-                              className="font-bold text-slate-900 dark:text-white"
-                              style={ag?.accentColor ? { color: ag.accentColor } : undefined}
+                              className={`font-bold ${
+                                isChairman
+                                  ? 'text-amber-700 dark:text-amber-300'
+                                  : 'text-slate-900 dark:text-white'
+                              }`}
+                              style={!isChairman && ag?.accentColor ? { color: ag.accentColor } : undefined}
                             >
                               {turn.actorName}
                             </span>
                             <span
                               className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${
-                                TURN_BADGE_CLASS[turn.kind] || 'bg-slate-500/15 text-slate-700 border-slate-500/30'
+                                isChairman
+                                  ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35'
+                                  : TURN_BADGE_CLASS[turn.kind] || 'bg-slate-500/15 text-slate-700 border-slate-500/30'
                               }`}
                             >
                               {turn.roleBadge}
@@ -929,7 +1103,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
                   type="text"
                   value={cmdText}
                   onChange={(e) => setCmdText(e.target.value)}
-                  placeholder="Nhập chỉ đạo bổ sung cho Muse AI 01 (vd: Khóa lại thoại nam ở giây thứ 4 và tạo lại cảnh)..."
+                  placeholder="Nhập chỉ đạo bổ sung cho Gemini AI – Chủ tịch gửi xuống Muse phụ trách..."
                   className="flex-1 min-w-[220px] h-9 px-3 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
                 />
                 <button
@@ -943,7 +1117,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
                   ) : (
                     <Send className="w-3.5 h-3.5" />
                   )}
-                  <span>Ra lệnh sửa qua Muse 01</span>
+                  <span>Phát lệnh qua Chủ tịch AI</span>
                 </button>
               </div>
             </>
