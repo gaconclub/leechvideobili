@@ -259,19 +259,19 @@ export function compileProductionModelPrompt(params: {
       .replace(new RegExp(`(?:Locked\\s+)?Costume\\s+Reference\\s*:\\s*${escaped}\\.?`, 'gi'), '')
       .replace(/Costume\s+in\s+Scene\s*:[^.]*\./gi, '');
   } else if (isSceneMode && params.allowFreeCostumeChange !== true && params.costumeBible?.trim()) {
-    if (!text.toLowerCase().includes('strict costume lock')) {
-      text = `${text} STRICT COSTUME LOCK: Reference image governs face, skin tone, hair, physique & main outfit (${params.costumeBible.trim().slice(0, 140)}) — 100% unchanged; only independent script accessories (${ALLOWED_ACCESSORIES_LIST_EN}) may be added without altering identity or main outfit.`;
+    if (!text.toLowerCase().includes('strict costume lock') && !text.toLowerCase().includes('first-frame lock')) {
+      text = `${text} STRICT COSTUME LOCK: Keep face, hair, physique & main outfit (${params.costumeBible.trim().slice(0, 120)}) identical to reference; only script accessories (${ALLOWED_ACCESSORIES_LIST_EN}) may vary.`;
     }
   }
 
   // Reference Image Over Text: if reference photos are attached & prompt is long, compress redundant characterBible prose
-  if (isSceneMode && params.hasAttachedRefs && params.characterBible?.trim() && text.length > maxChars * 0.72) {
+  if (isSceneMode && params.hasAttachedRefs && params.characterBible?.trim() && text.length > maxChars * 0.68) {
     const shortIdentityCue = params.characterBible
       .trim()
       .split(/[.;\n]/)
       .slice(0, 2)
       .join(', ')
-      .slice(0, 180);
+      .slice(0, 150);
     const escapedFull = params.characterBible.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     text = text.replace(
       new RegExp(`(?:Locked\\s+)?Character\\s+Reference[^:]*:\\s*${escapedFull}\\.?`, 'gi'),
@@ -288,10 +288,14 @@ export function compileProductionModelPrompt(params: {
   }
 
   if (text.length > maxChars) {
-    // Trim verbose settingBible/continuityBible prefixes cleanly before cutting at sentence boundary
+    // Trim secondary verbose bible/style prose FIRST so leading FIRST-FRAME LOCK, IMAGE MAP, action & dialogue stay intact
     text = text
       .replace(/Story\s+Continuity(?:\s+Anchor|\s+Rule)?\s*:[^.]+\./gi, '')
-      .replace(/Environment\s+Reference\s*:([^.]{120,})\./gi, (_m, body) => `Environment Reference: ${body.slice(0, 110)}.`)
+      .replace(/Learned\s+Camera\s*&\s*Motion\s+Style\s*:[^.]+\./gi, '')
+      .replace(/Visual\s+Style\s+Reference\s*:[^.]+\./gi, '')
+      .replace(/Separate\s+Narrator\s+Voiceover\s+Context[^:]*:[^.]+\./gi, '')
+      .replace(/Environment\s+Reference\s*:([^.]{90,})\./gi, (_m, body) => `Environment Reference: ${body.slice(0, 85)}.`)
+      .replace(/Visual\s+Style\s*:([^.]{120,})\./gi, (_m, body) => `Visual Style: ${body.slice(0, 110)}.`)
       .replace(/\s{2,}/g, ' ')
       .trim();
   }

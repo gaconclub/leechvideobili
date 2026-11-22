@@ -402,6 +402,7 @@ function evaluateMuse05CharacterConsistency(params: {
   allowFreeCostumeChange: boolean;
   fallbackCharScore: number;
   fallbackCostumeScore: number;
+  targetMediaKind?: 'character_image' | 'scene_image' | 'scene_video';
 }): {
   metrics: QaCharacterConsistencyMetrics;
   passed: boolean;
@@ -411,6 +412,45 @@ function evaluateMuse05CharacterConsistency(params: {
   characterViolated: boolean;
 } {
   const p = params.parsed || {};
+  const mediaKind = params.targetMediaKind || 'scene_video';
+  // Calibrated cinematic tolerances:
+  // - scene_image: flexible on angle/lighting/distance/expression folds when same recognizable person & core outfit
+  // - character_image: portrait-to-portrait comparison
+  // - scene_video: tolerant of motion blur/lighting, STRICT against stranger/actor swap vs Scene Keyframe
+  const limits =
+    mediaKind === 'scene_image'
+      ? {
+          maxFaceDev: 24,
+          minFaceSim: 74,
+          maxPhysiqueDev: 26,
+          minPhysiqueSim: 72,
+          maxCostumeDev: 24,
+          minCostumeSim: 74,
+          maxOverallDev: 22,
+          cleanPassMaxDev: 10,
+        }
+      : mediaKind === 'character_image'
+      ? {
+          maxFaceDev: 14,
+          minFaceSim: 84,
+          maxPhysiqueDev: 16,
+          minPhysiqueSim: 82,
+          maxCostumeDev: 14,
+          minCostumeSim: 84,
+          maxOverallDev: 14,
+          cleanPassMaxDev: 6,
+        }
+      : {
+          maxFaceDev: 20,
+          minFaceSim: 78,
+          maxPhysiqueDev: 24,
+          minPhysiqueSim: 74,
+          maxCostumeDev: 22,
+          minCostumeSim: 75,
+          maxOverallDev: 20,
+          cleanPassMaxDev: 8,
+        };
+
   const clampPct = (v: any, def: number) => {
     const n = Number(v);
     return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n * 10) / 10)) : def;
@@ -456,64 +496,83 @@ function evaluateMuse05CharacterConsistency(params: {
     computedOverallDev
   );
 
+  const videoKeyframeSwap =
+    mediaKind === 'scene_video' && p.videoKeyframeIdentityMatch === false;
+
   const criticalViolationFlags: string[] = [];
-  if (p.criticalFaceError === true || faceDeviationPct > 5 || faceSimilarityScore < 90 || p.characterPassed === false) {
+  if (
+    videoKeyframeSwap ||
+    p.criticalFaceError === true ||
+    faceDeviationPct > limits.maxFaceDev ||
+    faceSimilarityScore < limits.minFaceSim
+  ) {
     criticalViolationFlags.push(
-      `Sai lệch khuôn mặt/nhận dạng (${faceDeviationPct}% > ngưỡng an toàn, tương đồng ${faceSimilarityScore}/100)`
+      videoKeyframeSwap
+        ? `Video bị đổi sang nhân vật xa lạ khác với ảnh keyframe cảnh (tương đồng mặt ${faceSimilarityScore}/100, lệch ${faceDeviationPct}%)`
+        : `Sai lệch khuôn mặt/nhận dạng rõ rệt (${faceDeviationPct}% > ngưỡng ${limits.maxFaceDev}%, tương đồng ${faceSimilarityScore}/100)`
     );
   }
-  if (p.criticalPhysiqueError === true || physiqueDeviationPct > 5 || physiqueSimilarityScore < 90) {
+  if (
+    p.criticalPhysiqueError === true ||
+    physiqueDeviationPct > limits.maxPhysiqueDev ||
+    physiqueSimilarityScore < limits.minPhysiqueSim
+  ) {
     criticalViolationFlags.push(
-      `Biến đổi vóc dáng/tỷ lệ cơ thể (${physiqueDeviationPct}%, tương đồng ${physiqueSimilarityScore}/100)`
+      `Biến đổi vóc dáng/tỷ lệ cơ thể đáng kể (${physiqueDeviationPct}%, tương đồng ${physiqueSimilarityScore}/100)`
     );
   }
   const costumeViolated =
     !params.allowFreeCostumeChange &&
     (p.criticalMainCostumeError === true ||
-      p.costumePassed === false ||
-      mainCostumeDeviationPct > 5 ||
-      mainCostumeSimilarityScore < 90);
+      mainCostumeDeviationPct > limits.maxCostumeDev ||
+      mainCostumeSimilarityScore < limits.minCostumeSim);
   if (costumeViolated) {
     criticalViolationFlags.push(
-      `Thay đổi trang phục chính trái phép (${mainCostumeDeviationPct}%, tương đồng ${mainCostumeSimilarityScore}/100)`
+      `Trang phục chính sai khác rõ rệt so với tham chiếu (${mainCostumeDeviationPct}%, tương đồng ${mainCostumeSimilarityScore}/100)`
     );
   }
   if (accessoryDistortsIdentityOrCostume) {
     criticalViolationFlags.push('Phụ kiện làm biến đổi nhận dạng hoặc cấu trúc trang phục chính đã khóa');
   }
-  if (overallDeviationExcludingAccessoriesPct > 5) {
+  if (overallDeviationExcludingAccessoriesPct > limits.maxOverallDev) {
     criticalViolationFlags.push(
-      `Sai lệch tổng thể sau loại trừ phụ kiện được phép là ${overallDeviationExcludingAccessoriesPct}% (> ngưỡng tối đa 5%)`
+      `Sai lệch tổng thể sau loại trừ phụ kiện là ${overallDeviationExcludingAccessoriesPct}% (> ngưỡng ${limits.maxOverallDev}%)`
     );
   }
 
   const characterViolated =
+    videoKeyframeSwap ||
     p.criticalFaceError === true ||
     p.criticalPhysiqueError === true ||
-    p.characterPassed === false ||
-    faceDeviationPct > 5 ||
-    physiqueDeviationPct > 5 ||
-    faceSimilarityScore < 90 ||
-    physiqueSimilarityScore < 90;
+    faceDeviationPct > limits.maxFaceDev ||
+    physiqueDeviationPct > limits.maxPhysiqueDev ||
+    faceSimilarityScore < limits.minFaceSim ||
+    physiqueSimilarityScore < limits.minPhysiqueSim;
 
   let verdictStatus: QaVerdictStatus;
   let deviationClass: QaDeviationClass;
-  if (criticalViolationFlags.length > 0 || String(p.verdictStatus || '').toUpperCase() === 'FAIL') {
+  // For scene_image: rely on objective critical flags & numeric thresholds so good cinematic shots are NOT falsely rejected!
+  const llmForcedFail =
+    mediaKind !== 'scene_image' &&
+    String(p.verdictStatus || '').toUpperCase() === 'FAIL' &&
+    (p.characterPassed === false || (!params.allowFreeCostumeChange && p.costumePassed === false));
+
+  if (criticalViolationFlags.length > 0 || llmForcedFail) {
     verdictStatus = 'FAIL';
     deviationClass = 'type_c_exceeds_limit';
     if (criticalViolationFlags.length === 0) {
-      criticalViolationFlags.push('Muse AI 05 đánh dấu FAIL theo đối chiếu trực tiếp với ảnh tham chiếu.');
+      criticalViolationFlags.push('Muse AI 05 đánh dấu FAIL do phát hiện sai lệch nhận dạng hoặc trang phục chính.');
     }
-  } else if (allowedAccessoryChanges.length > 0 && overallDeviationExcludingAccessoriesPct <= 1) {
+  } else if (allowedAccessoryChanges.length > 0 && overallDeviationExcludingAccessoriesPct <= limits.cleanPassMaxDev) {
     verdictStatus = 'PASS_WITH_TOLERANCE';
     deviationClass = 'type_a_allowed_accessory';
   } else if (
-    overallDeviationExcludingAccessoriesPct > 0 ||
+    overallDeviationExcludingAccessoriesPct > limits.cleanPassMaxDev ||
     allowedAccessoryChanges.length > 0 ||
     String(p.verdictStatus || '').toUpperCase() === 'PASS_WITH_TOLERANCE'
   ) {
     verdictStatus = 'PASS_WITH_TOLERANCE';
-    deviationClass = allowedAccessoryChanges.length > 0 && overallDeviationExcludingAccessoriesPct <= 1.5
+    deviationClass = allowedAccessoryChanges.length > 0 && overallDeviationExcludingAccessoriesPct <= limits.cleanPassMaxDev + 3
       ? 'type_a_allowed_accessory'
       : 'type_b_minor_tolerance';
   } else {
@@ -2191,8 +2250,19 @@ async function openOrAdvanceDirectorIncident(params: {
   inc.status = 'remediating';
   inc.withinAutonomyScope = true;
 
+  // CRITICAL: When a VIDEO fails character/costume QA (stranger swap / video drift) while the SCENE KEYFRAME IMAGE
+  // ALREADY passed QA & exists on disk, KEEP the good keyframe and ONLY re-render the video with strict first-frame I2V lock!
+  const isVideoDriftWithGoodKeyframe = Boolean(
+    params.scene &&
+      params.qaReport?.targetMediaKind === 'scene_video' &&
+      params.scene.imageValidated === true &&
+      isValidImageArtifactOnDisk(params.scene.keyframeImageUrl)
+  );
+
   const isCostumeLockWorkflow =
-    category === 'wrong_costume' && mem.allowFreeCostumeChange !== true;
+    !isVideoDriftWithGoodKeyframe &&
+    category === 'wrong_costume' &&
+    mem.allowFreeCostumeChange !== true;
 
   // Pick assigned production Muse (muse-01..04); on retry #2+ rotate to another healthy production Muse
   const sceneBaseProducer: MuseAgentId =
@@ -2212,6 +2282,9 @@ async function openOrAdvanceDirectorIncident(params: {
     fixTargetAgent !== responsible.id
       ? `${chairmanName} điều chuyển từ ${responsible.name} sang ${storeDoc.agents.find((a) => a.id === fixTargetAgent)?.name || fixTargetAgent} để tránh lặp lỗi cũ. `
       : '';
+  if (isVideoDriftWithGoodKeyframe) {
+    routeAdjustmentNote += `Ảnh bối cảnh keyframe Cảnh ${params.scene?.index} ĐÃ ĐẠT CHUẨN — GIỮ NGUYÊN ảnh gốc, CHỈ dựng lại video ở chế độ khóa khung hình đầu tiên (Strict Single-Frame I2V Lock) để ngăn biến thành người xa lạ. `;
+  }
 
   // Smart recovery for disconnection / pinned account / AI JSON format failure
   if (category === 'muse_disconnected' || category === 'ai_output_format_error') {
@@ -2237,6 +2310,7 @@ async function openOrAdvanceDirectorIncident(params: {
   );
 
   const shouldRebuildKeyframe =
+    !isVideoDriftWithGoodKeyframe &&
     Boolean(params.scene) &&
     !isNonSceneRegenTask &&
     (isCostumeLockWorkflow ||
@@ -2258,6 +2332,8 @@ async function openOrAdvanceDirectorIncident(params: {
 
   const directorDirective = isCostumeLockWorkflow
     ? `${routeAdjustmentNote}Lệnh khôi phục trang phục chuẩn từ ${chairmanName} (${inc.code} vòng #${inc.attemptCount}): Giao ${fixTargetName} truy xuất ảnh tham chiếu & hồ sơ gốc của "${cm?.characterName || 'nhân vật'}" (${cm?.characterId || ''}), khôi phục nguyên bản trang phục chính "${cm?.expectedCostume || mem.costumeBible}", làm sạch prompt nguồn, lưu bản Trước/Sau không ghi đè gốc và chỉ tạo lại đúng ${params.scene ? `Cảnh ${String(params.scene.index).padStart(2, '0')}` : 'ảnh nhân vật'}. Sau đó gửi ngay Muse AI 05 kiểm định độc lập trước khi dựng video.`
+    : isVideoDriftWithGoodKeyframe && params.scene
+    ? `${routeAdjustmentNote}Lệnh dựng lại VIDEO KHÓA KHUNG HÌNH ĐẦU TIÊN từ ${chairmanName} (${inc.code} vòng #${inc.attemptCount}): GIỮ NGUYÊN ảnh keyframe Cảnh ${String(params.scene.index).padStart(2, '0')} đã đạt chuẩn, chỉ kích hoạt Strict Single-Frame Image-to-Video Lock để tái hiện chân thực đúng khuôn mặt, kiểu tóc, trang phục và bối cảnh từ ảnh keyframe gốc. Chi tiết: ${exactFixSummary}`
     : `${routeAdjustmentNote}${rule.directive} ${
         isNonSceneRegenTask && params.task
           ? `Chạy lại đúng bước "${getTaskTypeLabelVi(params.task.type)}" (${params.task.code}) với chuẩn JSON RFC 8259 nghiêm ngặt, giữ nguyên các cảnh/dữ liệu đã hoàn thành. Chi tiết: ${exactFixSummary}`
@@ -2950,6 +3026,8 @@ async function runAgentTextInference(params: {
   systemPrompt: string;
   userPrompt: string;
   attachments?: string[];
+  labeledAttachments?: { label: string; dataUrl: string }[];
+  preferGeminiVision?: boolean;
   jsonMode?: boolean;
 }): Promise<{ text: string; provider: string; accountUsed?: string }> {
   const health = await refreshIntegrationHealth();
@@ -2960,39 +3038,23 @@ async function runAgentTextInference(params: {
       ? health.healthyAccounts > 0 || health.accounts.some((a) => a.enabled)
       : true);
 
-  let museError: string | null = null;
-  if (canTryMuse) {
-    try {
-      const text = await chatWithMuse2ApiSpark(
-        [
-          { role: 'system', content: params.systemPrompt },
-          { role: 'user', content: params.userPrompt },
-        ],
-        240,
-        params.attachments,
-        params.agent.boundAccountId
-      );
-      return {
-        text,
-        provider: 'muse2api (muse-spark)',
-        accountUsed: params.agent.boundAccountId,
-      };
-    } catch (err: any) {
-      museError = String(err?.message || err || 'Lỗi kết nối Muse2API');
-    }
-  } else {
-    museError = health.muse2ApiReachable
-      ? health.warnings[0] || 'Chưa có tài khoản Muse.ai khả dụng trên Muse2API.'
-      : `Muse2API (${health.muse2ApiBaseUrl}) chưa trực tuyến.`;
-  }
-
-  if (params.agent.engineMode === 'muse2api_with_gemini_fallback' && health.geminiConfigured) {
+  const runGeminiMultimodal = async (providerPrefix: string): Promise<{ text: string; provider: string }> => {
     const ai = getGeminiClient();
     const parts: any[] = [];
-    for (const att of (params.attachments || []).slice(0, 6)) {
-      const m = String(att || '').match(/^data:([^;]+);base64,(.+)$/);
-      if (m) {
-        parts.push({ inlineData: { mimeType: m[1], data: m[2] } });
+    if (params.labeledAttachments && params.labeledAttachments.length > 0) {
+      for (const item of params.labeledAttachments.slice(0, 7)) {
+        const m = String(item.dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
+        if (m) {
+          parts.push({ text: item.label });
+          parts.push({ inlineData: { mimeType: m[1], data: m[2] } });
+        }
+      }
+    } else {
+      for (const att of (params.attachments || []).slice(0, 6)) {
+        const m = String(att || '').match(/^data:([^;]+);base64,(.+)$/);
+        if (m) {
+          parts.push({ inlineData: { mimeType: m[1], data: m[2] } });
+        }
       }
     }
     parts.push({ text: `${params.systemPrompt}\n\n${params.userPrompt}` });
@@ -3014,7 +3076,7 @@ async function runAgentTextInference(params: {
         if (!text) throw new Error(`Mô hình ${model} trả về rỗng.`);
         return {
           text,
-          provider: `gemini-fallback (${model})`,
+          provider: `${providerPrefix} (${model})`,
         };
       } catch (err: any) {
         lastErr = err;
@@ -3023,6 +3085,57 @@ async function runAgentTextInference(params: {
       }
     }
     throw new Error(formatGeminiError(lastErr));
+  };
+
+  // For multi-image Vision QA (labeledAttachments + preferGeminiVision), Gemini Vision reads interleaved image labels far more accurately than unlabeled text chat
+  if (
+    params.preferGeminiVision &&
+    health.geminiConfigured &&
+    ((params.labeledAttachments && params.labeledAttachments.length > 0) || (params.attachments && params.attachments.length > 0))
+  ) {
+    try {
+      return await runGeminiMultimodal('gemini-vision-qa');
+    } catch {
+      // fall through to Muse2API if Gemini Vision temporarily unavailable
+    }
+  }
+
+  let museError: string | null = null;
+  if (canTryMuse) {
+    try {
+      const flatAttachments =
+        params.labeledAttachments && params.labeledAttachments.length > 0
+          ? params.labeledAttachments.map((x) => x.dataUrl)
+          : params.attachments;
+      const labelLegend =
+        params.labeledAttachments && params.labeledAttachments.length > 0
+          ? `\n\nTHỨ TỰ ẢNH ĐÍNH KÈM:\n${params.labeledAttachments.map((x, idx) => `Ảnh #${idx + 1}: ${x.label}`).join('\n')}`
+          : '';
+      const text = await chatWithMuse2ApiSpark(
+        [
+          { role: 'system', content: params.systemPrompt },
+          { role: 'user', content: `${params.userPrompt}${labelLegend}` },
+        ],
+        240,
+        flatAttachments,
+        params.agent.boundAccountId
+      );
+      return {
+        text,
+        provider: 'muse2api (muse-spark)',
+        accountUsed: params.agent.boundAccountId,
+      };
+    } catch (err: any) {
+      museError = String(err?.message || err || 'Lỗi kết nối Muse2API');
+    }
+  } else {
+    museError = health.muse2ApiReachable
+      ? health.warnings[0] || 'Chưa có tài khoản Muse.ai khả dụng trên Muse2API.'
+      : `Muse2API (${health.muse2ApiBaseUrl}) chưa trực tuyến.`;
+  }
+
+  if (params.agent.engineMode === 'muse2api_with_gemini_fallback' && health.geminiConfigured) {
+    return await runGeminiMultimodal('gemini-fallback');
   }
 
   throw new Error(
@@ -3035,6 +3148,8 @@ async function runAgentJsonInference(params: {
   systemPrompt: string;
   userPrompt: string;
   attachments?: string[];
+  labeledAttachments?: { label: string; dataUrl: string }[];
+  preferGeminiVision?: boolean;
   validate?: (parsed: any) => boolean;
 }): Promise<{ parsed: any; rawText: string; provider: string; accountUsed?: string }> {
   const strictJsonRule =
@@ -3044,6 +3159,8 @@ async function runAgentJsonInference(params: {
     systemPrompt: `${params.systemPrompt}${strictJsonRule}`,
     userPrompt: params.userPrompt,
     attachments: params.attachments,
+    labeledAttachments: params.labeledAttachments,
+    preferGeminiVision: params.preferGeminiVision,
     jsonMode: true,
   });
 
@@ -3740,7 +3857,8 @@ async function executeDesignSceneImageTask(task: CommandTask, agent: MuseAgentCo
     }
   }
 
-  const charRefs = mem.characters
+  const matchedSceneChars = resolveCharactersInScene(mem, sc);
+  const charRefs = matchedSceneChars
     .map((c) => {
       ensureCharacterOriginalAnchors(c);
       const dUrl = getCharacterCanonicalImageDataUrl(c);
@@ -3755,7 +3873,7 @@ async function executeDesignSceneImageTask(task: CommandTask, agent: MuseAgentCo
     })
     .filter(Boolean) as any[];
 
-  const charBibleText = mem.characters
+  const charBibleText = matchedSceneChars
     .map(
       (c) =>
         `${c.name}: ${(c.confirmedOriginalSyncProfile || c.syncProfile).face}; ${(c.confirmedOriginalSyncProfile || c.syncProfile).physique}; ${
@@ -3778,7 +3896,8 @@ async function executeDesignSceneImageTask(task: CommandTask, agent: MuseAgentCo
     sceneIndex: sc.index,
     totalScenes: mem.scenes.length,
     sceneTitle: sc.title,
-    charactersInScene: mem.characters.map((c) => c.name).join(', '),
+    charactersInScene: matchedSceneChars.map((c) => c.name).join(', '),
+    selectedCharacterIds: matchedSceneChars.map((c) => c.id),
     settingDetail: sc.settingDetail,
     actionDetail: sc.actionDetail,
     dialogue: sc.dialogue,
@@ -3958,7 +4077,8 @@ async function executeRestoreCostumeAndRegenImageTask(
   let usedModel = '';
 
   if (refreshedSc) {
-    const charRefs = refreshedMem.characters
+    const matchedRestoreChars = resolveCharactersInScene(refreshedMem, refreshedSc);
+    const charRefs = matchedRestoreChars
       .map((c) => {
         ensureCharacterOriginalAnchors(c);
         const dUrl = getCharacterCanonicalImageDataUrl(c);
@@ -3974,7 +4094,7 @@ async function executeRestoreCostumeAndRegenImageTask(
       })
       .filter(Boolean) as any[];
 
-    const charBibleText = refreshedMem.characters
+    const charBibleText = matchedRestoreChars
       .map((c) => {
         const canon = c.confirmedOriginalSyncProfile || c.syncProfile;
         return `${c.name}: ${canon.face}; ${canon.physique}; ${canon.costume}`;
@@ -3997,7 +4117,8 @@ async function executeRestoreCostumeAndRegenImageTask(
       sceneIndex: refreshedSc.index,
       totalScenes: refreshedMem.scenes.length,
       sceneTitle: refreshedSc.title,
-      charactersInScene: refreshedMem.characters.map((c) => c.name).join(', '),
+      charactersInScene: matchedRestoreChars.map((c) => c.name).join(', '),
+      selectedCharacterIds: matchedRestoreChars.map((c) => c.id),
       settingDetail: refreshedSc.settingDetail,
       actionDetail: refreshedSc.actionDetail,
       dialogue: refreshedSc.dialogue,
@@ -4155,6 +4276,35 @@ async function executeRestoreCostumeAndRegenImageTask(
   });
 }
 
+function resolveCharactersInScene(
+  mem: ProjectMemory,
+  sc?: ProjectMemory['scenes'][number]
+): ProjectMemory['characters'] {
+  if (!sc || mem.characters.length <= 1) return mem.characters;
+  const norm = (s: string) =>
+    String(s || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .replace(/Đ/g, 'D')
+      .toLowerCase();
+  const corpus = norm(
+    [sc.speakerName, sc.dialogue, sc.actionDetail, sc.title, sc.narration, sc.costume].filter(Boolean).join(' | ')
+  );
+  const matched = mem.characters.filter((c) => {
+    const full = norm(c.name).trim();
+    if (!full) return false;
+    if (corpus.includes(full)) return true;
+    const tokens = full.split(/\s+/).filter((t) => t.length >= 2);
+    const lastToken = tokens[tokens.length - 1];
+    if (lastToken && lastToken.length >= 3 && new RegExp(`(?:^|[^a-z0-9])${lastToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:$|[^a-z0-9])`).test(corpus)) {
+      return true;
+    }
+    return false;
+  });
+  return matched.length > 0 ? matched : mem.characters.slice(0, 2);
+}
+
 async function executeQaInspectImageTask(task: CommandTask, agent: MuseAgentConfig): Promise<void> {
   const mem = getRunMemory(task.runId);
   throwIfRunStopped(task.runId);
@@ -4174,97 +4324,108 @@ async function executeQaInspectImageTask(task: CommandTask, agent: MuseAgentConf
   }
 
   const allowFreeCostumeChange = mem.allowFreeCostumeChange === true;
-  const refDataUrls = mem.characters
-    .map((c) => {
-      ensureCharacterOriginalAnchors(c);
-      const refUrl = getCharacterCanonicalImageRefUrl(c);
-      if (targetKind === 'character_image' && refUrl && refUrl === targetImageUrl) {
-        return null;
-      }
-      return getCharacterCanonicalImageDataUrl(c) || null;
-    })
-    .filter((x): x is string => Boolean(x))
-    .slice(0, 3);
+  const relevantChars = sc ? resolveCharactersInScene(mem, sc) : ch ? [ch] : mem.characters.slice(0, 2);
+  const labeledAttachments: { label: string; dataUrl: string }[] = [];
+  relevantChars.slice(0, 2).forEach((c, idx) => {
+    ensureCharacterOriginalAnchors(c);
+    const refUrl = getCharacterCanonicalImageRefUrl(c);
+    if (targetKind === 'character_image' && refUrl && refUrl === targetImageUrl) {
+      return;
+    }
+    const dUrl = getCharacterCanonicalImageDataUrl(c);
+    if (dUrl) {
+      labeledAttachments.push({
+        label: `[ẢNH THAM CHIẾU GỐC #${idx + 1} — Nhân vật "${c.name}" (Ảnh gốc chuẩn khuôn mặt, tóc, vóc dáng, trang phục)]`,
+        dataUrl: dUrl,
+      });
+    }
+  });
+  labeledAttachments.push({
+    label:
+      targetKind === 'scene_image'
+        ? `[ẢNH BỐI CẢNH CẦN KIỂM ĐỊNH — Ảnh Keyframe Cảnh ${sc?.index} "${sc?.title}"]`
+        : `[ẢNH NHÂN VẬT CẦN KIỂM ĐỊNH — "${ch?.name || 'Nhân vật'}"]`,
+    dataUrl: targetDataUrl,
+  });
 
-  const allAttachments = Array.from(new Set([...refDataUrls, targetDataUrl])).slice(0, 5);
   const charChecklist =
-    mem.characters
+    relevantChars
       .map((c, idx) => {
         ensureCharacterOriginalAnchors(c);
         const canon = c.confirmedOriginalSyncProfile || c.syncProfile;
-        return `  ${idx + 1}. "${c.name}" (ID: ${c.id}): Mặt/tóc="${canon.face}"; Vóc dáng="${canon.physique}"; Đặc điểm="${canon.distinguishingMarks}"; TRANG PHỤC GỐC BẮT BUỘC="${canon.costume}"`;
+        return `  ${idx + 1}. "${c.name}" (ID: ${c.id}): Mặt/tóc="${canon.face}"; Vóc dáng="${canon.physique}"; Đặc điểm="${canon.distinguishingMarks}"; TRANG PHỤC GỐC="${canon.costume}"`;
       })
       .join('\n') || '  (Đối chiếu mô tả nhân vật & trang phục gốc)';
 
   const sys = `Bạn là ${agent.name} (${agent.roleTitle}) — AI kiểm định độc lập dưới quyền Chủ tịch & Tổng chỉ huy Gemini AI.
-Nhiệm vụ: Kiểm định ĐO LƯỜNG ĐƯỢC hình ảnh (${targetKind === 'scene_image' ? `Ảnh keyframe Cảnh ${sc?.index}` : `Ảnh nhân vật "${ch?.name}"`}) so với ảnh tham chiếu gốc & hồ sơ nhân vật bất biến trong Project Memory v${mem.version}.
+Nhiệm vụ: Kiểm định THỰC TẾ, CÔNG TÂM hình ảnh (${targetKind === 'scene_image' ? `Ảnh bối cảnh Cảnh ${sc?.index}` : `Ảnh nhân vật "${ch?.name}"`}) so với ảnh tham chiếu gốc trong Project Memory v${mem.version}.
+NGUYÊN TẮC KIỂM ĐỊNH THỰC TẾ ĐIỆN ẢNH (CHỐNG BẮT BẺ QUÁ ĐÀ):
+- Chế độ cho phép đổi trang phục chính đang: ${allowFreeCostumeChange ? 'BẬT' : 'TẮT (KHÓA TRANG PHỤC CHÍNH)'}.
 ${
-  refDataUrls.length > 0
-    ? `THỨ TỰ ẢNH ĐÍNH KÈM: ${refDataUrls.length} ảnh đầu là ẢNH THAM CHIẾU GỐC CHUẨN; ảnh CUỐI CÙNG là ảnh mới tạo cần kiểm tra.`
-    : 'Ảnh đính kèm là ảnh cần đối chiếu chặt chẽ với hồ sơ nhân vật gốc bên dưới.'
+  targetKind === 'scene_image'
+    ? `- ĐÂY LÀ ẢNH BỐI CẢNH ĐIỆN ẢNH (không phải ảnh chân dung chụp thẳng studio): Luôn có sự khác biệt tự nhiên về góc máy (toàn cảnh/trung cảnh/góc nghiêng), ánh sáng bối cảnh (đêm, nắng gắt, đèn màu), bóng đổ, biểu cảm khuôn mặt, tóc bay và nếp gấp quần áo.
+- LINH ĐỘNG CHẤP NHẬN (PASS hoặc PASS_WITH_TOLERANCE): Nếu mắt thường nhìn vào nhận ra ĐÚNG cùng một nhân vật (đúng độ tuổi, giới tính, nét mặt, kiểu tóc cơ bản) và ĐÚNG bộ trang phục cốt lõi (đúng kiểu áo/quần/váy & tông màu chính dưới ánh sáng cảnh) thì PHẢI đánh PASS hoặc PASS_WITH_TOLERANCE (cho phép sai lệch môi trường/góc chụp tự nhiên <= 20%, điểm tương đồng >= 75). KHÔNG ĐƯỢC bắt lỗi vụn vặt khiến phải tạo lại ảnh tốt!
+- Phụ kiện độc lập (${ALLOWED_ACCESSORIES_LIST_VI}) luôn được phép thông qua nếu không phá hỏng nhận dạng.
+- CHỈ ĐÁNH FAIL (criticalFaceError=true hoặc criticalMainCostumeError=true) KHI CÓ LỖI RÕ RÀNG:
+  1) Nhân vật biến thành NGƯỜI XA LẠ hoàn toàn khác (sai giới tính, sai độ tuổi rõ rệt, khuôn mặt/kiểu tóc khác hẳn người gốc).
+  2) ${allowFreeCostumeChange ? '(Chế độ đổi trang phục đang BẬT)' : 'Trang phục chính bị thay đổi sang bộ đồ HOÀN TOÀN KHÁC (khác hẳn kiểu dáng/màu sắc chủ đạo, ví dụ áo dài thành vest hoặc trắng thành đỏ rực).'}
+  3) Ảnh bị lỗi giải phẫu nghiêm trọng (biến dạng mặt, thừa tay chân bất thường) hoặc sai bối cảnh hoàn toàn.`
+    : `- Đối chiếu chân dung nhân vật: Chấp nhận sai lệch ánh sáng/góc nhỏ <= 14%; CHỈ đánh FAIL khi khuôn mặt hoặc trang phục chính khác rõ rệt so với hồ sơ gốc.`
 }
-QUY TẮC KIỂM ĐỊNH 3 LOẠI SAI LỆCH & NGƯỠNG 5% (BẮT BUỘC):
-- Chế độ cho phép đổi trang phục chính đang: ${allowFreeCostumeChange ? 'BẬT' : 'TẮT (KHÓA CỨNG)'}.
-- LOẠI A — Thay đổi phụ kiện độc lập được phép (${ALLOWED_ACCESSORIES_LIST_VI}): ĐƯỢC PHÉP thông qua (PASS_WITH_TOLERANCE) nếu KHÔNG làm biến đổi nhận dạng, khuôn mặt, vóc dáng hay cấu trúc trang phục chính.
-- LOẠI B — Sai lệch tổng thể nhỏ <= 5% SAU KHI LOẠI TRỪ phụ kiện được phép: Cho phép thông qua (PASS_WITH_TOLERANCE) CHỈ KHI không có lỗi nghiêm trọng về khuôn mặt, vóc dáng hay trang phục chính (tách riêng từng thuộc tính!).
-- LOẠI C — Sai lệch vượt giới hạn (BẮT BUỘC đánh FAIL ngay lập tức):
-  1) Sai lệch tổng thể sau loại trừ phụ kiện được phép > 5%.
-  2) Khuôn mặt / nhận dạng nhân vật bị thay đổi rõ rệt (faceDeviationPct > 5 hoặc criticalFaceError = true).
-  3) Vóc dáng / tỷ lệ cơ thể bị biến đổi đáng kể (physiqueDeviationPct > 5 hoặc criticalPhysiqueError = true).
-  4) ${allowFreeCostumeChange ? '(Chế độ đổi đồ đang BẬT)' : 'Trang phục chính bị thay đổi trái phép (mainCostumeDeviationPct > 5 hoặc criticalMainCostumeError = true).'}
-  5) Phụ kiện làm biến đổi thiết kế trang phục chính hoặc nhận dạng nhân vật (accessoryDistortsIdentityOrCostume = true).
-  LƯU Ý CHỐT KỸ THUẬT: Ngưỡng 5% là sai lệch tổng thể sau khi loại trừ phụ kiện được phép — KHÔNG phải quyền thay đổi 5% khuôn mặt hoặc trang phục chính; lỗi nghiêm trọng ở thuộc tính quan trọng PHẢI đánh FAIL kể cả khi điểm tổng thể <= 5%.
 Trả về DUY NHẤT JSON:
 {
   "verdictStatus": "PASS | PASS_WITH_TOLERANCE | FAIL",
-  "overallScore": 96,
-  "faceSimilarityScore": 97,
-  "faceDeviationPct": 2.5,
-  "physiqueSimilarityScore": 96,
-  "physiqueDeviationPct": 2.0,
-  "mainCostumeSimilarityScore": 97,
-  "mainCostumeDeviationPct": 1.5,
-  "overallDeviationExcludingAccessoriesPct": 2.0,
-  "allowedAccessoryChanges": ["nhẫn vàng", "mũ"],
+  "overallScore": 90,
+  "faceSimilarityScore": 88,
+  "faceDeviationPct": 10.0,
+  "physiqueSimilarityScore": 90,
+  "physiqueDeviationPct": 8.0,
+  "mainCostumeSimilarityScore": 90,
+  "mainCostumeDeviationPct": 8.0,
+  "overallDeviationExcludingAccessoriesPct": 9.0,
+  "allowedAccessoryChanges": [],
   "criticalFaceError": false,
   "criticalPhysiqueError": false,
   "criticalMainCostumeError": false,
   "accessoryDistortsIdentityOrCostume": false,
-  "environmentalContextNote": "Đánh giá ảnh hưởng của góc máy, ánh sáng, tư thế, độ che khuất",
+  "environmentalContextNote": "Nhận xét ngắn về ánh sáng, góc máy, cự ly",
   "characterPassed": true,
   "costumePassed": true,
-  "summary": "Nhận xét ngắn gọn bằng tiếng Việt (nêu rõ PASS / PASS WITH TOLERANCE / FAIL và tỷ lệ sai lệch %)",
-  "affectedCharacterId": "${ch?.id || 'char_1'}",
-  "affectedCharacterName": "${ch?.name || 'Nhân vật chính'}",
-  "expectedCostume": "${getCharacterCanonicalCostume(ch) || mem.costumeBible}",
+  "summary": "Nhận xét ngắn gọn bằng tiếng Việt",
+  "affectedCharacterId": "${ch?.id || relevantChars[0]?.id || 'char_1'}",
+  "affectedCharacterName": "${ch?.name || relevantChars[0]?.name || 'Nhân vật chính'}",
+  "expectedCostume": "${getCharacterCanonicalCostume(ch || relevantChars[0]) || mem.costumeBible}",
   "observedCostume": "Mô tả trang phục thực tế thấy trong ảnh kiểm tra",
-  "mismatchDetails": "Mô tả cụ thể điểm sai lệch (rỗng nếu đạt)",
-  "fixInstruction": "Chỉ dẫn khắc phục cụ thể nếu FAIL"
+  "mismatchDetails": "",
+  "fixInstruction": ""
 }`;
 
   const user = `THÔNG SỐ ĐỐI CHIẾU GỐC:
-- Khóa trang phục chính: ${allowFreeCostumeChange ? 'BẬT (cho phép đổi theo cảnh, vẫn khóa mặt/tóc/vóc dáng)' : 'KHÓA CỨNG (chỉ loại trừ phụ kiện được phép)'}
-- Hồ sơ nhân vật gốc bất biến:\n${charChecklist}
-${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động: ${sc.actionDetail} — Trang phục chuẩn cảnh: ${sc.costume}` : `- Kiểm tra ảnh nhân vật "${ch?.name}" (${ch?.id})`}`;
+- Khóa trang phục chính: ${allowFreeCostumeChange ? 'BẬT (cho phép đổi theo cảnh, vẫn khóa nhận dạng nhân vật)' : 'KHÓA TRANG PHỤC CHÍNH (linh động ánh sáng/nếp gấp tự nhiên và phụ kiện nhỏ)'}
+- Hồ sơ nhân vật xuất hiện trong ảnh:\n${charChecklist}
+${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Góc máy: ${sc.cameraAngle || 'tự nhiên'} — Hành động: ${sc.actionDetail} — Trang phục chuẩn cảnh: ${sc.costume}` : `- Kiểm tra ảnh nhân vật "${ch?.name}" (${ch?.id})`}`;
 
   const res = await runAgentJsonInference({
     agent,
     systemPrompt: sys,
     userPrompt: user,
-    attachments: allAttachments,
+    labeledAttachments,
+    preferGeminiVision: true,
   });
 
   throwIfRunStopped(task.runId);
 
   const parsed = res.parsed || {};
   const threshold = storeDoc.cloudConfig.qaPassThreshold;
-  const rawCharScore = Math.max(0, Math.min(100, Number(parsed.faceSimilarityScore ?? parsed.characterScore ?? parsed.overallScore ?? 92)));
-  const rawCostumeScore = Math.max(0, Math.min(100, Number(parsed.mainCostumeSimilarityScore ?? parsed.costumeScore ?? parsed.overallScore ?? 92)));
+  const effectiveThreshold = targetKind === 'scene_image' ? Math.min(threshold, 74) : Math.min(threshold, 82);
+  const rawCharScore = Math.max(0, Math.min(100, Number(parsed.faceSimilarityScore ?? parsed.characterScore ?? parsed.overallScore ?? 88)));
+  const rawCostumeScore = Math.max(0, Math.min(100, Number(parsed.mainCostumeSimilarityScore ?? parsed.costumeScore ?? parsed.overallScore ?? 88)));
   const consistency = evaluateMuse05CharacterConsistency({
     parsed,
     allowFreeCostumeChange,
     fallbackCharScore: rawCharScore,
     fallbackCostumeScore: rawCostumeScore,
+    targetMediaKind: targetKind,
   });
   const charScore = Math.round((consistency.metrics.faceSimilarityScore + consistency.metrics.physiqueSimilarityScore) / 2);
   const costumeScore = consistency.metrics.mainCostumeSimilarityScore;
@@ -4273,7 +4434,7 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
     : Math.max(0, Math.min(100, Math.round(100 - consistency.metrics.overallDeviationExcludingAccessoriesPct)));
   const characterPassed = !consistency.characterViolated;
   const costumePassed = allowFreeCostumeChange ? true : !consistency.costumeViolated;
-  const passed = consistency.passed && overallScore >= threshold;
+  const passed = consistency.passed && overallScore >= effectiveThreshold;
   const finalVerdict: QaVerdictStatus = passed ? consistency.verdictStatus : 'FAIL';
 
   const matchedChar = matchCharacterForScene(
@@ -4586,7 +4747,9 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
     }
   }
 
-  const charRefs = mem.characters
+  // Filter ONLY characters actually appearing in THIS scene so unrelated character portraits NEVER cause face swaps!
+  const matchedSceneChars = resolveCharactersInScene(mem, sc);
+  const charRefs = matchedSceneChars
     .map((c) => {
       ensureCharacterOriginalAnchors(c);
       const dUrl = getCharacterCanonicalImageDataUrl(c);
@@ -4601,7 +4764,23 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
     })
     .filter(Boolean) as any[];
 
-  const charBibleText = mem.characters
+  // Strict Single-Frame Image-to-Video Lock:
+  // When retrying a video whose scene keyframe image is ALREADY valid (e.g. previous video drifted into a stranger),
+  // lock strictly onto the single verified scene keyframe image (no studio portraits competing with Image #1)
+  // and auto-route to Gemini Omni Flash (which supports explicit interleaved image labels) if Muse2API drifted!
+  const isStrictVideoRetry =
+    sc.retryCount >= 1 &&
+    Boolean(sceneKeyframeDataUrl);
+  if (
+    isStrictVideoRetry &&
+    engine === 'muse2api' &&
+    health.geminiConfigured &&
+    (task.instructions?.includes('Strict Single-Frame') || task.instructions?.includes('KHÓA KHUNG HÌNH') || sc.retryCount >= 1)
+  ) {
+    engine = 'gemini';
+  }
+
+  const charBibleText = matchedSceneChars
     .map((c) => {
       const canon = c.confirmedOriginalSyncProfile || c.syncProfile;
       return `${c.name}: ${canon.face}; ${canon.physique}; ${
@@ -4617,8 +4796,8 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
   const basePromptText =
     task.expectedMemoryVersion && mem.version > task.expectedMemoryVersion
       ? `${latestScenePrompt}${
-          task.instructions?.includes('CHỈ ĐẠO ĐẠO DIỄN TỔNG')
-            ? ` ${task.instructions.slice(task.instructions.indexOf('CHỈ ĐẠO ĐẠO DIỄN TỔNG'))}`
+          task.instructions?.includes('CHỈ ĐẠO')
+            ? ` ${task.instructions.slice(task.instructions.indexOf('CHỈ ĐẠO'))}`
             : ''
         }`
       : task.instructions || latestScenePrompt;
@@ -4639,7 +4818,8 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
     sceneTitle: sc.title,
     settingDetail: sc.settingDetail,
     cameraMovement: sc.cameraMovement,
-    charactersInScene: mem.characters.map((c) => c.name).join(', '),
+    charactersInScene: matchedSceneChars.map((c) => c.name).join(', '),
+    selectedCharacterIds: matchedSceneChars.map((c) => c.id),
     actionDetail: sc.actionDetail,
     dialogue: mem.productionFormat === 'dialogue_film' ? sc.dialogue : '',
     narration: sc.narration,
@@ -4653,6 +4833,7 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
     characterRefs: charRefs,
     museAccountId: agent.boundAccountId,
     allowFreeCostumeChange: mem.allowFreeCostumeChange === true,
+    strictSingleFrameLock: isStrictVideoRetry,
   });
 
   throwIfRunStopped(task.runId);
@@ -4737,21 +4918,37 @@ async function executeQaInspectSceneTask(task: CommandTask, agent: MuseAgentConf
   if (!sc.videoUrl) throw new Error(`Cảnh ${sc.index} chưa có file video đầu ra để kiểm định.`);
 
   const diskPath = artifactUrlToDiskPath(sc.videoUrl);
-  const extractedFrames = diskPath ? await extractFramesFromVideoDisk(diskPath, 3) : [];
-  const charAttachments = mem.characters
-    .map((c) => c.dataUrl || artifactUrlToDataUrl(c.artifactUrl))
-    .filter((x): x is string => Boolean(x))
-    .slice(0, 2);
+  const extractedFrames = diskPath ? await extractFramesFromVideoDisk(diskPath, 4) : [];
+  const matchedSceneChars = resolveCharactersInScene(mem, sc);
   const keyframeAtt = artifactUrlToDataUrl(sc.keyframeImageUrl);
-  const allAttachments = Array.from(
-    new Set([...extractedFrames, ...(keyframeAtt ? [keyframeAtt] : []), ...charAttachments])
-  ).slice(0, 6);
+  const labeledAttachments: { label: string; dataUrl: string }[] = [];
+  if (keyframeAtt) {
+    labeledAttachments.push({
+      label: `[ẢNH KEYFRAME CẢNH GỐC (KHUNG HÌNH CHUẨN 0.0s của Cảnh ${sc.index}) — Video PHẢI tái hiện ĐÚNG khuôn mặt, kiểu tóc, trang phục và bối cảnh từ ảnh này]`,
+      dataUrl: keyframeAtt,
+    });
+  }
+  matchedSceneChars.slice(0, 2).forEach((c, idx) => {
+    const dUrl = getCharacterCanonicalImageDataUrl(c) || c.dataUrl || artifactUrlToDataUrl(c.artifactUrl);
+    if (dUrl) {
+      labeledAttachments.push({
+        label: `[ẢNH THAM CHIẾU NHÂN VẬT GỐC #${idx + 1} — "${c.name}"]`,
+        dataUrl: dUrl,
+      });
+    }
+  });
+  extractedFrames.forEach((frame, idx) => {
+    labeledAttachments.push({
+      label: `[KHUNG HÌNH VIDEO THỰC TẾ #${idx + 1}/${extractedFrames.length} — Trích xuất từ video đầu ra Cảnh ${sc.index} cần kiểm tra]`,
+      dataUrl: frame,
+    });
+  });
 
   const prevScene = sc.index > 1 ? mem.scenes.find((s) => s.index === sc.index - 1) : undefined;
   const allowFreeCostumeChange = mem.allowFreeCostumeChange === true;
   const canonicalCharChecklist =
-    mem.characters.length > 0
-      ? mem.characters
+    matchedSceneChars.length > 0
+      ? matchedSceneChars
           .map(
             (c, i) =>
               `  ${i + 1}. Nhân vật "${c.name}": Khuôn mặt/tóc="${c.syncProfile.face}"; Vóc dáng="${c.syncProfile.physique}"; Đặc điểm nhận dạng="${c.syncProfile.distinguishingMarks}"; Trang phục chuẩn="${c.syncProfile.costume}"`
@@ -4760,49 +4957,40 @@ async function executeQaInspectSceneTask(task: CommandTask, agent: MuseAgentConf
       : '  (Kiểm tra khớp mô tả nhân vật & trang phục trong kịch bản)';
 
   const sys = `Bạn là ${agent.name} (${agent.roleTitle}) — AI kiểm định độc lập dưới quyền Chủ tịch & Tổng chỉ huy Gemini AI.
-Nhiệm vụ: Kiểm định ĐO LƯỜNG ĐƯỢC video đầu ra của Cảnh ${sc.index} dựa trên các khung hình trích xuất thực tế, ảnh tham chiếu nhân vật gốc và Project Memory v${mem.version}.
-QUY TẮC KIỂM ĐỊNH 3 LOẠI SAI LỆCH & NGƯỠNG 5% (BẮT BUỘC):
-1. TÁCH RIÊNG CÁC THUỘC TÍNH QUAN TRỌNG:
-   - Độ tương đồng & % sai lệch khuôn mặt/nhận dạng (faceSimilarityScore, faceDeviationPct).
-   - Độ tương đồng & % sai lệch vóc dáng/tỷ lệ cơ thể (physiqueSimilarityScore, physiqueDeviationPct).
-   - Độ tương đồng & % sai lệch trang phục chính (mainCostumeSimilarityScore, mainCostumeDeviationPct).
-   - Mức sai lệch tổng thể SAU KHI LOẠI TRỪ phụ kiện độc lập được phép (overallDeviationExcludingAccessoriesPct).
-   - Xét điều kiện góc máy, ánh sáng, tư thế, độ che khuất (environmentalContextNote).
-2. PHÂN LOẠI 3 LOẠI THAY ĐỔI:
-   - LOẠI A — Phụ kiện độc lập được phép (${ALLOWED_ACCESSORIES_LIST_VI}): ĐƯỢC PHÉP thông qua (PASS_WITH_TOLERANCE) nếu KHÔNG làm biến đổi nhận dạng, ngoại hình hay cấu trúc trang phục chính.
-   - LOẠI B — Sai lệch tổng thể nhỏ <= 5% sau loại trừ phụ kiện được phép: Thông qua (PASS_WITH_TOLERANCE) CHỈ KHI không có lỗi nghiêm trọng ở khuôn mặt, vóc dáng hoặc trang phục chính.
-   - LOẠI C — Sai lệch vượt giới hạn (FAIL ngay lập tức, báo thẳng Chủ tịch Gemini AI):
-     • overallDeviationExcludingAccessoriesPct > 5%.
-     • Khuôn mặt / nhận dạng thay đổi rõ rệt (faceDeviationPct > 5 hoặc criticalFaceError = true).
-     • Vóc dáng / tỷ lệ cơ thể biến đổi đáng kể (physiqueDeviationPct > 5 hoặc criticalPhysiqueError = true).
-     • ${allowFreeCostumeChange ? '(Chế độ đổi trang phục chính đang BẬT)' : 'Trang phục chính bị thay đổi trái phép (mainCostumeDeviationPct > 5 hoặc criticalMainCostumeError = true) — bắt buộc điền object "costumeMismatch".'}
-     • Phụ kiện làm biến đổi nhận dạng hoặc thiết kế trang phục chính (accessoryDistortsIdentityOrCostume = true).
-   CHỐT KỸ THUẬT: Ngưỡng 5% KHÔNG cho phép tự ý đổi 5% khuôn mặt hoặc trang phục chính; bất kỳ lỗi nghiêm trọng nào ở thuộc tính khóa đều phải đánh FAIL kể cả khi điểm tổng thể <= 5%.
+Nhiệm vụ: Kiểm định ĐO LƯỜNG ĐƯỢC video đầu ra của Cảnh ${sc.index} bằng cách đối chiếu trực tiếp các [KHUNG HÌNH VIDEO THỰC TẾ] với [ẢNH KEYFRAME CẢNH GỐC] và [ẢNH THAM CHIẾU NHÂN VẬT GỐC].
+ƯU TIÊN SỐ 1 — CHỐNG LỖI VIDEO BIẾN THÀNH NGƯỜI XA LẠ (STRANGER SWAP DETECTOR):
+- So sánh trực tiếp nhân vật trong TỪNG khung hình video (#1..#${extractedFrames.length}) với [ẢNH KEYFRAME CẢNH GỐC] và [ẢNH THAM CHIẾU NHÂN VẬT GỐC].
+- Chấp nhận linh động các khác biệt tự nhiên của video chuyển động (nhòe chuyển động nhẹ, thay đổi ánh sáng/bóng đổ, biểu cảm nói chuyện, góc xoay đầu tự nhiên — sai lệch môi trường <= 18% vẫn ĐẠT).
+- BẮT BUỘC ĐÁNH FAIL NGAY (videoKeyframeIdentityMatch = false, criticalFaceError = true) NẾU:
+  1) Nhân vật trong video biến thành NGƯỜI XA LẠ khác hẳn nhân vật trong ảnh keyframe cảnh hoặc ảnh tham chiếu gốc (khác gương mặt rõ rệt, khác độ tuổi/giới tính/kiểu tóc, hoặc đột ngột đổi sang khuôn mặt khác giữa clip).
+  2) ${allowFreeCostumeChange ? '(Chế độ đổi trang phục chính đang BẬT)' : 'Trang phục chính trong video bị biến đổi sang bộ quần áo khác hẳn ảnh keyframe & ảnh tham chiếu gốc (criticalMainCostumeError = true) — bắt buộc điền object "costumeMismatch".'}
+  3) Video bị giật cắt về phông nền trắng ảnh chân dung hoặc mất hoàn toàn bối cảnh từ ảnh keyframe gốc.
 Trả về DUY NHẤT JSON hợp lệ:
 {
   "verdictStatus": "PASS | PASS_WITH_TOLERANCE | FAIL",
-  "overallScore": 92,
-  "faceSimilarityScore": 96,
-  "faceDeviationPct": 2.5,
-  "physiqueSimilarityScore": 96,
-  "physiqueDeviationPct": 2.0,
-  "mainCostumeSimilarityScore": 97,
-  "mainCostumeDeviationPct": 1.5,
-  "overallDeviationExcludingAccessoriesPct": 2.0,
+  "videoKeyframeIdentityMatch": true,
+  "overallScore": 90,
+  "faceSimilarityScore": 88,
+  "faceDeviationPct": 10.0,
+  "physiqueSimilarityScore": 90,
+  "physiqueDeviationPct": 8.0,
+  "mainCostumeSimilarityScore": 90,
+  "mainCostumeDeviationPct": 8.0,
+  "overallDeviationExcludingAccessoriesPct": 9.0,
   "allowedAccessoryChanges": [],
   "criticalFaceError": false,
   "criticalPhysiqueError": false,
   "criticalMainCostumeError": false,
   "accessoryDistortsIdentityOrCostume": false,
-  "environmentalContextNote": "Nhận xét về góc máy, ánh sáng, tư thế, độ che khuất",
+  "environmentalContextNote": "Nhận xét so sánh giữa Ảnh Keyframe gốc và các khung hình video",
   "timestampRange": "0s-${sc.durationSec}s",
-  "summary": "Nhận xét ngắn gọn kết quả kiểm định",
+  "summary": "Nhận xét ngắn gọn kết quả kiểm định (nêu rõ video có giữ đúng nhân vật từ ảnh keyframe hay bị biến thành người lạ)",
   "targetFixAgentId": "muse-04",
-  "fixInstruction": "Chỉ dẫn cụ thể để sửa lỗi nếu FAIL",
+  "fixInstruction": "Chỉ dẫn cụ thể để sửa lỗi nếu FAIL (nêu rõ giữ nguyên ảnh keyframe tốt hay phải sửa)",
   "costumeMismatch": null,
   "criteria": [
-    { "criterion": "character", "score": 95, "passed": true, "note": "..." },
-    { "criterion": "costume", "score": 96, "passed": true, "note": "..." },
+    { "criterion": "character", "score": 90, "passed": true, "note": "..." },
+    { "criterion": "costume", "score": 90, "passed": true, "note": "..." },
     { "criterion": "voice", "score": 88, "passed": true, "note": "..." },
     { "criterion": "dialogue", "score": 88, "passed": true, "note": "..." },
     { "criterion": "setting", "score": 90, "passed": true, "note": "..." },
@@ -4814,8 +5002,8 @@ Trả về DUY NHẤT JSON hợp lệ:
 (Khi phát hiện sai trang phục chính lúc đang khóa, đặt "costumeMismatch": { "characterId": "...", "characterName": "...", "expectedCostume": "...", "observedCostume": "...", "mismatchDetails": "mô tả chi tiết điểm sai khác" })`;
 
   const user = `THÔNG SỐ CHUẨN PROJECT MEMORY v${mem.version}:
-- Thiết lập khóa trang phục: ${allowFreeCostumeChange ? 'TỰ DO ĐỔI THEO CẢNH (vẫn khóa mặt/tóc/vóc dáng)' : 'KHÓA CỨNG TRANG PHỤC CHÍNH THEO ẢNH THAM CHIẾU (chỉ loại trừ phụ kiện độc lập được phép)'}
-- Hồ sơ đối chiếu nhân vật chi tiết:
+- Thiết lập khóa trang phục: ${allowFreeCostumeChange ? 'TỰ DO ĐỔI THEO CẢNH (vẫn khóa mặt/tóc/vóc dáng)' : 'KHÓA TRANG PHỤC CHÍNH THEO ẢNH KEYFRAME & ẢNH THAM CHIẾU GỐC'}
+- Hồ sơ đối chiếu nhân vật xuất hiện trong cảnh:
 ${canonicalCharChecklist}
 - Trang phục tổng thể (Costume Bible): ${mem.costumeBible || sc.costume || '(Theo ảnh tham chiếu)'}
 - Cảnh cần kiểm tra: Cảnh ${sc.index}/${mem.scenes.length} — "${sc.title}"
@@ -4832,7 +5020,8 @@ ${canonicalCharChecklist}
     agent,
     systemPrompt: sys,
     userPrompt: user,
-    attachments: allAttachments,
+    labeledAttachments,
+    preferGeminiVision: true,
   });
 
   throwIfRunStopped(task.runId);
@@ -4864,6 +5053,7 @@ ${canonicalCharChecklist}
     allowFreeCostumeChange,
     fallbackCharScore: charCrit?.score ?? overallScore,
     fallbackCostumeScore: costumeCrit?.score ?? overallScore,
+    targetMediaKind: 'scene_video',
   });
 
   if (charCrit) {

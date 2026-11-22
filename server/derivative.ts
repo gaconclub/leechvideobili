@@ -4348,6 +4348,7 @@ export async function selectAndMapCharacterRefsForScene(params: {
   dialogue?: string;
   sceneSummary?: string;
   costume?: string;
+  hasSceneKeyframe?: boolean;
 }): Promise<{
   selectedRefs: StudioCharacterRefInput[];
   mappingDirective: string;
@@ -4359,6 +4360,8 @@ export async function selectAndMapCharacterRefsForScene(params: {
   if (validRefs.length === 0) {
     return { selectedRefs: [], mappingDirective: '' };
   }
+
+  const refStartNum = params.hasSceneKeyframe ? 2 : 1;
 
   const formatRefProfile = (r: StudioCharacterRefInput): string => {
     const sp = r.syncProfile;
@@ -4376,6 +4379,21 @@ export async function selectAndMapCharacterRefsForScene(params: {
 
   const buildMappingDirective = (refs: StudioCharacterRefInput[]) => {
     if (refs.length === 0) return '';
+    if (params.hasSceneKeyframe) {
+      const refMap = refs
+        .map((r, idx) => {
+          const imgNum = refStartNum + idx;
+          const name = (r.name || `Nhân vật #${idx + 1}`).trim();
+          const shortFace = r.syncProfile?.face?.trim() || r.description?.trim() || '';
+          const shortCostume = r.syncProfile?.costume?.trim() || '';
+          const cue = [shortFace ? `face/hair: ${shortFace.slice(0, 80)}` : '', shortCostume ? `outfit: ${shortCostume.slice(0, 70)}` : '']
+            .filter(Boolean)
+            .join('; ');
+          return `Image #${imgNum} = "${name}" identity anchor ONLY${cue ? ` (${cue})` : ''}`;
+        })
+        .join('; ');
+      return `IMAGE ROLE MAP: Image #1 is the EXACT STARTING FRAME (t=0.0s) of this scene — animate DIRECTLY from Image #1 without replacing the person or background. ${refMap} (reference ONLY for facial/outfit consistency, NEVER cut to a portrait or use as an ending frame).`;
+    }
     if (refs.length === 1) {
       const r = refs[0];
       const name = (r.name || 'Nhân vật chính').trim();
@@ -5047,12 +5065,15 @@ export async function generateSceneVideoWithOmniFlash(params: {
   characterRefs?: StudioCharacterRefInput[];
   museAccountId?: string;
   allowFreeCostumeChange?: boolean;
+  strictSingleFrameLock?: boolean;
 }): Promise<{ assetId: string; previewUrl: string; durationSec: number; hasAudio: boolean; model: string }> {
   const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
   const clampedDur = Math.max(3, Math.min(15, Math.round(params.durationSec || 8)));
   const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
+  const hasSceneKeyframe = Boolean(params.sceneImageDataUrl);
+  const strictSingleFrameLock = Boolean(hasSceneKeyframe && params.strictSingleFrameLock);
 
-  const { selectedRefs, mappingDirective } = await selectAndMapCharacterRefsForScene({
+  const { selectedRefs: rawSelectedRefs, mappingDirective } = await selectAndMapCharacterRefsForScene({
     characterRefs: params.characterRefs,
     selectedCharacterIds: params.selectedCharacterIds,
     prompt: params.prompt,
@@ -5061,7 +5082,15 @@ export async function generateSceneVideoWithOmniFlash(params: {
     dialogue: params.dialogue,
     sceneSummary: params.sceneSummary,
     costume: params.costume,
+    hasSceneKeyframe,
   });
+
+  // When a verified scene keyframe exists:
+  // - strictSingleFrameLock attaches ONLY the scene keyframe (pure I2V — zero portrait background hijack)
+  // - standard mode attaches at most 2 scene-matched character identity anchors after Image #1
+  const attachedCharRefs = strictSingleFrameLock
+    ? []
+    : rawSelectedRefs.slice(0, hasSceneKeyframe ? 2 : 3);
 
   const effectiveTimeline =
     (params.videoTimeline || '').trim() ||
@@ -5076,28 +5105,38 @@ export async function generateSceneVideoWithOmniFlash(params: {
       dialogue: params.dialogue,
     });
 
-  // Put Scene Timeline, Lip-Sync Direct Dialogue, Camera Motion, and Character Mapping FIRST so Muse's 1440-char limit NEVER truncates timeline or dialogue!
+  const lockPhrase = allowFreeCostumeChange
+    ? 'keep the EXACT same person(s), face, facial structure, age, ethnicity, hair, and physique identical (never swap to a stranger)'
+    : 'keep the EXACT same person(s), face, facial structure, age, ethnicity, hair, physique, AND exact main outfit identical (never swap to a stranger or change main clothing)';
+
+  // CRITICAL: Put FIRST-FRAME LOCK + IMAGE ROLE MAP at CHARACTER 0 so Muse2API (1440-char cap) and Omni Flash NEVER truncate or bury the identity lock!
+  const firstFrameLockLead = hasSceneKeyframe
+    ? strictSingleFrameLock
+      ? `FIRST-FRAME LOCK (STRICT PURE IMAGE-TO-VIDEO): Image #1 is the EXACT starting frame (t=0.0s). Animate DIRECTLY from Image #1 with natural continuous motion, ${lockPhrase}. Preserve the EXACT face, hairstyle, clothing, lighting, camera framing, and environment already shown in Image #1 — DO NOT invent or substitute a different actor, DO NOT cut away to a new face.`
+      : `FIRST-FRAME LOCK (CRITICAL): Image #1 is the EXACT starting frame (t=0.0s). Animate DIRECTLY from Image #1 with seamless continuous motion, ${lockPhrase}. Preserve the exact subject face, hair, outfit, lighting, and setting from Image #1 — NEVER replace the character with a stranger, NEVER redesign face/clothes, NEVER cut to a studio portrait. ${mappingDirective}`
+    : `CHARACTER IDENTITY LOCK (CRITICAL): ${lockPhrase}. ${mappingDirective}`;
+
   const priorityLeadLines = [
+    firstFrameLockLead,
     params.sceneIndex
       ? `Scene ${String(params.sceneIndex).padStart(2, '0')}${params.totalScenes ? `/${String(params.totalScenes).padStart(2, '0')}` : ''}${params.sceneTitle?.trim() ? ` - ${params.sceneTitle.trim()}` : ''}.`
       : '',
-    `Visual Style: ${styleMeta.promptDirective}.`,
-    `Per-Second Scene Timeline (${clampedDur}s — follow EVERY timestamp strictly): ${effectiveTimeline.replace(/\n+/g, ' | ')}.`,
-    params.dialogue?.trim()
-      ? `Character Direct Spoken Dialogue & Lip-Sync Audio (CRITICAL: the speaking character(s) MUST visibly open mouth and speak these exact lines aloud on camera with synchronized lip movements and natural character voice; DO NOT convert this character dialogue into off-screen third-person narration): ${params.dialogue.trim()}.`
-      : '',
-    params.enableVoiceover !== false && params.narration?.trim()
-      ? `Separate Narrator Voiceover Context (only background narration atmosphere, distinct from character dialogue): ${params.narration.trim()}.`
-      : '',
-    params.sceneSummary?.trim() ? `Main Scene Plot: ${params.sceneSummary.trim()}.` : '',
     params.actionDetail?.trim() ? `Action: ${params.actionDetail.trim()}.` : '',
+    `Timeline (${clampedDur}s): ${effectiveTimeline.replace(/\n+/g, ' | ')}.`,
+    params.dialogue?.trim()
+      ? `Direct Spoken Dialogue & Lip-Sync (the visible character from Image #1 opens mouth and speaks aloud with synchronized lips and natural voice): ${params.dialogue.trim()}.`
+      : '',
     [params.cameraAngle?.trim(), params.cameraMovement?.trim(), params.cameraEquipment?.trim()]
       .filter(Boolean)
       .join(' · ')
-      ? `Camera Angle & Movement: ${[params.cameraAngle?.trim(), params.cameraMovement?.trim(), params.cameraEquipment?.trim()].filter(Boolean).join(' · ')}.`
+      ? `Camera: ${[params.cameraAngle?.trim(), params.cameraMovement?.trim(), params.cameraEquipment?.trim()].filter(Boolean).join(' · ')}.`
       : '',
     params.settingDetail?.trim() ? `Setting: ${params.settingDetail.trim()}.` : '',
-    mappingDirective,
+    `Visual Style: ${styleMeta.promptDirective}.`,
+    params.enableVoiceover !== false && params.narration?.trim()
+      ? `Separate Narrator Voiceover Context: ${params.narration.trim()}.`
+      : '',
+    params.sceneSummary?.trim() ? `Scene Plot: ${params.sceneSummary.trim()}.` : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -5110,8 +5149,8 @@ export async function generateSceneVideoWithOmniFlash(params: {
     params.characterBible?.trim() ? `Character Reference: ${params.characterBible.trim()}.` : '',
     params.costumeBible?.trim()
       ? allowFreeCostumeChange
-        ? `Costume Guidance (adapt outfit strictly as directed by scene prompt while keeping face, hair & physique identical): ${params.costumeBible.trim()}.`
-        : `STRICT COSTUME LOCK (DO NOT alter, add, remove, or redesign reference clothes/accessories): ${params.costumeBible.trim()}.`
+        ? `Costume Guidance: ${params.costumeBible.trim()}.`
+        : `STRICT COSTUME LOCK: ${params.costumeBible.trim()}.`
       : '',
     params.settingBible?.trim() ? `Environment Reference: ${params.settingBible.trim()}.` : '',
     params.continuityBible?.trim() ? `Story Continuity: ${params.continuityBible.trim()}.` : '',
@@ -5119,13 +5158,9 @@ export async function generateSceneVideoWithOmniFlash(params: {
     .filter(Boolean)
     .join(' ');
 
-  const lockPhrase = allowFreeCostumeChange
-    ? 'keeping every character identity, face, hair, physique & distinguishing marks 100% identical while adapting outfit per scene prompt'
-    : 'keeping EVERY character identity, face, hair, physique, AND exact reference costume/colors/accessories 100% identical with ZERO unauthorized wardrobe changes';
-
-  const baseVideoPrompt = params.sceneImageDataUrl
-    ? `${priorityLeadLines} Animate this exact keyframe scene smoothly following the exact Per-Second Timeline above with natural continuous real-time motion, ${lockPhrase}: ${params.prompt}. ${trailingBibles} No overlaid text or watermarks.`
-    : `${priorityLeadLines} High-definition cohesive video scene following the exact Per-Second Timeline above with continuous real-time action and smooth camera motion, ${lockPhrase}: ${params.prompt}. ${trailingBibles} Cohesive lighting, no overlaid text or watermarks.`;
+  const baseVideoPrompt = hasSceneKeyframe
+    ? `${priorityLeadLines} Motion details: ${params.prompt}. ${trailingBibles} Smooth real-time physics, consistent face from start to end, no overlaid text or watermarks.`
+    : `${priorityLeadLines} High-definition cohesive video scene with continuous real-time action: ${params.prompt}. ${trailingBibles} Cohesive lighting, no overlaid text or watermarks.`;
 
   const styledVideoPrompt =
     params.videoStyle === 'cinematic_filmmaking'
@@ -5140,7 +5175,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
     rawCompiledPrompt: styledVideoPrompt,
     mode: 'scene',
     mediaType: 'video',
-    hasAttachedRefs: Boolean(params.sceneImageDataUrl || selectedRefs.length > 0),
+    hasAttachedRefs: Boolean(hasSceneKeyframe || attachedCharRefs.length > 0),
     cameraAngle: params.cameraAngle,
     vfxNotes: params.vfxNotes,
     targetEngine: params.engine === 'muse2api' ? 'muse2api' : 'gemini',
@@ -5150,10 +5185,18 @@ export async function generateSceneVideoWithOmniFlash(params: {
   }).prompt;
 
   if (params.engine === 'muse2api') {
+    // CRITICAL FOR MUSE2API (muse-video / Seedance):
+    // When a verified scene keyframe exists, passing ONLY the scene keyframe (or strictly Image #1 first) avoids portrait-jump & stranger morphing.
+    // Specifically: if strictSingleFrameLock is ON, pass ONLY [sceneImageDataUrl]; otherwise pass [sceneImageDataUrl, ...attachedCharRefs.slice(0, 1)] so single-character scenes stay locked to Image #1.
+    const museCharExtraRefs = strictSingleFrameLock
+      ? []
+      : hasSceneKeyframe
+      ? attachedCharRefs.slice(0, 1).map((r) => r.dataUrl)
+      : attachedCharRefs.map((r) => r.dataUrl);
     const museRefList = Array.from(
       new Set([
         ...(params.sceneImageDataUrl ? [params.sceneImageDataUrl] : []),
-        ...selectedRefs.map((r) => r.dataUrl),
+        ...museCharExtraRefs,
       ])
     );
     const { buffer, mimeType, ext } = await generateVideoBufferViaMuse2Api({
@@ -5195,9 +5238,14 @@ export async function generateSceneVideoWithOmniFlash(params: {
   const ai = getGeminiClient();
   const inputParts: any[] = [];
 
+  // Interleave explicit text labels BEFORE each image so Gemini Omni Flash NEVER treats Image #2 as an ending frame or blends/swaps faces!
   if (params.sceneImageDataUrl) {
     const parsed = parseDataUrlToBuffer(params.sceneImageDataUrl);
     if (parsed) {
+      inputParts.push({
+        type: 'text',
+        text: '[IMAGE #1 — MANDATORY EXACT STARTING FRAME (t=0.0s)]: Begin the video verbatim from this exact keyframe image. Keep the exact person(s), face, hair, clothing, lighting, and setting from IMAGE #1 throughout the clip — animate natural movement and dialogue directly from IMAGE #1 without replacing the actor.',
+      });
       inputParts.push({
         type: 'image',
         mime_type: parsed.mimeType,
@@ -5205,9 +5253,18 @@ export async function generateSceneVideoWithOmniFlash(params: {
       });
     }
   }
-  for (const ref of selectedRefs.slice(0, params.sceneImageDataUrl ? 3 : 4)) {
+  for (let i = 0; i < attachedCharRefs.length; i++) {
+    const ref = attachedCharRefs[i];
     const parsed = parseDataUrlToBuffer(ref.dataUrl);
     if (parsed) {
+      const imgIdx = (hasSceneKeyframe ? 2 : 1) + i;
+      const charName = (ref.name || `Character ${i + 1}`).trim();
+      inputParts.push({
+        type: 'text',
+        text: hasSceneKeyframe
+          ? `[IMAGE #${imgIdx} — CHARACTER IDENTITY ANCHOR ONLY for "${charName}" (NOT AN ENDING FRAME — DO NOT CUT TO THIS BACKGROUND)]: Use ONLY to keep "${charName}"'s face, hairstyle, and outfit 100% consistent while animating IMAGE #1.`
+          : `[IMAGE #${imgIdx} — CHARACTER REFERENCE for "${charName}"]: Reproduce "${charName}"'s exact face, hairstyle, physique, and outfit in the scene.`,
+      });
       inputParts.push({
         type: 'image',
         mime_type: parsed.mimeType,
