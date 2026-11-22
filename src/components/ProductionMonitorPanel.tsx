@@ -16,7 +16,7 @@ import {
   Square,
   X,
 } from 'lucide-react';
-import type { CommandCenterState, ProductionRun } from '../types/commandCenter';
+import type { CommandCenterState, ProductionRun, SceneProductionStage } from '../types/commandCenter';
 import { AgentAvatar } from './command-center/AgentAvatar';
 import { commandCenterApiJson } from '../hooks/useCommandCenterLive';
 
@@ -88,6 +88,18 @@ const RUN_STATUS_META: Record<
 function isActiveRunningStatus(status?: ProductionRun['status']): boolean {
   return status === 'planning' || status === 'producing' || status === 'inspecting' || status === 'assembling';
 }
+
+const SCENE_STAGE_LABELS: Record<SceneProductionStage, string> = {
+  waiting_data: 'Chờ dữ liệu',
+  creating_image: 'Đang tạo ảnh',
+  image_ready: 'Ảnh sẵn sàng',
+  waiting_video: 'Chờ dựng video',
+  creating_video: 'Đang dựng video',
+  inspecting_qa: 'Đang kiểm duyệt QA',
+  completed: 'Hoàn thành',
+  failed: 'Lỗi',
+  needs_regen: 'Cần tạo lại',
+};
 
 function formatDurationMs(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return '00:00';
@@ -559,7 +571,9 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                                   </span>
                                 </div>
                                 <div className="text-[11px] text-slate-600 dark:text-slate-300 truncate">
-                                  {mp.currentTaskTitle
+                                  {mp.runningTasks > 1
+                                    ? `Đang chạy ${mp.runningTasks} tác vụ song song · ${mp.currentTaskTitle || ''}`
+                                    : mp.currentTaskTitle
                                     ? `Đang làm: ${mp.currentTaskTitle}`
                                     : mp.totalTasks === 0
                                     ? 'Chưa có tác vụ trong phiên này'
@@ -572,6 +586,7 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
 
                             <div className="flex items-center gap-3 text-xs font-mono tabular-nums shrink-0">
                               <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                {mp.runningTasks > 0 ? `${mp.runningTasks} đang chạy · ` : ''}
                                 {mp.completedTasks}/{mp.totalTasks} tác vụ
                                 {mp.failedTasks > 0 ? ` · ${mp.failedTasks} lỗi` : ''}
                               </span>
@@ -663,7 +678,14 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                         Chưa có phân cảnh nào được lưu trong phiên này.
                       </div>
                     ) : (
-                      memory.scenes.map((sc) => (
+                      memory.scenes.map((sc) => {
+                        const producerLabel = sc.assignedProducerAgentId
+                          ? sc.assignedProducerAgentId.replace('muse-', 'Muse ')
+                          : 'Pool Muse 02–04';
+                        const stageLabel = sc.productionStage
+                          ? SCENE_STAGE_LABELS[sc.productionStage] || sc.productionStage
+                          : null;
+                        return (
                         <div
                           key={sc.sceneId}
                           className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white/80 dark:bg-[#0c1021]/85 p-3.5 space-y-2.5"
@@ -674,7 +696,8 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                                 Cảnh {sc.index}: {sc.title}
                               </div>
                               <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
-                                {sc.sceneId} · {sc.durationSec}s · QA: {sc.qaStatus}
+                                {sc.sceneId} · {sc.durationSec}s · {producerLabel}
+                                {stageLabel ? ` · ${stageLabel}` : ''} · QA: {sc.qaStatus}
                                 {typeof sc.qaScore === 'number' ? ` (${sc.qaScore}/100)` : ''}
                               </div>
                             </div>
@@ -702,7 +725,8 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                             {sc.dialogue || sc.narration || sc.actionDetail}
                           </p>
                         </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 )}

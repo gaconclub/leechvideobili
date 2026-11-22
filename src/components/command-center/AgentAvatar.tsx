@@ -22,7 +22,7 @@ export const MUSE_AVATAR_PRESETS: { id: MuseAgentAvatarPreset; label: string }[]
 
 export const MUSE_ACCENT_SWATCHES: { hex: string; label: string }[] = [
   { hex: '#7C3AED', label: 'Tím Đạo diễn' },
-  { hex: '#0891B2', label: 'Xanh Cyan Kịch bản' },
+  { hex: '#0891B2', label: 'Xanh Cyan Sản xuất' },
   { hex: '#DB2777', label: 'Hồng Mỹ thuật' },
   { hex: '#D97706', label: 'Vàng Hổ phách Video' },
   { hex: '#059669', label: 'Xanh Lục Kiểm duyệt' },
@@ -32,7 +32,7 @@ export const MUSE_ACCENT_SWATCHES: { hex: string; label: string }[] = [
 
 const DEFAULT_PRESET_BY_ID: Record<MuseAgentId, MuseAgentAvatarPreset> = {
   'muse-01': 'director_clapboard',
-  'muse-02': 'script_feather',
+  'muse-02': 'visual_palette',
   'muse-03': 'visual_palette',
   'muse-04': 'video_camera',
   'muse-05': 'qa_shield',

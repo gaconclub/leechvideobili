@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.12",
-    "date": "21/11/2026",
-    "title": "feat: implement costume consistency enforcement system",
+    "version": "1.0.13",
+    "date": "22/11/2026",
+    "title": "feat(command-center): enhance production monitoring and agent logic",
     "changes": [
-      "feat: implement costume consistency enforcement system"
+      "feat(command-center): enhance production monitoring and agent logic"
     ]
   },
   {

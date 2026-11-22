@@ -55,6 +55,7 @@ import type {
   IncidentDialogTurn,
   IncidentRecord,
   IncidentSeverity,
+  IncidentTechnicalDiagnosis,
   MuseAgentAvatarPreset,
   MuseAgentConfig,
   MuseAgentEngineMode,
@@ -70,6 +71,7 @@ import type {
   QaCriterionId,
   QaCriterionResult,
   QaInspectionReport,
+  SceneProductionStage,
   StudioSyncedDirective,
 } from '../src/types/commandCenter';
 
@@ -125,15 +127,17 @@ interface PersistedCommandCenterDoc {
   incidentSeq: number;
 }
 
+const PRODUCTION_AGENT_IDS: MuseAgentId[] = ['muse-02', 'muse-03', 'muse-04'];
+
 const DEFAULT_AGENTS: MuseAgentConfig[] = [
   {
     id: 'muse-01',
     code: 'Muse AI 01',
     name: 'Muse Director',
-    role: 'director',
-    roleTitle: 'Tổng đạo diễn',
+    role: 'director_script',
+    roleTitle: 'Tổng đạo diễn & Phân tích kịch bản',
     description:
-      'AI điều phối trưởng: nhận lệnh sản xuất, phân tích kịch bản tổng thể, chia việc song song, quản lý Project Memory và tổng hợp phim hoàn chỉnh.',
+      'Tổng đạo diễn kiêm Phân tích kịch bản: trực tiếp phân tích kịch bản gốc, nhân vật 5 thành phần, lời thoại, bối cảnh, timeline từng giây, phân công song song/nối tiếp, xử lý sự cố và tổng hợp phim.',
     boundAccountId: 'auto',
     engineMode: 'muse2api_with_gemini_fallback',
     status: 'offline',
@@ -144,40 +148,40 @@ const DEFAULT_AGENTS: MuseAgentConfig[] = [
       canModifyProjectMemory: true,
       canApproveQa: false,
       canExecuteMedia: false,
-      allowedDataScopes: ['project_memory:rw', 'tasks:dispatch', 'runs:control', 'chat:all'],
+      allowedDataScopes: ['project_memory:rw', 'script:analyze', 'tasks:dispatch', 'runs:control', 'chat:all'],
     },
     stats: { completed: 0, failed: 0, retried: 0 },
   },
   {
     id: 'muse-02',
     code: 'Muse AI 02',
-    name: 'Muse Script',
-    role: 'screenwriter',
-    roleTitle: 'Biên kịch',
+    name: 'Muse Producer 02',
+    role: 'production_media',
+    roleTitle: 'Thiết kế Hình ảnh & Sản xuất Video',
     description:
-      'Phân tích kịch bản, hồ sơ nhân vật 5 thành phần, giọng nói theo độ tuổi, lời thoại, bối cảnh, timeline theo giây và cấu trúc phân cảnh.',
+      'AI Sản xuất đa nhiệm (nhận việc ngay khi đủ dữ liệu): thiết kế ảnh nhân vật/phân cảnh và nối tiếp ngay sang tạo video theo timeline, lời thoại, khẩu hình mà không chờ AI khác.',
     boundAccountId: 'auto',
     engineMode: 'muse2api_with_gemini_fallback',
     status: 'offline',
     paused: false,
-    avatarPreset: 'script_feather',
+    avatarPreset: 'visual_palette',
     accentColor: '#0891B2',
     permissions: {
       canModifyProjectMemory: false,
       canApproveQa: false,
-      canExecuteMedia: false,
-      allowedDataScopes: ['project_memory:propose_script', 'chat:screenwriter', 'chat:group'],
+      canExecuteMedia: true,
+      allowedDataScopes: ['project_memory:read', 'artifacts:write_image', 'artifacts:write_video', 'chat:image', 'chat:video', 'chat:group'],
     },
     stats: { completed: 0, failed: 0, retried: 0 },
   },
   {
     id: 'muse-03',
     code: 'Muse AI 03',
-    name: 'Muse Visual',
-    role: 'image_designer',
-    roleTitle: 'Thiết kế hình ảnh',
+    name: 'Muse Producer 03',
+    role: 'production_media',
+    roleTitle: 'Thiết kế Hình ảnh & Sản xuất Video',
     description:
-      'Tạo ảnh tham chiếu nhân vật và ảnh keyframe phân cảnh, giữ đồng bộ gương mặt, vóc dáng, trang phục và bối cảnh.',
+      'AI Sản xuất đa nhiệm & khôi phục trang phục chuẩn: thiết kế ảnh tham chiếu/phân cảnh, chuyển thẳng sang dựng video của cảnh đó ngay khi ảnh hoàn tất.',
     boundAccountId: 'auto',
     engineMode: 'muse2api_with_gemini_fallback',
     status: 'offline',
@@ -188,18 +192,18 @@ const DEFAULT_AGENTS: MuseAgentConfig[] = [
       canModifyProjectMemory: false,
       canApproveQa: false,
       canExecuteMedia: true,
-      allowedDataScopes: ['project_memory:read', 'artifacts:write_image', 'chat:image', 'chat:group'],
+      allowedDataScopes: ['project_memory:read', 'artifacts:write_image', 'artifacts:write_video', 'chat:image', 'chat:video', 'chat:group'],
     },
     stats: { completed: 0, failed: 0, retried: 0 },
   },
   {
     id: 'muse-04',
     code: 'Muse AI 04',
-    name: 'Muse Video',
-    role: 'video_director',
-    roleTitle: 'Đạo diễn video',
+    name: 'Muse Producer 04',
+    role: 'production_media',
+    roleTitle: 'Thiết kế Hình ảnh & Sản xuất Video',
     description:
-      'Sản xuất video phân cảnh theo timeline từng giây, chuyển động, góc quay, lời thoại, khẩu hình và nối cảnh liên tục.',
+      'AI Sản xuất đa nhiệm: thiết kế keyframe phân cảnh và sản xuất trực tiếp video theo timeline từng giây, chuyển động, góc quay và lip-sync đồng bộ.',
     boundAccountId: 'auto',
     engineMode: 'muse2api_with_gemini_fallback',
     status: 'offline',
@@ -210,7 +214,7 @@ const DEFAULT_AGENTS: MuseAgentConfig[] = [
       canModifyProjectMemory: false,
       canApproveQa: false,
       canExecuteMedia: true,
-      allowedDataScopes: ['project_memory:read', 'artifacts:write_video', 'chat:video', 'chat:group'],
+      allowedDataScopes: ['project_memory:read', 'artifacts:write_image', 'artifacts:write_video', 'chat:image', 'chat:video', 'chat:group'],
     },
     stats: { completed: 0, failed: 0, retried: 0 },
   },
@@ -299,7 +303,8 @@ function createDefaultDoc(): PersistedCommandCenterDoc {
       customMuse2ApiKey: '',
       hasCustomMuse2ApiKey: false,
       maskedMuse2ApiKey: cfg.maskedKey,
-      parallelLimit: 2,
+      parallelLimit: 4,
+      perAgentConcurrencyLimit: 2,
       qaPassThreshold: 80,
       maxRetriesPerScene: 2,
       maxIncidentRetries: 3,
@@ -647,6 +652,43 @@ function nextTaskCode(): string {
   return code;
 }
 
+function getAgentEffectiveMaxConcurrency(agent: MuseAgentConfig, health?: MuseIntegrationHealth): number {
+  const baseLimit = Math.max(1, Math.min(3, storeDoc.cloudConfig.perAgentConcurrencyLimit ?? 2));
+  if (agent.role === 'director_script' || agent.role === 'qa_supervisor' || agent.role === 'director') {
+    return baseLimit;
+  }
+  if (agent.boundAccountId && agent.boundAccountId !== 'auto') {
+    return health?.geminiConfigured ? Math.min(2, baseLimit) : 1;
+  }
+  const healthyCount = health?.healthyAccounts || 0;
+  if (healthyCount >= 2 || health?.geminiConfigured) {
+    return baseLimit;
+  }
+  return 1;
+}
+
+function isValidImageArtifactOnDisk(artifactUrl?: string): boolean {
+  if (!artifactUrl) return false;
+  if (artifactUrl.startsWith('data:image/')) {
+    return artifactUrl.length > 200;
+  }
+  const dp = artifactUrlToDiskPath(artifactUrl);
+  if (!dp || !fs.existsSync(dp)) return false;
+  try {
+    return fs.statSync(dp).size > 200;
+  } catch {
+    return false;
+  }
+}
+
+function setSceneProductionStage(runId: string, sceneId: string | undefined, stage: SceneProductionStage): void {
+  if (!sceneId) return;
+  const mem = getRunMemory(runId);
+  const sc = mem.scenes.find((s) => s.sceneId === sceneId);
+  if (!sc) return;
+  sc.productionStage = stage;
+}
+
 function enqueueTask(input: {
   runId: string;
   type: CommandTaskType;
@@ -658,11 +700,13 @@ function enqueueTask(input: {
   sceneIndex?: number;
   characterId?: string;
   costumeRecovery?: CommandTask['costumeRecovery'];
+  expectedMemoryVersion?: number;
+  allowMultipleVariants?: boolean;
   priority?: number;
   maxRetries?: number;
 }): CommandTask {
-  // Deduplication guard: prevent duplicate active/pending task for same runId + type + sceneId + characterId
-  if (input.type !== 'custom_task') {
+  // Deduplication guard: prevent duplicate active/pending task across ALL agents for same runId + type + sceneId + characterId unless allowMultipleVariants is true
+  if (input.type !== 'custom_task' && !input.allowMultipleVariants) {
     const dup = storeDoc.tasks.find(
       (t) =>
         t.runId === input.runId &&
@@ -702,6 +746,8 @@ function enqueueTask(input: {
     sceneIndex: input.sceneIndex,
     characterId: input.characterId,
     costumeRecovery: input.costumeRecovery,
+    expectedMemoryVersion: input.expectedMemoryVersion,
+    allowMultipleVariants: input.allowMultipleVariants,
     status: depsDone ? 'queued' : 'blocked_by_deps',
     priority: input.priority ?? 10,
     retryCount: 0,
@@ -952,6 +998,11 @@ const INCIDENT_SMART_RULES: Record<
     rebuildKeyframe: false,
     targetAgent: 'muse-04',
   },
+  ai_output_format_error: {
+    label: 'Lỗi định dạng / JSON từ AI',
+    directive: 'Chuẩn hóa cấu trúc JSON RFC 8259 (dấu nháy kép cho mọi key/string, thoát dấu ngoặc kép trong lời thoại), thu gọn dữ liệu đầu ra hoặc tự động chuyển mô hình hỗ trợ JSON Schema (Gemini JSON Mode) để chạy lại đúng bước gặp lỗi.',
+    rebuildKeyframe: false,
+  },
   video_technical_error: {
     label: 'Video lỗi kỹ thuật',
     directive: 'Kiểm tra thông số tạo clip, âm thanh/khung hình và yêu cầu tạo lại riêng phân cảnh này.',
@@ -1043,7 +1094,10 @@ function classifyIncidentCategory(params: {
   if (params.explicitCategory) return params.explicitCategory;
 
   const text = `${params.errorText || ''} ${params.qaReport?.summary || ''} ${params.qaReport?.fixInstruction || ''}`.toLowerCase();
-  if (/mất kết nối|offline|timeout|vượt timeout|treo|econnrefused|ngoại tuyến|cookie|chưa có kết nối/i.test(text)) {
+  if (/expected double-quoted property name|unexpected token.*json|unterminated string in json|expected ',' or '}'|json\.parse|cú pháp json|định dạng json|trả về rỗng|invalid json|syntaxerror/i.test(text)) {
+    return 'ai_output_format_error';
+  }
+  if (/mất kết nối|offline|timeout|vượt timeout|treo|econnrefused|ngoại tuyến|cookie|chưa có kết nối|503|504|deadline_exceeded|high demand/i.test(text)) {
     return 'muse_disconnected';
   }
   if (params.qaReport) {
@@ -1068,14 +1122,188 @@ function classifyIncidentCategory(params: {
   return 'video_technical_error';
 }
 
-function inferAgentFromCategory(category: IncidentCategory, task?: CommandTask, qaReport?: QaInspectionReport): MuseAgentId {
+function inferAgentFromCategory(category: IncidentCategory, task?: CommandTask, qaReport?: QaInspectionReport, scene?: CommandMemoryScene): MuseAgentId {
   if (category === 'wrong_costume') return 'muse-03';
+  if (category === 'ai_output_format_error' && task?.assignedAgentId) {
+    return task.assignedAgentId;
+  }
+  if (task && ['plan_production', 'analyze_script', 'assemble_final_film', 'qa_inspect_scene', 'qa_inspect_image'].includes(task.type)) {
+    return task.assignedAgentId;
+  }
   if (qaReport?.targetFixAgentId) return qaReport.targetFixAgentId;
+  if (task?.assignedAgentId && PRODUCTION_AGENT_IDS.includes(task.assignedAgentId)) return task.assignedAgentId;
+  if (scene?.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(scene.assignedProducerAgentId)) {
+    return scene.assignedProducerAgentId;
+  }
   if (task?.assignedAgentId) return task.assignedAgentId;
   if (category === 'wrong_character' || category === 'wrong_setting') {
     return 'muse-03';
   }
   return 'muse-04';
+}
+
+function getTaskTypeLabelVi(type?: CommandTaskType | string): string {
+  switch (type) {
+    case 'plan_production':
+      return 'Lập kế hoạch sản xuất';
+    case 'analyze_script':
+      return 'Phân tích kịch bản & bóc tách phân cảnh';
+    case 'design_character_ref':
+      return 'Tạo ảnh tham chiếu nhân vật';
+    case 'design_scene_image':
+      return 'Tạo ảnh keyframe phân cảnh';
+    case 'restore_costume_and_regen_image':
+      return 'Khôi phục trang phục & tạo lại ảnh';
+    case 'produce_scene_video':
+      return 'Quay & dựng video phân cảnh';
+    case 'qa_inspect_image':
+      return 'Kiểm định ảnh keyframe/trang phục';
+    case 'qa_inspect_scene':
+      return 'Kiểm định chất lượng video (8 tiêu chí)';
+    case 'assemble_final_film':
+      return 'Ghép xuất phim hoàn chỉnh';
+    default:
+      return type || 'Tác vụ sản xuất';
+  }
+}
+
+function diagnoseIncidentTechnicalDetails(params: {
+  rawError: string;
+  task?: CommandTask;
+  agent?: MuseAgentConfig;
+  scene?: CommandMemoryScene;
+  category: IncidentCategory;
+}): {
+  concreteErrorDescription: string;
+  structuredRootCause: string;
+  actionableInitialProposal: string;
+  technicalDiagnosis: IncidentTechnicalDiagnosis;
+} {
+  const raw = String(params.rawError || '').trim();
+  const taskCode = params.task?.code;
+  const taskTypeLabel = getTaskTypeLabelVi(params.task?.type);
+  const agentName = params.agent?.name || params.task?.assignedAgentId || 'Muse AI';
+  const sceneLabel = params.scene ? `Cảnh ${String(params.scene.index).padStart(2, '0')} ("${params.scene.title}")` : '';
+  const providerMatch = raw.match(/\[Engine:\s*([^\]]+)\]/i);
+  const provider = providerMatch ? providerMatch[1].trim() : params.task?.executedByProvider;
+
+  const isJsonErr =
+    /expected double-quoted property name|unexpected token.*json|unterminated string in json|expected ',' or '}'|json\.parse|cú pháp json|định dạng json|invalid json/i.test(
+      raw
+    );
+  const posMatch = raw.match(/position\s+(\d+)(?:\s*\(([^)]+)\))?/i);
+  const excerptMatch = raw.match(/Đoạn lỗi[^:]*:\s*"([^"]+)"/i);
+  const locationText = posMatch ? `ký tự ${posMatch[1]}${posMatch[2] ? ` (${posMatch[2]})` : ''}` : undefined;
+  const excerptText = excerptMatch ? excerptMatch[1] : undefined;
+
+  if (isJsonErr) {
+    const specificSyntaxHint = /expected double-quoted property name/i.test(raw)
+      ? 'Tên thuộc tính (property key) thiếu dấu nháy kép, hoặc còn dấu phẩy thừa (trailing comma) / văn bản thừa trước dấu đóng "}".'
+      : /unterminated string/i.test(raw)
+      ? 'Chuỗi văn bản bị ngắt giữa chừng (thiếu dấu đóng ngoặc kép hoặc phản hồi từ AI bị cắt cụt do quá dài).'
+      : 'Cấu trúc JSON trả về không đúng chuẩn RFC 8259 (thiếu dấu phẩy, ngoặc kép trong lời thoại chưa thoát ký tự, hoặc lẫn mô tả ngoài JSON).';
+
+    const rootCauseDetail = `Mô hình AI${provider ? ` (${provider})` : ''} tại bước "${taskTypeLabel}"${sceneLabel ? ` cho ${sceneLabel}` : ''} trả về JSON sai cú pháp${locationText ? ` tại ${locationText}` : ''}: ${specificSyntaxHint}`;
+    const remediationPlan = `Muse AI 01 chỉ đạo: (1) Bật chế độ Gemini JSON Mode (responseMimeType: application/json) làm dự phòng chuẩn hóa cấu trúc cho ${agentName}; (2) Rút gọn độ dài schema/prompt để tránh cắt cụt giữa chừng và bắt buộc thoát dấu ngoặc kép (\\") trong lời thoại; (3) Chạy lại đúng tác vụ ${taskCode || taskTypeLabel} mà không hủy các cảnh đã hoàn thành.`;
+
+    return {
+      concreteErrorDescription: `${taskCode ? `[${taskCode}] ` : ''}${agentName} lỗi phân tích dữ liệu JSON ở bước "${taskTypeLabel}"${sceneLabel ? ` (${sceneLabel})` : ''}: ${raw}`,
+      structuredRootCause: rootCauseDetail,
+      actionableInitialProposal: remediationPlan,
+      technicalDiagnosis: {
+        errorType: 'Lỗi cú pháp JSON từ phản hồi AI',
+        taskCode,
+        taskType: taskTypeLabel,
+        agentName,
+        provider,
+        failedLocation: locationText,
+        excerpt: excerptText,
+        rootCauseDetail,
+        directorRemediationPlan: remediationPlan,
+      },
+    };
+  }
+
+  if (/keyframe hợp lệ|chưa có tệp ảnh keyframe|kiểm duyệt ảnh hợp lệ/i.test(raw)) {
+    const rootCauseDetail = `${sceneLabel || 'Phân cảnh'} chưa có tệp ảnh keyframe hợp lệ trên đĩa (hoặc ảnh đang ở trạng thái chờ tạo lại/kiểm định) nên hệ thống chủ động chặn dựng video để tránh lỗi sai nhân vật/trang phục.`;
+    const remediationPlan = `Muse AI 01 chỉ đạo: Yêu cầu Muse phụ trách tạo và xác thực xong tệp ảnh keyframe trên đĩa cho ${sceneLabel || 'phân cảnh'} trước, sau đó tự động mở khóa lại tác vụ dựng video.`;
+    return {
+      concreteErrorDescription: `${taskCode ? `[${taskCode}] ` : ''}${agentName} bị chặn bước "${taskTypeLabel}"${sceneLabel ? ` (${sceneLabel})` : ''}: ${raw}`,
+      structuredRootCause: rootCauseDetail,
+      actionableInitialProposal: remediationPlan,
+      technicalDiagnosis: {
+        errorType: 'Thiếu ảnh keyframe hợp lệ trên đĩa',
+        taskCode,
+        taskType: taskTypeLabel,
+        agentName,
+        provider,
+        rootCauseDetail,
+        directorRemediationPlan: remediationPlan,
+      },
+    };
+  }
+
+  if (/503|504|deadline_exceeded|high demand|timeout|vượt timeout|mất kết nối|offline|cookie|econnrefused|ngoại tuyến|chưa thể thực thi/i.test(raw)) {
+    const isQuotaOrOverload = /503|504|deadline_exceeded|high demand|timeout|vượt timeout/i.test(raw);
+    const rootCauseDetail = isQuotaOrOverload
+      ? `Máy chủ mô hình AI / API tạo media đang quá tải hoặc phản hồi chậm quá giới hạn timeout ở bước "${taskTypeLabel}" (${agentName}).`
+      : `Kênh kết nối Muse2API / tài khoản Muse.ai của ${agentName} bị ngắt, hết hạn cookie hoặc chưa cấu hình Gemini dự phòng cho bước "${taskTypeLabel}".`;
+    const remediationPlan = isQuotaOrOverload
+      ? `Muse AI 01 chỉ đạo: Tự động chuyển sang mô hình dự phòng nhanh hơn / xoay vòng tài khoản Muse.ai khác và thử chạy lại riêng tác vụ ${taskCode || taskTypeLabel}.`
+      : `Muse AI 01 chỉ đạo: Xoay vòng sang tài khoản Muse2API khỏe mạnh, kích hoạt Gemini dự phòng nếu đã cấu hình, và chạy lại tác vụ ${taskCode || taskTypeLabel}.`;
+    return {
+      concreteErrorDescription: `${taskCode ? `[${taskCode}] ` : ''}${agentName} gián đoạn kết nối / quá thời gian ở bước "${taskTypeLabel}"${sceneLabel ? ` (${sceneLabel})` : ''}: ${raw}`,
+      structuredRootCause: rootCauseDetail,
+      actionableInitialProposal: remediationPlan,
+      technicalDiagnosis: {
+        errorType: isQuotaOrOverload ? 'Quá tải / Timeout API AI' : 'Lỗi kết nối / Xác thực Engine AI',
+        taskCode,
+        taskType: taskTypeLabel,
+        agentName,
+        provider,
+        rootCauseDetail,
+        directorRemediationPlan: remediationPlan,
+      },
+    };
+  }
+
+  if (/ffmpeg|mux|mp4|audio|khung hình/i.test(raw)) {
+    const rootCauseDetail = `Lỗi xử lý media/FFmpeg ở bước "${taskTypeLabel}"${sceneLabel ? ` (${sceneLabel})` : ''}: ${raw}`;
+    const remediationPlan = `Muse AI 01 chỉ đạo: Kiểm tra tệp video/audio đầu vào trên đĩa, tạo lại clip của riêng ${sceneLabel || 'phân cảnh lỗi'} bằng thông số mã hóa chuẩn H.264/AAC rồi gửi Muse AI 05 kiểm duyệt lại.`;
+    return {
+      concreteErrorDescription: `${taskCode ? `[${taskCode}] ` : ''}${agentName} gặp sự cố kỹ thuật media ở bước "${taskTypeLabel}": ${raw}`,
+      structuredRootCause: rootCauseDetail,
+      actionableInitialProposal: remediationPlan,
+      technicalDiagnosis: {
+        errorType: 'Lỗi kỹ thuật xử lý Video / FFmpeg',
+        taskCode,
+        taskType: taskTypeLabel,
+        agentName,
+        provider,
+        rootCauseDetail,
+        directorRemediationPlan: remediationPlan,
+      },
+    };
+  }
+
+  const rule = INCIDENT_SMART_RULES[params.category];
+  const fallbackRootCause = raw
+    ? `Lỗi tại bước "${taskTypeLabel}" (${agentName}${sceneLabel ? ` · ${sceneLabel}` : ''}): ${raw}`
+    : `Sai lệch thông số đồng bộ hoặc lỗi thực thi giữa tác vụ ${taskCode || ''} và Project Memory.`;
+  return {
+    concreteErrorDescription: raw || `${agentName} gặp lỗi tại ${taskTypeLabel}`,
+    structuredRootCause: fallbackRootCause,
+    actionableInitialProposal: rule?.directive || 'Kiểm tra lại dữ liệu đầu vào và thực thi lại đúng tác vụ bị lỗi.',
+    technicalDiagnosis: {
+      errorType: rule?.label || 'Lỗi thực thi tác vụ',
+      taskCode,
+      taskType: taskTypeLabel,
+      agentName,
+      provider,
+      rootCauseDetail: fallbackRootCause,
+      directorRemediationPlan: rule?.directive || 'Kiểm tra và chạy lại tác vụ.',
+    },
+  };
 }
 
 async function generateQuickDirectorDialogPair(params: {
@@ -1280,7 +1508,7 @@ async function openOrAdvanceDirectorIncident(params: {
   const responsibleId =
     params.responsibleAgentId ||
     resolvedCostumeMismatch?.responsibleAgentId ||
-    inferAgentFromCategory(category, params.task, params.qaReport);
+    inferAgentFromCategory(category, params.task, params.qaReport, params.scene);
   const responsible = storeDoc.agents.find((a) => a.id === responsibleId) || storeDoc.agents[3];
   const maxAttempts = Math.max(
     1,
@@ -1312,6 +1540,32 @@ async function openOrAdvanceDirectorIncident(params: {
     ])
   ).filter(Boolean);
 
+  const diag =
+    !resolvedCostumeMismatch && !params.qaReport
+      ? diagnoseIncidentTechnicalDetails({
+          rawError: params.suspectedRootCause || params.errorDescription,
+          task: params.task,
+          agent: responsible,
+          scene: params.scene,
+          category,
+        })
+      : null;
+
+  const finalErrorDescription =
+    diag && !params.errorDescription.includes('[TASK-') && params.task?.code
+      ? diag.concreteErrorDescription
+      : params.errorDescription;
+  const finalRootCause =
+    resolvedCostumeMismatch?.mismatchDetails ||
+    params.qaReport?.summary ||
+    (diag ? diag.structuredRootCause : params.suspectedRootCause) ||
+    'Sai lệch thông số đồng bộ hoặc lỗi thực thi giữa tác vụ và Project Memory.';
+  const finalProposal =
+    params.initialProposal ||
+    resolvedCostumeMismatch?.restoreRecommendation ||
+    diag?.actionableInitialProposal ||
+    rule.directive;
+
   if (!inc) {
     inc = {
       id: `inc_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
@@ -1331,14 +1585,9 @@ async function openOrAdvanceDirectorIncident(params: {
       severity,
       priority: severity === 'critical' || severity === 'high' ? 'urgent' : 'high',
       status: 'reported',
-      errorDescription: params.errorDescription,
-      suspectedRootCause:
-        params.suspectedRootCause ||
-        resolvedCostumeMismatch?.mismatchDetails ||
-        params.qaReport?.summary ||
-        'Sai lệch thông số đồng bộ hoặc lỗi thực thi giữa tác vụ và Project Memory.',
-      initialProposal:
-        params.initialProposal || resolvedCostumeMismatch?.restoreRecommendation || rule.directive,
+      errorDescription: finalErrorDescription,
+      suspectedRootCause: finalRootCause,
+      initialProposal: finalProposal,
       artifactUrls: artifacts,
       referenceDataSummary: refSummary,
       attemptCount: 0,
@@ -1348,6 +1597,7 @@ async function openOrAdvanceDirectorIncident(params: {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       costumeMismatch: resolvedCostumeMismatch,
+      technicalDiagnosis: diag?.technicalDiagnosis,
       versionHistory: [],
       history: [],
     };
@@ -1359,9 +1609,9 @@ async function openOrAdvanceDirectorIncident(params: {
     inc.category = category;
     inc.categoryLabel = rule.label;
     inc.severity = severity;
-    inc.errorDescription = params.errorDescription;
-    inc.suspectedRootCause =
-      params.suspectedRootCause || resolvedCostumeMismatch?.mismatchDetails || inc.suspectedRootCause;
+    inc.errorDescription = finalErrorDescription;
+    inc.suspectedRootCause = finalRootCause || inc.suspectedRootCause;
+    if (diag?.technicalDiagnosis) inc.technicalDiagnosis = diag.technicalDiagnosis;
     if (resolvedCostumeMismatch) inc.costumeMismatch = resolvedCostumeMismatch;
     inc.artifactUrls = Array.from(new Set([...inc.artifactUrls, ...artifacts]));
     inc.maxAttempts = maxAttempts;
@@ -1553,28 +1803,39 @@ async function openOrAdvanceDirectorIncident(params: {
   let fixTargetAgent: MuseAgentId = isCostumeLockWorkflow ? 'muse-03' : responsible.id;
   let routeAdjustmentNote = '';
 
-  // Smart recovery for disconnection / pinned account failure
-  if (category === 'muse_disconnected') {
+  // Smart recovery for disconnection / pinned account / AI JSON format failure
+  if (category === 'muse_disconnected' || category === 'ai_output_format_error') {
     if (responsible.engineMode === 'muse2api' && health.geminiConfigured) {
       responsible.engineMode = 'muse2api_with_gemini_fallback';
-      routeAdjustmentNote = `Kích hoạt cơ chế Gemini dự phòng cho ${responsible.name}. `;
+      routeAdjustmentNote = `Kích hoạt cơ chế Gemini JSON Schema / dự phòng cho ${responsible.name}. `;
     }
-    if (responsible.boundAccountId !== 'auto' && health.healthyAccounts > 0) {
+    if (category === 'muse_disconnected' && responsible.boundAccountId !== 'auto' && health.healthyAccounts > 0) {
       responsible.boundAccountId = 'auto';
       routeAdjustmentNote += `Chuyển ${responsible.name} sang xoay vòng tài khoản Muse2API khỏe mạnh tự động. `;
     }
     responsible.reconnectCount = (responsible.reconnectCount || 0) + 1;
   }
 
+  const isNonSceneRegenTask = Boolean(
+    params.task &&
+      ['plan_production', 'analyze_script', 'qa_inspect_scene', 'qa_inspect_image', 'design_character_ref', 'assemble_final_film'].includes(
+        params.task.type
+      ) &&
+      category !== 'wrong_costume' &&
+      !params.qaReport
+  );
+
   const shouldRebuildKeyframe =
     Boolean(params.scene) &&
+    !isNonSceneRegenTask &&
     (isCostumeLockWorkflow ||
       rule.rebuildKeyframe ||
       params.qaReport?.targetFixAgentId === 'muse-03' ||
-      inc.attemptCount >= 2);
+      (inc.attemptCount >= 2 && category !== 'ai_output_format_error'));
 
   const exactFixSummary =
     params.qaReport?.fixInstruction ||
+    inc.technicalDiagnosis?.directorRemediationPlan ||
     `${rule.directive} ${
       params.scene
         ? `Khóa chặt Character ID (${mem.characters.map((c) => `${c.name}:${c.voiceId}`).join(', ')}), lời thoại "${params.scene.dialogue || 'không'}", timeline "${params.scene.videoTimeline || 'chuẩn'}".`
@@ -1584,7 +1845,9 @@ async function openOrAdvanceDirectorIncident(params: {
   const directorDirective = isCostumeLockWorkflow
     ? `Chỉ đạo khôi phục trang phục chuẩn (${inc.code} vòng #${inc.attemptCount}): Giao Muse AI 03 truy xuất ảnh tham chiếu & hồ sơ gốc của "${cm?.characterName || 'nhân vật'}" (${cm?.characterId || ''}), khôi phục nguyên bản trang phục "${cm?.expectedCostume || mem.costumeBible}", làm sạch prompt nguồn, lưu bản Trước/Sau không ghi đè gốc và chỉ tạo lại đúng ${params.scene ? `Cảnh ${String(params.scene.index).padStart(2, '0')}` : 'ảnh nhân vật'}. Sau đó gửi ngay Muse AI 05 kiểm duyệt lại trước khi dựng video.`
     : `${routeAdjustmentNote}${rule.directive} ${
-        params.scene
+        isNonSceneRegenTask && params.task
+          ? `Chạy lại đúng bước "${getTaskTypeLabelVi(params.task.type)}" (${params.task.code}) với chuẩn JSON RFC 8259 nghiêm ngặt, giữ nguyên các cảnh/dữ liệu đã hoàn thành. Chi tiết: ${exactFixSummary}`
+          : params.scene
           ? `Chỉ tạo lại RIÊNG Cảnh ${String(params.scene.index).padStart(2, '0')}, giữ nguyên tuyệt đối các phân cảnh đã đạt yêu cầu. Yêu cầu kỹ thuật: ${exactFixSummary}`
           : `Thực thi lại nhiệm vụ với cấu hình đã hiệu chỉnh.`
       }`.trim();
@@ -1726,6 +1989,36 @@ async function openOrAdvanceDirectorIncident(params: {
         }
       }
     }
+  } else if (isNonSceneRegenTask && params.task) {
+    // Re-queue ONLY the exact non-scene-regen step (e.g. analyze_script, plan_production, qa_inspect_scene JSON parsing failure) without wiping completed media
+    const retryExactTask = enqueueTask({
+      runId: params.runId,
+      type: params.task.type,
+      title: `[${inc.code} #${inc.attemptCount}] ${params.task.title}`,
+      instructions: `${params.task.instructions}\nCHỈ ĐẠO ĐẠO DIỄN TỔNG (${inc.code}): ${directorDirective}`,
+      assignedAgentId: fixTargetAgent,
+      dependsOnTaskIds: params.task.dependsOnTaskIds,
+      sceneId: params.task.sceneId,
+      sceneIndex: params.task.sceneIndex,
+      characterId: params.task.characterId,
+      expectedMemoryVersion: mem.version,
+      priority: Math.max(9, params.task.priority),
+    });
+    inc.remediationTaskIds.push(retryExactTask.id);
+    if (params.task.type === 'qa_inspect_scene' || params.task.type === 'qa_inspect_image') {
+      inc.qaVerificationTaskId = retryExactTask.id;
+    }
+    for (const downstream of storeDoc.tasks) {
+      if (
+        downstream.runId === params.runId &&
+        downstream.status === 'blocked_by_deps' &&
+        downstream.dependsOnTaskIds.includes(params.task.id)
+      ) {
+        downstream.dependsOnTaskIds = Array.from(
+          new Set([...downstream.dependsOnTaskIds.filter((id) => id !== params.task?.id), retryExactTask.id])
+        );
+      }
+    }
   } else if (params.scene) {
     const sc = params.scene;
     commitSessionMemoryUpdate(params.runId, 'muse-01', `Muse AI 01 chỉ đạo sửa Cảnh ${sc.index} (${inc.code} vòng #${inc.attemptCount})`, (m) => {
@@ -1740,26 +2033,37 @@ async function openOrAdvanceDirectorIncident(params: {
       }
     });
 
+    const producerId: MuseAgentId =
+      sc.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(sc.assignedProducerAgentId)
+        ? sc.assignedProducerAgentId
+        : responsible.id && PRODUCTION_AGENT_IDS.includes(responsible.id)
+        ? responsible.id
+        : 'muse-04';
+    sc.productionStage = 'needs_regen';
+    if (shouldRebuildKeyframe) {
+      sc.imageValidated = false;
+    }
+
     let fixDepTaskId: string | undefined;
     if (shouldRebuildKeyframe) {
-      const fixImgOwner = storeDoc.agents.find((a) => a.id === 'muse-03');
+      const fixImgOwner = storeDoc.agents.find((a) => a.id === producerId);
       if (fixImgOwner) fixImgOwner.regenCount = (fixImgOwner.regenCount || 0) + 1;
       const retryImg = enqueueTask({
         runId: params.runId,
         type: 'design_scene_image',
         title: `[${inc.code} #${inc.attemptCount}] Cảnh ${sc.index}: Tạo lại ảnh keyframe`,
         instructions: `${sc.actionDetail}. CHỈ ĐẠO ĐẠO DIỄN TỔNG (${inc.code}): ${directorDirective}`,
-        assignedAgentId: 'muse-03',
+        assignedAgentId: producerId,
         sceneId: sc.sceneId,
         sceneIndex: sc.index,
+        expectedMemoryVersion: mem.version,
         priority: 10,
       });
       inc.remediationTaskIds.push(retryImg.id);
       fixDepTaskId = retryImg.id;
-      fixTargetAgent = 'muse-03';
     }
 
-    const fixVidOwner = storeDoc.agents.find((a) => a.id === 'muse-04');
+    const fixVidOwner = storeDoc.agents.find((a) => a.id === producerId);
     if (fixVidOwner) fixVidOwner.regenCount = (fixVidOwner.regenCount || 0) + 1;
 
     const retryVid = enqueueTask({
@@ -1767,14 +2071,15 @@ async function openOrAdvanceDirectorIncident(params: {
       type: 'produce_scene_video',
       title: `[${inc.code} #${inc.attemptCount}] Cảnh ${sc.index}: Tạo lại video`,
       instructions: `${sc.actionDetail}. CHỈ ĐẠO ĐẠO DIỄN TỔNG (${inc.code}): ${directorDirective}`,
-      assignedAgentId: 'muse-04',
+      assignedAgentId: producerId,
       dependsOnTaskIds: fixDepTaskId ? [fixDepTaskId] : [],
       sceneId: sc.sceneId,
       sceneIndex: sc.index,
+      expectedMemoryVersion: mem.version,
       priority: 9,
     });
     inc.remediationTaskIds.push(retryVid.id);
-    if (!shouldRebuildKeyframe) fixTargetAgent = 'muse-04';
+    fixTargetAgent = producerId;
 
     const retryQa = enqueueTask({
       runId: params.runId,
@@ -2049,17 +2354,24 @@ function computeAgentLiveStatuses(health: MuseIntegrationHealth): void {
   const blockedTasks = storeDoc.tasks.filter((t) => t.status === 'blocked_by_deps' || t.status === 'queued');
 
   for (const agent of storeDoc.agents) {
-    const runningForAgent = runningTasks.find((t) => t.assignedAgentId === agent.id);
+    const runningForAgent = runningTasks.filter((t) => t.assignedAgentId === agent.id);
+    agent.activeTaskIds = runningForAgent.map((t) => t.id);
+    agent.activeTaskCount = runningForAgent.length;
+    agent.maxConcurrentTasks = getAgentEffectiveMaxConcurrency(agent, health);
+
     if (agent.paused) {
       agent.status = 'paused';
       agent.currentTaskId = undefined;
       agent.currentTaskSummary = undefined;
       continue;
     }
-    if (runningForAgent) {
+    if (runningForAgent.length > 0) {
       agent.status = agent.role === 'qa_supervisor' ? 'supervising' : 'working';
-      agent.currentTaskId = runningForAgent.id;
-      agent.currentTaskSummary = `${runningForAgent.code}: ${runningForAgent.title}`;
+      agent.currentTaskId = runningForAgent[0].id;
+      agent.currentTaskSummary =
+        runningForAgent.length > 1
+          ? `(${runningForAgent.length} tác vụ đa nhiệm) ${runningForAgent[0].code}: ${runningForAgent[0].title}`
+          : `${runningForAgent[0].code}: ${runningForAgent[0].title}`;
       continue;
     }
     agent.currentTaskId = undefined;
@@ -2294,6 +2606,7 @@ async function runAgentJsonInference(params: {
     jsonMode: true,
   });
 
+  let firstErrMsg = '';
   try {
     const parsed = parseAiBlueprintJsonSafe(first.text);
     if (!params.validate || params.validate(parsed)) {
@@ -2304,16 +2617,18 @@ async function runAgentJsonInference(params: {
         accountUsed: first.accountUsed,
       };
     }
-  } catch {
+    firstErrMsg = 'JSON thiếu trường bắt buộc theo schema.';
+  } catch (err: any) {
+    firstErrMsg = String(err?.message || err || 'Lỗi cú pháp JSON');
     pushPerformanceAlert({
       severity: 'warn',
       category: 'format_error',
       agentId: params.agent.id,
-      message: `${params.agent.name} trả về JSON chưa hợp chuẩn; đang tự động chạy lượt chuẩn hóa lại.`,
+      message: `${params.agent.name} trả về JSON chưa hợp chuẩn (${first.provider}): ${firstErrMsg.slice(0, 140)}`,
     });
   }
 
-  const repairSystem = `${params.systemPrompt}${strictJsonRule}\nLƯU Ý SỬA LỖI: Phản hồi trước bị lỗi cú pháp JSON. Hãy xuất lại DUY NHẤT JSON hợp lệ, đầy đủ và hợp chuẩn.`;
+  const repairSystem = `${params.systemPrompt}${strictJsonRule}\nLƯU Ý SỬA LỖI: Phản hồi trước bị lỗi cú pháp JSON (${firstErrMsg}). Hãy xuất lại DUY NHẤT JSON hợp lệ, đầy đủ và hợp chuẩn.`;
   const repairUser = `Phản hồi trước chưa đạt chuẩn JSON hợp lệ:\n${first.text.slice(0, 6500)}\n\nDựa vào yêu cầu ban đầu sau đây, hãy xuất lại DUY NHẤT JSON chuẩn xác:\n${params.userPrompt.slice(0, 3500)}`;
 
   const second = await runAgentTextInference({
@@ -2323,13 +2638,67 @@ async function runAgentJsonInference(params: {
     jsonMode: true,
   });
 
-  const parsedSecond = parseAiBlueprintJsonSafe(second.text);
-  return {
-    parsed: parsedSecond,
-    rawText: second.text,
-    provider: second.provider,
-    accountUsed: second.accountUsed,
-  };
+  let secondErrMsg = '';
+  try {
+    const parsedSecond = parseAiBlueprintJsonSafe(second.text);
+    if (!params.validate || params.validate(parsedSecond)) {
+      return {
+        parsed: parsedSecond,
+        rawText: second.text,
+        provider: second.provider,
+        accountUsed: second.accountUsed,
+      };
+    }
+    secondErrMsg = 'JSON sau lượt sửa vẫn thiếu trường bắt buộc.';
+  } catch (err: any) {
+    secondErrMsg = String(err?.message || err || 'Lỗi cú pháp JSON');
+  }
+
+  // Structural rescue pass via Gemini JSON Schema mode if Muse2API produced unparseable freeform text
+  const health = await refreshIntegrationHealth(false);
+  if (health.geminiConfigured && !second.provider.startsWith('gemini')) {
+    try {
+      const ai = getGeminiClient();
+      const parts: any[] = [];
+      for (const att of (params.attachments || []).slice(0, 4)) {
+        const m = String(att || '').match(/^data:([^;]+);base64,(.+)$/);
+        if (m) parts.push({ inlineData: { mimeType: m[1], data: m[2] } });
+      }
+      parts.push({ text: `${repairSystem}\n\n${repairUser}` });
+      const candidates = prioritizeGeminiCandidateModels(['gemini-3.1-flash-lite', 'gemini-4-hydrogen']);
+      for (const model of candidates) {
+        try {
+          const gRes = await retryWithGeminiBackoff(
+            () =>
+              ai.models.generateContent({
+                model,
+                contents: { parts },
+                config: { responseMimeType: 'application/json' },
+              }),
+            [1000, 2200]
+          );
+          const gText = String(gRes.text || '').trim();
+          if (gText) {
+            const gParsed = parseAiBlueprintJsonSafe(gText);
+            if (!params.validate || params.validate(gParsed)) {
+              return {
+                parsed: gParsed,
+                rawText: gText,
+                provider: `gemini-json-rescue (${model})`,
+              };
+            }
+          }
+        } catch (gErr: any) {
+          markGeminiModelOverloaded(model, gErr);
+          if (!shouldFallbackGeminiModel(gErr)) break;
+        }
+      }
+    } catch {
+      // fall through to rich error throw below
+    }
+  }
+
+  throw new Error(`${secondErrMsg} [Engine: ${second.provider}]`);
 }
 
 // ==========================================
@@ -2339,12 +2708,12 @@ async function runAgentJsonInference(params: {
 async function executePlanProductionTask(task: CommandTask, agent: MuseAgentConfig): Promise<void> {
   const mem = getRunMemory(task.runId);
   throwIfRunStopped(task.runId);
-  const sys = `Bạn là ${agent.name} (${agent.roleTitle}) — Điều phối trưởng trong Phòng Điều Hành AI Muse.
-Nhiệm vụ: Nhận kịch bản/lệnh của đạo diễn, lập kế hoạch sản xuất cho đội 5 AI (Muse 01 Tổng đạo diễn, Muse 02 Biên kịch, Muse 03 Hình ảnh, Muse 04 Video, Muse 05 QA).
+  const sys = `Bạn là ${agent.name} (${agent.roleTitle}) — Tổng đạo diễn kiêm Phân tích kịch bản trong Phòng Điều Hành AI Muse.
+Nhiệm vụ: Nhận kịch bản/lệnh của đạo diễn, lập kế hoạch sản xuất đa nhiệm không nghẽn cổ chai cho đội 5 AI (Muse 01 Tổng đạo diễn & Phân tích kịch bản, Muse 02/03/04 Thiết kế Hình ảnh & Sản xuất Video nối tiếp tự động từng cảnh, Muse 05 QA độc lập).
 Hãy trả về đúng JSON hợp lệ (không markdown) với cấu trúc:
 {
   "projectTitle": "Tên phim ngắn gọn",
-  "productionStrategyVi": "Tóm tắt kế hoạch phân công song song vs nối tiếp cho cả đội (3-5 câu tiếng Việt)",
+  "productionStrategyVi": "Tóm tắt kế hoạch phân công đa nhiệm song song vs nối tiếp cho cả đội (3-5 câu tiếng Việt)",
   "estimatedScenes": 4,
   "parallelGroupsNote": "Giải thích nhóm phân cảnh nào có thể chạy song song và cảnh nào phải nối tiếp giữ nhân vật/bối cảnh",
   "continuityLockNotes": "Quy tắc đồng bộ nhân vật, trang phục, bối cảnh cốt lõi cần khóa vào Project Memory"
@@ -2394,9 +2763,9 @@ Thông số dự án:
   const analyzeTask = enqueueTask({
     runId: task.runId,
     type: 'analyze_script',
-    title: `Biên kịch & bóc tách ${estScenes} phân cảnh + hồ sơ nhân vật 5 thành phần`,
-    instructions: `Phân tích kịch bản "${projectTitle}" (${estScenes} phân cảnh), tách nhân vật kèm hồ sơ 5 thành phần, giọng nói theo độ tuổi, timeline từng giây và quan hệ nối cảnh.`,
-    assignedAgentId: 'muse-02',
+    title: `Tổng đạo diễn phân tích kịch bản & bóc tách ${estScenes} phân cảnh`,
+    instructions: `Trực tiếp phân tích kịch bản "${projectTitle}" (${estScenes} phân cảnh), tách nhân vật 5 thành phần, giọng nói theo độ tuổi, timeline từng giây và phân công song song cho Muse AI 02, 03, 04.`,
+    assignedAgentId: 'muse-01',
     dependsOnTaskIds: [task.id],
     priority: 9,
   });
@@ -2408,19 +2777,19 @@ Thông số dự án:
     senderType: 'agent',
     senderId: agent.id,
     senderName: `${agent.name} (${agent.roleTitle})`,
-    targetAgentIds: ['muse-02', 'muse-05'],
+    targetAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
     taskId: task.id,
     messageKind: 'deliverable',
-    content: `Đã lập kế hoạch sản xuất "${projectTitle}" (~${estScenes} phân cảnh).\n• Chiến lược: ${strategy}\n• Đã khóa Project Memory v${newMemVer} và chuyển giao cho ${storeDoc.agents[1]?.name || 'Muse Script'}.`,
+    content: `Đã lập kế hoạch sản xuất đa nhiệm "${projectTitle}" (~${estScenes} phân cảnh).\n• Chiến lược: ${strategy}\n• Đã khóa Project Memory v${newMemVer} và bắt đầu trực tiếp bước bóc tách kịch bản & phân vai cho đội Muse AI 02, 03, 04.`,
   });
 
   postAiBusMessage({
     fromAgent: agent,
-    toAgentIds: ['muse-02', 'muse-05'],
+    toAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
     runId: task.runId,
     projectId: mem.projectId,
     taskId: analyzeTask.id,
-    content: `[ACK ${analyzeTask.code}] Khóa Memory v${newMemVer} cho "${projectTitle}". Yêu cầu ${storeDoc.agents[1]?.name} bóc tách ~${estScenes} phân cảnh và gửi schema sang pipeline.`,
+    content: `[ACK ${analyzeTask.code}] Khóa Memory v${newMemVer} cho "${projectTitle}". ${agent.name} đang bóc tách ~${estScenes} phân cảnh để phân phối thẳng sang Muse 02, 03, 04.`,
   });
 }
 
@@ -2507,7 +2876,7 @@ Lưu ý:
 
   const parsed = res.parsed;
   if (!parsed || !Array.isArray(parsed.scenes) || parsed.scenes.length === 0) {
-    throw new Error('Muse AI 02 chưa trả về cấu trúc phân cảnh JSON hợp lệ.');
+    throw new Error(`${agent.name} chưa trả về cấu trúc phân cảnh JSON hợp lệ.`);
   }
 
   throwIfRunStopped(task.runId);
@@ -2568,9 +2937,11 @@ Lưu ý:
       : String(parsed.costumeBible || mem.costumeBible || '').trim();
 
   const rawScenes = parsed.scenes.slice(0, 10);
+  const targetMemVer = mem.version + 1;
   const normalizedScenes: CommandMemoryScene[] = rawScenes.map((s: any, idx: number) => {
     const sceneId = `scene_${idx + 1}`;
     const prevId = idx > 0 && s.dependsOnPreviousScene ? `scene_${idx}` : undefined;
+    const producerId = PRODUCTION_AGENT_IDS[idx % PRODUCTION_AGENT_IDS.length];
     return {
       sceneId,
       index: idx + 1,
@@ -2592,6 +2963,10 @@ Lưu ý:
       videoTimeline: String(s.videoTimeline || '').trim(),
       dependsOnSceneIds: prevId ? [prevId] : [],
       continuityAnchorFromSceneId: prevId,
+      assignedProducerAgentId: producerId,
+      productionStage: 'waiting_data',
+      imageValidated: false,
+      lockedPromptVersion: targetMemVer,
       qaStatus: 'pending',
       retryCount: 0,
       lastModifiedBy: 'muse-01',
@@ -2604,37 +2979,48 @@ Lưu ý:
     'muse-01',
     `Khóa kịch bản từ ${agent.name} (${normalizedScenes.length} cảnh, ${normalizedChars.length} nhân vật)`,
     (m) => {
+      if (parsed.projectTitle && (!m.title || m.title === 'Dự án sản xuất mới')) {
+        m.title = String(parsed.projectTitle).trim();
+      }
       m.visualBible = String(m.visualBible || parsed.visualBible || '').trim();
       m.settingBible = String(m.settingBible || parsed.settingBible || '').trim();
       m.costumeBible = !allowFree && canonicalLockedCostumeBible ? canonicalLockedCostumeBible : String(parsed.costumeBible || m.costumeBible || '').trim();
       m.continuityBible = String(m.continuityBible || parsed.continuityBible || '').trim();
       m.characters = normalizedChars.length > 0 ? normalizedChars : m.characters;
-      m.scenes = normalizedScenes;
+      m.scenes = normalizedScenes.map((sc) => ({ ...sc, lockedPromptVersion: m.version + 1 }));
     }
   );
 
   const run = storeDoc.runs.find((r) => r.id === task.runId);
   if (run) {
+    run.status = 'producing';
     run.sceneCount = normalizedScenes.length;
     run.updatedAt = Date.now();
   }
 
   task.executedByProvider = res.provider;
   task.boundAccountUsed = res.accountUsed;
-  task.outputText = `Đã bóc tách ${normalizedChars.length} nhân vật (5 thành phần) và ${normalizedScenes.length} phân cảnh. Khóa Project Memory v${newVer}.`;
+  task.outputText = `Muse AI 01 đã trực tiếp bóc tách ${normalizedChars.length} nhân vật (5 thành phần) và ${normalizedScenes.length} phân cảnh. Khóa Project Memory v${newVer}.`;
 
-  // Stage 3A: Character Reference Sheet Tasks (parallel for all characters, max 4)
+  // Character Reference Sheet Tasks (ONLY for characters lacking confirmed ref images, distributed across Muse 02, 03, 04)
   const charTaskIds: string[] = [];
   const charQaDeps: string[] = [];
-  for (const ch of normalizedChars.slice(0, 4)) {
+  const charsToGenerate = normalizedChars.slice(0, 4);
+  for (let ci = 0; ci < charsToGenerate.length; ci += 1) {
+    const ch = charsToGenerate[ci];
+    if (ch.artifactUrl || ch.dataUrl || ch.confirmedOriginalArtifactUrl) {
+      continue;
+    }
+    const producerId = PRODUCTION_AGENT_IDS[ci % PRODUCTION_AGENT_IDS.length];
     const ct = enqueueTask({
       runId: task.runId,
       type: 'design_character_ref',
       title: `Tạo ảnh tham chiếu nhân vật: ${ch.name}`,
       instructions: `${ch.name}: ${ch.syncProfile.face}. Vóc dáng: ${ch.syncProfile.physique}. Trang phục: ${ch.syncProfile.costume}. Đặc điểm: ${ch.syncProfile.distinguishingMarks}`,
-      assignedAgentId: 'muse-03',
+      assignedAgentId: producerId,
       dependsOnTaskIds: [task.id],
       characterId: ch.id,
+      expectedMemoryVersion: newVer,
       priority: 8,
     });
     charTaskIds.push(ct.id);
@@ -2653,41 +3039,30 @@ Lưu ý:
     }
   }
 
-  // Stage 3B (Scene Image) & Stage 4 (Scene Video) & Stage 5 (QA Inspect) DAG
+  // Non-blocking Per-Scene Multitasking Pipeline:
+  // Each scene is assigned to ONE producer (Muse 02 / 03 / 04) who creates Stage 2 (keyframe image)
+  // and immediately continues to Stage 3 (scene video) without waiting for other scenes or another AI.
   const sceneVideoTaskBySceneId = new Map<string, string>();
   const qaTaskIds: string[] = [];
   const sceneImgDeps = !allowFree && charQaDeps.length > 0 ? charQaDeps : charTaskIds.length > 0 ? charTaskIds : [task.id];
 
-  for (const sc of normalizedScenes) {
+  for (let si = 0; si < normalizedScenes.length; si += 1) {
+    const sc = normalizedScenes[si];
+    const producerId = sc.assignedProducerAgentId || PRODUCTION_AGENT_IDS[si % PRODUCTION_AGENT_IDS.length];
     const imgTask = enqueueTask({
       runId: task.runId,
       type: 'design_scene_image',
       title: `Cảnh ${sc.index}: Tạo ảnh keyframe "${sc.title}"`,
       instructions: `${sc.actionDetail}. Bối cảnh: ${sc.settingDetail}. Góc máy: ${sc.cameraAngle}. Ánh sáng: ${sc.lighting}.`,
-      assignedAgentId: 'muse-03',
+      assignedAgentId: producerId,
       dependsOnTaskIds: sceneImgDeps,
       sceneId: sc.sceneId,
       sceneIndex: sc.index,
+      expectedMemoryVersion: newVer,
       priority: 7,
     });
 
-    let videoImageReadyDepId = imgTask.id;
-    if (!allowFree) {
-      const imgQa = enqueueTask({
-        runId: task.runId,
-        type: 'qa_inspect_image',
-        title: `Kiểm tra trang phục ảnh Cảnh ${sc.index}: "${sc.title}"`,
-        instructions: `Kiểm tra keyframe Cảnh ${sc.index} đối chiếu ảnh tham chiếu & trang phục gốc trước khi dựng video.`,
-        assignedAgentId: 'muse-05',
-        dependsOnTaskIds: [imgTask.id],
-        sceneId: sc.sceneId,
-        sceneIndex: sc.index,
-        priority: 7,
-      });
-      videoImageReadyDepId = imgQa.id;
-    }
-
-    const videoDeps = [videoImageReadyDepId];
+    const videoDeps = [imgTask.id];
     if (sc.continuityAnchorFromSceneId && sceneVideoTaskBySceneId.has(sc.continuityAnchorFromSceneId)) {
       videoDeps.push(sceneVideoTaskBySceneId.get(sc.continuityAnchorFromSceneId)!);
     }
@@ -2697,10 +3072,11 @@ Lưu ý:
       type: 'produce_scene_video',
       title: `Cảnh ${sc.index}: Quay & dựng video "${sc.title}" (${sc.durationSec}s)`,
       instructions: `${sc.actionDetail}. Timeline: ${sc.videoTimeline || 'chuyển động mượt liên tục'}. ${sc.dialogue ? `Lời thoại: ${sc.dialogue}` : ''}`,
-      assignedAgentId: 'muse-04',
+      assignedAgentId: producerId,
       dependsOnTaskIds: videoDeps,
       sceneId: sc.sceneId,
       sceneIndex: sc.index,
+      expectedMemoryVersion: newVer,
       priority: 6,
     });
     sceneVideoTaskBySceneId.set(sc.sceneId, vidTask.id);
@@ -2736,10 +3112,10 @@ Lưu ý:
     senderType: 'agent',
     senderId: agent.id,
     senderName: `${agent.name} (${agent.roleTitle})`,
-    targetAgentIds: ['muse-01', 'muse-03', 'muse-04', 'muse-05'],
+    targetAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
     taskId: task.id,
     messageKind: 'deliverable',
-    content: `Hoàn tất bóc tách kịch bản (Memory v${newVer}):\n• ${normalizedChars.length} nhân vật chuẩn 5 thành phần (${normalizedChars.map((c) => c.name).join(', ')}).\n• ${normalizedScenes.length} phân cảnh đã lập DAG song song/nối tiếp.`,
+    content: `${agent.name} hoàn tất phân tích kịch bản (Memory v${newVer}):\n• ${normalizedChars.length} nhân vật chuẩn 5 thành phần (${normalizedChars.map((c) => c.name).join(', ')}).\n• ${normalizedScenes.length} phân cảnh phân phối trực tiếp cho Muse AI 02, 03, 04 (mỗi AI làm trọn Ảnh → Video cho cảnh phụ trách không cần chờ nhau).`,
   });
 
   appendConversationMessage({
@@ -2750,16 +3126,16 @@ Lưu ý:
     senderId: agent.id,
     senderName: `${agent.name} (${agent.roleTitle})`,
     taskId: task.id,
-    content: `Đã nạp ${normalizedScenes.length} phân cảnh và ${normalizedChars.length} nhân vật vào dây chuyền sản xuất (Memory v${newVer}).`,
+    content: `Đã nạp ${normalizedScenes.length} phân cảnh và ${normalizedChars.length} nhân vật vào dây chuyền đa nhiệm (Memory v${newVer}).`,
   });
 
   postAiBusMessage({
     fromAgent: agent,
-    toAgentIds: ['muse-03', 'muse-04', 'muse-05'],
+    toAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
     runId: task.runId,
     projectId: mem.projectId,
     taskId: task.id,
-    content: `[SCRIPT→PIPELINE] Memory v${newVer} đã khóa ${normalizedChars.length} nhân vật & ${normalizedScenes.length} cảnh. ${storeDoc.agents[2]?.name} bắt đầu vẽ tham chiếu nhân vật và keyframe song song.`,
+    content: `[DIRECTOR→POOL] Memory v${newVer} đã khóa ${normalizedChars.length} nhân vật & ${normalizedScenes.length} cảnh. Muse AI 02, 03, 04 nhận việc song song: tạo ảnh xong chuyển thẳng sang dựng video ngay không chờ toàn dự án.`,
   });
 }
 
@@ -2913,21 +3289,54 @@ async function executeDesignSceneImageTask(task: CommandTask, agent: MuseAgentCo
   throwIfRunStopped(task.runId);
 
   const saved = saveDataUrlArtifact(`scene_${sc.index}_kf`, img.dataUrl);
-  if (!saved) throw new Error('Không lưu được ảnh keyframe phân cảnh.');
+  if (!saved || !isValidImageArtifactOnDisk(saved.url)) {
+    throw new Error('Không lưu hoặc xác thực được ảnh keyframe phân cảnh trên đĩa.');
+  }
 
-  commitSessionMemoryUpdate(task.runId, 'muse-01', `Khóa keyframe Cảnh ${sc.index} từ ${agent.name}`, (m) => {
+  const newImgMemVer = commitSessionMemoryUpdate(task.runId, 'muse-01', `Khóa keyframe Cảnh ${sc.index} từ ${agent.name}`, (m) => {
     const target = m.scenes.find((s) => s.sceneId === sc.sceneId);
     if (target) {
       target.keyframeImageUrl = saved.url;
       target.keyframeArtifactName = saved.fileName;
+      target.imageValidated = true;
+      target.imageMemoryVersion = m.version + 1;
+      target.productionStage = 'waiting_video';
+      target.assignedProducerAgentId = agent.id;
       target.lastModifiedBy = agent.id;
     }
   });
 
+  // Update downstream unstarted produce_scene_video expectedMemoryVersion so it remains synced
+  for (const downstreamTask of storeDoc.tasks) {
+    if (
+      downstreamTask.runId === task.runId &&
+      downstreamTask.sceneId === sc.sceneId &&
+      downstreamTask.type === 'produce_scene_video' &&
+      ['blocked_by_deps', 'queued'].includes(downstreamTask.status)
+    ) {
+      downstreamTask.expectedMemoryVersion = newImgMemVer;
+    }
+  }
+
+  // Parallel non-blocking QA costume check by Muse AI 05 while the same producer proceeds directly to Stage 3 video
+  if (mem.allowFreeCostumeChange !== true) {
+    enqueueTask({
+      runId: task.runId,
+      type: 'qa_inspect_image',
+      title: `Kiểm tra trang phục ảnh Cảnh ${sc.index}: "${sc.title}"`,
+      instructions: `Kiểm tra keyframe Cảnh ${sc.index} đối chiếu ảnh tham chiếu & trang phục gốc (song song không chặn tiến độ).`,
+      assignedAgentId: 'muse-05',
+      dependsOnTaskIds: [task.id],
+      sceneId: sc.sceneId,
+      sceneIndex: sc.index,
+      priority: 7,
+    });
+  }
+
   task.executedByProvider = img.model;
   task.boundAccountUsed = agent.boundAccountId;
   task.outputArtifactUrl = saved.url;
-  task.outputText = `Đã tạo & lưu keyframe Cảnh ${sc.index} "${sc.title}" (${img.model}).`;
+  task.outputText = `Đã tạo & xác thực keyframe Cảnh ${sc.index} "${sc.title}" (${img.model}). Tiếp tục ngay sang tạo video.`;
 
   appendConversationMessage({
     channel: 'visual',
@@ -2940,20 +3349,20 @@ async function executeDesignSceneImageTask(task: CommandTask, agent: MuseAgentCo
     taskId: task.id,
     messageKind: 'deliverable',
     attachments: [saved.url],
-    content: `Cảnh ${sc.index} "${sc.title}" đã hoàn tất keyframe (${img.model}).`,
+    content: `Cảnh ${sc.index} "${sc.title}" đã hoàn tất & xác thực keyframe (${img.model}). ${agent.name} tự động chuyển tiếp ngay sang dựng video cho cảnh này.`,
   });
 
   postAiBusMessage({
     fromAgent: agent,
-    toAgentIds: mem.allowFreeCostumeChange === true ? ['muse-04'] : ['muse-05', 'muse-04'],
+    toAgentIds: mem.allowFreeCostumeChange === true ? [agent.id, 'muse-01'] : ['muse-05', agent.id, 'muse-01'],
     runId: task.runId,
     projectId: mem.projectId,
     taskId: task.id,
     sceneId: sc.sceneId,
     content:
       mem.allowFreeCostumeChange === true
-        ? `[VISUAL→VIDEO] Keyframe Cảnh ${sc.index} "${sc.title}" đã sẵn sàng tại Memory. Chuyển sang ${storeDoc.agents[3]?.name || 'Muse Video'} dựng video.`
-        : `[VISUAL→QA] Keyframe Cảnh ${sc.index} "${sc.title}" đã sẵn sàng. Gửi ${storeDoc.agents[4]?.name || 'Muse Guardian'} kiểm tra khớp trang phục tham chiếu trước khi dựng video.`,
+        ? `[IMAGE→VIDEO] ${agent.name} hoàn tất keyframe Cảnh ${sc.index} "${sc.title}" (Memory v${newImgMemVer}). Tiếp tục dựng video ngay.`
+        : `[IMAGE→VIDEO] ${agent.name} hoàn tất & xác thực keyframe Cảnh ${sc.index} "${sc.title}" (Memory v${newImgMemVer}). Tự chuyển sang dựng video ngay, đồng thời gửi Muse AI 05 kiểm tra trang phục song song.`,
   });
 }
 
@@ -3082,7 +3491,9 @@ async function executeRestoreCostumeAndRegenImageTask(
     });
     throwIfRunStopped(task.runId);
     const saved = saveDataUrlArtifact(`scene_${refreshedSc.index}_kf_restore`, img.dataUrl);
-    if (!saved) throw new Error('Không lưu được ảnh keyframe sau khi khôi phục trang phục.');
+    if (!saved || !isValidImageArtifactOnDisk(saved.url)) {
+      throw new Error('Không lưu hoặc xác thực được ảnh keyframe sau khi khôi phục trang phục.');
+    }
     afterImageUrl = saved.url;
     usedModel = img.model;
 
@@ -3095,6 +3506,9 @@ async function executeRestoreCostumeAndRegenImageTask(
         if (target) {
           target.keyframeImageUrl = saved.url;
           target.keyframeArtifactName = saved.fileName;
+          target.imageValidated = true;
+          target.imageMemoryVersion = m.version + 1;
+          target.productionStage = 'waiting_video';
           target.costume = canonicalCostume || target.costume;
           target.lastModifiedBy = agent.id;
         }
@@ -3328,6 +3742,10 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
   const mismatchText = String(
     parsed.mismatchDetails || parsed.summary || 'Trang phục trên ảnh chưa khớp với ảnh tham chiếu gốc.'
   ).trim();
+  const responsibleProducerId: MuseAgentId =
+    sc?.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(sc.assignedProducerAgentId)
+      ? sc.assignedProducerAgentId
+      : 'muse-03';
   const costumeMismatch =
     !passed && !allowFreeCostumeChange && !costumePassed
       ? buildCostumeMismatchReport({
@@ -3336,7 +3754,7 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
           targetMediaKind: targetKind,
           scene: sc,
           character: matchedChar || ch,
-          responsibleAgentId: 'muse-03',
+          responsibleAgentId: responsibleProducerId,
           faultyArtifactUrl: targetImageUrl,
           observedCostume: String(parsed.observedCostume || '').trim() || undefined,
           mismatchDetails: mismatchText,
@@ -3406,6 +3824,9 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
   );
 
   if (passed) {
+    if (sc) {
+      sc.imageValidated = true;
+    }
     appendConversationMessage({
       channel: 'qa',
       projectId: mem.projectId,
@@ -3422,6 +3843,12 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
 
     if (openInc) {
       if (sc) {
+        const sceneProducerId: MuseAgentId =
+          sc.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(sc.assignedProducerAgentId)
+            ? sc.assignedProducerAgentId
+            : 'muse-04';
+        const sceneProducerName = storeDoc.agents.find((a) => a.id === sceneProducerId)?.name || sceneProducerId;
+
         // Restored image passed Muse 05 -> verify whether an unstarted video task is already waiting on task.id
         const pendingVid = storeDoc.tasks.find(
           (t) =>
@@ -3432,7 +3859,7 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
         );
         let vidIdForBus = pendingVid?.id;
         if (!pendingVid) {
-          const fixVidOwner = storeDoc.agents.find((a) => a.id === 'muse-04');
+          const fixVidOwner = storeDoc.agents.find((a) => a.id === sceneProducerId);
           if (fixVidOwner) fixVidOwner.regenCount = (fixVidOwner.regenCount || 0) + 1;
           const canonCst = getCharacterCanonicalCostume(matchedChar || ch) || sc.costume;
           const retryVid = enqueueTask({
@@ -3440,10 +3867,11 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
             type: 'produce_scene_video',
             title: `[${openInc.code} #${openInc.attemptCount}] Cảnh ${sc.index}: Quay lại video từ ảnh đã sửa trang phục`,
             instructions: `${sc.actionDetail}. Timeline: ${sc.videoTimeline || 'chuyển động mượt liên tục'}. KHÓA TRANG PHỤC CHUẨN: ${canonCst}. ${sc.dialogue ? `Lời thoại: ${sc.dialogue}` : ''}`,
-            assignedAgentId: 'muse-04',
+            assignedAgentId: sceneProducerId,
             dependsOnTaskIds: [task.id],
             sceneId: sc.sceneId,
             sceneIndex: sc.index,
+            expectedMemoryVersion: mem.version,
             priority: 9,
           });
           const finalVidQa = enqueueTask({
@@ -3480,16 +3908,16 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
           roleBadge: 'Ảnh ĐẠT · Sang Video',
           kind: 'qa_review',
           attachments: targetImageUrl ? [targetImageUrl] : undefined,
-          content: `Ảnh khôi phục Cảnh ${sc.index} ĐẠT ${overallScore}/100 — trang phục đã khớp 100% ảnh tham chiếu gốc. Đã xác nhận với Muse AI 01 cho phép Muse AI 04 dựng lại video Cảnh ${sc.index}.`,
+          content: `Ảnh khôi phục Cảnh ${sc.index} ĐẠT ${overallScore}/100 — trang phục đã khớp 100% ảnh tham chiếu gốc. Đã xác nhận với Muse AI 01 cho phép ${sceneProducerName} dựng lại video Cảnh ${sc.index}.`,
         });
         postIncidentChannelMessage({
           inc: openInc,
           senderId: agent.id,
           senderName: `${agent.name} – Kiểm duyệt ảnh`,
           roleBadge: 'Ảnh ĐẠT',
-          targetAgentIds: ['muse-01', 'muse-04'],
+          targetAgentIds: ['muse-01', sceneProducerId],
           attachments: targetImageUrl ? [targetImageUrl] : undefined,
-          content: `[${openInc.code}] Ảnh Cảnh ${sc.index} đã đạt khớp trang phục gốc (${overallScore}/100). Chuyển Muse AI 04 dựng video Cảnh ${sc.index} (Task ${vidIdForBus || ''}).`,
+          content: `[${openInc.code}] Ảnh Cảnh ${sc.index} đã đạt khớp trang phục gốc (${overallScore}/100). Chuyển ${sceneProducerName} dựng video Cảnh ${sc.index} (Task ${vidIdForBus || ''}).`,
         });
         emitCommandCenterEvent('incident:updated', openInc);
       } else {
@@ -3503,7 +3931,7 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
 
     postAiBusMessage({
       fromAgent: agent,
-      toAgentIds: ['muse-01', 'muse-04'],
+      toAgentIds: ['muse-01', ...(sc?.assignedProducerAgentId ? [sc.assignedProducerAgentId] : (['muse-04'] as MuseAgentId[]))],
       runId: task.runId,
       projectId: mem.projectId,
       taskId: task.id,
@@ -3513,7 +3941,11 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
     return;
   }
 
-  // Image failed costume/character QA -> reject task & escalate immediately to Muse AI 01
+  // Image failed costume/character QA -> invalidate scene image flag, reject task & escalate immediately to Muse AI 01
+  if (sc) {
+    sc.imageValidated = false;
+    sc.productionStage = 'needs_regen';
+  }
   task.status = 'qa_rejected';
   agent.stats.retried += 1;
   await openOrAdvanceDirectorIncident({
@@ -3524,7 +3956,7 @@ ${sc ? `- Cảnh kiểm tra: Cảnh ${sc.index} "${sc.title}" — Hành động:
     qaReport: report,
     costumeMismatch,
     reporterAgentId: 'muse-05',
-    responsibleAgentId: 'muse-03',
+    responsibleAgentId: costumeMismatch ? responsibleProducerId : 'muse-03',
     explicitCategory: costumeMismatch ? 'wrong_costume' : 'wrong_character',
     errorDescription: costumeMismatch
       ? `Sai lệch trang phục nhân vật "${costumeMismatch.characterName}" (${costumeMismatch.characterId}) tại ${sc ? `ảnh Cảnh ${sc.index}` : 'ảnh nhân vật'}: ${costumeMismatch.mismatchDetails}`
@@ -3541,6 +3973,27 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
   throwIfRunStopped(task.runId);
   const sc = mem.scenes.find((s) => s.sceneId === task.sceneId);
   if (!sc) throw new Error(`Không tìm thấy phân cảnh ${task.sceneId} trong Project Memory.`);
+
+  // Guard 1: Validate keyframe / image readiness and non-rejected costume status
+  const hasValidKeyframe = isValidImageArtifactOnDisk(sc.keyframeImageUrl);
+  if (sc.imageValidated === false) {
+    throw new Error(`Cảnh ${sc.index} đang chờ tạo lại hoặc kiểm duyệt ảnh hợp lệ trước khi dựng video.`);
+  }
+  if (!hasValidKeyframe && !sc.continuityAnchorFromSceneId) {
+    throw new Error(`Cảnh ${sc.index} chưa có tệp ảnh keyframe hợp lệ trên đĩa để chuyển sang dựng video.`);
+  }
+  if (mem.allowFreeCostumeChange !== true) {
+    const hasOpenCostumeBlock = storeDoc.incidents.some(
+      (i) =>
+        i.runId === task.runId &&
+        i.sceneId === sc.sceneId &&
+        i.category === 'wrong_costume' &&
+        !['resolved', 'escalated_to_user'].includes(i.status)
+    );
+    if (hasOpenCostumeBlock) {
+      throw new Error(`Cảnh ${sc.index} đang có sự cố sai lệch trang phục chưa nghiệm thu xong — tạm hoãn dựng video.`);
+    }
+  }
 
   const health = await refreshIntegrationHealth();
   const useMuse =
@@ -3593,9 +4046,22 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
     })
     .join(' | ');
 
+  // Guard 2: Refresh prompt from latest Project Memory if version moved forward since task enqueue
+  const latestScenePrompt = `${sc.actionDetail}. Timeline: ${sc.videoTimeline || 'chuyển động mượt liên tục'}. ${
+    sc.costume ? `Trang phục: ${sc.costume}. ` : ''
+  }${sc.dialogue ? `Lời thoại: ${sc.dialogue}` : ''}`.trim();
+  const basePromptText =
+    task.expectedMemoryVersion && mem.version > task.expectedMemoryVersion
+      ? `${latestScenePrompt}${
+          task.instructions?.includes('CHỈ ĐẠO ĐẠO DIỄN TỔNG')
+            ? ` ${task.instructions.slice(task.instructions.indexOf('CHỈ ĐẠO ĐẠO DIỄN TỔNG'))}`
+            : ''
+        }`
+      : task.instructions || latestScenePrompt;
+
   const vidRes = await generateSceneVideoWithOmniFlash({
     engine,
-    prompt: `${task.instructions || sc.actionDetail}${sc.lighting ? `. Lighting: ${sc.lighting}` : ''}`,
+    prompt: `${basePromptText}${sc.lighting ? `. Lighting: ${sc.lighting}` : ''}`,
     aspectRatio: mem.aspectRatio,
     durationSec: sc.durationSec,
     videoStyle: mem.videoStyle,
@@ -3646,6 +4112,8 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
       target.probedDurationSec = vidRes.durationSec;
       target.hasAudioStream = vidRes.hasAudio;
       target.qaStatus = 'inspecting';
+      target.productionStage = 'inspecting_qa';
+      target.assignedProducerAgentId = agent.id;
       target.lastModifiedBy = agent.id;
     }
   });
@@ -3823,14 +4291,18 @@ ${canonicalCharChecklist}
     criteriaResults.filter((c) => !c.passed).length <= 1;
 
   const attemptNumber = sc.retryCount + 1;
+  const sceneProducer: 'muse-02' | 'muse-03' | 'muse-04' =
+    sc.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(sc.assignedProducerAgentId)
+      ? (sc.assignedProducerAgentId as 'muse-02' | 'muse-03' | 'muse-04')
+      : 'muse-04';
   const targetFix: 'muse-02' | 'muse-03' | 'muse-04' =
     costumeLockedFailed
       ? 'muse-03'
-      : parsed.targetFixAgentId === 'muse-03' || parsed.targetFixAgentId === 'muse-02'
+      : parsed.targetFixAgentId === 'muse-03' || parsed.targetFixAgentId === 'muse-02' || parsed.targetFixAgentId === 'muse-04'
       ? parsed.targetFixAgentId
       : hardLockFailed
       ? 'muse-03'
-      : 'muse-04';
+      : sceneProducer;
 
   const baseFixInstr = String(
     parsed.fixInstruction ||
@@ -3856,7 +4328,7 @@ ${canonicalCharChecklist}
         targetMediaKind: 'scene_video',
         scene: sc,
         character: matchedCmChar,
-        responsibleAgentId: 'muse-04',
+        responsibleAgentId: sceneProducer,
         faultyArtifactUrl: extractedFaultFrameUrl || sc.keyframeImageUrl,
         faultyVideoUrl: sc.videoUrl,
         observedCostume: String(parsedCm?.observedCostume || '').trim() || undefined,
@@ -3913,6 +4385,7 @@ ${canonicalCharChecklist}
         target.qaStatus = 'passed';
         target.qaScore = overallScore;
         target.qaReportId = report.id;
+        target.productionStage = 'completed';
       }
     });
 
@@ -3963,6 +4436,7 @@ ${canonicalCharChecklist}
   }
 
   // Failed QA: Muse 05 MUST report urgently to Muse AI 01 (never silently skip or bypass Director)
+  sc.productionStage = 'needs_regen';
   task.status = 'qa_rejected';
   agent.stats.retried += 1;
   const failedLabels = report.criteriaResults
@@ -4286,6 +4760,16 @@ async function runSingleTask(task: CommandTask): Promise<void> {
   task.error = undefined;
   const ackLatencyMs = Math.max(1, now - (task.acknowledgedAt || task.createdAt));
 
+  if (task.sceneId) {
+    if (task.type === 'design_scene_image' || task.type === 'restore_costume_and_regen_image') {
+      setSceneProductionStage(task.runId, task.sceneId, 'creating_image');
+    } else if (task.type === 'produce_scene_video') {
+      setSceneProductionStage(task.runId, task.sceneId, 'creating_video');
+    } else if (task.type === 'qa_inspect_scene') {
+      setSceneProductionStage(task.runId, task.sceneId, 'inspecting_qa');
+    }
+  }
+
   agent.lastActiveAt = now;
   agent.lastError = undefined;
   addActivityLog('info', `Bắt đầu ${task.code}`, `${agent.name} đang thực thi: ${task.title}`, {
@@ -4428,22 +4912,36 @@ async function runSingleTask(task: CommandTask): Promise<void> {
       runId: task.runId,
     });
 
-    // Report urgently to Muse AI 01 so Director handles recovery autonomously unless escalated
+    // Report urgently to Muse AI 01 so Director handles recovery autonomously unless escalated (isolated per scene!)
     const mem = getRunMemory(task.runId);
     const sc = task.sceneId ? mem.scenes.find((s) => s.sceneId === task.sceneId) : undefined;
+    if (sc) {
+      sc.productionStage = 'needs_regen';
+    }
+    const preCategory = classifyIncidentCategory({ errorText: errMsg });
+    const preDiag = diagnoseIncidentTechnicalDetails({
+      rawError: errMsg,
+      task,
+      agent,
+      scene: sc,
+      category: preCategory,
+    });
     const outcome = await openOrAdvanceDirectorIncident({
       runId: task.runId,
       task,
       scene: sc,
       reporterAgentId: agent.id,
       responsibleAgentId: agent.id,
-      errorDescription: `${task.code} (${agent.name}) gặp lỗi khi thực thi "${task.title}": ${errMsg}`,
-      suspectedRootCause: errMsg,
-      severity: /offline|timeout|mất kết nối|chưa thể thực thi/i.test(errMsg) ? 'critical' : 'high',
+      explicitCategory: preCategory,
+      errorDescription: preDiag.concreteErrorDescription,
+      suspectedRootCause: preDiag.structuredRootCause,
+      initialProposal: preDiag.actionableInitialProposal,
+      severity: /offline|timeout|mất kết nối|chưa thể thực thi|503|504/i.test(errMsg) ? 'critical' : 'high',
       artifactUrls: task.outputArtifactUrl ? [task.outputArtifactUrl] : [],
     });
 
     if (outcome.escalated) {
+      if (sc) sc.productionStage = 'failed';
       const run = storeDoc.runs.find((r) => r.id === task.runId);
       if (run && !['completed', 'cancelled', 'paused'].includes(run.status)) {
         run.status = 'needs_attention';
@@ -4456,6 +4954,8 @@ async function runSingleTask(task: CommandTask): Promise<void> {
   } finally {
     activeTaskIds.delete(task.id);
     saveStateAtomic();
+    // Immediately advance Stage 2 -> Stage 3 or next ready tasks without waiting for 2s poll tick
+    void tickOrchestratorQueue();
   }
 }
 
@@ -4505,6 +5005,7 @@ async function tickOrchestratorQueue(): Promise<void> {
           task.error = `Tác vụ treo vượt quá giới hạn ${Math.round(limit / 1000)}s.`;
           const mem = getRunMemory(task.runId);
           const sc = task.sceneId ? mem.scenes.find((s) => s.sceneId === task.sceneId) : undefined;
+          if (sc) sc.productionStage = 'needs_regen';
           await openOrAdvanceDirectorIncident({
             runId: task.runId,
             task,
@@ -4545,8 +5046,8 @@ async function tickOrchestratorQueue(): Promise<void> {
     }
     if (promoted) saveStateAtomic();
 
-    // 2. Dispatch eligible queued tasks up to parallelLimit
-    const maxParallel = Math.max(1, Math.min(5, storeDoc.cloudConfig.parallelLimit || 2));
+    // 2. Dispatch eligible queued tasks up to parallelLimit with per-agent multitasking & dynamic load balancing
+    const maxParallel = Math.max(1, Math.min(8, storeDoc.cloudConfig.parallelLimit || 4));
     if (activeTaskIds.size >= maxParallel) return;
 
     const queued = storeDoc.tasks
@@ -4557,9 +5058,12 @@ async function tickOrchestratorQueue(): Promise<void> {
 
     const health = await refreshIntegrationHealth();
     const busyPinnedAccounts = new Set<string>();
+    const activeByAgent = new Map<MuseAgentId, number>();
     for (const activeId of activeTaskIds) {
       const at = storeDoc.tasks.find((t) => t.id === activeId);
-      const ag = at ? storeDoc.agents.find((a) => a.id === at.assignedAgentId) : undefined;
+      if (!at) continue;
+      activeByAgent.set(at.assignedAgentId, (activeByAgent.get(at.assignedAgentId) || 0) + 1);
+      const ag = storeDoc.agents.find((a) => a.id === at.assignedAgentId);
       if (ag?.boundAccountId && ag.boundAccountId !== 'auto') {
         busyPinnedAccounts.add(ag.boundAccountId);
       }
@@ -4571,8 +5075,71 @@ async function tickOrchestratorQueue(): Promise<void> {
       const run = storeDoc.runs.find((r) => r.id === task.runId);
       if (run && ['paused', 'cancelled'].includes(run.status)) continue;
 
-      const agent = storeDoc.agents.find((a) => a.id === task.assignedAgentId);
-      if (!agent || agent.paused) continue;
+      let agent = storeDoc.agents.find((a) => a.id === task.assignedAgentId);
+      if (!agent) continue;
+
+      let currentAgentActive = activeByAgent.get(agent.id) || 0;
+      let agentMax = getAgentEffectiveMaxConcurrency(agent, health);
+
+      // Dynamic load-balancing across production pool (Muse 02, 03, 04) if assigned agent is full or paused
+      const isRebalanceableMedia =
+        PRODUCTION_AGENT_IDS.includes(agent.id) &&
+        (task.type === 'design_scene_image' ||
+          task.type === 'design_character_ref' ||
+          (task.type === 'produce_scene_video' && agent.paused));
+
+      if (
+        isRebalanceableMedia &&
+        (agent.paused ||
+          currentAgentActive >= agentMax ||
+          (agent.boundAccountId !== 'auto' && busyPinnedAccounts.has(agent.boundAccountId)))
+      ) {
+        const alternate = storeDoc.agents
+          .filter(
+            (cand) =>
+              PRODUCTION_AGENT_IDS.includes(cand.id) &&
+              cand.id !== agent!.id &&
+              !cand.paused &&
+              isAgentAccountReady(cand, health) &&
+              (cand.boundAccountId === 'auto' || !busyPinnedAccounts.has(cand.boundAccountId)) &&
+              (activeByAgent.get(cand.id) || 0) < getAgentEffectiveMaxConcurrency(cand, health)
+          )
+          .sort((a, b) => (activeByAgent.get(a.id) || 0) - (activeByAgent.get(b.id) || 0))[0];
+
+        if (alternate) {
+          const prevAgentId = agent.id;
+          task.assignedAgentId = alternate.id;
+          agent = alternate;
+          currentAgentActive = activeByAgent.get(alternate.id) || 0;
+          agentMax = getAgentEffectiveMaxConcurrency(alternate, health);
+
+          // Keep same-producer Stage 2 -> Stage 3 affinity when a scene image is rebalanced
+          if (task.sceneId && task.type === 'design_scene_image') {
+            const mem = getRunMemory(task.runId);
+            const sc = mem.scenes.find((s) => s.sceneId === task.sceneId);
+            if (sc) sc.assignedProducerAgentId = alternate.id;
+            for (const dt of storeDoc.tasks) {
+              if (
+                dt.runId === task.runId &&
+                dt.sceneId === task.sceneId &&
+                dt.type === 'produce_scene_video' &&
+                ['blocked_by_deps', 'queued'].includes(dt.status)
+              ) {
+                dt.assignedAgentId = alternate.id;
+              }
+            }
+          }
+          addActivityLog(
+            'info',
+            `Cân bằng tải ${task.code}`,
+            `Muse AI 01 điều chuyển ${task.code} từ ${prevAgentId} sang ${alternate.name} đang rảnh để không chờ đợi.`,
+            { agentId: 'muse-01', taskId: task.id, runId: task.runId }
+          );
+        }
+      }
+
+      if (agent.paused) continue;
+      if (currentAgentActive >= agentMax) continue;
       if (agent.boundAccountId !== 'auto' && busyPinnedAccounts.has(agent.boundAccountId)) {
         continue;
       }
@@ -4596,6 +5163,7 @@ async function tickOrchestratorQueue(): Promise<void> {
         });
         const mem = getRunMemory(task.runId);
         const sc = task.sceneId ? mem.scenes.find((s) => s.sceneId === task.sceneId) : undefined;
+        if (sc) sc.productionStage = 'needs_regen';
         await openOrAdvanceDirectorIncident({
           runId: task.runId,
           task,
@@ -4611,9 +5179,19 @@ async function tickOrchestratorQueue(): Promise<void> {
         continue;
       }
 
+      if (currentAgentActive >= 1) {
+        addActivityLog(
+          'info',
+          `Đa nhiệm song song ${task.code}`,
+          `${agent.name} đang xử lý đồng thời ${currentAgentActive + 1} tác vụ (nhận tiếp ${task.code}).`,
+          { agentId: agent.id, taskId: task.id, runId: task.runId }
+        );
+      }
+
       if (agent.boundAccountId !== 'auto') {
         busyPinnedAccounts.add(agent.boundAccountId);
       }
+      activeByAgent.set(agent.id, currentAgentActive + 1);
       slotsLeft -= 1;
       void runSingleTask(task);
     }
@@ -4629,12 +5207,66 @@ export function initCommandCenter(): void {
       const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) as Partial<PersistedCommandCenterDoc>;
       const base = createDefaultDoc();
       const loadedAgents = Array.isArray(raw.agents) && raw.agents.length === 5 ? raw.agents : base.agents;
-      // Non-destructive identity defaults migration (preserve user edits)
+      // Non-destructive role & multitasking model migration (preserve user custom edits where applicable)
       loadedAgents.forEach((ag, idx) => {
         const def = DEFAULT_AGENTS[idx];
-        if (ag.name === `Muse AI 0${idx + 1}` && def) ag.name = def.name;
-        if (!ag.accentColor && def) ag.accentColor = def.accentColor;
-        if (!ag.avatarPreset && def) ag.avatarPreset = def.avatarPreset;
+        if (!def) return;
+        if (ag.name === `Muse AI 0${idx + 1}`) ag.name = def.name;
+        if (!ag.accentColor) ag.accentColor = def.accentColor;
+        if (!ag.avatarPreset) ag.avatarPreset = def.avatarPreset;
+
+        // Migrate legacy 5-role pipeline -> Multitasking Production Model
+        if (ag.id === 'muse-01' && (ag.role === 'director' || ag.role === 'director_script')) {
+          ag.role = 'director_script';
+          if (!ag.roleTitle || ag.roleTitle === 'Tổng đạo diễn') ag.roleTitle = def.roleTitle;
+          if (!ag.description || ag.description.includes('AI điều phối trưởng: nhận lệnh')) {
+            ag.description = def.description;
+          }
+          ag.permissions = {
+            ...def.permissions,
+            ...(ag.permissions || {}),
+            canModifyProjectMemory: true,
+            canExecuteMedia: false,
+            allowedDataScopes: Array.from(new Set([...(ag.permissions?.allowedDataScopes || []), ...def.permissions.allowedDataScopes])),
+          };
+        } else if (
+          PRODUCTION_AGENT_IDS.includes(ag.id) &&
+          ['screenwriter', 'image_designer', 'video_director', 'production_media'].includes(ag.role)
+        ) {
+          ag.role = 'production_media';
+          if (['Muse Script', 'Muse Visual', 'Muse Video'].includes(ag.name)) {
+            ag.name = def.name;
+          }
+          if (!ag.roleTitle || ['Biên kịch', 'Thiết kế hình ảnh', 'Đạo diễn video'].includes(ag.roleTitle)) {
+            ag.roleTitle = def.roleTitle;
+          }
+          if (
+            !ag.description ||
+            ag.description.includes('Phân tích kịch bản, hồ sơ') ||
+            ag.description.includes('Tạo ảnh tham chiếu nhân vật') ||
+            ag.description.includes('Sản xuất video phân cảnh theo timeline')
+          ) {
+            ag.description = def.description;
+          }
+          if (ag.id === 'muse-02' && ag.avatarPreset === 'script_feather') {
+            ag.avatarPreset = def.avatarPreset;
+          }
+          ag.permissions = {
+            ...def.permissions,
+            canExecuteMedia: true,
+            canModifyProjectMemory: false,
+            canApproveQa: false,
+          };
+        } else if (ag.id === 'muse-05') {
+          ag.role = 'qa_supervisor';
+          ag.permissions = {
+            ...def.permissions,
+            ...(ag.permissions || {}),
+            canApproveQa: true,
+            canExecuteMedia: false,
+          };
+        }
+
         if (
           ag.engineMode === 'muse2api' &&
           !ag.lastActiveAt &&
@@ -4671,13 +5303,48 @@ export function initCommandCenter(): void {
         runs: loadedRuns,
         tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
         qaReports: Array.isArray(raw.qaReports) ? raw.qaReports : [],
-        incidents: Array.isArray(raw.incidents) ? raw.incidents : [],
+        incidents: (Array.isArray(raw.incidents) ? raw.incidents : []).map((incItem) => {
+          if (
+            incItem &&
+            !incItem.technicalDiagnosis &&
+            /expected double-quoted property name|unexpected token.*json|unterminated string in json|syntaxerror/i.test(
+              `${incItem.suspectedRootCause || ''} ${incItem.errorDescription || ''}`
+            )
+          ) {
+            const relatedTask = (Array.isArray(raw.tasks) ? raw.tasks : []).find((t) => t.id === incItem.taskId);
+            const relatedAgent = loadedAgents.find((a) => a.id === incItem.responsibleAgentId);
+            const relatedMem = (incItem.runId && loadedSessionMemories[incItem.runId]) || loadedMem;
+            const relatedScene = relatedMem?.scenes?.find((s) => s.sceneId === incItem.sceneId);
+            const upDiag = diagnoseIncidentTechnicalDetails({
+              rawError: incItem.suspectedRootCause || incItem.errorDescription,
+              task: relatedTask,
+              agent: relatedAgent,
+              scene: relatedScene,
+              category: 'ai_output_format_error',
+            });
+            return {
+              ...incItem,
+              category: 'ai_output_format_error' as IncidentCategory,
+              categoryLabel: INCIDENT_SMART_RULES.ai_output_format_error.label,
+              suspectedRootCause: upDiag.structuredRootCause,
+              initialProposal: upDiag.actionableInitialProposal,
+              technicalDiagnosis: upDiag.technicalDiagnosis,
+            };
+          }
+          return incItem;
+        }),
         conversations: migratedConversations,
         logs: Array.isArray(raw.logs) ? raw.logs : [],
         backups: Array.isArray(raw.backups) ? raw.backups : [],
         performanceAlerts: Array.isArray(raw.performanceAlerts) ? raw.performanceAlerts : [],
         fastCommStats: { ...base.fastCommStats, ...(raw.fastCommStats || {}) },
-        cloudConfig: { ...base.cloudConfig, ...(raw.cloudConfig || {}), workerBootId: WORKER_BOOT_ID },
+        cloudConfig: {
+          ...base.cloudConfig,
+          ...(raw.cloudConfig || {}),
+          parallelLimit: Math.max(1, Math.min(8, Number(raw.cloudConfig?.parallelLimit || base.cloudConfig.parallelLimit))),
+          perAgentConcurrencyLimit: Math.max(1, Math.min(3, Number(raw.cloudConfig?.perAgentConcurrencyLimit ?? 2))),
+          workerBootId: WORKER_BOOT_ID,
+        },
         taskSeq: Number(raw.taskSeq) || 1,
         incidentSeq: Number(raw.incidentSeq) || 1,
       };
@@ -4702,6 +5369,14 @@ export function initCommandCenter(): void {
       t.status = 'queued';
       t.error = undefined;
       recovered += 1;
+      if (t.sceneId) {
+        const mem = getRunMemory(t.runId);
+        const sc = mem.scenes.find((s) => s.sceneId === t.sceneId);
+        if (sc) {
+          if (sc.productionStage === 'creating_image') sc.productionStage = 'waiting_data';
+          else if (sc.productionStage === 'creating_video') sc.productionStage = 'waiting_video';
+        }
+      }
     }
   }
   if (recovered > 0) {
@@ -4782,6 +5457,7 @@ export async function getCommandCenterState(forceHealth = false): Promise<Comman
       ? maskSecret(storeDoc.cloudConfig.customMuse2ApiKey)
       : cfg.maskedKey,
     parallelLimit: storeDoc.cloudConfig.parallelLimit,
+    perAgentConcurrencyLimit: Math.max(1, Math.min(3, storeDoc.cloudConfig.perAgentConcurrencyLimit ?? 2)),
     qaPassThreshold: storeDoc.cloudConfig.qaPassThreshold,
     maxRetriesPerScene: storeDoc.cloudConfig.maxRetriesPerScene,
     maxIncidentRetries: storeDoc.cloudConfig.maxIncidentRetries ?? 3,
@@ -5378,17 +6054,22 @@ export async function startProductionOrchestration(params: {
 
     preSeededChars.forEach(ensureCharacterOriginalAnchors);
 
+    // Character Reference Tasks (ONLY for characters lacking confirmed images, distributed across Muse 02, 03, 04)
     const charTaskIds: string[] = [];
     const charQaDeps: string[] = [];
-    for (const ch of preSeededChars.slice(0, 4)) {
-      if (!ch.artifactUrl) {
+    const charsList = preSeededChars.slice(0, 4);
+    for (let ci = 0; ci < charsList.length; ci += 1) {
+      const ch = charsList[ci];
+      if (!ch.artifactUrl && !ch.dataUrl && !ch.confirmedOriginalArtifactUrl) {
+        const producerId = PRODUCTION_AGENT_IDS[ci % PRODUCTION_AGENT_IDS.length];
         const ct = enqueueTask({
           runId,
           type: 'design_character_ref',
           title: `Tạo ảnh tham chiếu nhân vật: ${ch.name}`,
           instructions: `${ch.name}: ${ch.syncProfile.face}. Vóc dáng: ${ch.syncProfile.physique}. Trang phục: ${ch.syncProfile.costume}.`,
-          assignedAgentId: 'muse-03',
+          assignedAgentId: producerId,
           characterId: ch.id,
+          expectedMemoryVersion: freshMemory.version,
           priority: 9,
         });
         charTaskIds.push(ct.id);
@@ -5412,56 +6093,67 @@ export async function startProductionOrchestration(params: {
     const qaTaskIds: string[] = [];
     const sceneImgDeps = !resolvedAllowFreeCostumeChange && charQaDeps.length > 0 ? charQaDeps : charTaskIds;
 
-    for (const sc of preSeededScenes) {
+    for (let si = 0; si < preSeededScenes.length; si += 1) {
+      const sc = preSeededScenes[si];
+      const producerId = PRODUCTION_AGENT_IDS[si % PRODUCTION_AGENT_IDS.length];
+      sc.assignedProducerAgentId = producerId;
+      sc.lockedPromptVersion = freshMemory.version;
+
       const videoDeps: string[] = [];
-      let imgReadyDep: string | undefined;
-      if (!sc.keyframeImageUrl) {
+      const hasValidPreSeededKf = isValidImageArtifactOnDisk(sc.keyframeImageUrl);
+      if (!hasValidPreSeededKf) {
+        sc.imageValidated = false;
+        sc.productionStage = 'waiting_data';
         const imgTask = enqueueTask({
           runId,
           type: 'design_scene_image',
           title: `Cảnh ${sc.index}: Tạo ảnh keyframe "${sc.title}"`,
           instructions: `${sc.actionDetail}. Bối cảnh: ${sc.settingDetail}. Góc máy: ${sc.cameraAngle}. Ánh sáng: ${sc.lighting}.`,
-          assignedAgentId: 'muse-03',
+          assignedAgentId: producerId,
           dependsOnTaskIds: sceneImgDeps,
           sceneId: sc.sceneId,
           sceneIndex: sc.index,
+          expectedMemoryVersion: freshMemory.version,
           priority: 8,
         });
-        imgReadyDep = imgTask.id;
-      } else if (sceneImgDeps.length > 0) {
-        videoDeps.push(...sceneImgDeps);
-      }
-
-      if (!resolvedAllowFreeCostumeChange && (imgReadyDep || sc.keyframeImageUrl)) {
-        const imgQa = enqueueTask({
-          runId,
-          type: 'qa_inspect_image',
-          title: `Kiểm tra trang phục ảnh Cảnh ${sc.index}: "${sc.title}"`,
-          instructions: `Kiểm tra trang phục trên ảnh keyframe Cảnh ${sc.index} so với ảnh tham chiếu & hồ sơ gốc trước khi dựng video.`,
-          assignedAgentId: 'muse-05',
-          dependsOnTaskIds: imgReadyDep ? [imgReadyDep] : sceneImgDeps,
-          sceneId: sc.sceneId,
-          sceneIndex: sc.index,
-          priority: 8,
-        });
-        videoDeps.push(imgQa.id);
-      } else if (imgReadyDep) {
-        videoDeps.push(imgReadyDep);
+        videoDeps.push(imgTask.id);
+      } else {
+        sc.imageValidated = true;
+        sc.imageMemoryVersion = freshMemory.version;
+        sc.productionStage = 'waiting_video';
+        if (sceneImgDeps.length > 0) {
+          videoDeps.push(...sceneImgDeps);
+        }
+        // Dispatch parallel non-blocking costume inspection on pre-seeded image if lock is active
+        if (!resolvedAllowFreeCostumeChange) {
+          enqueueTask({
+            runId,
+            type: 'qa_inspect_image',
+            title: `Kiểm tra trang phục ảnh Cảnh ${sc.index}: "${sc.title}"`,
+            instructions: `Kiểm tra trang phục trên ảnh keyframe Cảnh ${sc.index} so với ảnh tham chiếu & hồ sơ gốc.`,
+            assignedAgentId: 'muse-05',
+            sceneId: sc.sceneId,
+            sceneIndex: sc.index,
+            priority: 7,
+          });
+        }
       }
 
       if (sc.continuityAnchorFromSceneId && sceneVideoTaskBySceneId.has(sc.continuityAnchorFromSceneId)) {
         videoDeps.push(sceneVideoTaskBySceneId.get(sc.continuityAnchorFromSceneId)!);
       }
 
+      // SAME producer handles Stage 3 (video) immediately after Stage 2 (image) completes!
       const vidTask = enqueueTask({
         runId,
         type: 'produce_scene_video',
         title: `Cảnh ${sc.index}: Quay & dựng video "${sc.title}" (${sc.durationSec}s)`,
         instructions: `${sc.actionDetail}. Timeline: ${sc.videoTimeline || 'chuyển động mượt liên tục'}. ${sc.dialogue ? `Lời thoại: ${sc.dialogue}` : ''}`,
-        assignedAgentId: 'muse-04',
+        assignedAgentId: producerId,
         dependsOnTaskIds: videoDeps,
         sceneId: sc.sceneId,
         sceneIndex: sc.index,
+        expectedMemoryVersion: freshMemory.version,
         priority: 6,
       });
       sceneVideoTaskBySceneId.set(sc.sceneId, vidTask.id);
@@ -5496,39 +6188,41 @@ export async function startProductionOrchestration(params: {
       runId,
       senderType: 'agent',
       senderId: 'muse-01',
-      senderName: `${storeDoc.agents[0]?.name || 'Muse Director'} (${storeDoc.agents[0]?.roleTitle || 'Tổng đạo diễn'})`,
+      senderName: `${storeDoc.agents[0]?.name || 'Muse Director'} (${storeDoc.agents[0]?.roleTitle || 'Tổng đạo diễn & Phân tích kịch bản'})`,
       targetAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
       taskId: planTask.id,
       messageKind: 'ack',
-      content: `Đã tiếp nhận kịch bản & phân cảnh đồng bộ từ Studio cho "${title}" (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh). Đã khóa Project Memory v${freshMemory.version} và phân công song song cho đội 5 Muse AI.`,
+      content: `Đã tiếp nhận kịch bản & phân cảnh đồng bộ từ Studio cho "${title}" (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh). Đã khóa Project Memory v${freshMemory.version} và phân công đa nhiệm song song cho Muse AI 02, 03, 04 (mỗi AI làm trọn Ảnh → Video cho cảnh phụ trách).`,
     });
 
     postAiBusMessage({
       fromAgent: storeDoc.agents[0],
-      toAgentIds: ['muse-03', 'muse-04', 'muse-05'],
+      toAgentIds: ['muse-02', 'muse-03', 'muse-04', 'muse-05'],
       runId,
       projectId: freshMemory.projectId,
       taskId: planTask.id,
-      content: `[STUDIO-BLUEPRINT] Khởi chạy song song ${preSeededScenes.length} phân cảnh của "${title}".`,
+      content: `[STUDIO-BLUEPRINT] Khởi chạy đa nhiệm ${preSeededScenes.length} phân cảnh của "${title}" trên pool Muse 02–04.`,
     });
 
     addActivityLog(
       'info',
       'Tiếp nhận kịch bản từ Studio',
-      `${storeDoc.agents[0]?.name || 'Muse Director'} đã phân công ${preSeededScenes.length} phân cảnh của "${title}" vào dây chuyền sản xuất song song.`,
+      `${storeDoc.agents[0]?.name || 'Muse Director'} đã phân công ${preSeededScenes.length} phân cảnh của "${title}" cho Muse 02, 03, 04 xử lý đa nhiệm.`,
       { agentId: 'muse-01', runId }
     );
   } else {
+    // Muse AI 01 directly handles script analysis & breakdown (eliminating Muse 02 handoff bottleneck)
     enqueueTask({
       runId,
-      type: 'plan_production',
-      title: `Tổng đạo diễn lập kế hoạch & phân công sản xuất: ${title}`,
-      instructions: script,
+      type: 'analyze_script',
+      title: `Tổng đạo diễn phân tích kịch bản & phân công sản xuất: ${title}`,
+      instructions: `Trực tiếp phân tích kịch bản "${title}", bóc tách nhân vật 5 thành phần, lời thoại, timeline từng giây, phân cảnh và phân công song song cho Muse AI 02, 03, 04.\n\nKịch bản gốc:\n${script}`,
       assignedAgentId: 'muse-01',
+      expectedMemoryVersion: freshMemory.version,
       priority: 10,
     });
 
-    addActivityLog('info', 'Khởi động dây chuyền sản xuất', `Phiên "${title}" đã được giao cho ${storeDoc.agents[0]?.name || 'Muse Director'}.`, {
+    addActivityLog('info', 'Khởi động dây chuyền đa nhiệm', `Phiên "${title}" đã được giao trực tiếp cho ${storeDoc.agents[0]?.name || 'Muse Director'} phân tích kịch bản & phân phối ngay.`, {
       agentId: 'muse-01',
       runId,
     });
@@ -5752,16 +6446,21 @@ export async function resolveSceneQaManual(
     const fixText = (instruction || '').trim() || 'Tạo lại phân cảnh này cho khớp gương mặt nhân vật, trang phục và hành động kịch bản.';
     commitSessionMemoryUpdate(runId, 'user', `Người dùng yêu cầu tạo lại Cảnh ${sc.index}`, (m) => {
       const target = m.scenes.find((s) => s.sceneId === sceneId);
-      if (target) target.qaStatus = 'rejected';
+      if (target) {
+        target.qaStatus = 'rejected';
+        target.productionStage = 'needs_regen';
+      }
     });
+    const freshMem = getRunMemory(runId);
     const vidTask = enqueueTask({
       runId,
       type: 'produce_scene_video',
       title: `[Làm lại thủ công] Cảnh ${sc.index}: "${sc.title}"`,
       instructions: `${sc.actionDetail}. YÊU CẦU: ${fixText}`,
-      assignedAgentId: 'muse-04',
+      assignedAgentId: sc.assignedProducerAgentId || 'muse-04',
       sceneId: sc.sceneId,
       sceneIndex: sc.index,
+      expectedMemoryVersion: freshMem.version,
       priority: 9,
     });
     enqueueTask({
@@ -5810,8 +6509,8 @@ const DEFAULT_AGENT_BY_CHANNEL: Record<string, MuseAgentId> = {
   commander: 'muse-01',
   incident: 'muse-01',
   production: 'muse-01',
-  script: 'muse-02',
-  visual: 'muse-03',
+  script: 'muse-01',
+  visual: 'muse-02',
   video: 'muse-04',
   qa: 'muse-05',
   ai_bus: 'muse-01',
@@ -6175,6 +6874,7 @@ export async function updateCloudConfig(patch: {
   muse2ApiKey?: string;
   clearCustomKey?: boolean;
   parallelLimit?: number;
+  perAgentConcurrencyLimit?: number;
   qaPassThreshold?: number;
   maxRetriesPerScene?: number;
   maxIncidentRetries?: number;
@@ -6190,7 +6890,10 @@ export async function updateCloudConfig(patch: {
     storeDoc.cloudConfig.customMuse2ApiKey = patch.muse2ApiKey.trim();
   }
   if (typeof patch.parallelLimit === 'number') {
-    storeDoc.cloudConfig.parallelLimit = Math.max(1, Math.min(5, Math.round(patch.parallelLimit)));
+    storeDoc.cloudConfig.parallelLimit = Math.max(1, Math.min(8, Math.round(patch.parallelLimit)));
+  }
+  if (typeof patch.perAgentConcurrencyLimit === 'number') {
+    storeDoc.cloudConfig.perAgentConcurrencyLimit = Math.max(1, Math.min(3, Math.round(patch.perAgentConcurrencyLimit)));
   }
   if (typeof patch.qaPassThreshold === 'number') {
     storeDoc.cloudConfig.qaPassThreshold = Math.max(50, Math.min(98, Math.round(patch.qaPassThreshold)));
@@ -6216,7 +6919,7 @@ export async function updateCloudConfig(patch: {
   addActivityLog(
     'info',
     'Cập nhật cấu hình Cloud & Điều phối',
-    `Muse2API: ${storeDoc.cloudConfig.muse2ApiBaseUrl || 'mặc định'} · Song song: ${storeDoc.cloudConfig.parallelLimit} · Ngưỡng QA: ${storeDoc.cloudConfig.qaPassThreshold} · Vòng sự cố tối đa: ${storeDoc.cloudConfig.maxIncidentRetries ?? 3}`
+    `Muse2API: ${storeDoc.cloudConfig.muse2ApiBaseUrl || 'mặc định'} · Song song tổng: ${storeDoc.cloudConfig.parallelLimit} · Đa nhiệm/Muse: ${storeDoc.cloudConfig.perAgentConcurrencyLimit ?? 2} · Ngưỡng QA: ${storeDoc.cloudConfig.qaPassThreshold} · Vòng sự cố tối đa: ${storeDoc.cloudConfig.maxIncidentRetries ?? 3}`
   );
   saveStateAtomic();
   return getCommandCenterState(true);
