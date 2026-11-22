@@ -34,6 +34,7 @@ import type {
   MuseAgentEngineMode,
   MuseAgentId,
   ProductionRun,
+  SceneProductionStage,
 } from '../types/commandCenter';
 import {
   AgentAvatar,
@@ -122,6 +123,30 @@ const RUN_STATUS_LABELS: Record<string, string> = {
   paused: 'Đang tạm dừng',
   failed: 'Thất bại',
   needs_attention: 'Cần kiểm tra thủ công',
+};
+
+const SCENE_STAGE_LABELS: Record<SceneProductionStage, string> = {
+  waiting_data: 'Chờ dữ liệu',
+  creating_image: 'Đang tạo ảnh',
+  image_ready: 'Ảnh sẵn sàng',
+  waiting_video: 'Chờ dựng video',
+  creating_video: 'Đang dựng video',
+  inspecting_qa: 'Đang kiểm duyệt QA',
+  completed: 'Hoàn thành',
+  failed: 'Lỗi',
+  needs_regen: 'Cần tạo lại',
+};
+
+const SCENE_STAGE_TEXT_CLASS: Record<SceneProductionStage, string> = {
+  waiting_data: 'text-slate-500 dark:text-slate-400',
+  creating_image: 'text-cyan-600 dark:text-cyan-400',
+  image_ready: 'text-emerald-600 dark:text-emerald-400',
+  waiting_video: 'text-sky-600 dark:text-sky-400',
+  creating_video: 'text-amber-600 dark:text-amber-400',
+  inspecting_qa: 'text-violet-600 dark:text-violet-400',
+  completed: 'text-emerald-600 dark:text-emerald-400',
+  failed: 'text-rose-600 dark:text-rose-400',
+  needs_regen: 'text-orange-600 dark:text-orange-400',
 };
 
 function fmtTime(ts?: number): string {
@@ -235,7 +260,8 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   // Cloud & Muse2API form
   const [cloudUrl, setCloudUrl] = useState('');
   const [cloudKey, setCloudKey] = useState('');
-  const [parallelLimit, setParallelLimit] = useState(2);
+  const [parallelLimit, setParallelLimit] = useState(4);
+  const [perAgentConcurrencyLimit, setPerAgentConcurrencyLimit] = useState(2);
   const [qaThreshold, setQaThreshold] = useState(80);
   const [maxRetries, setMaxRetries] = useState(2);
   const [maxIncidentRetries, setMaxIncidentRetries] = useState(3);
@@ -285,6 +311,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     if (!cloudSyncedOnce) {
       setCloudUrl(state.cloudConfig.muse2ApiBaseUrl || '');
       setParallelLimit(state.cloudConfig.parallelLimit);
+      setPerAgentConcurrencyLimit(state.cloudConfig.perAgentConcurrencyLimit ?? 2);
       setQaThreshold(state.cloudConfig.qaPassThreshold);
       setMaxRetries(state.cloudConfig.maxRetriesPerScene);
       setMaxIncidentRetries(state.cloudConfig.maxIncidentRetries ?? 3);
@@ -521,6 +548,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
             muse2ApiBaseUrl: cloudUrl,
             muse2ApiKey: cloudKey || undefined,
             parallelLimit,
+            perAgentConcurrencyLimit,
             qaPassThreshold: qaThreshold,
             maxRetriesPerScene: maxRetries,
             maxIncidentRetries,
@@ -840,7 +868,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                   Đội ngũ 5 Muse AI
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Muse 01 điều phối · Muse 05 kiểm định độc lập · Muse 02–04 chuyên trách sản xuất
+                  Muse 01 Tổng đạo diễn &amp; Phân tích kịch bản · Muse 02–04 Thiết kế ảnh &amp; Sản xuất video đa nhiệm · Muse 05 Kiểm định độc lập
                 </p>
               </div>
               <button
@@ -863,6 +891,9 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                       <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">{ag.code}</span>
                       <span className={`font-semibold ${AGENT_STATUS_TEXT_CLASS[ag.status]}`}>
                         {AGENT_STATUS_LABELS[ag.status]}
+                        {ag.activeTaskCount && ag.activeTaskCount > 0
+                          ? ` (${ag.activeTaskCount}/${ag.maxConcurrentTasks || 2})`
+                          : ''}
                       </span>
                     </div>
                     <div className="flex items-center gap-2.5">
@@ -1305,6 +1336,9 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                         <p className="text-xs text-slate-600 dark:text-slate-300">{ag.description}</p>
                         <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400 pt-1 font-mono tabular-nums">
                           <span>Phạm vi: {ag.permissions.allowedDataScopes.join(', ')}</span>
+                          <span>
+                            Đa nhiệm: {ag.activeTaskCount ?? 0}/{ag.maxConcurrentTasks ?? (ag.role === 'production_media' ? 2 : 1)} luồng
+                          </span>
                           {typeof ag.avgResponseMs === 'number' && ag.avgResponseMs > 0 && (
                             <span>TB phản hồi: {(ag.avgResponseMs / 1000).toFixed(1)}s</span>
                           )}
@@ -1876,7 +1910,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                 Luồng phân cảnh song song &amp; kế thừa nối cảnh ({memory.scenes.length} cảnh)
               </h2>
               <span className="text-xs text-slate-500 dark:text-slate-400">
-                Song song tối đa {state?.cloudConfig.parallelLimit} luồng
+                Song song tối đa {state?.cloudConfig.parallelLimit} luồng · {state?.cloudConfig.perAgentConcurrencyLimit ?? 2} tác vụ/Muse
               </span>
             </div>
 
@@ -1886,7 +1920,23 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {memory.scenes.map((sc) => (
+                {memory.scenes.map((sc) => {
+                  const producerAgent = sc.assignedProducerAgentId
+                    ? agents.find((a) => a.id === sc.assignedProducerAgentId)
+                    : undefined;
+                  const producerLabel = producerAgent
+                    ? producerAgent.name
+                    : sc.assignedProducerAgentId
+                    ? sc.assignedProducerAgentId.replace('muse-', 'Muse ')
+                    : 'Muse 02–04';
+                  const stageLabel = sc.productionStage
+                    ? SCENE_STAGE_LABELS[sc.productionStage] || sc.productionStage
+                    : null;
+                  const stageClass = sc.productionStage
+                    ? SCENE_STAGE_TEXT_CLASS[sc.productionStage] || 'text-slate-500 dark:text-slate-400'
+                    : 'text-slate-500 dark:text-slate-400';
+
+                  return (
                   <div
                     key={sc.sceneId}
                     className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] p-4 space-y-2.5"
@@ -1900,10 +1950,17 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                       </span>
                     </div>
 
-                    <div className="text-[11px] text-violet-700 dark:text-violet-300">
-                      {sc.continuityAnchorFromSceneId
-                        ? `Nối tiếp tuần tự (kế thừa từ ${sc.continuityAnchorFromSceneId.replace('_', ' ')})`
-                        : 'Phân cảnh độc lập — chạy song song được'}
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <span className="text-violet-700 dark:text-violet-300">
+                        {sc.continuityAnchorFromSceneId
+                          ? `Nối tiếp tuần tự (kế thừa từ ${sc.continuityAnchorFromSceneId.replace('_', ' ')})`
+                          : 'Phân cảnh độc lập — chạy song song được'}
+                      </span>
+                      <span className={`font-semibold ${stageClass}`}>
+                        {producerLabel}
+                        {stageLabel ? ` · ${stageLabel}` : ''}
+                        {sc.lockedPromptVersion ? ` (v${sc.lockedPromptVersion})` : ''}
+                      </span>
                     </div>
 
                     <p className="text-xs text-slate-600 dark:text-slate-300">{sc.actionDetail}</p>
@@ -1915,7 +1972,14 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
 
                     <div className="grid grid-cols-2 gap-2 pt-1">
                       <div className="rounded-lg border border-slate-200 dark:border-slate-700/60 p-1.5 bg-slate-50 dark:bg-[#131a35]">
-                        <div className="text-[10px] text-slate-500 dark:text-slate-400 mb-1">Keyframe (Muse 03)</div>
+                        <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500 dark:text-slate-400 mb-1">
+                          <span>Keyframe ({producerLabel})</span>
+                          {sc.imageValidated && (
+                            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                              ✓ Hợp lệ{sc.imageMemoryVersion ? ` v${sc.imageMemoryVersion}` : ''}
+                            </span>
+                          )}
+                        </div>
                         {sc.keyframeImageUrl ? (
                           <img src={sc.keyframeImageUrl} alt={sc.title} className="w-full h-24 object-cover rounded" />
                         ) : (
@@ -1923,7 +1987,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                         )}
                       </div>
                       <div className="rounded-lg border border-slate-200 dark:border-slate-700/60 p-1.5 bg-slate-50 dark:bg-[#131a35]">
-                        <div className="text-[10px] text-slate-500 dark:text-slate-400 mb-1">Video (Muse 04)</div>
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400 mb-1">Video ({producerLabel})</div>
                         {sc.videoUrl ? (
                           <video src={sc.videoUrl} controls className="w-full h-24 rounded bg-black object-cover" />
                         ) : (
@@ -1932,7 +1996,8 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -2406,14 +2471,28 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
 
               <div>
                 <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                  Số luồng song song tối đa
+                  Số luồng song song tối đa (1–8)
                 </label>
                 <input
                   type="number"
                   min={1}
-                  max={5}
+                  max={8}
                   value={parallelLimit}
-                  onChange={(e) => setParallelLimit(Number(e.target.value) || 2)}
+                  onChange={(e) => setParallelLimit(Math.max(1, Math.min(8, Number(e.target.value) || 4)))}
+                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono tabular-nums text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
+                  Đa nhiệm mỗi Muse AI (1–3)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={3}
+                  value={perAgentConcurrencyLimit}
+                  onChange={(e) => setPerAgentConcurrencyLimit(Math.max(1, Math.min(3, Number(e.target.value) || 2)))}
                   className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono tabular-nums text-slate-900 dark:text-white"
                 />
               </div>

@@ -30,6 +30,7 @@ const INCIDENT_CATEGORY_OPTIONS: { id: IncidentCategory; label: string }[] = [
   { id: 'wrong_costume', label: 'Sai trang phục / phụ kiện' },
   { id: 'wrong_setting', label: 'Sai bối cảnh / lỗi nối cảnh' },
   { id: 'motion_error', label: 'Sai chuyển động / sai góc quay' },
+  { id: 'ai_output_format_error', label: 'Lỗi định dạng / JSON từ AI' },
   { id: 'video_technical_error', label: 'Lỗi kỹ thuật video / âm thanh' },
   { id: 'muse_disconnected', label: 'Muse AI mất kết nối / quá thời gian' },
   { id: 'recurring_error', label: 'Lỗi lặp lại nhiều lần' },
@@ -658,11 +659,40 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
                   <div className="font-semibold text-slate-800 dark:text-slate-100">
                     Chẩn đoán gốc &amp; Chỉ đạo Muse AI 01
                   </div>
-                  <div className="text-slate-600 dark:text-slate-300 space-y-1">
+                  <div className="text-slate-600 dark:text-slate-300 space-y-1.5">
                     <div>
-                      <span className="font-medium text-slate-800 dark:text-slate-100">Mô tả lỗi: </span>
+                      <span className="font-medium text-slate-800 dark:text-slate-100">Lỗi cụ thể: </span>
                       {selectedIncident.errorDescription}
                     </div>
+                    {selectedIncident.suspectedRootCause && (
+                      <div>
+                        <span className="font-medium text-slate-800 dark:text-slate-100">Nguyên nhân dự kiến: </span>
+                        {selectedIncident.suspectedRootCause}
+                      </div>
+                    )}
+                    {selectedIncident.technicalDiagnosis && (
+                      <div className="rounded-lg border border-amber-300/60 dark:border-amber-700/50 bg-amber-50/60 dark:bg-amber-950/20 p-2 text-[11px] space-y-1">
+                        <div className="font-semibold text-amber-800 dark:text-amber-300">
+                          Chi tiết kỹ thuật: {selectedIncident.technicalDiagnosis.errorType}
+                          {selectedIncident.technicalDiagnosis.taskCode ? ` (${selectedIncident.technicalDiagnosis.taskCode})` : ''}
+                          {selectedIncident.technicalDiagnosis.provider ? ` · Engine: ${selectedIncident.technicalDiagnosis.provider}` : ''}
+                        </div>
+                        {selectedIncident.technicalDiagnosis.failedLocation && (
+                          <div className="font-mono text-[10px] text-slate-700 dark:text-slate-300">
+                            Vị trí lỗi: {selectedIncident.technicalDiagnosis.failedLocation}
+                          </div>
+                        )}
+                        {selectedIncident.technicalDiagnosis.excerpt && (
+                          <div className="font-mono text-[10px] bg-white/80 dark:bg-black/30 rounded px-2 py-1 text-rose-700 dark:text-rose-300 break-all">
+                            {selectedIncident.technicalDiagnosis.excerpt}
+                          </div>
+                        )}
+                        <div className="text-slate-700 dark:text-slate-200">
+                          <span className="font-semibold">Phương án khắc phục gợi ý: </span>
+                          {selectedIncident.technicalDiagnosis.directorRemediationPlan}
+                        </div>
+                      </div>
+                    )}
                     {selectedIncident.analyzedRootCause && (
                       <div>
                         <span className="font-medium text-slate-800 dark:text-slate-100">Phân tích Đạo diễn: </span>
@@ -889,7 +919,7 @@ export const IncidentCommandTab: React.FC<IncidentCommandTabProps> = ({
                   onChange={(e) => setCmdTargetAgent(e.target.value as MuseAgentId)}
                   className="h-9 px-2.5 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-800 dark:text-slate-200"
                 >
-                  {agents.filter((a) => a.id !== 'muse-01').map((a) => (
+                  {agents.map((a) => (
                     <option key={a.id} value={a.id}>
                       Giao sửa: {a.name}
                     </option>

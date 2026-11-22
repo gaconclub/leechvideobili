@@ -61,21 +61,21 @@ export const TEAM_CHANNELS: {
     id: 'script',
     slug: '#kịch-bản',
     label: 'Kịch bản',
-    purpose: 'Biên kịch phân tích nhân vật, lời thoại, bối cảnh & timeline',
-    defaultResponder: 'muse-02',
+    purpose: 'Tổng đạo diễn kiêm Phân tích kịch bản (nhân vật, lời thoại, bối cảnh & timeline)',
+    defaultResponder: 'muse-01',
   },
   {
     id: 'visual',
     slug: '#hình-ảnh',
     label: 'Hình ảnh',
-    purpose: 'Trao đổi ảnh phân cảnh, nhân vật tham chiếu và trang phục',
-    defaultResponder: 'muse-03',
+    purpose: 'Trao đổi ảnh phân cảnh, nhân vật tham chiếu và trang phục (Muse 02, 03, 04 đa nhiệm)',
+    defaultResponder: 'muse-02',
   },
   {
     id: 'video',
     slug: '#video',
     label: 'Video',
-    purpose: 'Trao đổi prompt chuyển động, góc quay, khẩu hình và video',
+    purpose: 'Trao đổi prompt chuyển động, góc quay, khẩu hình và video (Muse 02, 03, 04 đa nhiệm)',
     defaultResponder: 'muse-04',
   },
   {
@@ -283,11 +283,9 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
   const drawerAgents = dmAgent
     ? [dmAgent]
     : activeChannel === 'script'
-    ? agents.filter((a) => a.id === 'muse-02')
-    : activeChannel === 'visual'
-    ? agents.filter((a) => a.id === 'muse-03')
-    : activeChannel === 'video'
-    ? agents.filter((a) => a.id === 'muse-04')
+    ? agents.filter((a) => a.id === 'muse-01')
+    : activeChannel === 'visual' || activeChannel === 'video'
+    ? agents.filter((a) => ['muse-02', 'muse-03', 'muse-04'].includes(a.id))
     : activeChannel === 'qa'
     ? agents.filter((a) => a.id === 'muse-05')
     : agents;

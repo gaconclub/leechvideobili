@@ -1333,7 +1333,7 @@ export function parseAiBlueprintJsonSafe(rawText: string): any {
       }
     }
 
-    // Pass 3: escape likely unescaped inner double quotes inside dialogue/string values
+    // Pass 3: escape likely unescaped inner double quotes inside dialogue/string values (both after and before outside repair)
     const withEscapedQuotes = repairJsonOutsideStrings(
       insertMissingCommasOutsideStrings(escapeUnescapedInnerQuotesInStrings(repairedOutside))
     );
@@ -1341,7 +1341,19 @@ export function parseAiBlueprintJsonSafe(rawText: string): any {
     try {
       return JSON.parse(withEscapedQuotes);
     } catch {
-      // continue to truncation recovery below
+      // continue
+    }
+
+    const preEscaped = repairJsonOutsideStrings(
+      insertMissingCommasOutsideStrings(repairJsonOutsideStrings(escapeUnescapedInnerQuotesInStrings(sanitized)))
+    );
+    if (preEscaped !== withEscapedQuotes) {
+      candidatesToTry.push(preEscaped);
+      try {
+        return JSON.parse(preEscaped);
+      } catch {
+        // continue to truncation recovery below
+      }
     }
 
     // Strategy 1 & 2: truncation repair on the cleanest repaired candidate
@@ -1412,7 +1424,20 @@ export function parseAiBlueprintJsonSafe(rawText: string): any {
       }
     }
 
-    throw initialErr;
+    const rawMsg = initialErr instanceof Error ? initialErr.message : String(initialErr);
+    const posMatch = rawMsg.match(/position\s+(\d+)/i);
+    const pos = posMatch ? Math.max(0, Math.min(sanitized.length, Number(posMatch[1]))) : -1;
+    let snippet = '';
+    if (pos >= 0) {
+      const start = Math.max(0, pos - 65);
+      const end = Math.min(sanitized.length, pos + 65);
+      snippet = sanitized.slice(start, end).replace(/\s+/g, ' ').trim();
+    } else if (sanitized.length > 0) {
+      snippet = sanitized.slice(0, 120).replace(/\s+/g, ' ').trim();
+    }
+    throw new Error(
+      `Lỗi cú pháp JSON từ AI (${rawMsg})${snippet ? ` | Đoạn lỗi gần vị trí ${pos >= 0 ? pos : 0}: "${snippet}"` : ''}`
+    );
   }
 }
 

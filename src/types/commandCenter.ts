@@ -10,11 +10,13 @@ import {
 export type MuseAgentId = 'muse-01' | 'muse-02' | 'muse-03' | 'muse-04' | 'muse-05';
 
 export type MuseAgentRole =
+  | 'director_script'
+  | 'production_media'
+  | 'qa_supervisor'
   | 'director'
   | 'screenwriter'
   | 'image_designer'
-  | 'video_director'
-  | 'qa_supervisor';
+  | 'video_director';
 
 export type MuseAgentStatus =
   | 'online'
@@ -60,6 +62,9 @@ export interface MuseAgentConfig {
   permissions: MuseAgentPermissions;
   currentTaskId?: string;
   currentTaskSummary?: string;
+  activeTaskCount?: number;
+  activeTaskIds?: string[];
+  maxConcurrentTasks?: number;
   lastActiveAt?: number;
   lastError?: string;
   avgResponseMs?: number;
@@ -166,6 +171,17 @@ export interface CommandMemoryCharacter {
   costumeVersionHistory?: CostumeVersionSnapshot[];
 }
 
+export type SceneProductionStage =
+  | 'waiting_data'
+  | 'creating_image'
+  | 'image_ready'
+  | 'waiting_video'
+  | 'creating_video'
+  | 'inspecting_qa'
+  | 'completed'
+  | 'failed'
+  | 'needs_regen';
+
 export interface CommandMemoryScene {
   sceneId: string;
   index: number;
@@ -184,6 +200,11 @@ export interface CommandMemoryScene {
   videoTimeline: string;
   dependsOnSceneIds: string[];
   continuityAnchorFromSceneId?: string;
+  assignedProducerAgentId?: MuseAgentId;
+  productionStage?: SceneProductionStage;
+  imageValidated?: boolean;
+  imageMemoryVersion?: number;
+  lockedPromptVersion?: number;
   keyframeImageUrl?: string;
   keyframeArtifactName?: string;
   videoUrl?: string;
@@ -286,6 +307,8 @@ export interface CommandTask {
   priority: number;
   retryCount: number;
   maxRetries: number;
+  expectedMemoryVersion?: number;
+  allowMultipleVariants?: boolean;
   createdAt: number;
   acknowledgedAt?: number;
   startedAt?: number;
@@ -431,6 +454,7 @@ export interface CloudOrchestratorConfig {
   hasCustomMuse2ApiKey: boolean;
   maskedMuse2ApiKey: string;
   parallelLimit: number;
+  perAgentConcurrencyLimit?: number;
   qaPassThreshold: number;
   maxRetriesPerScene: number;
   maxIncidentRetries?: number;
@@ -502,6 +526,7 @@ export type IncidentCategory =
   | 'wrong_costume'
   | 'wrong_setting'
   | 'motion_error'
+  | 'ai_output_format_error'
   | 'video_technical_error'
   | 'muse_disconnected'
   | 'recurring_error';
@@ -533,6 +558,18 @@ export interface IncidentDialogTurn {
     | 'escalation';
   content: string;
   attachments?: string[];
+}
+
+export interface IncidentTechnicalDiagnosis {
+  errorType: string;
+  taskCode?: string;
+  taskType?: string;
+  agentName?: string;
+  provider?: string;
+  failedLocation?: string;
+  excerpt?: string;
+  rootCauseDetail: string;
+  directorRemediationPlan: string;
 }
 
 export interface IncidentRecord {
@@ -573,6 +610,7 @@ export interface IncidentRecord {
   resolvedAt?: number;
   costumeMismatch?: CostumeMismatchReport;
   versionHistory?: CostumeVersionSnapshot[];
+  technicalDiagnosis?: IncidentTechnicalDiagnosis;
   history: IncidentDialogTurn[];
 }
 
