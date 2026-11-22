@@ -46,7 +46,7 @@ const STATUS_LABELS: Record<IncidentStatus, string> = {
   remediating: 'Muse đang sửa theo lệnh',
   verifying: 'Muse 05 kiểm định lại',
   resolved: 'Đã đóng (Muse 05 QA đạt)',
-  escalated_to_user: 'Cần bạn can thiệp',
+  escalated_to_user: 'Ngoại lệ (hết vòng tự quyết / offline)',
 };
 
 const STATUS_BADGE_CLASS: Record<IncidentStatus, string> = {

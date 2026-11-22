@@ -69,7 +69,7 @@ export const ChairmanCommandPanel: React.FC<ChairmanCommandPanelProps> = ({
     name: 'Gemini AI – Chủ tịch',
     title: 'Chủ tịch & Tổng chỉ huy toàn bộ hệ thống 5 Muse AI',
     autoInterveneOnIncident: true,
-    autoExecuteRecommended: false,
+    autoExecuteRecommended: true,
     strictOversightMode: true,
   };
   const coordinationLog = state.projectMemory?.coordinationLog || [];
@@ -255,9 +255,9 @@ export const ChairmanCommandPanel: React.FC<ChairmanCommandPanelProps> = ({
 
           <label className="flex items-start justify-between gap-3 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5 cursor-pointer">
             <div className="space-y-0.5">
-              <div className="font-semibold text-slate-900 dark:text-white">Tự thực thi phương án rủi ro thấp</div>
+              <div className="font-semibold text-slate-900 dark:text-white">Toàn quyền tự quyết &amp; tự thực thi</div>
               <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                Tự chạy phương án khuyến nghị mức rủi ro thấp mà không cần chờ bạn bấm duyệt.
+                Chủ tịch tự ra mọi quyết định sản xuất, phân tích &amp; điều hướng sửa lỗi ngay mà không cần chờ bạn bấm duyệt.
               </div>
             </div>
             <input

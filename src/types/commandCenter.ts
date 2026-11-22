@@ -273,7 +273,7 @@ export interface ProjectCoordinationEntry {
   timestamp: number;
   actorId: MuseAgentId | 'chairman' | 'user' | 'system';
   actorName: string;
-  targetAgentIds?: MuseAgentId[];
+  targetAgentIds?: (MuseAgentId | 'chairman')[];
   kind: 'directive' | 'response' | 'qa_report' | 'incident' | 'remediation' | 'delivery';
   projectId: string;
   runId?: string;
@@ -440,7 +440,7 @@ export interface ConversationMessage {
   messageKind?: 'chat' | 'ai_bus' | 'ack' | 'alert' | 'deliverable' | 'incident';
   incidentId?: string;
   roleBadge?: string;
-  targetAgentIds?: MuseAgentId[];
+  targetAgentIds?: (MuseAgentId | 'chairman')[];
   content: string;
   promptDelivered?: string;
   taskId?: string;
@@ -669,6 +669,7 @@ export interface ChairmanConfig {
   autoInterveneOnIncident: boolean;
   autoExecuteRecommended: boolean;
   strictOversightMode: boolean;
+  autonomousUpgraded?: boolean;
 }
 
 export interface IncidentRecord {
@@ -681,7 +682,7 @@ export interface IncidentRecord {
   sceneId?: string;
   sceneIndex?: number;
   timestampRange?: string;
-  reporterAgentId: MuseAgentId;
+  reporterAgentId: MuseAgentId | 'chairman';
   responsibleAgentId: MuseAgentId;
   assignedFixAgentId: MuseAgentId;
   category: IncidentCategory;
@@ -712,6 +713,7 @@ export interface IncidentRecord {
   technicalDiagnosis?: IncidentTechnicalDiagnosis;
   chairmanBriefingId?: string;
   chairmanOptions?: ChairmanPlanOption[];
+  chairmanTakeoverCount?: number;
   history: IncidentDialogTurn[];
 }
 
