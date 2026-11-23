@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.14",
+    "version": "1.0.15",
     "date": "23/11/2026",
-    "title": "feat: add multi-account Gemini support and dashboard",
+    "title": "chore: update Firebase configuration credentials",
     "changes": [
-      "feat: add multi-account Gemini support and dashboard"
+      "chore: update Firebase configuration credentials"
     ]
   },
   {
