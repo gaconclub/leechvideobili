@@ -22,11 +22,13 @@ import {
 } from 'lucide-react';
 import type { ProductionRun } from '../types/commandCenter';
 import {
+  classifyGoogleAuthError,
   clearGoogleWorkspaceAccessToken,
   getGoogleWorkspaceAccessToken,
   initGoogleWorkspaceAuth,
   logoutGoogleWorkspace,
   signInGoogleWorkspace,
+  type GoogleAuthErrorInfo,
 } from '../lib/googleWorkspaceAuth';
 
 interface UploadedDriveFileRecord {
@@ -141,6 +143,8 @@ export const WorkspaceSyncSection: React.FC<WorkspaceSyncSectionProps> = ({
   const [busyAction, setBusyAction] = useState('');
   const [notice, setNotice] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [authErrorInfo, setAuthErrorInfo] = useState<GoogleAuthErrorInfo | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
   const [confirmModal, setConfirmModal] = useState<ConfirmAction | null>(null);
 
   const [appsScriptModal, setAppsScriptModal] = useState<{
@@ -244,6 +248,7 @@ export const WorkspaceSyncSection: React.FC<WorkspaceSyncSectionProps> = ({
   const handleGoogleSignIn = async () => {
     setIsLoggingIn(true);
     setErrorMsg('');
+    setAuthErrorInfo(null);
     setNotice('');
     try {
       const res = await signInGoogleWorkspace();
@@ -254,9 +259,24 @@ export const WorkspaceSyncSection: React.FC<WorkspaceSyncSectionProps> = ({
         setNotice(`Đã kết nối Google Sheets & Google Drive (${res.user.email || 'Google Account'}).`);
       }
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Đăng nhập Google chưa thành công.');
+      const info = classifyGoogleAuthError(err);
+      if (info.code === 'unauthorized-domain') {
+        setAuthErrorInfo(info);
+      } else {
+        setErrorMsg(info.message);
+      }
     } finally {
       setIsLoggingIn(false);
+    }
+  };
+
+  const handleCopyHostname = async (hostname: string) => {
+    try {
+      await navigator.clipboard.writeText(hostname);
+      setCopiedDomain(true);
+      setTimeout(() => setCopiedDomain(false), 2000);
+    } catch {
+      // ignore clipboard errors
     }
   };
 
@@ -601,6 +621,73 @@ export const WorkspaceSyncSection: React.FC<WorkspaceSyncSectionProps> = ({
           </div>
         )}
       </div>
+
+      {authErrorInfo && authErrorInfo.code === 'unauthorized-domain' && (
+        <div className="rounded-xl border border-amber-300 dark:border-amber-500/40 bg-amber-50/90 dark:bg-amber-950/30 p-4 space-y-3 text-xs text-slate-800 dark:text-slate-200">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <div className="font-semibold text-amber-800 dark:text-amber-300">
+                Tên miền hiện tại chưa được cấp phép đăng nhập Google (auth/unauthorized-domain)
+              </div>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                Firebase Authentication của dự án{' '}
+                <code className="font-mono font-semibold text-slate-900 dark:text-white">
+                  {authErrorInfo.firebaseProjectId}
+                </code>{' '}
+                chưa có tên miền{' '}
+                <code className="font-mono font-semibold text-amber-800 dark:text-amber-300">
+                  {authErrorInfo.currentHostname}
+                </code>{' '}
+                trong danh sách <strong>Authorized domains</strong>.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAuthErrorInfo(null)}
+              className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 shrink-0 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <ol className="list-decimal pl-5 space-y-1 text-[11px] text-slate-700 dark:text-slate-300">
+            <li>
+              Bấm nút <strong>Mở cài đặt Firebase Authorized Domains</strong> bên dưới.
+            </li>
+            <li>
+              Vào mục <strong>Authorized domains</strong> → bấm <strong>Add domain</strong> → dán{' '}
+              <code className="font-mono font-semibold">{authErrorInfo.currentHostname}</code> → bấm{' '}
+              <strong>Add</strong>.
+            </li>
+            <li>
+              Quay lại trang này (đợi 5–10 giây) rồi bấm <strong>Sign in with Google</strong> lại.
+            </li>
+          </ol>
+
+          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+            <button
+              type="button"
+              onClick={() => void handleCopyHostname(authErrorInfo.currentHostname)}
+              className="px-3 py-1.5 rounded-lg border border-amber-400/60 bg-white dark:bg-[#11162b] hover:bg-amber-100/60 dark:hover:bg-slate-800 text-[11px] font-semibold text-slate-800 dark:text-slate-100 inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              {copiedDomain ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>
+                {copiedDomain ? 'Đã sao chép tên miền' : `Sao chép: ${authErrorInfo.currentHostname}`}
+              </span>
+            </button>
+
+            <a
+              href={authErrorInfo.firebaseAuthSettingsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-semibold inline-flex items-center gap-1.5"
+            >
+              <span>Mở cài đặt Firebase Authorized Domains</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+          </div>
+        </div>
+      )}
 
       {errorMsg && (
         <div className="rounded-xl border border-rose-300 dark:border-rose-700/60 bg-rose-50 dark:bg-rose-950/35 px-3.5 py-2.5 text-xs text-rose-800 dark:text-rose-200 flex items-center justify-between gap-2">
