@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.0.14",
+    "date": "23/11/2026",
+    "title": "feat: add multi-account Gemini support and dashboard",
+    "changes": [
+      "feat: add multi-account Gemini support and dashboard"
+    ]
+  },
+  {
     "version": "1.0.13",
     "date": "22/11/2026",
     "title": "feat(command-center): enhance production monitoring and agent logic",
