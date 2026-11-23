@@ -1,119 +1,32 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity,
-  Clapperboard,
+  AlertTriangle,
+  ArrowDown,
+  ChevronRight,
   Crown,
   Film,
   Hash,
-  Image as ImageIcon,
   Loader2,
   MessageSquare,
-  PanelLeftClose,
-  PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
   Search,
   Send,
-  ShieldCheck,
-  Siren,
-  Terminal,
+  ShieldAlert,
+  Sparkles,
+  Trash2,
   X,
+  Zap,
 } from 'lucide-react';
 import type {
   CommandCenterState,
   CommunicationChannelId,
+  ConversationMessage,
+  MuseAgentConfig,
   MuseAgentId,
 } from '../../types/commandCenter';
 import { AgentAvatar } from './AgentAvatar';
-import { commandCenterApiJson } from '../../hooks/useCommandCenterLive';
-
-export const TEAM_CHANNELS: {
-  id: Exclude<CommunicationChannelId, MuseAgentId | 'chairman'>;
-  slug: string;
-  label: string;
-  purpose: string;
-  defaultResponder: MuseAgentId | 'chairman';
-  highPriority?: boolean;
-}[] = [
-  {
-    id: 'commander',
-    slug: '#tổng-chỉ-huy',
-    label: 'Tổng chỉ huy',
-    purpose: 'Người dùng giao lệnh trực tiếp cho Gemini AI – Chủ tịch để chỉ đạo cả 5 Muse AI',
-    defaultResponder: 'chairman',
-  },
-  {
-    id: 'incident',
-    slug: '#incident-command',
-    label: 'INCIDENT COMMAND',
-    purpose: 'Trung tâm xử lý sự cố — Muse AI 05 báo lỗi trực tiếp về Gemini AI – Chủ tịch để chất vấn và ra lệnh sửa',
-    defaultResponder: 'chairman',
-    highPriority: true,
-  },
-  {
-    id: 'production',
-    slug: '#sản-xuất-phim',
-    label: 'Sản xuất phim',
-    purpose: 'Gemini AI – Chủ tịch điều phối tiến độ song song của 4 Muse sản xuất & Muse 05 QA',
-    defaultResponder: 'chairman',
-  },
-  {
-    id: 'script',
-    slug: '#kịch-bản',
-    label: 'Kịch bản & Khóa nhân vật',
-    purpose: 'Gemini AI – Chủ tịch phân tích kịch bản, khóa cứng nhân vật tham chiếu và phân cảnh',
-    defaultResponder: 'chairman',
-  },
-  {
-    id: 'visual',
-    slug: '#hình-ảnh',
-    label: 'Hình ảnh',
-    purpose: 'Nhóm sản xuất (Muse Director 01, Muse 02, 03, 04) trao đổi ảnh phân cảnh & khóa nhân vật',
-    defaultResponder: 'muse-02',
-  },
-  {
-    id: 'video',
-    slug: '#video',
-    label: 'Video',
-    purpose: 'Nhóm sản xuất (Muse Director 01, Muse 02, 03, 04) trao đổi prompt chuyển động, góc quay & video',
-    defaultResponder: 'muse-04',
-  },
-  {
-    id: 'qa',
-    slug: '#kiểm-duyệt',
-    label: 'Kiểm duyệt (Muse 05)',
-    purpose: 'Muse AI 05 kiểm định độc lập theo ngưỡng 5% (sau loại trừ phụ kiện được phép) & báo về Chủ tịch',
-    defaultResponder: 'muse-05',
-  },
-  {
-    id: 'ai_bus',
-    slug: '#trao-đổi-ai',
-    label: 'Trao đổi AI',
-    purpose: 'Luồng chỉ thị trực tiếp giữa Gemini AI – Chủ tịch và 5 Muse AI qua Bus tốc độ cao',
-    defaultResponder: 'chairman',
-  },
-];
-
-function getRoleBadgeClass(badge: string): string {
-  const b = badge.toLowerCase();
-  if (b.includes('báo cáo lỗi') || b.includes('cần can thiệp') || b.includes('cần người dùng')) {
-    return 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/35';
-  }
-  if (b.includes('điều hành') || b.includes('chỉ đạo')) {
-    return 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/35';
-  }
-  if (b.includes('giải trình')) {
-    return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35';
-  }
-  if (b.includes('phản hồi')) {
-    return 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/35';
-  }
-  if (b.includes('kiểm duyệt') || b.includes('đóng sự cố')) {
-    return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35';
-  }
-  return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/30';
-}
 
 interface CommunicationHubProps {
   state: CommandCenterState;
@@ -124,748 +37,1628 @@ interface CommunicationHubProps {
   onJumpToIncident?: (incidentId?: string) => void;
 }
 
-function fmtDateTime(ts: number): string {
-  return new Date(ts).toLocaleString('vi-VN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    day: '2-digit',
-    month: '2-digit',
-  });
+interface ChannelMeta {
+  id: CommunicationChannelId;
+  name: string;
+  shortLabel: string;
+  description: string;
+  defaultResponder: MuseAgentId | 'chairman';
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(new Error('Không đọc được tệp đã chọn.'));
-    reader.readAsDataURL(file);
-  });
+interface QuickCommand {
+  label: string;
+  prompt: string;
+  target?: MuseAgentId | 'chairman';
+}
+
+const WORK_CHANNELS: ChannelMeta[] = [
+  {
+    id: 'commander',
+    name: '#tổng-chỉ-huy',
+    shortLabel: 'Tổng chỉ huy',
+    description: 'Chỉ đạo trực tiếp Gemini AI – Chủ tịch điều phối toàn đội Gemini & 5 Muse AI',
+    defaultResponder: 'chairman',
+  },
+  {
+    id: 'incident',
+    name: '#incident-command',
+    shortLabel: 'Xử lý sự cố',
+    description: 'Chẩn đoán lỗi, truy vết sai lệch nhân vật và tái phân công xử lý sự cố',
+    defaultResponder: 'chairman',
+  },
+  {
+    id: 'production',
+    name: '#sản-xuất-phim',
+    shortLabel: 'Sản xuất phim',
+    description: 'Theo dõi luồng sản xuất ảnh & video song song của đội 4 Muse',
+    defaultResponder: 'chairman',
+  },
+  {
+    id: 'script',
+    name: '#kịch-bản',
+    shortLabel: 'Kịch bản & Khóa NV',
+    description: 'Đồng bộ kịch bản phân cảnh, trang phục khóa cứng và lời thoại',
+    defaultResponder: 'chairman',
+  },
+  {
+    id: 'visual',
+    name: '#hình-ảnh',
+    shortLabel: 'Hình ảnh Keyframe',
+    description: 'Tạo ảnh phân cảnh, khớp ngoại hình và trang phục nhân vật chuẩn',
+    defaultResponder: 'muse-03',
+  },
+  {
+    id: 'video',
+    name: '#video',
+    shortLabel: 'Video Phân cảnh',
+    description: 'Dựng video I2V giữ nguyên khuôn mặt, vóc dáng và bối cảnh từ ảnh gốc',
+    defaultResponder: 'muse-04',
+  },
+  {
+    id: 'qa',
+    name: '#kiểm-duyệt',
+    shortLabel: 'Kiểm định QA',
+    description: 'Muse AI 05 đối chiếu ảnh/video và báo cáo sai lệch về Chủ tịch',
+    defaultResponder: 'muse-05',
+  },
+  {
+    id: 'ai_bus',
+    name: '#trao-đổi-ai',
+    shortLabel: 'Phối hợp AI',
+    description: 'Nhật ký trao đổi nội bộ giữa Chủ tịch Gemini AI và các AI sản xuất',
+    defaultResponder: 'chairman',
+  },
+];
+
+const AGENT_SHORT_LABEL: Record<MuseAgentId, string> = {
+  'muse-01': 'Muse 01',
+  'muse-02': 'Muse 02',
+  'muse-03': 'Muse 03',
+  'muse-04': 'Muse 04',
+  'muse-05': 'Muse 05',
+};
+
+const AGENT_STATUS_LABEL: Record<MuseAgentConfig['status'], string> = {
+  online: 'Sẵn sàng',
+  working: 'Đang chạy',
+  waiting: 'Đang chờ',
+  supervising: 'Giám sát',
+  paused: 'Tạm dừng',
+  offline: 'Ngoại tuyến',
+  error: 'Gặp lỗi',
+};
+
+const AGENT_STATUS_TEXT_CLASS: Record<MuseAgentConfig['status'], string> = {
+  online: 'text-emerald-600 dark:text-emerald-400',
+  working: 'text-cyan-600 dark:text-cyan-400',
+  waiting: 'text-amber-600 dark:text-amber-400',
+  supervising: 'text-violet-600 dark:text-violet-400',
+  paused: 'text-slate-500 dark:text-slate-400',
+  offline: 'text-slate-400 dark:text-slate-500',
+  error: 'text-rose-600 dark:text-rose-400',
+};
+
+function formatTime(ts: number): string {
+  try {
+    return new Date(ts).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
+}
+
+function formatFullDateTime(ts: number): string {
+  try {
+    return new Date(ts).toLocaleString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
+function getQuickCommandsForChannel(channel: CommunicationChannelId): QuickCommand[] {
+  if (channel === 'commander' || channel === 'production' || channel === 'ai_bus') {
+    return [
+      {
+        label: 'Báo cáo tiến độ phiên',
+        prompt: 'Báo cáo ngắn gọn tiến độ phiên hiện tại: cảnh nào đã xong, cảnh nào đang chạy hoặc kẹt lỗi?',
+        target: 'chairman',
+      },
+      {
+        label: 'Kiểm tra & gỡ kẹt lỗi',
+        prompt: 'Kiểm tra toàn bộ sự cố đang mở và điều phối xử lý dứt điểm các cảnh đang bị kẹt.',
+        target: 'chairman',
+      },
+      {
+        label: 'Phân công lại cảnh chờ',
+        prompt: 'Rà soát các phân cảnh chưa xong và phân công lại đồng đều cho các AI đang rảnh.',
+        target: 'chairman',
+      },
+      {
+        label: 'Tóm tắt kết quả QA',
+        prompt: 'Tổng hợp nhanh kết quả kiểm định của Muse 05 cho phiên này và đề xuất bước tiếp theo.',
+        target: 'chairman',
+      },
+    ];
+  }
+  if (channel === 'incident') {
+    return [
+      {
+        label: 'Phân tích lỗi đang mở',
+        prompt: 'Phân tích nguyên nhân gốc của các sự cố đang mở và đưa ra phương án sửa nhanh nhất.',
+        target: 'chairman',
+      },
+      {
+        label: 'Tạo lại cảnh lỗi',
+        prompt: 'Giao sản xuất tạo lại các phân cảnh bị lỗi và giữ chặt nhân vật tham chiếu.',
+        target: 'chairman',
+      },
+      {
+        label: 'Yêu cầu Muse 05 rà soát lại',
+        prompt: 'Yêu cầu Muse AI 05 đối chiếu lại các cảnh vừa sửa xem đã đạt chuẩn chưa.',
+        target: 'chairman',
+      },
+    ];
+  }
+  if (channel === 'qa' || channel === 'muse-05') {
+    return [
+      {
+        label: 'Báo cáo lỗi QA gần nhất',
+        prompt: 'Báo cáo ngắn gọn các cảnh gần đây không đạt QA và lý do cụ thể.',
+        target: 'muse-05',
+      },
+      {
+        label: 'Kiểm định lại ảnh/video',
+        prompt: 'Đối chiếu lại ảnh và video mới nhất với ảnh nhân vật khóa cứng, linh hoạt chấp nhận sai lệch nhỏ.',
+        target: 'muse-05',
+      },
+    ];
+  }
+  if (channel === 'visual' || channel === 'video') {
+    return [
+      {
+        label: 'Báo cáo cảnh đang xử lý',
+        prompt: 'Báo cáo trạng thái các phân cảnh bạn đang phụ trách và cảnh nào sắp hoàn thành.',
+      },
+      {
+        label: 'Khớp lại nhân vật chuẩn',
+        prompt: 'Rà soát lại khuôn mặt, trang phục khóa cứng và tạo lại khung hình chuẩn nhất.',
+      },
+    ];
+  }
+  if (channel.startsWith('muse-')) {
+    return [
+      {
+        label: 'Báo cáo công việc hiện tại',
+        prompt: 'Báo cáo ngắn gọn nhiệm vụ bạn đang làm và tiến độ hoàn thành.',
+      },
+      {
+        label: 'Kiểm tra khóa nhân vật',
+        prompt: 'Xác nhận bạn đã nắm đầy đủ nhân vật tham chiếu và trang phục khóa cứng của phiên hiện tại.',
+      },
+    ];
+  }
+  return [
+    {
+      label: 'Tóm tắt kịch bản & cảnh',
+      prompt: 'Tóm tắt danh sách phân cảnh hiện có và kiểm tra xem có điểm mâu thuẫn nào về nhân vật không.',
+      target: 'chairman',
+    },
+  ];
+}
+
+interface OptimisticMessage {
+  tempId: string;
+  channel: CommunicationChannelId;
+  content: string;
+  attachments: string[];
+  sceneId?: string;
+  createdAt: number;
 }
 
 export const CommunicationHub: React.FC<CommunicationHubProps> = ({
   state,
   setState,
-  initialChannel = 'commander',
+  initialChannel,
   onJumpToTask,
   onJumpToScene,
   onJumpToIncident,
 }) => {
-  const [activeChannel, setActiveChannel] = useState<CommunicationChannelId>(initialChannel);
-  const [leftOpen, setLeftOpen] = useState(true);
-  const [rightOpen, setRightOpen] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [onlyCurrentSession, setOnlyCurrentSession] = useState(false);
-  const [responderAgentId, setResponderAgentId] = useState<MuseAgentId | 'chairman'>('chairman');
+  const [activeChannel, setActiveChannel] = useState<CommunicationChannelId>(initialChannel || 'commander');
+  const [targetResponder, setTargetResponder] = useState<MuseAgentId | 'chairman'>('chairman');
+  const [inputText, setInputText] = useState('');
   const [selectedSceneId, setSelectedSceneId] = useState('');
-  const [composerText, setComposerText] = useState('');
-  const [pendingAttachments, setPendingAttachments] = useState<{ url: string; fileName: string }[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
-  const [isSending, setIsSending] = useState(false);
-  const [chatError, setChatError] = useState('');
-  const [lastSeenByChannel, setLastSeenByChannel] = useState<Record<string, number>>(() => ({
-    [initialChannel]: Date.now(),
-  }));
+  const [attachments, setAttachments] = useState<string[]>([]);
+  const [sending, setSending] = useState(false);
+  const [sendElapsedMs, setSendElapsedMs] = useState(0);
+  const [lastReplyMs, setLastReplyMs] = useState<number | null>(null);
+  const [optimisticMsg, setOptimisticMsg] = useState<OptimisticMessage | null>(null);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+
+  // Clean collapsible inspector & search states
+  const [rightOpen, setRightOpen] = useState(false);
+  const [showInChannelSearch, setShowInChannelSearch] = useState(false);
+  const [channelFilterText, setChannelFilterText] = useState('');
+  const [confirmClearChannel, setConfirmClearChannel] = useState(false);
+  const [expandedPromptIds, setExpandedPromptIds] = useState<Record<string, boolean>>({});
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+
+  // Archive search drawer/modal mode
+  const [archiveMode, setArchiveMode] = useState(false);
+  const [archiveQuery, setArchiveQuery] = useState('');
+  const [archiveAgentFilter, setArchiveAgentFilter] = useState('');
+  const [archiveResults, setArchiveResults] = useState<ConversationMessage[] | null>(null);
+  const [searchingArchive, setSearchingArchive] = useState(false);
+
+  // Auto-scroll management
+  const feedScrollRef = useRef<HTMLDivElement | null>(null);
+  const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isNearBottom, setIsNearBottom] = useState(true);
+  const [unseenCount, setUnseenCount] = useState(0);
+  const prevMsgCountRef = useRef(0);
 
   useEffect(() => {
-    setActiveChannel(initialChannel);
-    const meta = TEAM_CHANNELS.find((c) => c.id === initialChannel);
-    setResponderAgentId(meta ? meta.defaultResponder : (initialChannel as MuseAgentId | 'chairman'));
-    setLastSeenByChannel((prev) => ({ ...prev, [initialChannel]: Date.now() }));
+    if (initialChannel) {
+      setActiveChannel(initialChannel);
+      setArchiveMode(false);
+    }
   }, [initialChannel]);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeWorkMeta = useMemo(
+    () => WORK_CHANNELS.find((c) => c.id === activeChannel) || null,
+    [activeChannel]
+  );
 
-  const agents = state.agents;
-  const chairmanName = state.chairmanConfig?.name || 'Gemini AI – Chủ tịch';
-  const chairmanTitle = state.chairmanConfig?.title || 'Chủ tịch & Tổng chỉ huy toàn bộ hệ thống 5 Muse AI';
-  const activeRunId = state.selectedRunId || state.activeRun?.id || '';
-  const activeChannelMeta = TEAM_CHANNELS.find((c) => c.id === activeChannel);
-  const isChairmanDm = activeChannel === 'chairman';
-  const dmAgent = agents.find((a) => a.id === activeChannel);
-  const openIncidents = useMemo(
-    () => (state.incidents || []).filter((i) => i.status !== 'resolved'),
+  const isDmChannel = activeChannel.startsWith('muse-');
+  const activeDmAgent = useMemo(
+    () => (isDmChannel ? state.agents.find((a) => a.id === activeChannel) || null : null),
+    [isDmChannel, activeChannel, state.agents]
+  );
+
+  // Sync default responder cleanly when switching channels
+  useEffect(() => {
+    if (activeChannel.startsWith('muse-')) {
+      setTargetResponder(activeChannel as MuseAgentId);
+    } else {
+      const meta = WORK_CHANNELS.find((c) => c.id === activeChannel);
+      setTargetResponder(meta?.defaultResponder || 'chairman');
+    }
+    setConfirmClearChannel(false);
+    setChannelFilterText('');
+    setUnseenCount(0);
+  }, [activeChannel]);
+
+  // Live elapsed timer while AI is responding
+  useEffect(() => {
+    if (!sending) {
+      setSendElapsedMs(0);
+      return;
+    }
+    const start = Date.now();
+    const timer = window.setInterval(() => {
+      setSendElapsedMs(Date.now() - start);
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [sending]);
+
+  const activeRun = useMemo(() => {
+    const id = state.selectedRunId || state.runs[0]?.id;
+    return state.runs.find((r) => r.id === id) || state.runs[0] || null;
+  }, [state.runs, state.selectedRunId]);
+
+  const chairmanAccountLabel = useMemo(() => {
+    const accounts = state.geminiAccounts || [];
+    const acc =
+      accounts.find((a) => a.id === activeRun?.chairmanGeminiAccountId) ||
+      accounts.find((a) => a.isChairman);
+    return acc ? acc.label : 'Gemini API mặc định';
+  }, [state.geminiAccounts, activeRun?.chairmanGeminiAccountId]);
+
+  const openIncidentsCount = useMemo(
+    () => (state.incidents || []).filter((i) => i.status !== 'resolved').length,
     [state.incidents]
   );
 
-  const handleSelectChannel = (ch: CommunicationChannelId) => {
-    setActiveChannel(ch);
-    setLastSeenByChannel((prev) => ({ ...prev, [ch]: Date.now() }));
-    const meta = TEAM_CHANNELS.find((c) => c.id === ch);
-    if (meta) {
-      setResponderAgentId(meta.defaultResponder);
-    } else {
-      setResponderAgentId(ch as MuseAgentId | 'chairman');
-    }
-  };
-
-  const unreadCounts = useMemo(() => {
+  const messageCountByChannel = useMemo(() => {
     const map: Record<string, number> = {};
-    for (const msg of state.conversations) {
-      const ch = msg.channel === ('group' as any) ? 'commander' : msg.channel;
-      if (ch === activeChannel) continue;
-      const seenAt = lastSeenByChannel[ch] || 0;
-      if (msg.createdAt > seenAt) {
-        map[ch] = (map[ch] || 0) + 1;
-      }
+    for (const m of state.conversations) {
+      map[m.channel] = (map[m.channel] || 0) + 1;
     }
     return map;
-  }, [state.conversations, activeChannel, lastSeenByChannel]);
+  }, [state.conversations]);
 
-  const visibleMessages = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
-    return state.conversations.filter((m) => {
-      const normalizedCh = m.channel === ('group' as any) ? 'commander' : m.channel;
-      if (normalizedCh !== activeChannel) return false;
-      if (onlyCurrentSession && activeRunId) {
-        const msgSession = m.sessionId || m.runId;
-        if (msgSession && msgSession !== activeRunId) return false;
-      }
-      if (q) {
-        const hay = `${m.senderName} ${m.content} ${m.taskId || ''} ${m.sceneId || ''}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [state.conversations, activeChannel, onlyCurrentSession, activeRunId, searchTerm]);
+  const channelMessages = useMemo(() => {
+    const base = state.conversations.filter((m) => m.channel === activeChannel);
+    const q = channelFilterText.trim().toLowerCase();
+    if (!q) return base;
+    return base.filter(
+      (m) =>
+        m.content.toLowerCase().includes(q) ||
+        m.senderName.toLowerCase().includes(q) ||
+        (m.roleBadge || '').toLowerCase().includes(q)
+    );
+  }, [state.conversations, activeChannel, channelFilterText]);
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []).slice(0, 4);
-    if (files.length === 0) return;
-    setIsUploading(true);
-    setChatError('');
-    try {
-      for (const file of files) {
-        const dataUrl = await readFileAsDataUrl(file);
-        const uploaded = await commandCenterApiJson<{ url: string; fileName: string }>(
-          '/api/command-center/attachments',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ dataUrl, filename: file.name }),
-          }
-        );
-        setPendingAttachments((prev) => [...prev, uploaded].slice(0, 6));
+  const activeScenes = state.projectMemory?.scenes || [];
+  const quickCommands = useMemo(() => getQuickCommandsForChannel(activeChannel), [activeChannel]);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    bottomSentinelRef.current?.scrollIntoView({ behavior, block: 'end' });
+    setUnseenCount(0);
+    setIsNearBottom(true);
+  }, []);
+
+  // Auto-scroll when switching channel
+  useEffect(() => {
+    prevMsgCountRef.current = channelMessages.length;
+    const id = window.requestAnimationFrame(() => scrollToBottom('auto'));
+    return () => window.cancelAnimationFrame(id);
+  }, [activeChannel, archiveMode]);
+
+  // Auto-scroll or show unread pill when new messages arrive
+  useEffect(() => {
+    const delta = channelMessages.length - prevMsgCountRef.current;
+    prevMsgCountRef.current = channelMessages.length;
+    if (delta > 0) {
+      if (isNearBottom) {
+        window.requestAnimationFrame(() => scrollToBottom('smooth'));
+      } else {
+        setUnseenCount((prev) => prev + delta);
       }
-    } catch (err: any) {
-      setChatError(err?.message || 'Không thể tải tệp đính kèm.');
-    } finally {
-      setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  }, [channelMessages.length, isNearBottom, scrollToBottom]);
+
+  // Auto-scroll when optimistic message appears
+  useEffect(() => {
+    if (optimisticMsg || sending) {
+      window.requestAnimationFrame(() => scrollToBottom('smooth'));
+    }
+  }, [optimisticMsg, sending, scrollToBottom]);
+
+  // Auto-resize composer textarea cleanly
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+  }, [inputText]);
+
+  const handleFeedScroll = () => {
+    const el = feedScrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const near = distanceFromBottom < 90;
+    setIsNearBottom(near);
+    if (near && unseenCount > 0) setUnseenCount(0);
   };
 
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if ((!composerText.trim() && pendingAttachments.length === 0) || isSending) return;
-    setIsSending(true);
-    setChatError('');
+  const handleAttachFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    Array.from(files)
+      .slice(0, 4)
+      .forEach((file) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === 'string') {
+            setAttachments((prev) => [...prev, reader.result as string].slice(0, 4));
+          }
+        };
+        reader.readAsDataURL(file);
+      });
+  };
+
+  const dispatchMessage = async (overrideText?: string, overrideTarget?: MuseAgentId | 'chairman') => {
+    const textToSend = (overrideText !== undefined ? overrideText : inputText).trim();
+    const filesToSend = overrideText !== undefined ? [] : attachments;
+    if ((!textToSend && filesToSend.length === 0) || sending) return;
+
+    const effectiveTarget: MuseAgentId | 'chairman' = isDmChannel
+      ? (activeChannel as MuseAgentId)
+      : overrideTarget || targetResponder;
+
+    setErrorBanner(null);
+    setLastReplyMs(null);
+    setSending(true);
+    setOptimisticMsg({
+      tempId: `opt_${Date.now()}`,
+      channel: activeChannel,
+      content: textToSend || '(Đã gửi tệp đính kèm)',
+      attachments: filesToSend,
+      sceneId: selectedSceneId || undefined,
+      createdAt: Date.now(),
+    });
+
+    if (overrideText === undefined) {
+      setInputText('');
+      setAttachments([]);
+    }
+
+    const startedAt = Date.now();
     try {
-      const res = await commandCenterApiJson<{ state: CommandCenterState }>('/api/command-center/chat', {
+      const res = await fetch('/api/command-center/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           channel: activeChannel,
-          message: composerText.trim(),
-          targetAgentId: isChairmanDm ? 'chairman' : dmAgent ? dmAgent.id : responderAgentId,
-          attachments: pendingAttachments.map((a) => a.url),
+          message: textToSend,
+          targetAgentId: effectiveTarget,
+          attachments: filesToSend,
           sceneId: selectedSceneId || undefined,
-          sessionId: activeRunId || undefined,
+          sessionId: state.selectedRunId || undefined,
         }),
       });
-      setState(res.state);
-      setComposerText('');
-      setPendingAttachments([]);
-      setLastSeenByChannel((prev) => ({ ...prev, [activeChannel]: Date.now() }));
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Không thể gửi tin nhắn.');
+      if (data.state) setState(data.state);
+      setLastReplyMs(Math.max(100, Date.now() - startedAt));
     } catch (err: any) {
-      setChatError(err?.message || 'Không thể gửi tin nhắn.');
+      setErrorBanner(err?.message || 'Lỗi kết nối khi gửi tin nhắn.');
+      if (overrideText === undefined && textToSend) {
+        setInputText(textToSend);
+      }
     } finally {
-      setIsSending(false);
+      setOptimisticMsg(null);
+      setSending(false);
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
     }
   };
 
-  const drawerAgents = dmAgent
-    ? [dmAgent]
-    : activeChannel === 'visual' || activeChannel === 'video'
-    ? agents.filter((a) => ['muse-01', 'muse-02', 'muse-03', 'muse-04'].includes(a.id))
-    : activeChannel === 'qa'
-    ? agents.filter((a) => a.id === 'muse-05')
-    : agents;
+  const handleClearChannel = async () => {
+    try {
+      const res = await fetch('/api/command-center/chat/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: activeChannel }),
+      });
+      const data = await res.json();
+      if (res.ok && data.state) {
+        setState(data.state);
+      }
+    } finally {
+      setConfirmClearChannel(false);
+    }
+  };
 
-  const activeSessionTasks = useMemo(() => {
-    const list = activeRunId ? state.tasks.filter((t) => t.runId === activeRunId) : state.tasks;
-    return list.slice(0, 8);
-  }, [state.tasks, activeRunId]);
+  const handleArchiveSearch = async () => {
+    setSearchingArchive(true);
+    try {
+      const qs = new URLSearchParams();
+      if (archiveQuery.trim()) qs.set('q', archiveQuery.trim());
+      if (archiveAgentFilter) qs.set('agentId', archiveAgentFilter);
+      const res = await fetch(`/api/command-center/archive/search?${qs.toString()}`);
+      const data = await res.json();
+      if (res.ok) setArchiveResults(data.messages || []);
+    } finally {
+      setSearchingArchive(false);
+    }
+  };
 
-  return (
-    <section className="glass-card rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-700/50 flex flex-col lg:flex-row min-h-[620px]">
-      {/* Collapsible Left Channel Sidebar */}
-      {leftOpen && (
-        <aside className="w-full lg:w-[250px] shrink-0 border-b lg:border-b-0 lg:border-r border-slate-200 dark:border-slate-700/45 bg-slate-50/70 dark:bg-[#090d1c]/80 p-3.5 space-y-4">
-          <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-700/40">
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-violet-600 dark:text-violet-300">
-                AI MUSE HUB
-              </div>
-              <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                {state.metrics.connectedAgents}/5 AI trực tuyến
-              </div>
+  const responderLabel = useMemo(() => {
+    if (isDmChannel && activeDmAgent) return activeDmAgent.name;
+    if (targetResponder === 'chairman') return 'Gemini AI – Chủ tịch';
+    const found = state.agents.find((a) => a.id === targetResponder);
+    return found ? found.name : targetResponder.toUpperCase();
+  }, [isDmChannel, activeDmAgent, targetResponder, state.agents]);
+
+  const contextTasks = useMemo(() => {
+    if (isDmChannel && activeDmAgent) {
+      return state.tasks.filter((t) => t.assignedAgentId === activeDmAgent.id).slice(0, 8);
+    }
+    return state.tasks.filter((t) => t.status === 'running' || t.status === 'queued' || t.status === 'failed').slice(0, 8);
+  }, [isDmChannel, activeDmAgent, state.tasks]);
+
+  const renderMessageItem = (msg: ConversationMessage) => {
+    const isUser = msg.senderType === 'user';
+    const isSystem = msg.senderType === 'system';
+    const isChairman = msg.senderId === 'chairman';
+    const senderAgent =
+      !isUser && !isSystem && !isChairman
+        ? state.agents.find((a) => a.id === msg.senderId) || null
+        : null;
+    const linkedScene = msg.sceneId ? activeScenes.find((s) => s.sceneId === msg.sceneId) : null;
+    const linkedTask = msg.taskId ? state.tasks.find((t) => t.id === msg.taskId) : null;
+    const linkedIncident = msg.incidentId ? (state.incidents || []).find((i) => i.id === msg.incidentId) : null;
+    const hasLinks = Boolean(linkedScene || linkedTask || linkedIncident);
+
+    if (isSystem) {
+      return (
+        <div key={msg.id} className="flex justify-center py-1">
+          <div className="max-w-2xl rounded-lg border border-slate-200/80 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 px-3.5 py-2 text-xs text-slate-600 dark:text-slate-300">
+            <div className="flex items-center gap-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              <span>{msg.senderName}</span>
+              {msg.roleBadge && (
+                <>
+                  <span>·</span>
+                  <span className="text-amber-600 dark:text-amber-400">{msg.roleBadge}</span>
+                </>
+              )}
+              <span>·</span>
+              <span className="tabular-nums">{formatTime(msg.createdAt)}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => setLeftOpen(false)}
-              title="Thu gọn danh sách kênh"
-              className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-200/70 dark:hover:bg-white/10 cursor-pointer"
-            >
-              <PanelLeftClose className="w-4 h-4" />
-            </button>
+            <p className="mt-1 whitespace-pre-wrap leading-relaxed">{msg.content}</p>
           </div>
+        </div>
+      );
+    }
 
-          <div className="space-y-1">
-            <div className="px-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">KÊNH</div>
-            {TEAM_CHANNELS.map((ch) => {
-              const unread = unreadCounts[ch.id] || 0;
-              const isSelected = activeChannel === ch.id;
-              const isIncidentCh = ch.id === 'incident';
-              const incidentCount = isIncidentCh ? openIncidents.length : 0;
-              return (
-                <button
-                  key={ch.id}
-                  type="button"
-                  onClick={() => handleSelectChannel(ch.id)}
-                  className={`w-full px-2.5 py-2 rounded-xl text-xs flex items-center justify-between gap-2 transition cursor-pointer ${
-                    isSelected
-                      ? isIncidentCh
-                        ? 'bg-rose-600 text-white font-semibold shadow-sm'
-                        : 'bg-violet-600 text-white font-semibold shadow-sm'
-                      : isIncidentCh && incidentCount > 0
-                      ? 'text-rose-700 dark:text-rose-300 bg-rose-500/10 border border-rose-500/25 hover:bg-rose-500/15 font-semibold'
-                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-white/5'
-                  }`}
-                >
-                  <span className="flex items-center gap-2 truncate">
-                    {isIncidentCh ? (
-                      <Siren className="w-3.5 h-3.5 shrink-0" />
-                    ) : ch.id === 'ai_bus' ? (
-                      <Terminal className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                    ) : ch.id === 'qa' ? (
-                      <ShieldCheck className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                    ) : ch.id === 'video' ? (
-                      <Film className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                    ) : ch.id === 'visual' ? (
-                      <ImageIcon className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                    ) : ch.id === 'production' ? (
-                      <Clapperboard className="w-3.5 h-3.5 shrink-0 opacity-80" />
+    if (isUser) {
+      return (
+        <div key={msg.id} className="flex justify-end">
+          <div className="max-w-[78%] sm:max-w-[70%] space-y-1.5">
+            <div className="flex items-center justify-end gap-1.5 text-[11px] text-slate-400 dark:text-slate-500">
+              <span>Bạn</span>
+              <span>·</span>
+              <span className="tabular-nums">{formatTime(msg.createdAt)}</span>
+            </div>
+            <div className="rounded-2xl rounded-tr-sm bg-slate-900 dark:bg-violet-600 text-white px-4 py-2.5 text-sm leading-relaxed shadow-xs">
+              <p className="whitespace-pre-wrap break-words">{msg.content}</p>
+              {msg.attachments && msg.attachments.length > 0 && (
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  {msg.attachments.map((att, idx) =>
+                    att.startsWith('data:video/') || att.endsWith('.mp4') ? (
+                      <video
+                        key={idx}
+                        src={att}
+                        controls
+                        className="h-28 w-44 rounded-lg border border-white/20 object-cover bg-black"
+                      />
                     ) : (
-                      <Hash className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                    )}
-                    <span className="truncate">{ch.label}</span>
-                  </span>
-                  <span className="flex items-center gap-1 shrink-0">
-                    {isIncidentCh && (
-                      <span
-                        className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${
-                          isSelected
-                            ? 'bg-white/20 text-white'
-                            : 'bg-rose-500/15 text-rose-700 dark:text-rose-300'
-                        }`}
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => setPreviewImageUrl(att)}
+                        className="block overflow-hidden rounded-lg border border-white/20 hover:opacity-90 transition-opacity"
                       >
-                        {incidentCount > 0 ? `${incidentCount} mở` : 'Ưu tiên'}
-                      </span>
-                    )}
-                    {unread > 0 && (
-                      <span className="px-1.5 py-0.5 rounded-md bg-rose-500 text-white text-[10px] font-mono tabular-nums font-bold">
-                        {unread}
-                      </span>
-                    )}
-                  </span>
+                        <img src={att} alt="Đính kèm" className="h-24 w-24 object-cover" />
+                      </button>
+                    )
+                  )}
+                </div>
+              )}
+              {linkedScene && (
+                <button
+                  type="button"
+                  onClick={() => onJumpToScene?.(linkedScene.sceneId)}
+                  className="mt-2 inline-flex items-center gap-1 text-[11px] text-white/80 hover:text-white underline underline-offset-2"
+                >
+                  <Film className="w-3 h-3" />
+                  Cảnh {linkedScene.index}: {linkedScene.title}
                 </button>
-              );
-            })}
-          </div>
-
-          <div className="space-y-1 pt-2 border-t border-slate-200/80 dark:border-slate-700/40">
-            <div className="px-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">
-              CHỈ HUY &amp; TIN NHẮN RIÊNG 1-1
+              )}
             </div>
-            <button
-              type="button"
-              onClick={() => handleSelectChannel('chairman')}
-              className={`w-full px-2 py-2 rounded-xl text-xs flex items-center justify-between gap-2 transition cursor-pointer ${
-                activeChannel === 'chairman'
-                  ? 'bg-amber-600 text-white font-semibold shadow-sm'
-                  : 'text-amber-800 dark:text-amber-200 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/15 font-semibold'
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div key={msg.id} className="flex items-start gap-3">
+        <div className="shrink-0 mt-0.5">
+          {isChairman ? (
+            <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-600 dark:text-amber-400">
+              <Crown className="w-4 h-4" />
+            </div>
+          ) : senderAgent ? (
+            <AgentAvatar agent={senderAgent} size="sm" />
+          ) : (
+            <div className="w-8 h-8 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-xs font-semibold text-slate-600 dark:text-slate-300">
+              AI
+            </div>
+          )}
+        </div>
+
+        <div className="min-w-0 flex-1 max-w-[85%] space-y-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+            <span
+              className={`font-semibold ${
+                isChairman
+                  ? 'text-amber-700 dark:text-amber-400'
+                  : 'text-slate-900 dark:text-slate-100'
               }`}
             >
-              <span className="flex items-center gap-2 min-w-0">
-                <AgentAvatar fallbackId="chairman" avatarPreset="crown_star" accentColor="#D97706" size="xs" />
-                <span className="truncate">{chairmanName}</span>
-              </span>
-              {(unreadCounts['chairman'] || 0) > 0 ? (
-                <span className="px-1.5 py-0.5 rounded-md bg-rose-500 text-white text-[10px] font-mono tabular-nums font-bold">
-                  {unreadCounts['chairman']}
-                </span>
-              ) : (
-                <span className={`text-[10px] truncate max-w-[70px] ${activeChannel === 'chairman' ? 'text-white/85' : 'text-amber-700 dark:text-amber-300'}`}>
-                  Tổng chỉ huy
-                </span>
-              )}
-            </button>
-            {agents.map((ag) => {
-              const unread = unreadCounts[ag.id] || 0;
-              const isSelected = activeChannel === ag.id;
-              return (
-                <button
-                  key={ag.id}
-                  type="button"
-                  onClick={() => handleSelectChannel(ag.id)}
-                  className={`w-full px-2 py-2 rounded-xl text-xs flex items-center justify-between gap-2 transition cursor-pointer ${
-                    isSelected
-                      ? 'bg-violet-600 text-white font-semibold shadow-sm'
-                      : 'text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-white/5'
+              {msg.senderName}
+            </span>
+            {msg.roleBadge && (
+              <>
+                <span className="text-slate-300 dark:text-slate-700">·</span>
+                <span
+                  className={`text-[11px] font-medium ${
+                    isChairman
+                      ? 'text-amber-600/90 dark:text-amber-300/80'
+                      : 'text-slate-500 dark:text-slate-400'
                   }`}
                 >
-                  <span className="flex items-center gap-2 min-w-0">
-                    <AgentAvatar agent={ag} size="xs" showStatusDot />
-                    <span className="truncate">{ag.name}</span>
-                  </span>
-                  {unread > 0 ? (
-                    <span className="px-1.5 py-0.5 rounded-md bg-rose-500 text-white text-[10px] font-mono tabular-nums font-bold">
-                      {unread}
-                    </span>
+                  {msg.roleBadge}
+                </span>
+              </>
+            )}
+            <span className="text-slate-300 dark:text-slate-700">·</span>
+            <span className="text-[11px] text-slate-400 dark:text-slate-500 tabular-nums">
+              {formatTime(msg.createdAt)}
+            </span>
+          </div>
+
+          <div
+            className={`rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed border ${
+              isChairman
+                ? 'bg-amber-50/55 dark:bg-amber-500/[0.06] border-amber-200/80 dark:border-amber-500/20 text-slate-900 dark:text-slate-100'
+                : 'bg-slate-50/90 dark:bg-[#141925] border-slate-200/80 dark:border-slate-800/90 text-slate-800 dark:text-slate-100'
+            }`}
+          >
+            <p className="whitespace-pre-wrap break-words">{msg.content}</p>
+
+            {msg.attachments && msg.attachments.length > 0 && (
+              <div className="mt-2.5 flex flex-wrap gap-2">
+                {msg.attachments.map((att, idx) =>
+                  att.startsWith('data:video/') || att.endsWith('.mp4') ? (
+                    <video
+                      key={idx}
+                      src={att}
+                      controls
+                      className="h-32 w-52 rounded-lg border border-slate-200 dark:border-slate-700 object-cover bg-black"
+                    />
                   ) : (
-                    <span className={`text-[10px] truncate max-w-[75px] ${isSelected ? 'text-white/80' : 'text-slate-400'}`}>
-                      {ag.roleTitle}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </aside>
-      )}
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setPreviewImageUrl(att)}
+                      className="block overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 hover:opacity-90 transition-opacity"
+                    >
+                      <img src={att} alt="Đính kèm" className="h-28 w-28 object-cover" />
+                    </button>
+                  )
+                )}
+              </div>
+            )}
 
-      {/* Main Message Feed */}
-      <div className="flex-1 flex flex-col min-w-0 bg-white/60 dark:bg-[#0c1021]/60">
-        {/* Feed Top Header */}
-        <div className="p-3.5 border-b border-slate-200 dark:border-slate-700/45 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 min-w-0">
-            {!leftOpen && (
-              <button
-                type="button"
-                onClick={() => setLeftOpen(true)}
-                title="Mở danh sách kênh"
-                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
-              >
-                <PanelLeftOpen className="w-4 h-4" />
-              </button>
+            {(hasLinks || msg.promptDelivered) && (
+              <div className="mt-2.5 pt-2 border-t border-slate-200/60 dark:border-slate-800/70 flex flex-wrap items-center gap-3 text-[11px]">
+                {linkedScene && (
+                  <button
+                    type="button"
+                    onClick={() => onJumpToScene?.(linkedScene.sceneId)}
+                    className="inline-flex items-center gap-1 font-medium text-violet-600 dark:text-violet-400 hover:underline"
+                  >
+                    <Film className="w-3 h-3" />
+                    Cảnh {linkedScene.index}
+                  </button>
+                )}
+                {linkedTask && (
+                  <button
+                    type="button"
+                    onClick={() => onJumpToTask?.(linkedTask.id)}
+                    className="inline-flex items-center gap-1 font-medium text-cyan-600 dark:text-cyan-400 hover:underline"
+                  >
+                    <Zap className="w-3 h-3" />
+                    {linkedTask.code}
+                  </button>
+                )}
+                {linkedIncident && (
+                  <button
+                    type="button"
+                    onClick={() => onJumpToIncident?.(linkedIncident.id)}
+                    className="inline-flex items-center gap-1 font-medium text-rose-600 dark:text-rose-400 hover:underline"
+                  >
+                    <ShieldAlert className="w-3 h-3" />
+                    Sự cố {linkedIncident.code}
+                  </button>
+                )}
+                {msg.promptDelivered && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedPromptIds((prev) => ({ ...prev, [msg.id]: !prev[msg.id] }))
+                    }
+                    className="ml-auto text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                  >
+                    {expandedPromptIds[msg.id] ? 'Ẩn lệnh gốc' : 'Xem lệnh gốc'}
+                  </button>
+                )}
+              </div>
             )}
-            {isChairmanDm && (
-              <AgentAvatar fallbackId="chairman" avatarPreset="crown_star" accentColor="#D97706" size="sm" />
+
+            {expandedPromptIds[msg.id] && msg.promptDelivered && (
+              <div className="mt-2 rounded-lg bg-slate-100/80 dark:bg-slate-900/80 px-3 py-2 text-xs text-slate-600 dark:text-slate-400 whitespace-pre-wrap">
+                {msg.promptDelivered}
+              </div>
             )}
-            {dmAgent && <AgentAvatar agent={dmAgent} size="sm" showStatusDot />}
-            <div className="min-w-0">
-              <h2 className="text-sm font-display font-bold text-slate-900 dark:text-white truncate">
-                {activeChannelMeta
-                  ? `${activeChannelMeta.slug} — ${activeChannelMeta.label}`
-                  : isChairmanDm
-                  ? `Chỉ huy tối cao: ${chairmanName}`
-                  : dmAgent
-                  ? `DM: ${dmAgent.name} (${dmAgent.roleTitle})`
-                  : activeChannel}
-              </h2>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                {activeChannelMeta?.purpose || (isChairmanDm ? chairmanTitle : dmAgent?.description)}
-              </p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="relative rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1119] overflow-hidden shadow-xs flex h-[calc(100vh-225px)] min-h-[640px] max-h-[880px]">
+      {/* =====================================================
+          LEFT SIDEBAR: CLEAN CHANNEL & DIRECT AI NAVIGATION
+         ===================================================== */}
+      <aside className="w-[244px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-slate-50/75 dark:bg-[#111622] flex flex-col">
+        {/* Top Chairman Fast Entry */}
+        <div className="p-3 border-b border-slate-200/80 dark:border-slate-800/80">
+          <button
+            type="button"
+            onClick={() => {
+              setArchiveMode(false);
+              setActiveChannel('commander');
+              setTargetResponder('chairman');
+            }}
+            className={`w-full text-left rounded-xl p-2.5 transition-colors border ${
+              !archiveMode && activeChannel === 'commander'
+                ? 'bg-amber-500/12 border-amber-500/35 text-slate-900 dark:text-white'
+                : 'bg-white dark:bg-[#151B29] border-slate-200/80 dark:border-slate-800 hover:border-amber-500/30 text-slate-800 dark:text-slate-200'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                <Crown className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-semibold truncate">Gemini AI – Chủ tịch</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {chairmanAccountLabel}
+                </div>
+              </div>
+            </div>
+          </button>
+        </div>
+
+        {/* Scrollable Nav Lists */}
+        <div className="flex-1 overflow-y-auto px-2.5 py-3 space-y-5">
+          {/* Group 1: Direct 1-1 with 5 Muse AI */}
+          <div>
+            <div className="px-2 mb-1.5 flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                Chat riêng 5 Muse AI
+              </span>
+            </div>
+            <div className="space-y-0.5">
+              {state.agents.map((agent) => {
+                const isSelected = !archiveMode && activeChannel === agent.id;
+                const count = messageCountByChannel[agent.id] || 0;
+                return (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    onClick={() => {
+                      setArchiveMode(false);
+                      setActiveChannel(agent.id);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left transition-colors ${
+                      isSelected
+                        ? 'bg-slate-900 text-white dark:bg-slate-800 dark:text-white'
+                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800/60'
+                    }`}
+                  >
+                    <AgentAvatar agent={agent} size="xs" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium truncate">{agent.name}</div>
+                      <div
+                        className={`text-[10px] truncate ${
+                          isSelected ? 'text-slate-300' : AGENT_STATUS_TEXT_CLASS[agent.status]
+                        }`}
+                      >
+                        {AGENT_STATUS_LABEL[agent.status]}
+                        {agent.id === 'muse-05' ? ' · QA' : ''}
+                      </div>
+                    </div>
+                    {count > 0 && (
+                      <span
+                        className={`text-[10px] tabular-nums ${
+                          isSelected ? 'text-slate-300' : 'text-slate-400 dark:text-slate-500'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Tìm trong kênh..."
-                className="h-8 pl-8 pr-2.5 w-40 sm:w-48 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-              />
+          {/* Group 2: Work Channels */}
+          <div>
+            <div className="px-2 mb-1.5 flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                Kênh điều phối
+              </span>
             </div>
+            <div className="space-y-0.5">
+              {WORK_CHANNELS.map((ch) => {
+                const isSelected = !archiveMode && activeChannel === ch.id;
+                const count = messageCountByChannel[ch.id] || 0;
+                const isIncident = ch.id === 'incident';
+                return (
+                  <button
+                    key={ch.id}
+                    type="button"
+                    onClick={() => {
+                      setArchiveMode(false);
+                      setActiveChannel(ch.id);
+                    }}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors ${
+                      isSelected
+                        ? 'bg-slate-900 text-white dark:bg-slate-800 dark:text-white'
+                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800/60'
+                    }`}
+                  >
+                    {isIncident ? (
+                      <AlertTriangle
+                        className={`w-3.5 h-3.5 shrink-0 ${
+                          openIncidentsCount > 0
+                            ? 'text-rose-500'
+                            : isSelected
+                            ? 'text-slate-300'
+                            : 'text-slate-400'
+                        }`}
+                      />
+                    ) : (
+                      <Hash
+                        className={`w-3.5 h-3.5 shrink-0 ${
+                          isSelected ? 'text-slate-300' : 'text-slate-400'
+                        }`}
+                      />
+                    )}
+                    <span className="text-xs font-medium truncate flex-1">{ch.shortLabel}</span>
+                    {isIncident && openIncidentsCount > 0 ? (
+                      <span className="text-[11px] font-semibold tabular-nums text-rose-500">
+                        {openIncidentsCount}
+                      </span>
+                    ) : count > 0 ? (
+                      <span
+                        className={`text-[10px] tabular-nums ${
+                          isSelected ? 'text-slate-300' : 'text-slate-400 dark:text-slate-500'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
 
-            {activeRunId && (
+        {/* Footer Archive Search Button */}
+        <div className="p-2.5 border-t border-slate-200/80 dark:border-slate-800/80">
+          <button
+            type="button"
+            onClick={() => setArchiveMode((v) => !v)}
+            className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+              archiveMode
+                ? 'bg-violet-600 text-white'
+                : 'bg-white dark:bg-[#151B29] border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            <Search className="w-3.5 h-3.5" />
+            <span>{archiveMode ? 'Quay lại phòng chat' : 'Tra cứu toàn bộ lịch sử'}</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* =====================================================
+          MAIN CHAT CANVAS (SPACIOUS, FAST, UNCLUTTERED)
+         ===================================================== */}
+      <div className="flex-1 min-w-0 flex flex-col bg-white dark:bg-[#0D1119]">
+        {archiveMode ? (
+          /* ARCHIVE SEARCH VIEW */
+          <div className="flex-1 flex flex-col min-h-0">
+            <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                  Kho tra cứu lịch sử trao đổi
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Tìm nhanh lệnh chỉ đạo, báo cáo QA và phản hồi trên tất cả các kênh
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={() => setOnlyCurrentSession((v) => !v)}
-                className={`h-8 px-2.5 rounded-lg border text-[11px] font-medium cursor-pointer whitespace-nowrap ${
-                  onlyCurrentSession
-                    ? 'border-violet-500 bg-violet-500/15 text-violet-700 dark:text-violet-300'
-                    : 'border-slate-200 dark:border-slate-700/60 text-slate-600 dark:text-slate-300'
-                }`}
+                onClick={() => setArchiveMode(false)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 whitespace-nowrap"
               >
-                {onlyCurrentSession ? 'Đang lọc phiên này' : 'Tất cả phiên'}
+                Đóng tra cứu
               </button>
-            )}
+            </div>
 
-            {!dmAgent && !isChairmanDm && (
+            <div className="px-5 py-3 border-b border-slate-200/70 dark:border-slate-800/70 flex flex-wrap items-center gap-2">
+              <div className="relative flex-1 min-w-[220px]">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={archiveQuery}
+                  onChange={(e) => setArchiveQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void handleArchiveSearch();
+                  }}
+                  placeholder="Nhập từ khóa, mã cảnh, mã nhiệm vụ..."
+                  className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:border-violet-500"
+                />
+              </div>
               <select
-                value={responderAgentId}
-                onChange={(e) => setResponderAgentId(e.target.value as MuseAgentId | 'chairman')}
-                className="h-8 px-2 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-700 dark:text-slate-200"
+                value={archiveAgentFilter}
+                onChange={(e) => setArchiveAgentFilter(e.target.value)}
+                className="px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200"
               >
-                <option value="chairman">Phản hồi: {chairmanName} (Tổng chỉ huy)</option>
-                {agents.map((ag) => (
-                  <option key={ag.id} value={ag.id}>
-                    Phản hồi: {ag.name}
+                <option value="">Tất cả người gửi</option>
+                <option value="chairman">Gemini AI – Chủ tịch</option>
+                {state.agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
                   </option>
                 ))}
               </select>
-            )}
-
-            <button
-              type="button"
-              onClick={() => setRightOpen((v) => !v)}
-              title="Bật/tắt bảng thông tin AI"
-              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
-            >
-              {rightOpen ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-
-        {/* Incident Command Strip */}
-        {activeChannel === 'incident' && (
-          <div className="px-3.5 py-2.5 border-b border-rose-500/25 bg-rose-50/70 dark:bg-rose-950/25 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex flex-wrap items-center gap-2 min-w-0">
-              <span className="inline-flex items-center gap-1 font-bold text-rose-700 dark:text-rose-300">
-                <Siren className="w-3.5 h-3.5" />
-                <span>ƯU TIÊN CAO</span>
-              </span>
-              <span className="text-slate-600 dark:text-slate-300">
-                {openIncidents.length > 0
-                  ? `${openIncidents.length} sự cố đang được ${chairmanName} trực tiếp điều phối:`
-                  : 'Chưa có sự cố đang mở. Mọi báo cáo từ Muse AI 05 hoặc lỗi tác vụ sẽ báo thẳng về Gemini AI – Chủ tịch.'}
-              </span>
-              {openIncidents.slice(0, 3).map((inc) => (
-                <button
-                  key={inc.id}
-                  type="button"
-                  onClick={() => onJumpToIncident?.(inc.id)}
-                  className={`px-2 py-0.5 rounded-md text-[11px] font-mono border cursor-pointer ${
-                    inc.status === 'escalated_to_user'
-                      ? 'bg-rose-600 text-white border-rose-600'
-                      : 'bg-white/85 dark:bg-[#0c1021] text-slate-800 dark:text-slate-200 border-rose-300 dark:border-rose-700/50'
-                  }`}
-                >
-                  {inc.code} · {inc.attemptCount}/{inc.maxAttempts}
-                </button>
-              ))}
-            </div>
-            {onJumpToIncident && (
               <button
                 type="button"
-                onClick={() => onJumpToIncident(openIncidents[0]?.id)}
-                className="text-[11px] font-semibold text-rose-700 dark:text-rose-300 underline cursor-pointer shrink-0"
+                onClick={() => void handleArchiveSearch()}
+                disabled={searchingArchive}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-violet-600 text-white hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
               >
-                Mở Trung tâm sự cố →
+                {searchingArchive ? 'Đang tìm...' : 'Tìm kiếm'}
               </button>
-            )}
-          </div>
-        )}
-
-        {/* Message List */}
-        <div className="flex-1 overflow-y-auto max-h-[460px] p-4 space-y-3">
-          {visibleMessages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center py-14 text-center text-xs text-slate-500 dark:text-slate-400 space-y-2">
-              <MessageSquare className="w-7 h-7 opacity-50" />
-              <div>
-                Chưa có tin nhắn phù hợp trong kênh{' '}
-                <strong>{activeChannelMeta?.slug || (isChairmanDm ? chairmanName : dmAgent?.name)}</strong>.
-              </div>
-              <div className="text-[11px] max-w-sm">
-                Bạn có thể nhắn lệnh trực tiếp, đính kèm ảnh tham chiếu hoặc chọn phân cảnh cần xử lý bên dưới.
-              </div>
             </div>
-          ) : (
-            visibleMessages.map((msg) => {
-              const senderAgent = agents.find((a) => a.id === msg.senderId);
-              const isUser = msg.senderType === 'user';
-              const isChairman = msg.senderId === 'chairman';
-              const isBus = msg.messageKind === 'ai_bus';
-              return (
-                <div
-                  key={msg.id}
-                  className={`rounded-xl p-3 text-xs border space-y-1.5 ${
-                    isUser
-                      ? 'bg-violet-50/80 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800/50 ml-6'
-                      : isChairman
-                      ? 'bg-amber-50/75 dark:bg-amber-950/20 border-amber-400/50 mr-2'
-                      : isBus
-                      ? 'bg-slate-100/90 dark:bg-[#101730] border-cyan-500/35'
-                      : 'bg-white dark:bg-[#0c1021] border-slate-200 dark:border-slate-700/50 mr-4'
+
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2.5">
+              {archiveResults === null ? (
+                <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 dark:text-slate-500">
+                  <Search className="w-8 h-8 mb-2 opacity-40" />
+                  <p className="text-xs">Nhập từ khóa và nhấn Tìm kiếm để tra cứu lịch sử toàn hệ thống.</p>
+                </div>
+              ) : archiveResults.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 dark:text-slate-500">
+                  <p className="text-xs">Không tìm thấy tin nhắn nào khớp với bộ lọc hiện tại.</p>
+                </div>
+              ) : (
+                archiveResults.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-[#131824] p-3.5 space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">
+                          {msg.senderName}
+                        </span>
+                        <span>·</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveChannel(msg.channel);
+                            setArchiveMode(false);
+                          }}
+                          className="text-violet-600 dark:text-violet-400 hover:underline whitespace-nowrap"
+                        >
+                          Mở kênh #{msg.channel}
+                        </button>
+                      </div>
+                      <span className="tabular-nums shrink-0">{formatFullDateTime(msg.createdAt)}</span>
+                    </div>
+                    <p className="text-xs text-slate-700 dark:text-slate-200 whitespace-pre-wrap leading-relaxed">
+                      {msg.content}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          /* ACTIVE CHAT VIEW */
+          <>
+            {/* Top Channel Header */}
+            <header className="px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                {isDmChannel && activeDmAgent ? (
+                  <AgentAvatar agent={activeDmAgent} size="sm" />
+                ) : activeChannel === 'commander' ? (
+                  <div className="w-8 h-8 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                    <Crown className="w-4 h-4" />
+                  </div>
+                ) : (
+                  <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center shrink-0">
+                    <Hash className="w-4 h-4" />
+                  </div>
+                )}
+
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                      {isDmChannel && activeDmAgent
+                        ? activeDmAgent.name
+                        : activeWorkMeta?.name || `#${activeChannel}`}
+                    </h3>
+                    {isDmChannel && activeDmAgent && (
+                      <span
+                        className={`text-xs font-medium whitespace-nowrap ${AGENT_STATUS_TEXT_CLASS[activeDmAgent.status]}`}
+                      >
+                        · {AGENT_STATUS_LABEL[activeDmAgent.status]}
+                      </span>
+                    )}
+                    {lastReplyMs !== null && !sending && (
+                      <span className="text-[11px] text-emerald-600 dark:text-emerald-400 tabular-nums whitespace-nowrap">
+                        · Phản hồi {(lastReplyMs / 1000).toFixed(1)}s
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                    {isDmChannel && activeDmAgent
+                      ? `${activeDmAgent.roleTitle} · ${activeDmAgent.currentTaskSummary || 'Đang sẵn sàng nhận lệnh'}`
+                      : activeWorkMeta?.description}
+                  </p>
+                </div>
+              </div>
+
+              {/* Clean Header Action Controls */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowInChannelSearch((v) => !v);
+                    if (showInChannelSearch) setChannelFilterText('');
+                  }}
+                  title="Lọc tin nhắn trong kênh này"
+                  className={`p-2 rounded-lg text-xs transition-colors ${
+                    showInChannelSearch
+                      ? 'bg-slate-900 text-white dark:bg-slate-700'
+                      : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-400'
                   }`}
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      {!isUser && (
-                        <AgentAvatar
-                          agent={senderAgent}
-                          avatarUrl={msg.senderAvatarUrl}
-                          avatarPreset={isChairman ? 'crown_star' : undefined}
-                          fallbackName={isChairman ? 'Chủ tịch Điều hành AI' : undefined}
-                          accentColor={msg.senderColor || (isChairman ? '#D97706' : undefined)}
-                          size="xs"
-                        />
-                      )}
-                      <span
-                        className="font-bold text-slate-900 dark:text-white truncate"
-                        style={!isUser && (senderAgent?.accentColor || msg.senderColor || (isChairman ? '#D97706' : undefined))
-                          ? { color: senderAgent?.accentColor || msg.senderColor || (isChairman ? '#D97706' : undefined) }
-                          : undefined}
-                      >
-                        {msg.senderName}
-                      </span>
-                      {senderAgent && (
-                        <span className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                          {senderAgent.roleTitle}
-                        </span>
-                      )}
-                      {msg.roleBadge && (
-                        <span
-                          className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold whitespace-nowrap ${getRoleBadgeClass(
-                            msg.roleBadge
-                          )}`}
-                        >
-                          {msg.roleBadge}
-                        </span>
-                      )}
-                      {isBus && (
-                        <span className="text-[10px] font-mono text-cyan-700 dark:text-cyan-300">
-                          [AI-BUS]
-                        </span>
-                      )}
-                    </div>
+                  <Search className="w-4 h-4" />
+                </button>
 
-                    <div className="flex items-center gap-2 text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                      {msg.incidentId && onJumpToIncident && (
-                        <button
-                          type="button"
-                          onClick={() => onJumpToIncident(msg.incidentId)}
-                          className="underline text-rose-600 dark:text-rose-300 cursor-pointer"
-                        >
-                          Hồ sơ sự cố
-                        </button>
-                      )}
-                      {msg.sceneId && (
-                        <button
-                          type="button"
-                          onClick={() => onJumpToScene?.(msg.sceneId!)}
-                          className="underline text-violet-600 dark:text-violet-300 cursor-pointer"
-                        >
-                          {msg.sceneId}
-                        </button>
-                      )}
-                      {msg.taskId && (
-                        <button
-                          type="button"
-                          onClick={() => onJumpToTask?.(msg.taskId!)}
-                          className="underline text-cyan-600 dark:text-cyan-300 cursor-pointer"
-                        >
-                          {msg.taskId}
-                        </button>
-                      )}
-                      <span>{fmtDateTime(msg.createdAt)}</span>
-                    </div>
+                {confirmClearChannel ? (
+                  <div className="flex items-center gap-1 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 rounded-lg px-2 py-1">
+                    <button
+                      type="button"
+                      onClick={() => void handleClearChannel()}
+                      className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:underline whitespace-nowrap"
+                    >
+                      Xác nhận xóa
+                    </button>
+                    <span className="text-slate-300 dark:text-slate-700">|</span>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmClearChannel(false)}
+                      className="text-[11px] text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 whitespace-nowrap"
+                    >
+                      Hủy
+                    </button>
                   </div>
-
-                  <div className="whitespace-pre-wrap text-slate-800 dark:text-slate-200 leading-relaxed">
-                    {msg.content}
-                  </div>
-
-                  {msg.attachments && msg.attachments.length > 0 && (
-                    <div className="flex flex-wrap gap-2 pt-1">
-                      {msg.attachments.map((att, idx) =>
-                        att.endsWith('.mp4') || att.endsWith('.webm') ? (
-                          <video
-                            key={idx}
-                            src={att}
-                            controls
-                            className="h-32 rounded-lg border border-slate-200 dark:border-slate-700 bg-black"
-                          />
-                        ) : (
-                          <img
-                            key={idx}
-                            src={att}
-                            alt="Đính kèm"
-                            className="h-24 w-auto rounded-lg border border-slate-200 dark:border-slate-700 object-cover"
-                          />
-                        )
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        {/* Composer */}
-        <form onSubmit={handleSend} className="p-3.5 border-t border-slate-200 dark:border-slate-700/45 space-y-2.5 bg-white/80 dark:bg-[#0a0f1f]/90">
-          {chatError && (
-            <div className="text-[11px] text-rose-600 dark:text-rose-400">{chatError}</div>
-          )}
-
-          {pendingAttachments.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
-              {pendingAttachments.map((att, idx) => (
-                <div
-                  key={idx}
-                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0c1021] text-[11px] text-slate-700 dark:text-slate-200"
-                >
-                  <span className="truncate max-w-[140px]">{att.fileName}</span>
+                ) : (
                   <button
                     type="button"
-                    onClick={() => setPendingAttachments((prev) => prev.filter((_, i) => i !== idx))}
-                    className="text-slate-400 hover:text-rose-500 cursor-pointer"
+                    onClick={() => setConfirmClearChannel(true)}
+                    disabled={channelMessages.length === 0}
+                    title="Dọn lịch sử kênh này"
+                    className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-400 disabled:opacity-35 transition-colors"
                   >
-                    <X className="w-3 h-3" />
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setRightOpen((v) => !v)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
+                    rightOpen
+                      ? 'bg-slate-900 text-white border-slate-900 dark:bg-slate-800 dark:border-slate-700'
+                      : 'bg-white dark:bg-[#131824] border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {rightOpen ? (
+                    <PanelRightClose className="w-3.5 h-3.5" />
+                  ) : (
+                    <PanelRightOpen className="w-3.5 h-3.5" />
+                  )}
+                  <span>Hồ sơ & Tác vụ</span>
+                </button>
+              </div>
+            </header>
+
+            {/* Optional In-Channel Filter Bar */}
+            {showInChannelSearch && (
+              <div className="px-5 py-2 border-b border-slate-200/70 dark:border-slate-800/70 bg-slate-50/70 dark:bg-[#111622] flex items-center gap-2 shrink-0">
+                <Search className="w-3.5 h-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  autoFocus
+                  value={channelFilterText}
+                  onChange={(e) => setChannelFilterText(e.target.value)}
+                  placeholder="Lọc nhanh tin nhắn trong kênh này..."
+                  className="flex-1 bg-transparent text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none"
+                />
+                {channelFilterText && (
+                  <button
+                    type="button"
+                    onClick={() => setChannelFilterText('')}
+                    className="text-slate-400 hover:text-slate-600"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Error Toast Banner */}
+            {errorBanner && (
+              <div className="mx-5 mt-3 rounded-xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs text-rose-700 dark:text-rose-300 shrink-0">
+                <span className="truncate">{errorBanner}</span>
+                <button
+                  type="button"
+                  onClick={() => setErrorBanner(null)}
+                  className="text-rose-500 hover:text-rose-700 shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {/* Message Feed */}
+            <div className="relative flex-1 min-h-0">
+              <div
+                ref={feedScrollRef}
+                onScroll={handleFeedScroll}
+                className="h-full overflow-y-auto px-5 py-5 space-y-4"
+              >
+                {channelMessages.length === 0 && !optimisticMsg ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto py-8">
+                    <div className="w-11 h-11 rounded-2xl bg-slate-100 dark:bg-slate-800/80 flex items-center justify-center text-slate-500 dark:text-slate-400 mb-3">
+                      <MessageSquare className="w-5 h-5" />
+                    </div>
+                    <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                      Bắt đầu trao đổi tại{' '}
+                      {isDmChannel && activeDmAgent
+                        ? activeDmAgent.name
+                        : activeWorkMeta?.name || `#${activeChannel}`}
+                    </h4>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                      Nhập chỉ đạo bên dưới hoặc bấm vào các lệnh nhanh để Chủ tịch và đội Muse AI phản hồi trực tiếp theo dữ liệu phiên hiện tại.
+                    </p>
+                  </div>
+                ) : (
+                  channelMessages.map(renderMessageItem)
+                )}
+
+                {/* Optimistic User Message (Instant Feedback) */}
+                {optimisticMsg && optimisticMsg.channel === activeChannel && (
+                  <div className="flex justify-end opacity-90">
+                    <div className="max-w-[78%] sm:max-w-[70%] space-y-1">
+                      <div className="flex items-center justify-end gap-1.5 text-[11px] text-slate-400">
+                        <span>Bạn</span>
+                        <span>·</span>
+                        <span>Đang gửi...</span>
+                      </div>
+                      <div className="rounded-2xl rounded-tr-sm bg-slate-900 dark:bg-violet-600 text-white px-4 py-2.5 text-sm leading-relaxed">
+                        <p className="whitespace-pre-wrap break-words">{optimisticMsg.content}</p>
+                        {optimisticMsg.attachments.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {optimisticMsg.attachments.map((att, i) => (
+                              <img
+                                key={i}
+                                src={att}
+                                alt="Đang tải"
+                                className="h-20 w-20 rounded-lg object-cover border border-white/20"
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Live Responding Indicator with Real Stopwatch */}
+                {sending && (
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/25 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    </div>
+                    <div className="rounded-2xl rounded-tl-sm border border-slate-200/80 dark:border-slate-800 bg-slate-50 dark:bg-[#141925] px-4 py-2.5 text-xs text-slate-600 dark:text-slate-300 flex items-center gap-2.5">
+                      <span className="font-medium">{responderLabel} đang xử lý lệnh...</span>
+                      <span className="text-slate-400 tabular-nums">
+                        {(sendElapsedMs / 1000).toFixed(1)}s
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <div ref={bottomSentinelRef} />
+              </div>
+
+              {/* Floating Jump-to-Latest Button */}
+              {!isNearBottom && (
+                <button
+                  type="button"
+                  onClick={() => scrollToBottom('smooth')}
+                  className="absolute bottom-4 right-5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900 dark:bg-slate-800 text-white text-xs font-medium shadow-md hover:opacity-95 transition-opacity"
+                >
+                  <ArrowDown className="w-3.5 h-3.5" />
+                  <span>{unseenCount > 0 ? `${unseenCount} tin mới` : 'Xuống mới nhất'}</span>
+                </button>
+              )}
+            </div>
+
+            {/* =====================================================
+                QUICK COMMANDS + COMPOSER DOCK
+               ===================================================== */}
+            <div className="border-t border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-[#101521] px-4 pt-2.5 pb-3 space-y-2.5 shrink-0">
+              {/* 1-Click Context Quick Commands */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0 mr-0.5" />
+                {quickCommands.map((cmd) => (
+                  <button
+                    key={cmd.label}
+                    type="button"
+                    disabled={sending}
+                    onClick={(e) => {
+                      if (e.shiftKey) {
+                        setInputText(cmd.prompt);
+                        if (cmd.target && !isDmChannel) setTargetResponder(cmd.target);
+                        textareaRef.current?.focus();
+                      } else {
+                        if (cmd.target && !isDmChannel) setTargetResponder(cmd.target);
+                        void dispatchMessage(cmd.prompt, cmd.target);
+                      }
+                    }}
+                    title="Bấm để gửi ngay · Giữ Shift + bấm để chỉnh sửa trước"
+                    className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-[#161C2B] hover:border-slate-400 dark:hover:border-slate-500 text-[11px] font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+                  >
+                    {cmd.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Attachment Preview Strip */}
+              {attachments.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {attachments.map((att, idx) => (
+                    <div
+                      key={idx}
+                      className="relative group rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                    >
+                      {att.startsWith('data:video/') ? (
+                        <div className="w-16 h-16 flex items-center justify-center text-[10px] text-slate-500">
+                          <Film className="w-4 h-4" />
+                        </div>
+                      ) : (
+                        <img src={att} alt="Đính kèm" className="w-16 h-16 object-cover" />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                        className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/70 text-white flex items-center justify-center hover:bg-black"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Unified Input Card */}
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700/90 bg-white dark:bg-[#151B29] focus-within:border-slate-400 dark:focus-within:border-violet-500/70 transition-colors">
+                {/* Inline Recipient + Scene Controls */}
+                <div className="px-3 pt-2 pb-1.5 border-b border-slate-100 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
+                  {!isDmChannel ? (
+                    <div className="flex items-center gap-1 overflow-x-auto">
+                      <span className="text-[11px] text-slate-400 dark:text-slate-500 mr-1 whitespace-nowrap">
+                        Gửi tới:
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setTargetResponder('chairman')}
+                        className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
+                          targetResponder === 'chairman'
+                            ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                            : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        Chủ tịch Gemini
+                      </button>
+                      {state.agents.map((a) => (
+                        <button
+                          key={a.id}
+                          type="button"
+                          onClick={() => setTargetResponder(a.id)}
+                          className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
+                            targetResponder === a.id
+                              ? 'bg-slate-900 text-white dark:bg-violet-600 dark:text-white'
+                              : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                          }`}
+                        >
+                          {AGENT_SHORT_LABEL[a.id]}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Trao đổi trực tiếp 1-1 với{' '}
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">
+                        {activeDmAgent?.name}
+                      </span>
+                    </div>
+                  )}
+
+                  {activeScenes.length > 0 && (
+                    <select
+                      value={selectedSceneId}
+                      onChange={(e) => setSelectedSceneId(e.target.value)}
+                      className="text-[11px] rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 px-2 py-0.5 max-w-[190px]"
+                    >
+                      <option value="">Không gắn cảnh</option>
+                      {activeScenes.map((s) => (
+                        <option key={s.sceneId} value={s.sceneId}>
+                          Cảnh {s.index}: {s.title.slice(0, 26)}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                {/* Textarea & Action Row */}
+                <div className="flex items-end gap-2 px-3 py-2">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*,video/*"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      handleAttachFiles(e.target.files);
+                      e.target.value = '';
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Đính kèm ảnh hoặc video tham chiếu"
+                    className="p-2 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+                  >
+                    <Paperclip className="w-4 h-4" />
+                  </button>
+
+                  <textarea
+                    ref={textareaRef}
+                    rows={1}
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        void dispatchMessage();
+                      }
+                    }}
+                    placeholder={`Nhắn cho ${responderLabel}... (Enter để gửi, Shift+Enter xuống dòng)`}
+                    className="flex-1 resize-none bg-transparent text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none py-1.5 max-h-[140px]"
+                  />
+
+                  <button
+                    type="button"
+                    disabled={sending || (!inputText.trim() && attachments.length === 0)}
+                    onClick={() => void dispatchMessage()}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-violet-600 text-white text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity whitespace-nowrap shrink-0"
+                  >
+                    {sending ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Send className="w-3.5 h-3.5" />
+                    )}
+                    <span>Gửi</span>
                   </button>
                 </div>
-              ))}
+              </div>
             </div>
-          )}
-
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*,video/mp4,video/webm,.txt,.json"
-              multiple
-              onChange={handleFileChange}
-              className="hidden"
-            />
-            <button
-              type="button"
-              disabled={isUploading}
-              onClick={() => fileInputRef.current?.click()}
-              title="Đính kèm ảnh / video / kịch bản"
-              className="h-9 px-2.5 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1 cursor-pointer"
-            >
-              {isUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Paperclip className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">Đính kèm</span>
-            </button>
-
-            <select
-              value={selectedSceneId}
-              onChange={(e) => setSelectedSceneId(e.target.value)}
-              className="h-9 px-2 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-600 dark:text-slate-300 max-w-[150px]"
-            >
-              <option value="">Liên kết cảnh...</option>
-              {state.projectMemory.scenes.map((sc) => (
-                <option key={sc.sceneId} value={sc.sceneId}>
-                  Cảnh {sc.index}: {sc.title}
-                </option>
-              ))}
-            </select>
-
-            <input
-              type="text"
-              value={composerText}
-              onChange={(e) => setComposerText(e.target.value)}
-              disabled={isSending}
-              placeholder={`Nhắn vào ${activeChannelMeta?.slug || (isChairmanDm ? chairmanName : dmAgent?.name) || 'kênh'}...`}
-              className="flex-1 min-w-[180px] h-9 px-3 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
-            />
-
-            <button
-              type="submit"
-              disabled={isSending || (!composerText.trim() && pendingAttachments.length === 0)}
-              className="h-9 px-4 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-            >
-              {isSending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-              <span>Gửi</span>
-            </button>
-          </div>
-        </form>
+          </>
+        )}
       </div>
 
-      {/* Collapsible Right Profile & Task Inspector Drawer */}
+      {/* =====================================================
+          COLLAPSIBLE RIGHT INSPECTOR (CLOSED BY DEFAULT)
+         ===================================================== */}
       {rightOpen && (
-        <aside className="w-full lg:w-[270px] shrink-0 border-t lg:border-t-0 lg:border-l border-slate-200 dark:border-slate-700/45 bg-slate-50/70 dark:bg-[#090d1c]/80 p-3.5 space-y-4">
-          <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-700/40">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              Hồ sơ &amp; Tác vụ liên kết
+        <aside className="w-[296px] shrink-0 border-l border-slate-200 dark:border-slate-800 bg-slate-50/75 dark:bg-[#111622] flex flex-col overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-200/80 dark:border-slate-800/80 flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-900 dark:text-white">
+              {isDmChannel && activeDmAgent ? `Hồ sơ ${activeDmAgent.name}` : 'Ngữ cảnh phiên hiện tại'}
             </span>
-            <span className="text-[11px] font-mono text-slate-400">
-              {state.projectMemory.scenes.length} cảnh
-            </span>
+            <button
+              type="button"
+              onClick={() => setRightOpen(false)}
+              className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
-          <div className="space-y-2">
-            {(!dmAgent || isChairmanDm) && (
-              <div className="rounded-xl border border-amber-400/50 bg-amber-50/70 dark:bg-amber-950/25 p-2.5 space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
-                    <Crown className="w-4 h-4" />
-                  </span>
-                  <div className="min-w-0">
-                    <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{chairmanName}</div>
-                    <div className="text-[10px] text-amber-700 dark:text-amber-300 truncate">Chủ tịch &amp; Tổng chỉ huy</div>
-                  </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-5">
+            {/* Session Summary */}
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Phiên sản xuất
+              </div>
+              <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-[#151B29] p-3 space-y-1.5">
+                <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+                  {state.projectMemory?.title || activeRun?.title || 'Chưa chọn dự án'}
                 </div>
-                <div className="text-[11px] text-slate-600 dark:text-slate-300 line-clamp-2">
-                  Trực tiếp phân công 4 Muse sản xuất Ảnh/Video, tiếp nhận QA từ Muse 05 và chất vấn xử lý sự cố.
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
+                  Memory v{state.projectMemory?.version || 1} · {state.projectMemory?.characters.length || 0} nhân vật ·{' '}
+                  {activeScenes.length} cảnh
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Chủ tịch: <span className="text-amber-600 dark:text-amber-400 font-medium">{chairmanAccountLabel}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Active DM Agent Stats */}
+            {isDmChannel && activeDmAgent && (
+              <div className="space-y-1.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  Hiệu suất AI này
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-[#151B29] p-3 grid grid-cols-3 gap-2 text-center">
+                  <div>
+                    <div className="text-sm font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                      {activeDmAgent.stats.completed}
+                    </div>
+                    <div className="text-[10px] text-slate-500">Xong</div>
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold text-rose-600 dark:text-rose-400 tabular-nums">
+                      {activeDmAgent.stats.failed}
+                    </div>
+                    <div className="text-[10px] text-slate-500">Lỗi</div>
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold text-slate-700 dark:text-slate-200 tabular-nums">
+                      {activeDmAgent.avgResponseMs && activeDmAgent.avgResponseMs > 0
+                        ? `${(activeDmAgent.avgResponseMs / 1000).toFixed(1)}s`
+                        : '—'}
+                    </div>
+                    <div className="text-[10px] text-slate-500">Tốc độ</div>
+                  </div>
                 </div>
               </div>
             )}
-            {!isChairmanDm && drawerAgents.map((ag) => (
-              <div
-                key={ag.id}
-                className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white/85 dark:bg-[#0c1021] p-2.5 space-y-1.5"
-              >
-                <div className="flex items-center gap-2">
-                  <AgentAvatar agent={ag} size="sm" showStatusDot />
-                  <div className="min-w-0">
-                    <div className="text-xs font-bold text-slate-900 dark:text-white truncate">{ag.name}</div>
-                    <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{ag.roleTitle}</div>
-                  </div>
+
+            {/* Open Incidents */}
+            {openIncidentsCount > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-rose-500">
+                    Sự cố đang mở ({openIncidentsCount})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onJumpToIncident?.()}
+                    className="text-[11px] text-violet-600 dark:text-violet-400 hover:underline"
+                  >
+                    Xem tất cả
+                  </button>
                 </div>
-                <div className="text-[11px] text-slate-600 dark:text-slate-300 line-clamp-2">
-                  {ag.currentTaskSummary || ag.description}
+                <div className="space-y-1.5">
+                  {(state.incidents || [])
+                    .filter((i) => i.status !== 'resolved')
+                    .slice(0, 4)
+                    .map((inc) => (
+                      <button
+                        key={inc.id}
+                        type="button"
+                        onClick={() => onJumpToIncident?.(inc.id)}
+                        className="w-full text-left rounded-lg border border-rose-200/70 dark:border-rose-500/25 bg-white dark:bg-[#151B29] p-2.5 hover:border-rose-400 transition-colors"
+                      >
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-semibold text-rose-600 dark:text-rose-400">{inc.code}</span>
+                          <span className="text-slate-400 tabular-nums">
+                            Vòng {inc.attemptCount}/{inc.maxAttempts}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300 line-clamp-2">
+                          {inc.categoryLabel}: {inc.errorDescription}
+                        </p>
+                      </button>
+                    ))}
                 </div>
               </div>
-            ))}
-          </div>
+            )}
 
-          <div className="space-y-2 pt-2 border-t border-slate-200/80 dark:border-slate-700/40">
-            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              <Activity className="w-3.5 h-3.5" />
-              <span>Tác vụ gần đây</span>
+            {/* Relevant Tasks */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  Nhiệm vụ liên quan ({contextTasks.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onJumpToTask?.('')}
+                  className="text-[11px] text-violet-600 dark:text-violet-400 hover:underline"
+                >
+                  Hàng đợi
+                </button>
+              </div>
+              {contextTasks.length === 0 ? (
+                <p className="text-xs text-slate-400 dark:text-slate-500">Không có tác vụ đang chờ hoặc chạy.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {contextTasks.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => onJumpToTask?.(t.id)}
+                      className="w-full text-left rounded-lg border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-[#151B29] p-2.5 hover:border-slate-400 dark:hover:border-slate-600 transition-colors"
+                    >
+                      <div className="flex items-center justify-between gap-1 text-[11px]">
+                        <span className="font-semibold text-slate-800 dark:text-slate-200">{t.code}</span>
+                        <span className="text-slate-400 truncate">{t.assignedAgentId.toUpperCase()}</span>
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-400 truncate">
+                        {t.title}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-            {activeSessionTasks.length === 0 ? (
-              <div className="text-[11px] text-slate-500 dark:text-slate-400">Chưa có tác vụ nào.</div>
-            ) : (
-              <div className="space-y-1.5 max-h-56 overflow-y-auto">
-                {activeSessionTasks.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => onJumpToTask?.(t.id)}
-                    className="w-full text-left p-2 rounded-lg border border-slate-200/80 dark:border-slate-700/45 bg-white/70 dark:bg-[#0c1021]/70 hover:border-violet-400/50 cursor-pointer space-y-0.5"
-                  >
-                    <div className="flex items-center justify-between text-[10px] font-mono text-slate-500">
-                      <span>{t.code}</span>
-                      <span>{t.status}</span>
-                    </div>
-                    <div className="text-[11px] font-medium text-slate-800 dark:text-slate-200 truncate">
-                      {t.title}
-                    </div>
-                  </button>
-                ))}
+
+            {/* Locked Scenes Quick Jump */}
+            {activeScenes.length > 0 && (
+              <div className="space-y-1.5">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  Phân cảnh phiên ({activeScenes.length})
+                </span>
+                <div className="space-y-1">
+                  {activeScenes.slice(0, 8).map((sc) => (
+                    <button
+                      key={sc.sceneId}
+                      type="button"
+                      onClick={() => {
+                        setSelectedSceneId(sc.sceneId);
+                        textareaRef.current?.focus();
+                      }}
+                      className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-left text-[11px] bg-white dark:bg-[#151B29] border border-slate-200/70 dark:border-slate-800 hover:border-violet-400 transition-colors"
+                    >
+                      <span className="truncate text-slate-700 dark:text-slate-200">
+                        Cảnh {sc.index}: {sc.title}
+                      </span>
+                      <ChevronRight className="w-3 h-3 text-slate-400 shrink-0" />
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
         </aside>
       )}
-    </section>
+
+      {/* Clean Image Lightbox */}
+      {previewImageUrl && (
+        <div
+          onClick={() => setPreviewImageUrl(null)}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-6"
+        >
+          <div className="relative max-w-4xl max-h-[85vh]" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setPreviewImageUrl(null)}
+              className="absolute -top-10 right-0 text-white/80 hover:text-white inline-flex items-center gap-1 text-xs"
+            >
+              <X className="w-4 h-4" />
+              Đóng
+            </button>
+            <img
+              src={previewImageUrl}
+              alt="Xem ảnh lớn"
+              className="max-w-full max-h-[85vh] rounded-xl object-contain shadow-2xl"
+            />
+          </div>
+        </div>
+      )}
+    </div>
   );
 };

@@ -84,6 +84,15 @@ import {
   testMuse2ApiAccount,
 } from './server/muse2api';
 import {
+  addGeminiAccount,
+  deleteGeminiAccount,
+  getGeminiPoolSummary,
+  listGeminiAccountsPublic,
+  setChairmanGeminiAccount,
+  testGeminiAccountConnection,
+  updateGeminiAccount,
+} from './server/geminiPool';
+import {
   analyzeAndDirectWithChairman,
   commandIncidentAction,
   controlProductionRun,
@@ -94,6 +103,7 @@ import {
   executeChairmanPlanOption,
   getBackupExportFilePath,
   getCommandCenterState,
+  handoffSessionToCloud,
   initCommandCenter,
   reportCommandCenterIncident,
   resolveArtifactDiskPath,
@@ -110,6 +120,7 @@ import {
   testMuseAgentConnection,
   updateCloudConfig,
   updateMuseAgentConfig,
+  updateSessionWorkforceConfig,
   uploadCommandCenterAttachment,
 } from './server/commandCenter';
 import {
@@ -6107,12 +6118,132 @@ async function startServer() {
     }
   });
 
+  // ---- Gemini API Pool Management (Multi-Key + Chairman) ----
+  app.get('/api/gemini-accounts', (_req, res) => {
+    try {
+      res.json({
+        accounts: listGeminiAccountsPublic(),
+        summary: getGeminiPoolSummary(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể tải danh sách Gemini API.' });
+    }
+  });
+
+  app.post('/api/gemini-accounts', (req, res) => {
+    try {
+      const account = addGeminiAccount({
+        label: String(req.body?.label || ''),
+        apiKey: String(req.body?.apiKey || ''),
+        note: typeof req.body?.note === 'string' ? req.body.note : undefined,
+        preferredModel: typeof req.body?.preferredModel === 'string' ? req.body.preferredModel : undefined,
+        setAsChairman: req.body?.setAsChairman === true,
+      });
+      res.json({
+        account,
+        accounts: listGeminiAccountsPublic(),
+        summary: getGeminiPoolSummary(),
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể thêm tài khoản Gemini API.' });
+    }
+  });
+
+  app.patch('/api/gemini-accounts/:id', (req, res) => {
+    try {
+      const account = updateGeminiAccount(req.params.id, {
+        label: typeof req.body?.label === 'string' ? req.body.label : undefined,
+        apiKey: typeof req.body?.apiKey === 'string' ? req.body.apiKey : undefined,
+        enabled: typeof req.body?.enabled === 'boolean' ? req.body.enabled : undefined,
+        note: typeof req.body?.note === 'string' ? req.body.note : undefined,
+        preferredModel: typeof req.body?.preferredModel === 'string' ? req.body.preferredModel : undefined,
+      });
+      res.json({
+        account,
+        accounts: listGeminiAccountsPublic(),
+        summary: getGeminiPoolSummary(),
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể cập nhật tài khoản Gemini API.' });
+    }
+  });
+
+  app.delete('/api/gemini-accounts/:id', (req, res) => {
+    try {
+      deleteGeminiAccount(req.params.id);
+      res.json({
+        ok: true,
+        accounts: listGeminiAccountsPublic(),
+        summary: getGeminiPoolSummary(),
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể xóa tài khoản Gemini API.' });
+    }
+  });
+
+  app.post('/api/gemini-accounts/:id/test', async (req, res) => {
+    try {
+      const result = await testGeminiAccountConnection(req.params.id);
+      res.json({
+        ...result,
+        accounts: listGeminiAccountsPublic(),
+        summary: getGeminiPoolSummary(),
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Kiểm tra kết nối Gemini API thất bại.' });
+    }
+  });
+
+  app.post('/api/gemini-accounts/:id/set-chairman', (req, res) => {
+    try {
+      const account = setChairmanGeminiAccount(req.params.id);
+      res.json({
+        account,
+        accounts: listGeminiAccountsPublic(),
+        summary: getGeminiPoolSummary(),
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể đổi Chỉ huy trưởng Gemini.' });
+    }
+  });
+
   app.post('/api/command-center/productions/:runId/select', async (req, res) => {
     try {
       const state = await selectProductionRun(req.params.runId);
       res.json(state);
     } catch (err: any) {
       res.status(404).json({ error: err?.message || 'Không tìm thấy phiên sản xuất.' });
+    }
+  });
+
+  app.post('/api/command-center/productions/:runId/workforce', async (req, res) => {
+    try {
+      const state = await updateSessionWorkforceConfig(req.params.runId, {
+        aiWorkforceMode: req.body?.aiWorkforceMode,
+        selectedGeminiAccountIds: Array.isArray(req.body?.selectedGeminiAccountIds)
+          ? req.body.selectedGeminiAccountIds
+          : undefined,
+        chairmanGeminiAccountId:
+          typeof req.body?.chairmanGeminiAccountId === 'string' ? req.body.chairmanGeminiAccountId : undefined,
+      });
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể cập nhật lực lượng AI cho phiên.' });
+    }
+  });
+
+  app.post('/api/command-center/productions/:runId/handoff-cloud', async (req, res) => {
+    try {
+      const result = await handoffSessionToCloud(req.params.runId, {
+        selectedGeminiAccountIds: Array.isArray(req.body?.selectedGeminiAccountIds)
+          ? req.body.selectedGeminiAccountIds
+          : undefined,
+        chairmanGeminiAccountId:
+          typeof req.body?.chairmanGeminiAccountId === 'string' ? req.body.chairmanGeminiAccountId : undefined,
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Chuyển giao phiên lên Đám mây thất bại.' });
     }
   });
 

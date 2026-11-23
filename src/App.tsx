@@ -66,7 +66,7 @@ export default function App() {
   const [mountedCommandCenter, setMountedCommandCenter] = useState(false);
   const [mountedProductionMonitor, setMountedProductionMonitor] = useState(false);
   const [ccSubTabRequest, setCcSubTabRequest] = useState<{
-    subTab: 'overview' | 'chairman' | 'chat' | 'tasks' | 'pipeline' | 'qa' | 'incidents' | 'perf';
+    subTab: 'overview' | 'progress' | 'chairman' | 'chat' | 'tasks' | 'pipeline' | 'qa' | 'incidents' | 'perf';
     nonce: number;
   } | null>(null);
   const ccLive = useCommandCenterLive(activeTab === 'command_center' || activeTab === 'production_monitor');

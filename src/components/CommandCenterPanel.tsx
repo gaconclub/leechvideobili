@@ -3,6 +3,7 @@ import {
   Activity,
   AlertOctagon,
   AlertTriangle,
+  CloudUpload,
   Download,
   Film,
   Image as ImageIcon,
@@ -42,6 +43,7 @@ import {
   MUSE_AVATAR_PRESETS,
   renderPresetSvgIcon,
 } from './command-center/AgentAvatar';
+import { AiProgressBoardTab } from './command-center/AiProgressBoardTab';
 import { ChairmanCommandPanel } from './command-center/ChairmanCommandPanel';
 import { CommunicationHub } from './command-center/CommunicationHub';
 import { IncidentCommandTab } from './command-center/IncidentCommandTab';
@@ -49,6 +51,7 @@ import { PerformanceMonitorTab } from './command-center/PerformanceMonitorTab';
 
 type CommandCenterSubTab =
   | 'overview'
+  | 'progress'
   | 'chairman'
   | 'agents'
   | 'chat'
@@ -63,6 +66,7 @@ type CommandCenterSubTab =
 
 const SUB_TABS: { id: CommandCenterSubTab; label: string }[] = [
   { id: 'overview', label: 'Tổng quan & Lệnh tổng' },
+  { id: 'progress', label: 'Tiến độ AI & Cloud' },
   { id: 'chairman', label: 'Chủ tịch Điều hành' },
   { id: 'agents', label: 'Đội ngũ 5 Muse AI' },
   { id: 'chat', label: 'Trung tâm giao tiếp' },
@@ -196,6 +200,7 @@ interface CommandCenterPanelProps {
 }
 
 export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
+  onOpenSettings,
   onOpenProductionMonitor,
   isActiveTab = false,
   liveState: state,
@@ -779,6 +784,47 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
          ========================================================= */}
       {subTab === 'overview' && (
         <div className="space-y-5">
+          {/* Quick Workforce Mode & Cloud Handoff Bar */}
+          {state?.activeRun && (
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-400/20 bg-white dark:bg-[#0c1021]/95 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="font-bold text-slate-900 dark:text-white">
+                  Lực lượng phiên:{' '}
+                  {state.activeRun.aiWorkforceMode === 'gemini_only'
+                    ? 'Chỉ Gemini làm việc'
+                    : state.activeRun.aiWorkforceMode === 'muse_only'
+                    ? 'Chỉ Muse làm việc'
+                    : 'Gemini + Muse cùng làm việc'}
+                </span>
+                <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
+                <span className="text-slate-600 dark:text-slate-300 tabular-nums">
+                  {(state.activeRun.selectedGeminiAccountIds || []).length} Gemini API tham gia
+                </span>
+                <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
+                <span
+                  className={
+                    state.activeRun.cloudHandoff?.safeToShutdownLocalPc
+                      ? 'font-semibold text-emerald-600 dark:text-emerald-400'
+                      : 'text-slate-500 dark:text-slate-400'
+                  }
+                >
+                  {state.activeRun.cloudHandoff?.safeToShutdownLocalPc
+                    ? 'Đã bàn giao Cloud · An toàn tắt máy'
+                    : 'Thiết bị cá nhân đang kết nối'}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSubTab('progress')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-semibold transition cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <CloudUpload className="w-3.5 h-3.5" />
+                <span>Chọn lực lượng &amp; Chuyển giao Đám mây</span>
+              </button>
+            </div>
+          )}
+
           {/* Escalated Incidents Banner (ONLY interrupts user when Muse 01 escalates) */}
           {escalatedIncidents.length > 0 && (
             <div className="rounded-2xl border border-rose-400/70 bg-rose-50/95 dark:bg-rose-950/40 p-4 space-y-2.5 text-xs">
@@ -1605,6 +1651,18 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
             if (incId) setSelectedIncidentId(incId);
             setSubTab('incidents');
           }}
+        />
+      )}
+
+      {/* =========================================================
+          1A. VISUAL AI PROGRESS BOARD, WORKFORCE SELECTOR & CLOUD HANDOFF
+         ========================================================= */}
+      {subTab === 'progress' && state && (
+        <AiProgressBoardTab
+          state={state}
+          setState={setState}
+          onOpenSettings={onOpenSettings}
+          onRefresh={() => void onRefreshLive(true)}
         />
       )}
 

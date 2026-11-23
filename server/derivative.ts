@@ -11,6 +11,7 @@ import {
   generateVideoBufferViaMuse2Api,
   getMuse2ApiStatus,
 } from './muse2api';
+import { resolveChairmanGeminiAccount } from './geminiPool';
 import {
   buildCinematicFilmmakingScriptDirective,
   CINEMATIC_FILMMAKING_SKILL,
@@ -311,11 +312,14 @@ setInterval(() => {
   }
 }, 15 * 60 * 1000).unref();
 
-export function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
+export function getGeminiClient(apiKeyOverride?: string): GoogleGenAI {
+  const apiKey =
+    apiKeyOverride?.trim() ||
+    resolveChairmanGeminiAccount()?.apiKey ||
+    process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
-      'Chưa phát hiện GEMINI_API_KEY trên máy chủ. Hãy thêm GEMINI_API_KEY trong bảng Settings > Secrets (hoặc tệp .env trên máy) để dùng tính năng AI học & tạo video phái sinh.'
+      'Chưa phát hiện tài khoản Gemini API khả dụng trên máy chủ. Hãy thêm API Key trong Cài đặt > Kết nối API Gemini hoặc Settings > Secrets.'
     );
   }
   return new GoogleGenAI({
@@ -4562,6 +4566,7 @@ export async function generateStudioImage(params: {
   selectedCharacterIds?: string[];
   characterRefs?: StudioCharacterRefInput[];
   museAccountId?: string;
+  geminiApiKey?: string;
   allowFreeCostumeChange?: boolean;
 }): Promise<{ dataUrl: string; model: string }> {
   const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
@@ -4676,7 +4681,7 @@ export async function generateStudioImage(params: {
     return { dataUrl: res.dataUrl, model: 'muse-image (Muse2API)' };
   }
 
-  const ai = getGeminiClient();
+  const ai = getGeminiClient(params.geminiApiKey);
   const parts: any[] = [];
   selectedRefs.forEach((ref, idx) => {
     const parsed = parseDataUrlToBuffer(ref.dataUrl);
@@ -5064,6 +5069,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
   sceneImageDataUrl?: string;
   characterRefs?: StudioCharacterRefInput[];
   museAccountId?: string;
+  geminiApiKey?: string;
   allowFreeCostumeChange?: boolean;
   strictSingleFrameLock?: boolean;
 }): Promise<{ assetId: string; previewUrl: string; durationSec: number; hasAudio: boolean; model: string }> {
@@ -5235,7 +5241,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
     };
   }
 
-  const ai = getGeminiClient();
+  const ai = getGeminiClient(params.geminiApiKey);
   const inputParts: any[] = [];
 
   // Interleave explicit text labels BEFORE each image so Gemini Omni Flash NEVER treats Image #2 as an ending frame or blends/swaps faces!

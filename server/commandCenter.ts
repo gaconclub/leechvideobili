@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
-import { Type } from '@google/genai';
+import { ThinkingLevel, Type } from '@google/genai';
 import {
   chatWithMuse2ApiSpark,
   getMuse2ApiStatus,
@@ -11,6 +11,15 @@ import {
   resolveMuse2ApiConfig,
   setMuse2ApiRuntimeOverride,
 } from './muse2api';
+import {
+  getGeminiPoolSummary,
+  hasAnyEnabledGeminiAccount,
+  listGeminiAccountsPublic,
+  pickWorkerGeminiAccount,
+  recordGeminiAccountUsage,
+  resolveChairmanGeminiAccount,
+  testGeminiAccountConnection,
+} from './geminiPool';
 import {
   formatGeminiError,
   generateSceneVideoWithOmniFlash,
@@ -37,11 +46,14 @@ import type {
   StudioVideoStyle,
 } from '../src/types/bilibili';
 import type {
+  AiWorkforceMode,
   ChairmanActionType,
   ChairmanBriefing,
   ChairmanConfig,
   ChairmanPlanOption,
   ChairmanScenePatch,
+  CloudHandoffState,
+  CloudHandoffStep,
   CloudOrchestratorConfig,
   CommandActivityLog,
   CommandBackupRecord,
@@ -58,6 +70,7 @@ import type {
   CostumeMismatchReport,
   CostumeVersionSnapshot,
   FastCommStats,
+  GeminiWorkerProgress,
   IncidentCategory,
   IncidentDialogTurn,
   IncidentRecord,
@@ -2807,7 +2820,7 @@ export async function refreshIntegrationHealth(force = false): Promise<MuseInteg
     }
   }
 
-  const geminiConfigured = Boolean(process.env.GEMINI_API_KEY?.trim());
+  const geminiConfigured = hasAnyEnabledGeminiAccount() || Boolean(process.env.GEMINI_API_KEY?.trim());
   const ffmpegAvailable = await checkFfmpegQuick();
   const cfg = resolveMuse2ApiConfig();
   const warnings: string[] = [];
@@ -3021,6 +3034,104 @@ async function extractFramesFromVideoDisk(videoPath: string, count = 3): Promise
   return frames;
 }
 
+function resolveSessionWorkforce(runId?: string): {
+  mode: AiWorkforceMode;
+  selectedGeminiAccountIds: string[];
+  chairmanGeminiAccountId: string;
+  cloudActive: boolean;
+  handoffInProgress: boolean;
+} {
+  const run = runId ? storeDoc.runs.find((r) => r.id === runId) : undefined;
+  const allAccounts = listGeminiAccountsPublic();
+  const enabledIds = allAccounts.filter((a) => a.enabled).map((a) => a.id);
+  const summary = getGeminiPoolSummary();
+
+  const mode: AiWorkforceMode =
+    run?.cloudHandoff?.status === 'cloud_active'
+      ? 'gemini_only'
+      : run?.aiWorkforceMode || 'hybrid_gemini_muse';
+
+  const selectedGeminiAccountIds =
+    run?.selectedGeminiAccountIds && run.selectedGeminiAccountIds.length > 0
+      ? run.selectedGeminiAccountIds.filter((id) => enabledIds.includes(id))
+      : enabledIds;
+
+  const effectiveSelectedIds = selectedGeminiAccountIds.length > 0 ? selectedGeminiAccountIds : enabledIds;
+  const chairmanGeminiAccountId =
+    run?.chairmanGeminiAccountId && enabledIds.includes(run.chairmanGeminiAccountId)
+      ? run.chairmanGeminiAccountId
+      : summary.chairmanAccountId;
+
+  return {
+    mode,
+    selectedGeminiAccountIds: effectiveSelectedIds,
+    chairmanGeminiAccountId,
+    cloudActive: run?.cloudHandoff?.status === 'cloud_active',
+    handoffInProgress: Boolean(run?.cloudHandoff?.inProgress),
+  };
+}
+
+function resolveMediaEngineForTask(
+  task: CommandTask,
+  agent: MuseAgentConfig,
+  health: MuseIntegrationHealth
+): {
+  engine: 'muse2api' | 'gemini';
+  geminiAccount: { id: string; label: string; apiKey: string } | null;
+  workforceMode: AiWorkforceMode;
+} {
+  const wf = resolveSessionWorkforce(task.runId);
+  const useMuseReady =
+    health.muse2ApiReachable &&
+    health.muse2ApiStatus === 'ready' &&
+    (agent.boundAccountId !== 'auto' || health.healthyAccounts > 0 || health.accounts.some((a) => a.enabled));
+
+  if (wf.mode === 'gemini_only') {
+    const picked = pickWorkerGeminiAccount({
+      allowedAccountIds: wf.selectedGeminiAccountIds,
+      preferredAccountId: task.assignedGeminiAccountId,
+      chairmanAccountId: wf.chairmanGeminiAccountId,
+    });
+    if (!picked) {
+      throw new Error(
+        'Chế độ Chỉ Gemini / Đám mây yêu cầu ít nhất 1 tài khoản Gemini API đang bật. Hãy thêm hoặc bật API trong Cài đặt > Kết nối API Gemini.'
+      );
+    }
+    task.assignedGeminiAccountId = picked.id;
+    task.assignedGeminiAccountLabel = picked.label;
+    return { engine: 'gemini', geminiAccount: picked, workforceMode: wf.mode };
+  }
+
+  if (wf.mode === 'muse_only') {
+    if (!useMuseReady) {
+      throw new Error(
+        `Chế độ Chỉ Muse yêu cầu Muse2API trực tuyến & tài khoản Muse.ai sẵn sàng để ${agent.name} thực thi ${task.code}.`
+      );
+    }
+    return { engine: 'muse2api', geminiAccount: null, workforceMode: wf.mode };
+  }
+
+  // hybrid_gemini_muse
+  if (useMuseReady) {
+    return { engine: 'muse2api', geminiAccount: null, workforceMode: wf.mode };
+  }
+  if (agent.engineMode === 'muse2api_with_gemini_fallback' && health.geminiConfigured) {
+    const picked = pickWorkerGeminiAccount({
+      allowedAccountIds: wf.selectedGeminiAccountIds,
+      preferredAccountId: task.assignedGeminiAccountId,
+      chairmanAccountId: wf.chairmanGeminiAccountId,
+    });
+    if (picked) {
+      task.assignedGeminiAccountId = picked.id;
+      task.assignedGeminiAccountLabel = picked.label;
+      return { engine: 'gemini', geminiAccount: picked, workforceMode: wf.mode };
+    }
+  }
+  throw new Error(
+    `${agent.name} cần Muse2API trực tuyến (hoặc bật Gemini dự phòng / chuyển sang chế độ Chỉ Gemini) để thực thi ${task.code}.`
+  );
+}
+
 async function runAgentTextInference(params: {
   agent: MuseAgentConfig;
   systemPrompt: string;
@@ -3029,17 +3140,31 @@ async function runAgentTextInference(params: {
   labeledAttachments?: { label: string; dataUrl: string }[];
   preferGeminiVision?: boolean;
   jsonMode?: boolean;
+  runId?: string;
+  task?: CommandTask;
 }): Promise<{ text: string; provider: string; accountUsed?: string }> {
   const health = await refreshIntegrationHealth();
+  const wf = resolveSessionWorkforce(params.runId || params.task?.runId || getEffectiveSelectedRunId() || undefined);
+
   const canTryMuse =
+    wf.mode !== 'gemini_only' &&
     health.muse2ApiReachable &&
     health.muse2ApiStatus === 'ready' &&
     (params.agent.boundAccountId === 'auto'
       ? health.healthyAccounts > 0 || health.accounts.some((a) => a.enabled)
       : true);
 
-  const runGeminiMultimodal = async (providerPrefix: string): Promise<{ text: string; provider: string }> => {
-    const ai = getGeminiClient();
+  const runGeminiMultimodal = async (providerPrefix: string): Promise<{ text: string; provider: string; accountUsed?: string }> => {
+    const picked = pickWorkerGeminiAccount({
+      allowedAccountIds: wf.selectedGeminiAccountIds,
+      preferredAccountId: params.task?.assignedGeminiAccountId,
+      chairmanAccountId: wf.chairmanGeminiAccountId,
+    });
+    if (picked && params.task) {
+      params.task.assignedGeminiAccountId = picked.id;
+      params.task.assignedGeminiAccountLabel = picked.label;
+    }
+    const ai = getGeminiClient(picked?.apiKey);
     const parts: any[] = [];
     if (params.labeledAttachments && params.labeledAttachments.length > 0) {
       for (const item of params.labeledAttachments.slice(0, 7)) {
@@ -3062,6 +3187,7 @@ async function runAgentTextInference(params: {
     const candidates = prioritizeGeminiCandidateModels(['gemini-4-hydrogen', 'gemini-3.1-flash-lite']);
     let lastErr: any;
     for (const model of candidates) {
+      const t0 = Date.now();
       try {
         const res = await retryWithGeminiBackoff(
           () =>
@@ -3074,12 +3200,18 @@ async function runAgentTextInference(params: {
         );
         const text = String(res.text || '').trim();
         if (!text) throw new Error(`Mô hình ${model} trả về rỗng.`);
+        recordGeminiAccountUsage(picked?.id, true, { latencyMs: Date.now() - t0 });
         return {
           text,
           provider: `${providerPrefix} (${model})`,
+          accountUsed: picked?.label || 'Gemini Cloud',
         };
       } catch (err: any) {
         lastErr = err;
+        recordGeminiAccountUsage(picked?.id, false, {
+          latencyMs: Date.now() - t0,
+          errorMsg: String(err?.message || err),
+        });
         markGeminiModelOverloaded(model, err);
         if (!shouldFallbackGeminiModel(err)) throw new Error(formatGeminiError(err));
       }
@@ -3087,8 +3219,14 @@ async function runAgentTextInference(params: {
     throw new Error(formatGeminiError(lastErr));
   };
 
+  // Mode 1: Chỉ Gemini làm việc (hoặc phiên đã bàn giao lên Cloud) — bỏ qua hoàn toàn Muse2API
+  if (wf.mode === 'gemini_only') {
+    return await runGeminiMultimodal('gemini-cloud');
+  }
+
   // For multi-image Vision QA (labeledAttachments + preferGeminiVision), Gemini Vision reads interleaved image labels far more accurately than unlabeled text chat
   if (
+    wf.mode !== 'muse_only' &&
     params.preferGeminiVision &&
     health.geminiConfigured &&
     ((params.labeledAttachments && params.labeledAttachments.length > 0) || (params.attachments && params.attachments.length > 0))
@@ -3134,12 +3272,12 @@ async function runAgentTextInference(params: {
       : `Muse2API (${health.muse2ApiBaseUrl}) chưa trực tuyến.`;
   }
 
-  if (params.agent.engineMode === 'muse2api_with_gemini_fallback' && health.geminiConfigured) {
+  if (wf.mode !== 'muse_only' && params.agent.engineMode === 'muse2api_with_gemini_fallback' && health.geminiConfigured) {
     return await runGeminiMultimodal('gemini-fallback');
   }
 
   throw new Error(
-    `${params.agent.name} (${params.agent.roleTitle}) chưa thể thực thi: ${museError}. Hãy kết nối Muse2API + tài khoản Muse.ai thực tế hoặc bật chế độ Gemini Dự phòng cho agent này.`
+    `${params.agent.name} (${params.agent.roleTitle}) chưa thể thực thi: ${museError}. Hãy kết nối Muse2API + tài khoản Muse.ai thực tế hoặc chuyển lực lượng phiên sang Gemini.`
   );
 }
 
@@ -3768,35 +3906,37 @@ async function executeDesignCharacterRefTask(task: CommandTask, agent: MuseAgent
   if (!ch) throw new Error(`Không tìm thấy nhân vật ${task.characterId} trong Project Memory.`);
 
   const health = await refreshIntegrationHealth();
-  const useMuse =
-    health.muse2ApiReachable &&
-    health.muse2ApiStatus === 'ready' &&
-    (agent.boundAccountId !== 'auto' || health.healthyAccounts > 0 || health.accounts.some((a) => a.enabled));
-
-  let engine: 'muse2api' | 'gemini' = 'muse2api';
-  if (!useMuse) {
-    if (agent.engineMode === 'muse2api_with_gemini_fallback' && health.geminiConfigured) {
-      engine = 'gemini';
-    } else {
-      throw new Error(
-        `${agent.name} cần Muse2API trực tuyến (hoặc bật Gemini dự phòng) để tạo ảnh nhân vật "${ch.name}".`
-      );
-    }
-  }
+  const { engine, geminiAccount } = resolveMediaEngineForTask(task, agent, health);
 
   const charBible = `${ch.name}: ${ch.syncProfile.face}; ${ch.syncProfile.physique}; ${ch.syncProfile.costume}; ${ch.syncProfile.distinguishingMarks}`;
-  const img = await generateStudioImage({
-    mode: 'character',
-    prompt: task.instructions || charBible,
-    aspectRatio: '1:1',
-    engine,
-    videoStyle: mem.videoStyle,
-    characterBible: charBible,
-    costumeBible: ch.syncProfile.costume,
-    visualStyleBible: mem.visualBible,
-    museAccountId: agent.boundAccountId,
-    allowFreeCostumeChange: mem.allowFreeCostumeChange === true,
-  });
+  const t0 = Date.now();
+  let img: { dataUrl: string; model: string };
+  try {
+    img = await generateStudioImage({
+      mode: 'character',
+      prompt: task.instructions || charBible,
+      aspectRatio: '1:1',
+      engine,
+      videoStyle: mem.videoStyle,
+      characterBible: charBible,
+      costumeBible: ch.syncProfile.costume,
+      visualStyleBible: mem.visualBible,
+      museAccountId: agent.boundAccountId,
+      geminiApiKey: geminiAccount?.apiKey,
+      allowFreeCostumeChange: mem.allowFreeCostumeChange === true,
+    });
+    if (engine === 'gemini' && geminiAccount) {
+      recordGeminiAccountUsage(geminiAccount.id, true, { latencyMs: Date.now() - t0 });
+    }
+  } catch (err: any) {
+    if (engine === 'gemini' && geminiAccount) {
+      recordGeminiAccountUsage(geminiAccount.id, false, {
+        latencyMs: Date.now() - t0,
+        errorMsg: String(err?.message || err),
+      });
+    }
+    throw err;
+  }
 
   throwIfRunStopped(task.runId);
 
@@ -3841,21 +3981,7 @@ async function executeDesignSceneImageTask(task: CommandTask, agent: MuseAgentCo
   if (!sc) throw new Error(`Không tìm thấy phân cảnh ${task.sceneId} trong Project Memory.`);
 
   const health = await refreshIntegrationHealth();
-  const useMuse =
-    health.muse2ApiReachable &&
-    health.muse2ApiStatus === 'ready' &&
-    (agent.boundAccountId !== 'auto' || health.healthyAccounts > 0 || health.accounts.some((a) => a.enabled));
-
-  let engine: 'muse2api' | 'gemini' = 'muse2api';
-  if (!useMuse) {
-    if (agent.engineMode === 'muse2api_with_gemini_fallback' && health.geminiConfigured) {
-      engine = 'gemini';
-    } else {
-      throw new Error(
-        `${agent.name} cần Muse2API trực tuyến (hoặc bật Gemini dự phòng) để tạo ảnh Cảnh ${sc.index}.`
-      );
-    }
-  }
+  const { engine, geminiAccount } = resolveMediaEngineForTask(task, agent, health);
 
   const matchedSceneChars = resolveCharactersInScene(mem, sc);
   const charRefs = matchedSceneChars
@@ -3882,33 +4008,49 @@ async function executeDesignSceneImageTask(task: CommandTask, agent: MuseAgentCo
     )
     .join(' | ');
 
-  const img = await generateStudioImage({
-    mode: 'scene',
-    prompt: task.instructions || `${sc.actionDetail}. ${sc.settingDetail}`,
-    aspectRatio: mem.aspectRatio,
-    engine,
-    videoStyle: mem.videoStyle,
-    characterBible: charBibleText,
-    settingBible: mem.settingBible,
-    visualStyleBible: mem.visualBible,
-    costumeBible: sc.costume || mem.costumeBible,
-    continuityBible: mem.continuityBible,
-    sceneIndex: sc.index,
-    totalScenes: mem.scenes.length,
-    sceneTitle: sc.title,
-    charactersInScene: matchedSceneChars.map((c) => c.name).join(', '),
-    selectedCharacterIds: matchedSceneChars.map((c) => c.id),
-    settingDetail: sc.settingDetail,
-    actionDetail: sc.actionDetail,
-    dialogue: sc.dialogue,
-    sceneSummary: sc.title,
-    costume: sc.costume,
-    cameraAngle: sc.cameraAngle,
-    vfxNotes: sc.vfxNotes,
-    characterRefs: charRefs,
-    museAccountId: agent.boundAccountId,
-    allowFreeCostumeChange: mem.allowFreeCostumeChange === true,
-  });
+  const t0 = Date.now();
+  let img: { dataUrl: string; model: string };
+  try {
+    img = await generateStudioImage({
+      mode: 'scene',
+      prompt: task.instructions || `${sc.actionDetail}. ${sc.settingDetail}`,
+      aspectRatio: mem.aspectRatio,
+      engine,
+      videoStyle: mem.videoStyle,
+      characterBible: charBibleText,
+      settingBible: mem.settingBible,
+      visualStyleBible: mem.visualBible,
+      costumeBible: sc.costume || mem.costumeBible,
+      continuityBible: mem.continuityBible,
+      sceneIndex: sc.index,
+      totalScenes: mem.scenes.length,
+      sceneTitle: sc.title,
+      charactersInScene: matchedSceneChars.map((c) => c.name).join(', '),
+      selectedCharacterIds: matchedSceneChars.map((c) => c.id),
+      settingDetail: sc.settingDetail,
+      actionDetail: sc.actionDetail,
+      dialogue: sc.dialogue,
+      sceneSummary: sc.title,
+      costume: sc.costume,
+      cameraAngle: sc.cameraAngle,
+      vfxNotes: sc.vfxNotes,
+      characterRefs: charRefs,
+      museAccountId: agent.boundAccountId,
+      geminiApiKey: geminiAccount?.apiKey,
+      allowFreeCostumeChange: mem.allowFreeCostumeChange === true,
+    });
+    if (engine === 'gemini' && geminiAccount) {
+      recordGeminiAccountUsage(geminiAccount.id, true, { latencyMs: Date.now() - t0 });
+    }
+  } catch (err: any) {
+    if (engine === 'gemini' && geminiAccount) {
+      recordGeminiAccountUsage(geminiAccount.id, false, {
+        latencyMs: Date.now() - t0,
+        errorMsg: String(err?.message || err),
+      });
+    }
+    throw err;
+  }
 
   throwIfRunStopped(task.runId);
 
@@ -4029,21 +4171,7 @@ async function executeRestoreCostumeAndRegenImageTask(
   }
 
   const health = await refreshIntegrationHealth();
-  const useMuse =
-    health.muse2ApiReachable &&
-    health.muse2ApiStatus === 'ready' &&
-    (agent.boundAccountId !== 'auto' || health.healthyAccounts > 0 || health.accounts.some((a) => a.enabled));
-
-  let engine: 'muse2api' | 'gemini' = 'muse2api';
-  if (!useMuse) {
-    if (agent.engineMode === 'muse2api_with_gemini_fallback' && health.geminiConfigured) {
-      engine = 'gemini';
-    } else {
-      throw new Error(
-        `${agent.name} cần Muse2API trực tuyến (hoặc bật Gemini dự phòng) để khôi phục trang phục & tạo lại ảnh.`
-      );
-    }
-  }
+  const { engine, geminiAccount } = resolveMediaEngineForTask(task, agent, health);
 
   if (ch) ensureCharacterOriginalAnchors(ch);
   const canonicalCostume = getCharacterCanonicalCostume(ch) || recovery?.expectedCostume || mem.costumeBible;
@@ -4128,6 +4256,7 @@ async function executeRestoreCostumeAndRegenImageTask(
       vfxNotes: refreshedSc.vfxNotes,
       characterRefs: charRefs,
       museAccountId: agent.boundAccountId,
+      geminiApiKey: geminiAccount?.apiKey,
       allowFreeCostumeChange: false,
     });
     throwIfRunStopped(task.runId);
@@ -4721,21 +4850,9 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
   }
 
   const health = await refreshIntegrationHealth();
-  const useMuse =
-    health.muse2ApiReachable &&
-    health.muse2ApiStatus === 'ready' &&
-    (agent.boundAccountId !== 'auto' || health.healthyAccounts > 0 || health.accounts.some((a) => a.enabled));
-
-  let engine: 'muse2api' | 'gemini' = 'muse2api';
-  if (!useMuse) {
-    if (agent.engineMode === 'muse2api_with_gemini_fallback' && health.geminiConfigured) {
-      engine = 'gemini';
-    } else {
-      throw new Error(
-        `${agent.name} cần Muse2API trực tuyến (hoặc bật Gemini dự phòng) để tạo video Cảnh ${sc.index}.`
-      );
-    }
-  }
+  const resolvedMedia = resolveMediaEngineForTask(task, agent, health);
+  let engine: 'muse2api' | 'gemini' = resolvedMedia.engine;
+  let geminiAccount = resolvedMedia.geminiAccount;
 
   let sceneKeyframeDataUrl = artifactUrlToDataUrl(sc.keyframeImageUrl);
   if (!sceneKeyframeDataUrl && sc.continuityAnchorFromSceneId) {
@@ -4767,17 +4884,29 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
   // Strict Single-Frame Image-to-Video Lock:
   // When retrying a video whose scene keyframe image is ALREADY valid (e.g. previous video drifted into a stranger),
   // lock strictly onto the single verified scene keyframe image (no studio portraits competing with Image #1)
-  // and auto-route to Gemini Omni Flash (which supports explicit interleaved image labels) if Muse2API drifted!
+  // and auto-route to Gemini Omni Flash (which supports explicit interleaved image labels) if Muse2API drifted (except in strict muse_only mode)!
   const isStrictVideoRetry =
     sc.retryCount >= 1 &&
     Boolean(sceneKeyframeDataUrl);
   if (
+    resolvedMedia.workforceMode !== 'muse_only' &&
     isStrictVideoRetry &&
     engine === 'muse2api' &&
     health.geminiConfigured &&
     (task.instructions?.includes('Strict Single-Frame') || task.instructions?.includes('KHÓA KHUNG HÌNH') || sc.retryCount >= 1)
   ) {
-    engine = 'gemini';
+    const wf = resolveSessionWorkforce(task.runId);
+    const picked = pickWorkerGeminiAccount({
+      allowedAccountIds: wf.selectedGeminiAccountIds,
+      preferredAccountId: task.assignedGeminiAccountId,
+      chairmanAccountId: wf.chairmanGeminiAccountId,
+    });
+    if (picked) {
+      engine = 'gemini';
+      geminiAccount = picked;
+      task.assignedGeminiAccountId = picked.id;
+      task.assignedGeminiAccountLabel = picked.label;
+    }
   }
 
   const charBibleText = matchedSceneChars
@@ -4832,9 +4961,13 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
     sceneImageDataUrl: sceneKeyframeDataUrl,
     characterRefs: charRefs,
     museAccountId: agent.boundAccountId,
+    geminiApiKey: geminiAccount?.apiKey,
     allowFreeCostumeChange: mem.allowFreeCostumeChange === true,
     strictSingleFrameLock: isStrictVideoRetry,
   });
+  if (engine === 'gemini' && geminiAccount) {
+    recordGeminiAccountUsage(geminiAccount.id, true);
+  }
 
   throwIfRunStopped(task.runId);
 
@@ -5540,6 +5673,70 @@ function enrichProductionRun(run: ProductionRun): ProductionRun {
     estimatedRemainingSec = Math.max(5, Math.round((elapsedSec * (100 - overallProgressPct)) / overallProgressPct));
   }
 
+  const wf = resolveSessionWorkforce(run.id);
+  const geminiAccounts = listGeminiAccountsPublic();
+  const perGeminiProgress: GeminiWorkerProgress[] = geminiAccounts
+    .filter((acc) => acc.enabled || wf.selectedGeminiAccountIds.includes(acc.id))
+    .map((acc) => {
+      const accTasks = runTasks.filter(
+        (t) =>
+          t.assignedGeminiAccountId === acc.id ||
+          (t.assignedAgentId === 'chairman' && acc.id === wf.chairmanGeminiAccountId)
+      );
+      const totalTasks = accTasks.length;
+      const completedTasks = accTasks.filter((t) => t.status === 'completed').length;
+      const runningTasks = accTasks.filter((t) => t.status === 'running').length;
+      const queuedTasks = accTasks.filter((t) => t.status === 'queued' || t.status === 'blocked_by_deps').length;
+      const failedTasks = accTasks.filter((t) => t.status === 'failed').length;
+      const runningTask = accTasks.find((t) => t.status === 'running');
+      const progressPct =
+        totalTasks > 0
+          ? completedTasks === totalTasks
+            ? 100
+            : Math.min(96, Math.round(((completedTasks + runningTasks * 0.45) / totalTasks) * 100))
+          : run.status === 'completed'
+          ? 100
+          : 0;
+      return {
+        accountId: acc.id,
+        label: acc.label,
+        isChairman: acc.id === wf.chairmanGeminiAccountId,
+        status: acc.status,
+        completedTasks,
+        runningTasks,
+        queuedTasks,
+        failedTasks,
+        totalTasks,
+        progressPct,
+        currentTaskTitle: runningTask?.title || accTasks.find((t) => t.status === 'queued')?.title,
+      };
+    });
+
+  const existingHandoff = run.cloudHandoff;
+  const computedHandoff: CloudHandoffState = existingHandoff || {
+    status: wf.mode === 'gemini_only' ? 'cloud_active' : 'local_active',
+    inProgress: false,
+    localDeviceStatus: wf.mode === 'gemini_only' ? 'safe_to_shutdown' : 'connected',
+    museConnectionStatus:
+      wf.mode === 'gemini_only'
+        ? 'disconnected'
+        : cachedHealth?.muse2ApiReady
+        ? 'active'
+        : 'inactive',
+    cloudStatus: hasAnyEnabledGeminiAccount()
+      ? wf.mode === 'gemini_only'
+        ? 'running'
+        : 'ready'
+      : 'unavailable',
+    safeToShutdownLocalPc: wf.mode === 'gemini_only',
+    reassignedTaskCount: 0,
+    preservedCompletedImages: scenes.filter((s) => Boolean(s.keyframeImageUrl)).length,
+    preservedCompletedVideos: scenes.filter((s) => Boolean(s.videoUrl)).length,
+    activeCloudGeminiIds: wf.selectedGeminiAccountIds,
+    chairmanGeminiAccountId: wf.chairmanGeminiAccountId,
+    steps: buildInitialCloudHandoffSteps(),
+  };
+
   return {
     ...run,
     startedAt,
@@ -5551,6 +5748,12 @@ function enrichProductionRun(run: ProductionRun): ProductionRun {
     failedScenes,
     overallProgressPct,
     perMuseProgress,
+    perGeminiProgress,
+    aiWorkforceMode: run.aiWorkforceMode || 'hybrid_gemini_muse',
+    selectedGeminiAccountIds: wf.selectedGeminiAccountIds,
+    chairmanGeminiAccountId: wf.chairmanGeminiAccountId,
+    pipelineLocked: true,
+    cloudHandoff: computedHandoff,
     estimatedRemainingSec,
   };
 }
@@ -5893,14 +6096,17 @@ async function tickOrchestratorQueue(): Promise<void> {
       if (slotsLeft <= 0) break;
       const run = storeDoc.runs.find((r) => r.id === task.runId);
       if (run && ['paused', 'cancelled'].includes(run.status)) continue;
+      if (run?.cloudHandoff?.inProgress) continue;
+
+      const wf = resolveSessionWorkforce(task.runId);
 
       if (task.assignedAgentId === 'chairman') {
         const currentChairmanActive = activeByAgent.get('chairman') || 0;
         if (currentChairmanActive >= 2) continue;
-        if (task.type !== 'assemble_final_film' && !health.geminiConfigured) {
+        if (task.type !== 'assemble_final_film' && !health.geminiConfigured && wf.mode !== 'muse_only') {
           task.status = 'failed';
           task.error =
-            'Gemini AI – Chủ tịch cần cấu hình GEMINI_API_KEY để phân tích kịch bản và điều phối 5 Muse AI. Vui lòng kiểm tra Settings > Secrets.';
+            'Gemini AI – Chủ tịch cần ít nhất 1 tài khoản Gemini API khả dụng. Hãy kiểm tra Cài đặt > Kết nối API Gemini.';
           addActivityLog('error', `Không thể chạy ${task.code}`, task.error, {
             agentId: 'chairman',
             taskId: task.id,
@@ -5917,6 +6123,29 @@ async function tickOrchestratorQueue(): Promise<void> {
 
       let agent = storeDoc.agents.find((a) => a.id === task.assignedAgentId);
       if (!agent) continue;
+
+      // Mode 1 (gemini_only / Cloud Handoff active): bypass local Muse2API & paused local Muse agents, dispatch directly on Gemini Cloud pool!
+      if (wf.mode === 'gemini_only') {
+        if (!hasAnyEnabledGeminiAccount()) {
+          task.status = 'failed';
+          task.error = 'Chế độ Chỉ Gemini / Cloud chưa có tài khoản Gemini API nào đang bật.';
+          saveStateAtomic();
+          continue;
+        }
+        const picked = pickWorkerGeminiAccount({
+          allowedAccountIds: wf.selectedGeminiAccountIds,
+          preferredAccountId: task.assignedGeminiAccountId,
+          chairmanAccountId: wf.chairmanGeminiAccountId,
+        });
+        if (picked) {
+          task.assignedGeminiAccountId = picked.id;
+          task.assignedGeminiAccountLabel = picked.label;
+        }
+        activeByAgent.set(agent.id, (activeByAgent.get(agent.id) || 0) + 1);
+        slotsLeft -= 1;
+        void runSingleTask(task);
+        continue;
+      }
 
       let currentAgentActive = activeByAgent.get(agent.id) || 0;
       let agentMax = getAgentEffectiveMaxConcurrency(agent, health);
@@ -5984,9 +6213,19 @@ async function tickOrchestratorQueue(): Promise<void> {
         continue;
       }
 
-      if (!isAgentAccountReady(agent, health)) {
+      const readyForMode =
+        wf.mode === 'muse_only'
+          ? health.muse2ApiReachable &&
+            health.muse2ApiStatus === 'ready' &&
+            (agent.boundAccountId !== 'auto' || health.healthyAccounts > 0 || health.accounts.some((a) => a.enabled))
+          : isAgentAccountReady(agent, health);
+
+      if (!readyForMode) {
         task.status = 'failed';
-        task.error = `${agent.name} chưa có kết nối Muse2API/tài khoản khỏe mạnh để thực thi thực tế. Hãy kiểm tra mục Cấu hình Cloud & Tài khoản hoặc bật Gemini dự phòng.`;
+        task.error =
+          wf.mode === 'muse_only'
+            ? `${agent.name} đang ở chế độ Chỉ Muse nhưng Muse2API/tài khoản Muse.ai chưa sẵn sàng.`
+            : `${agent.name} chưa có kết nối Muse2API/tài khoản khỏe mạnh để thực thi thực tế. Hãy kiểm tra mục Cấu hình Cloud & Tài khoản hoặc chuyển phiên sang chế độ Chỉ Gemini.`;
         agent.lastError = task.error;
         pushPerformanceAlert({
           severity: 'error',
@@ -6355,6 +6594,7 @@ export async function getCommandCenterState(forceHealth = false): Promise<Comman
     fastCommStats,
     cloudConfig: safeCloudConfig,
     integrationHealth: health,
+    geminiAccounts: listGeminiAccountsPublic(),
   };
 }
 
@@ -6795,6 +7035,9 @@ export async function startProductionOrchestration(params: {
   settingBible?: string;
   costumeBible?: string;
   continuityBible?: string;
+  aiWorkforceMode?: AiWorkforceMode;
+  selectedGeminiAccountIds?: string[];
+  chairmanGeminiAccountId?: string;
 }): Promise<CommandCenterState> {
   const cachedBp = storeDoc.latestStudioBlueprint;
   const resolvedAllowFreeCostumeChange =
@@ -6865,6 +7108,11 @@ export async function startProductionOrchestration(params: {
   const hasPreSeededScenes = preSeededScenes.length > 0;
   const now = Date.now();
   let run: ProductionRun;
+  const geminiSummary = getGeminiPoolSummary();
+  const defaultEnabledGeminiIds = listGeminiAccountsPublic()
+    .filter((a) => a.enabled)
+    .map((a) => a.id);
+
   if (targetExisting) {
     targetExisting.title = title;
     targetExisting.userCommand = script || title;
@@ -6875,6 +7123,10 @@ export async function startProductionOrchestration(params: {
     targetExisting.completedScenes = 0;
     targetExisting.passedQaScenes = 0;
     targetExisting.escalatedScenes = 0;
+    if (params.aiWorkforceMode) targetExisting.aiWorkforceMode = params.aiWorkforceMode;
+    if (params.selectedGeminiAccountIds) targetExisting.selectedGeminiAccountIds = params.selectedGeminiAccountIds;
+    if (params.chairmanGeminiAccountId) targetExisting.chairmanGeminiAccountId = params.chairmanGeminiAccountId;
+    targetExisting.pipelineLocked = true;
     run = targetExisting;
   } else {
     run = {
@@ -6890,6 +7142,12 @@ export async function startProductionOrchestration(params: {
       completedScenes: 0,
       passedQaScenes: 0,
       escalatedScenes: 0,
+      aiWorkforceMode: params.aiWorkforceMode || 'hybrid_gemini_muse',
+      selectedGeminiAccountIds: params.selectedGeminiAccountIds?.length
+        ? params.selectedGeminiAccountIds
+        : defaultEnabledGeminiIds,
+      chairmanGeminiAccountId: params.chairmanGeminiAccountId || geminiSummary.chairmanAccountId,
+      pipelineLocked: true,
     };
     storeDoc.runs.unshift(run);
     if (storeDoc.runs.length > 25) storeDoc.runs = storeDoc.runs.slice(0, 25);
@@ -7544,10 +7802,12 @@ export async function sendCommandCenterChat(params: {
   // === TWO-WAY COMMAND EXECUTION BY GEMINI AI – CHAIRMAN & SUPREME COMMANDER ===
   if (responderId === 'chairman') {
     const chairmanName = getChairmanDisplayName();
+    const activeRunObj = runId ? storeDoc.runs.find((r) => r.id === runId) : storeDoc.runs[0];
+    const chairmanAcc = resolveChairmanGeminiAccount(activeRunObj?.chairmanGeminiAccountId);
     const health = await refreshIntegrationHealth(false);
-    if (!health.geminiConfigured) {
+    if (!chairmanAcc && !health.geminiConfigured && !hasAnyEnabledGeminiAccount()) {
       throw new Error(
-        'Chưa cấu hình GEMINI_API_KEY nên Gemini AI – Chủ tịch chưa thể điều hành qua Chat Room. Hãy kiểm tra Settings > Secrets.'
+        'Chưa cấu hình API Gemini nào. Hãy thêm Gemini API Key tại Cài đặt > Kết nối API Gemini hoặc Settings > Secrets.'
       );
     }
 
@@ -7558,61 +7818,97 @@ export async function sendCommandCenterChat(params: {
       )
       .join('\n');
 
+    const wfInfo = resolveSessionWorkforce(runId);
     const startedAt = Date.now();
-    const ai = getGeminiClient();
+    const ai = getGeminiClient(chairmanAcc?.apiKey);
     const parts: any[] = [];
     for (const dataUrl of inlineImageAttachments.slice(0, 3)) {
       const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
       if (m) parts.push({ inlineData: { mimeType: m[1], data: m[2] } });
     }
     parts.push({
-      text: `Lịch sử kênh #${channel} gần đây:\n${recentHistory}\n\nTrạng thái 5 Muse AI:\n${teamStatusText}${memoryScenesNote}${openIncidentsNote}${studioDirectiveNote}\n\nChỉ đạo mới nhất từ người dùng:\n${text || 'Xem tệp đính kèm và chỉ đạo 5 Muse AI.'}`,
+      text: `Lịch sử kênh #${channel} gần đây:\n${recentHistory}\n\nChế độ lực lượng AI của phiên: ${wfInfo.mode} · Chỉ huy trưởng API: ${chairmanAcc?.label || 'Mặc định'}\nTrạng thái 5 Muse AI:\n${teamStatusText}${memoryScenesNote}${openIncidentsNote}${studioDirectiveNote}\n\nChỉ đạo mới nhất từ người dùng:\n${text || 'Xem tệp đính kèm và chỉ đạo 5 Muse AI.'}`,
     });
 
-    const resp = await retryWithGeminiBackoff(
-      () =>
-        ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: [{ role: 'user', parts }],
-          config: {
-            systemInstruction: `Bạn là ${chairmanName} — Chủ tịch & Tổng chỉ huy toàn bộ hệ thống 5 Muse AI.
+    const chairmanSystemInstruction = `Bạn là ${chairmanName} — Chủ tịch & Tổng chỉ huy toàn bộ hệ thống AI (Gemini Pool + 5 Muse AI).
 Cơ cấu nhân sự thực tế:
 - Muse AI 01 (muse-01 · Muse Director): Nhân viên Sản xuất Hình ảnh & Video.
 - Muse AI 02, 03, 04 (muse-02, muse-03, muse-04): Nhân viên Sản xuất Hình ảnh & Video song song.
 - Muse AI 05 (muse-05 · Muse Guardian): Kiểm định độc lập (ngưỡng sai lệch tổng thể <= 5% sau loại trừ phụ kiện được phép).
 
-Bạn có quyền THỰC SỰ điều phối trong Chat Room:
-1. Trả lời trực tiếp, sắc bén cho người dùng trong "replyToUser".
-2. Khi cần giao việc, hỏi tiến độ, chất vấn lỗi, yêu cầu sửa prompt/ảnh/video hoặc chỉ đạo kiểm định lại: thêm danh sách "museDirectives" (tối đa 3 lệnh). Hệ thống sẽ gửi thật chỉ thị xuống kênh riêng của từng Muse, tự tạo Task nếu có "enqueueTaskType", và gọi Muse trả lời thật nếu "askMuseToReply": true.
-3. Không giả lập kết quả nếu chưa chạy. Trả về JSON đúng schema.`,
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                replyToUser: { type: Type.STRING },
-                museDirectives: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      targetAgentId: { type: Type.STRING },
-                      directiveMessage: { type: Type.STRING },
-                      askMuseToReply: { type: Type.BOOLEAN },
-                      enqueueTaskType: { type: Type.STRING },
-                      taskTitle: { type: Type.STRING },
-                      taskInstructions: { type: Type.STRING },
-                      sceneId: { type: Type.STRING },
+Nguyên tắc điều hành:
+1. Trả lời trực tiếp, ngắn gọn, sắc bén, rõ hành động bằng tiếng Việt trong "replyToUser".
+2. Bạn có quyền điều phối Gemini khác & 5 Muse AI nhưng KHÔNG tự ý thay đổi quy trình sản xuất chuẩn đã khóa.
+3. Khi cần giao việc, hỏi tiến độ, chất vấn lỗi, yêu cầu sửa prompt/ảnh/video hoặc chỉ đạo kiểm định lại: thêm danh sách "museDirectives" (tối đa 3 lệnh). Hệ thống sẽ gửi thật chỉ thị xuống kênh riêng của từng Muse, tự tạo Task nếu có "enqueueTaskType", và gọi Muse trả lời bất đồng bộ (live stream vào phòng chat) nếu "askMuseToReply": true.
+4. Không giả lập kết quả nếu chưa chạy. Trả về JSON đúng schema.`;
+
+    const candidateModels = prioritizeGeminiCandidateModels(['gemini-4-hydrogen', 'gemini-3.1-flash-lite']);
+    let resp: any = null;
+    let lastErr: any = null;
+    for (const modelName of candidateModels) {
+      const reqStarted = Date.now();
+      try {
+        const isThinkingModel = modelName === 'gemini-4-hydrogen';
+        resp = await retryWithGeminiBackoff(
+          () =>
+            ai.models.generateContent({
+              model: modelName,
+              contents: [{ role: 'user', parts }],
+              config: {
+                ...(isThinkingModel ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
+                systemInstruction: chairmanSystemInstruction,
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    replyToUser: { type: Type.STRING },
+                    museDirectives: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          targetAgentId: { type: Type.STRING },
+                          directiveMessage: { type: Type.STRING },
+                          askMuseToReply: { type: Type.BOOLEAN },
+                          enqueueTaskType: { type: Type.STRING },
+                          taskTitle: { type: Type.STRING },
+                          taskInstructions: { type: Type.STRING },
+                          sceneId: { type: Type.STRING },
+                        },
+                        required: ['targetAgentId', 'directiveMessage'],
+                      },
                     },
-                    required: ['targetAgentId', 'directiveMessage'],
                   },
+                  required: ['replyToUser'],
                 },
               },
-              required: ['replyToUser'],
-            },
-          },
-        }),
-      [1200, 2600]
-    );
+            }),
+          [800, 1600]
+        );
+        if (chairmanAcc) {
+          recordGeminiAccountUsage(chairmanAcc.id, true, {
+            latencyMs: Math.max(1, Date.now() - reqStarted),
+          });
+        }
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        if (chairmanAcc) {
+          recordGeminiAccountUsage(chairmanAcc.id, false, {
+            latencyMs: Math.max(1, Date.now() - reqStarted),
+            errorMsg: formatGeminiError(err),
+          });
+        }
+        if (shouldFallbackGeminiModel(err)) {
+          markGeminiModelOverloaded(modelName, err);
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!resp) {
+      throw lastErr || new Error('Không thể kết nối Gemini AI – Chủ tịch. Vui lòng kiểm tra API Key.');
+    }
 
     const parsed = parseAiBlueprintJsonSafe((resp.text || '').trim()) || {};
     const replyText = String(parsed.replyToUser || resp.text || '').trim();
@@ -7624,6 +7920,13 @@ Bạn có quyền THỰC SỰ điều phối trong Chat Room:
     const createdTaskCodes: string[] = [];
     const targetedMuseIds: MuseAgentId[] = [];
     const activeRunIdForTasks = runId || storeDoc.runs[0]?.id || 'manual_run';
+    const pendingMuseFollowUps: Array<{
+      targetAgent: MuseAgentConfig;
+      targetId: MuseAgentId;
+      dirMsg: string;
+      createdTask?: CommandTask;
+      sceneId?: string;
+    }> = [];
 
     for (const d of directives) {
       const targetId = normalizeMuseId(d?.targetAgentId, 'muse-01');
@@ -7698,67 +8001,14 @@ Bạn có quyền THỰC SỰ điều phối trong Chat Room:
         summary: `Chỉ đạo ${targetAgent.name}: ${dirMsg.slice(0, 200)}`,
       });
 
-      // Live two-way response from the directed Muse AI (no fake response if unreachable)
       if (d?.askMuseToReply) {
-        try {
-          const museInf = await runAgentTextInference({
-            agent: targetAgent,
-            systemPrompt: `Bạn là ${targetAgent.name} (${targetAgent.roleTitle}) thuộc đội 5 Muse AI dưới quyền chỉ huy trực tiếp của ${chairmanName}. Trả lời ngắn gọn (2-4 câu tiếng Việt), xác nhận hoặc giải trình rõ ràng theo dữ liệu thật của dự án "${mem.title}" (Memory v${mem.version}).`,
-            userPrompt: `Chỉ thị từ ${chairmanName}:\n${dirMsg}${createdTask ? `\nMã nhiệm vụ được giao: ${createdTask.code}` : ''}`,
-          });
-          targetAgent.lastActiveAt = Date.now();
-          appendConversationMessage({
-            channel: targetId,
-            projectId: mem.projectId,
-            runId,
-            sessionId: runId,
-            sceneId: d?.sceneId || params.sceneId,
-            taskId: createdTask?.id,
-            senderType: 'agent',
-            senderId: targetAgent.id,
-            senderName: `${targetAgent.name} (${targetAgent.roleTitle})`,
-            roleBadge: 'Phản hồi Chủ tịch',
-            content: museInf.text,
-          });
-          if (channel !== targetId) {
-            appendConversationMessage({
-              channel,
-              projectId: mem.projectId,
-              runId,
-              sessionId: runId,
-              sceneId: d?.sceneId || params.sceneId,
-              taskId: createdTask?.id,
-              senderType: 'agent',
-              senderId: targetAgent.id,
-              senderName: `${targetAgent.name} (${targetAgent.roleTitle})`,
-              roleBadge: 'Báo cáo Chủ tịch',
-              content: museInf.text,
-            });
-          }
-          appendProjectCoordinationLog(runId, {
-            actorId: targetAgent.id,
-            actorName: targetAgent.name,
-            kind: 'response',
-            runId,
-            taskId: createdTask?.id,
-            sceneId: d?.sceneId || params.sceneId,
-            summary: `${targetAgent.name} phản hồi Chủ tịch: ${museInf.text.slice(0, 180)}`,
-          });
-        } catch (museErr: any) {
-          const errNote = String(museErr?.message || museErr || 'Không thể kết nối Muse AI.');
-          appendConversationMessage({
-            channel: targetId,
-            projectId: mem.projectId,
-            runId,
-            sessionId: runId,
-            taskId: createdTask?.id,
-            senderType: 'system',
-            senderId: 'system',
-            senderName: 'Hệ thống giám sát',
-            roleBadge: 'Cảnh báo kết nối',
-            content: `${targetAgent.name} chưa phản hồi chỉ thị của ${chairmanName}: ${errNote}`,
-          });
-        }
+        pendingMuseFollowUps.push({
+          targetAgent,
+          targetId,
+          dirMsg,
+          createdTask,
+          sceneId: d?.sceneId || params.sceneId,
+        });
       }
     }
 
@@ -7769,7 +8019,7 @@ Bạn có quyền THỰC SỰ điều phối trong Chat Room:
     const respMs = Math.max(1, Date.now() - startedAt);
     const footerNote =
       targetedMuseIds.length > 0
-        ? `\n\n— Đã chuyển chỉ thị trực tiếp tới: ${Array.from(new Set(targetedMuseIds)).map((id) => id.toUpperCase()).join(', ')}${createdTaskCodes.length > 0 ? ` · Tạo nhiệm vụ: ${createdTaskCodes.join(', ')}` : ''}.`
+        ? `\n\n— Đã chuyển chỉ thị trực tiếp tới: ${Array.from(new Set(targetedMuseIds)).map((id) => id.toUpperCase()).join(', ')}${createdTaskCodes.length > 0 ? ` · Tạo nhiệm vụ: ${createdTaskCodes.join(', ')}` : ''}${pendingMuseFollowUps.length > 0 ? ' · Đang chờ Muse báo cáo trực tiếp...' : ''}.`
         : '';
 
     const reply = appendConversationMessage({
@@ -7793,6 +8043,77 @@ Bạn có quyền THỰC SỰ điều phối trong Chat Room:
       runId,
     });
     saveStateAtomic();
+
+    // Non-blocking background dispatch for Muse AI follow-up replies (streams live via SSE message:created)
+    if (pendingMuseFollowUps.length > 0) {
+      void Promise.allSettled(
+        pendingMuseFollowUps.map(async ({ targetAgent, targetId, dirMsg, createdTask, sceneId }) => {
+          try {
+            const museInf = await runAgentTextInference({
+              agent: targetAgent,
+              runId,
+              systemPrompt: `Bạn là ${targetAgent.name} (${targetAgent.roleTitle}) thuộc đội 5 Muse AI dưới quyền chỉ huy trực tiếp của ${chairmanName}. Trả lời ngắn gọn (2-4 câu tiếng Việt), xác nhận hoặc giải trình rõ ràng theo dữ liệu thật của dự án "${mem.title}" (Memory v${mem.version}).`,
+              userPrompt: `Chỉ thị từ ${chairmanName}:\n${dirMsg}${createdTask ? `\nMã nhiệm vụ được giao: ${createdTask.code}` : ''}`,
+            });
+            targetAgent.lastActiveAt = Date.now();
+            appendConversationMessage({
+              channel: targetId,
+              projectId: mem.projectId,
+              runId,
+              sessionId: runId,
+              sceneId,
+              taskId: createdTask?.id,
+              senderType: 'agent',
+              senderId: targetAgent.id,
+              senderName: `${targetAgent.name} (${targetAgent.roleTitle})`,
+              roleBadge: 'Phản hồi Chủ tịch',
+              content: museInf.text,
+            });
+            if (channel !== targetId) {
+              appendConversationMessage({
+                channel,
+                projectId: mem.projectId,
+                runId,
+                sessionId: runId,
+                sceneId,
+                taskId: createdTask?.id,
+                senderType: 'agent',
+                senderId: targetAgent.id,
+                senderName: `${targetAgent.name} (${targetAgent.roleTitle})`,
+                roleBadge: 'Báo cáo Chủ tịch',
+                content: museInf.text,
+              });
+            }
+            appendProjectCoordinationLog(runId, {
+              actorId: targetAgent.id,
+              actorName: targetAgent.name,
+              kind: 'response',
+              runId,
+              taskId: createdTask?.id,
+              sceneId,
+              summary: `${targetAgent.name} phản hồi Chủ tịch: ${museInf.text.slice(0, 180)}`,
+            });
+            saveStateAtomic();
+          } catch (museErr: any) {
+            const errNote = String(museErr?.message || museErr || 'Không thể kết nối Muse AI.');
+            appendConversationMessage({
+              channel: targetId,
+              projectId: mem.projectId,
+              runId,
+              sessionId: runId,
+              taskId: createdTask?.id,
+              senderType: 'system',
+              senderId: 'system',
+              senderName: 'Hệ thống giám sát',
+              roleBadge: 'Cảnh báo kết nối',
+              content: `${targetAgent.name} chưa phản hồi chỉ thị của ${chairmanName}: ${errNote}`,
+            });
+            saveStateAtomic();
+          }
+        })
+      );
+    }
+
     return { state: await getCommandCenterState(false), reply };
   }
 
@@ -7821,6 +8142,7 @@ ${
   const startedAt = Date.now();
   const inf = await runAgentTextInference({
     agent: responder,
+    runId,
     systemPrompt: sys,
     userPrompt: `Lịch sử kênh gần đây:\n${recentHistory}\n\nYêu cầu mới nhất:\n${text || 'Xem tệp đính kèm và phản hồi.'}`,
     attachments: inlineImageAttachments,
@@ -8410,11 +8732,13 @@ Nhiệm vụ của bạn:
    - "adjust_qa_and_approve": Phê duyệt thông chốt QA cho cảnh bị kẹt để dây chuyền đi tiếp.
    - "reset_stuck_run": Gỡ kẹt toàn bộ tác vụ lỗi/treo của phiên hiện tại và khởi động lại hàng đợi.
    - "direct_briefing": Phát chỉ thị chiến lược trực tiếp cho Muse AI mục tiêu (tạo nhiệm vụ ưu tiên nếu cần).
-5. Toàn bộ nội dung viết bằng tiếng Việt tự nhiên, sắc bén, quyết đoán như một Chủ tịch điều hành thực thụ. Không bịa tên mô hình hay thông số giả.`;
+5. Toàn bộ nội dung viết bằng tiếng Việt tự nhiên, sắc bén, quyết đoán như một Chủ tịch điều hành thực thụ. Không bịa tên mô hình hay thông số giả.
+6. NGUYÊN TẮC QUẢN TRỊ BẮT BUỘC: Chỉ huy trưởng có quyền điều phối các tài khoản Gemini khác và đội ngũ AI Muse, NHƯNG KHÔNG ĐƯỢC tự ý thay đổi quy trình sản xuất đã thiết lập (Kịch bản -> Ảnh -> QA Ảnh -> Video -> QA Video -> Ghép phim).`;
 
   const userPrompt = `Dưới đây là toàn bộ tình hình thực tế của Phòng Điều Hành AI Muse:\n${contextJson}\n\nHãy phân tích sâu, chỉ rõ điểm chưa ổn của đội 5 Muse AI và lập 3 phương án hành động thực thi được ngay.`;
 
-  const ai = getGeminiClient();
+  const chairmanAccount = resolveChairmanGeminiAccount(run?.chairmanGeminiAccountId);
+  const ai = getGeminiClient(chairmanAccount?.apiKey);
   let responseText = '';
   try {
     const resp = await retryWithGeminiBackoff(
@@ -9194,4 +9518,448 @@ export function getProductionSessionSnapshot(runId?: string): {
     qaReports,
     artifacts,
   };
+}
+
+function buildInitialCloudHandoffSteps(): CloudHandoffStep[] {
+  return [
+    {
+      id: 'pause_local',
+      order: 1,
+      title: 'Tạm dừng nhận công việc mới trên máy cá nhân',
+      detail: 'Khóa hàng đợi cục bộ để không phát sinh tác vụ Muse mới trong lúc bàn giao.',
+      status: 'pending',
+    },
+    {
+      id: 'save_checkpoint',
+      order: 2,
+      title: 'Lưu checkpoint phiên, Project Memory, ảnh/video & tiến độ từng cảnh',
+      detail: 'Khóa toàn bộ ảnh và video đã hoàn thành để tuyệt đối không tạo trùng hoặc mất tiến độ.',
+      status: 'pending',
+    },
+    {
+      id: 'sync_cloud',
+      order: 3,
+      title: 'Đồng bộ toàn bộ gói trạng thái lên máy chủ Cloud',
+      detail: 'Ghi bản chụp bất biến (kịch bản, bộ nhớ dự án, hàng đợi, lịch sử hội thoại).',
+      status: 'pending',
+    },
+    {
+      id: 'chairman_takeover',
+      order: 4,
+      title: 'Gemini Chủ tịch tiếp nhận danh sách công việc còn dang dở',
+      detail: 'Chủ tịch rà soát các cảnh chưa hoàn tất mà vẫn giữ nguyên quy trình sản xuất đã khóa.',
+      status: 'pending',
+    },
+    {
+      id: 'reassign_gemini',
+      order: 5,
+      title: 'Phân công lại tác vụ dang dở cho các Gemini API đang hoạt động',
+      detail: 'Phân bổ đều các tác vụ còn lại sang cụm Gemini Cloud được chọn theo checkpoint.',
+      status: 'pending',
+    },
+    {
+      id: 'verify_cloud',
+      order: 6,
+      title: 'Xác thực Cloud đã nhận đủ dữ liệu và sẵn sàng tiếp tục thực thi',
+      detail: 'Kiểm tra sống Gemini Chủ tịch & xác nhận bản sao lưu nguyên vẹn trước khi ngắt Muse.',
+      status: 'pending',
+    },
+    {
+      id: 'disconnect_muse',
+      order: 7,
+      title: 'Ngắt kết nối AI Muse cục bộ & bật trạng thái an toàn để tắt máy',
+      detail: 'Chỉ thực hiện sau khi Bước 6 xác nhận thành công 100%.',
+      status: 'pending',
+    },
+  ];
+}
+
+export async function updateSessionWorkforceConfig(
+  runId: string,
+  input: {
+    aiWorkforceMode?: AiWorkforceMode;
+    selectedGeminiAccountIds?: string[];
+    chairmanGeminiAccountId?: string;
+  }
+): Promise<CommandCenterState> {
+  const run = storeDoc.runs.find((r) => r.id === runId);
+  if (!run) {
+    throw new Error('Không tìm thấy phiên sản xuất để cập nhật lực lượng AI.');
+  }
+
+  const allAccounts = listGeminiAccountsPublic();
+  const enabledIds = allAccounts.filter((a) => a.enabled).map((a) => a.id);
+
+  if (input.aiWorkforceMode) {
+    if (!['gemini_only', 'muse_only', 'hybrid_gemini_muse'].includes(input.aiWorkforceMode)) {
+      throw new Error('Chế độ lực lượng AI không hợp lệ.');
+    }
+    if (input.aiWorkforceMode === 'gemini_only' && enabledIds.length === 0) {
+      throw new Error('Chế độ "Chỉ Gemini làm việc" cần ít nhất 1 tài khoản Gemini API đang bật.');
+    }
+    run.aiWorkforceMode = input.aiWorkforceMode;
+  }
+
+  if (Array.isArray(input.selectedGeminiAccountIds)) {
+    const valid = input.selectedGeminiAccountIds.filter((id) => enabledIds.includes(id));
+    if (run.aiWorkforceMode !== 'muse_only' && valid.length === 0 && enabledIds.length > 0) {
+      throw new Error('Vui lòng chọn ít nhất 1 tài khoản Gemini API tham gia phiên.');
+    }
+    run.selectedGeminiAccountIds = valid;
+  }
+
+  if (input.chairmanGeminiAccountId) {
+    if (!enabledIds.includes(input.chairmanGeminiAccountId)) {
+      throw new Error('Tài khoản Gemini được chọn làm Chỉ huy trưởng hiện đang tắt hoặc không tồn tại.');
+    }
+    run.chairmanGeminiAccountId = input.chairmanGeminiAccountId;
+    if (run.selectedGeminiAccountIds && !run.selectedGeminiAccountIds.includes(input.chairmanGeminiAccountId)) {
+      run.selectedGeminiAccountIds = [input.chairmanGeminiAccountId, ...run.selectedGeminiAccountIds];
+    }
+  }
+
+  run.pipelineLocked = true;
+  run.updatedAt = Date.now();
+
+  // If user switches back from cloud_active to hybrid/muse, update handoff status accordingly
+  if (run.cloudHandoff && run.aiWorkforceMode !== 'gemini_only') {
+    run.cloudHandoff.status = 'local_active';
+    run.cloudHandoff.localDeviceStatus = 'connected';
+    run.cloudHandoff.museConnectionStatus = 'active';
+    run.cloudHandoff.safeToShutdownLocalPc = false;
+  }
+
+  const modeLabel =
+    run.aiWorkforceMode === 'gemini_only'
+      ? 'Chế độ 1 · Chỉ Gemini làm việc'
+      : run.aiWorkforceMode === 'muse_only'
+      ? 'Chế độ 2 · Chỉ Muse làm việc'
+      : 'Chế độ 3 · Gemini + Muse cùng làm việc';
+
+  addActivityLog(
+    'info',
+    'Cập nhật lực lượng AI của phiên',
+    `Phiên "${run.title}" đã chuyển sang ${modeLabel} (${(run.selectedGeminiAccountIds || []).length} Gemini API tham gia · Quy trình sản xuất đã khóa).`,
+    { agentId: 'chairman', runId: run.id }
+  );
+
+  saveStateAtomic();
+  emitCommandCenterEvent('run:updated', enrichProductionRun(run));
+  return getCommandCenterState(false);
+}
+
+export async function handoffSessionToCloud(
+  runId: string,
+  options?: { selectedGeminiAccountIds?: string[]; chairmanGeminiAccountId?: string }
+): Promise<{ state: CommandCenterState; handoff: CloudHandoffState }> {
+  const run = storeDoc.runs.find((r) => r.id === runId);
+  if (!run) {
+    throw new Error('Không tìm thấy phiên sản xuất cần chuyển giao lên Đám mây.');
+  }
+  if (run.cloudHandoff?.inProgress) {
+    throw new Error('Phiên này đang thực hiện chuyển giao lên Đám mây, vui lòng chờ hoàn tất.');
+  }
+
+  const mem = getRunMemory(run.id);
+  const allAccounts = listGeminiAccountsPublic();
+  const enabledAccounts = allAccounts.filter((a) => a.enabled);
+  const enabledIds = enabledAccounts.map((a) => a.id);
+
+  const targetGeminiIds =
+    options?.selectedGeminiAccountIds && options.selectedGeminiAccountIds.length > 0
+      ? options.selectedGeminiAccountIds.filter((id) => enabledIds.includes(id))
+      : run.selectedGeminiAccountIds && run.selectedGeminiAccountIds.length > 0
+      ? run.selectedGeminiAccountIds.filter((id) => enabledIds.includes(id))
+      : enabledIds;
+
+  const targetChairmanId =
+    options?.chairmanGeminiAccountId && enabledIds.includes(options.chairmanGeminiAccountId)
+      ? options.chairmanGeminiAccountId
+      : run.chairmanGeminiAccountId && enabledIds.includes(run.chairmanGeminiAccountId)
+      ? run.chairmanGeminiAccountId
+      : getGeminiPoolSummary().chairmanAccountId;
+
+  const steps = buildInitialCloudHandoffSteps();
+  const handoff: CloudHandoffState = {
+    status: 'handing_off',
+    inProgress: true,
+    localDeviceStatus: 'pausing',
+    museConnectionStatus: 'draining',
+    cloudStatus: 'syncing',
+    safeToShutdownLocalPc: false,
+    startedAt: Date.now(),
+    reassignedTaskCount: 0,
+    preservedCompletedImages: 0,
+    preservedCompletedVideos: 0,
+    activeCloudGeminiIds: targetGeminiIds,
+    chairmanGeminiAccountId: targetChairmanId,
+    steps,
+  };
+
+  run.cloudHandoff = handoff;
+  run.updatedAt = Date.now();
+  saveStateAtomic();
+  emitCommandCenterEvent('run:updated', enrichProductionRun(run));
+
+  const markStep = (
+    id: CloudHandoffStep['id'],
+    status: CloudHandoffStep['status'],
+    detailOverride?: string,
+    error?: string
+  ) => {
+    const step = handoff.steps.find((s) => s.id === id);
+    if (!step) return;
+    step.status = status;
+    if (status === 'running') step.startedAt = Date.now();
+    if (status === 'completed' || status === 'failed') step.completedAt = Date.now();
+    if (detailOverride) step.detail = detailOverride;
+    if (error) step.error = error;
+    run.updatedAt = Date.now();
+    saveStateAtomic();
+    emitCommandCenterEvent('run:updated', enrichProductionRun(run));
+  };
+
+  const abortSafelyKeepingMuseConnected = (failedStepId: CloudHandoffStep['id'], errMsg: string): Error => {
+    markStep(failedStepId, 'failed', undefined, errMsg);
+    handoff.status = 'failed';
+    handoff.inProgress = false;
+    handoff.localDeviceStatus = 'connected';
+    handoff.museConnectionStatus = 'active';
+    handoff.cloudStatus = 'unavailable';
+    handoff.safeToShutdownLocalPc = false;
+    handoff.error = errMsg;
+    run.updatedAt = Date.now();
+
+    addActivityLog(
+      'error',
+      'Hủy chuyển giao Cloud an toàn (giữ nguyên AI Muse)',
+      `Bàn giao bị dừng tại bước "${failedStepId}": ${errMsg}. AI Muse cục bộ vẫn được giữ kết nối an toàn.`,
+      { agentId: 'chairman', runId: run.id }
+    );
+    saveStateAtomic();
+    emitCommandCenterEvent('run:updated', enrichProductionRun(run));
+    return new Error(errMsg);
+  };
+
+  // STEP 1: Tạm dừng nhận công việc mới trên máy cá nhân
+  markStep('pause_local', 'running');
+  await new Promise((r) => setTimeout(r, 150));
+  markStep(
+    'pause_local',
+    'completed',
+    'Đã khóa nhận tác vụ cục bộ mới trên thiết bị cá nhân để chuẩn bị checkpoint.'
+  );
+
+  // STEP 2: Lưu toàn bộ trạng thái phiên, Project Memory, kịch bản, ảnh, video, tiến độ từng cảnh (Checkpoint chống trùng!)
+  markStep('save_checkpoint', 'running');
+  let preservedImages = 0;
+  let preservedVideos = 0;
+  let checkpointSkippedTasks = 0;
+
+  for (const sc of mem.scenes) {
+    const hasImg = isValidImageArtifactOnDisk(sc.keyframeImageUrl) && sc.imageValidated !== false;
+    const hasVid = Boolean(sc.videoUrl) && Boolean(artifactUrlToDiskPath(sc.videoUrl));
+    if (hasImg) preservedImages += 1;
+    if (hasVid) preservedVideos += 1;
+
+    // Prevent duplicate regeneration on Cloud by checkpointing tasks whose output already exists on disk!
+    for (const t of storeDoc.tasks) {
+      if (t.runId !== run.id || t.sceneId !== sc.sceneId) continue;
+      if (t.status === 'completed') {
+        t.checkpointed = true;
+        continue;
+      }
+      if (t.type === 'design_scene_image' && hasImg && ['queued', 'blocked_by_deps', 'failed', 'running'].includes(t.status)) {
+        t.status = 'completed';
+        t.checkpointed = true;
+        t.completedAt = Date.now();
+        t.outputArtifactUrl = sc.keyframeImageUrl;
+        t.outputText = `[Checkpoint Cloud] Đã giữ nguyên ảnh Cảnh ${sc.index} hoàn thành trước đó — bỏ qua tạo trùng.`;
+        activeTaskIds.delete(t.id);
+        checkpointSkippedTasks += 1;
+      }
+      if (t.type === 'produce_scene_video' && hasVid && ['queued', 'blocked_by_deps', 'failed', 'running'].includes(t.status)) {
+        t.status = 'completed';
+        t.checkpointed = true;
+        t.completedAt = Date.now();
+        t.outputArtifactUrl = sc.videoUrl;
+        t.outputText = `[Checkpoint Cloud] Đã giữ nguyên video Cảnh ${sc.index} hoàn thành trước đó — bỏ qua tạo trùng.`;
+        activeTaskIds.delete(t.id);
+        checkpointSkippedTasks += 1;
+      }
+    }
+  }
+
+  handoff.preservedCompletedImages = preservedImages;
+  handoff.preservedCompletedVideos = preservedVideos;
+  handoff.checkpointMemoryVersion = mem.version;
+  saveStateAtomic();
+  markStep(
+    'save_checkpoint',
+    'completed',
+    `Đã khóa checkpoint Memory v${mem.version}: bảo toàn ${preservedImages} ảnh, ${preservedVideos} video đã xong${
+      checkpointSkippedTasks > 0 ? ` (chặn ${checkpointSkippedTasks} tác vụ có nguy cơ tạo trùng)` : ''
+    }.`
+  );
+
+  // STEP 3: Đồng bộ dữ liệu lên máy chủ Cloud (ghi bản sao lưu đầy đủ & kiểm tra file tồn tại)
+  markStep('sync_cloud', 'running');
+  const backupRec = createBackupSnapshot(
+    'cloud_handoff',
+    `Cloud Handoff Checkpoint · Phiên "${run.title}" (v${mem.version}, ${preservedImages} ảnh, ${preservedVideos} video)`,
+    run.id
+  );
+  const backupFilePath = path.join(BACKUPS_DIR, `${backupRec.id}.json`);
+  if (!fs.existsSync(backupFilePath)) {
+    throw abortSafelyKeepingMuseConnected('sync_cloud', 'Không ghi được gói đồng bộ checkpoint lên máy chủ lưu trữ.');
+  }
+  handoff.checkpointBackupId = backupRec.id;
+  markStep(
+    'sync_cloud',
+    'completed',
+    `Đã đồng bộ gói trạng thái ${backupRec.id} (${backupRec.taskCount} tác vụ, ${backupRec.messageCount} tin nhắn, Memory v${mem.version}).`
+  );
+
+  // STEP 4: Gemini Chủ tịch tiếp nhận danh sách công việc còn dang dở
+  markStep('chairman_takeover', 'running');
+  const chairmanAcc = resolveChairmanGeminiAccount(targetChairmanId);
+  if (!chairmanAcc) {
+    throw abortSafelyKeepingMuseConnected(
+      'chairman_takeover',
+      'Không có tài khoản Gemini Chỉ huy trưởng khả dụng. Hãy thêm & bật ít nhất 1 Gemini API Key trong Cài đặt > Kết nối API Gemini.'
+    );
+  }
+  const unfinishedTasks = storeDoc.tasks.filter(
+    (t) =>
+      t.runId === run.id &&
+      ['queued', 'blocked_by_deps', 'failed', 'qa_rejected', 'running'].includes(t.status)
+  );
+  markStep(
+    'chairman_takeover',
+    'completed',
+    `Chỉ huy trưởng "${chairmanAcc.label}" đã tiếp nhận ${unfinishedTasks.length} tác vụ còn dang dở (quy trình sản xuất vẫn được giữ nguyên).`
+  );
+
+  // STEP 5: Gemini phân công lại các công việc cho những Gemini còn hoạt động
+  markStep('reassign_gemini', 'running');
+  if (targetGeminiIds.length === 0) {
+    throw abortSafelyKeepingMuseConnected(
+      'reassign_gemini',
+      'Chưa có tài khoản Gemini API nào được chọn và đang bật để tiếp nhận công việc trên Cloud.'
+    );
+  }
+
+  let reassignedCount = 0;
+  for (const t of unfinishedTasks) {
+    // Roll any in-flight local Muse task cleanly back to queued so Gemini Cloud resumes from checkpoint
+    if (t.status === 'running' || t.status === 'failed' || t.status === 'qa_rejected') {
+      activeTaskIds.delete(t.id);
+      t.status = t.dependsOnTaskIds.every((depId) => {
+        const dep = storeDoc.tasks.find((d) => d.id === depId);
+        return !dep || dep.status === 'completed';
+      })
+        ? 'queued'
+        : 'blocked_by_deps';
+      t.error = undefined;
+    }
+
+    const picked =
+      t.assignedAgentId === 'chairman'
+        ? chairmanAcc
+        : pickWorkerGeminiAccount({
+            allowedAccountIds: targetGeminiIds,
+            chairmanAccountId: chairmanAcc.id,
+          }) || chairmanAcc;
+
+    t.assignedGeminiAccountId = picked.id;
+    t.assignedGeminiAccountLabel = picked.label;
+    t.checkpointed = true;
+    reassignedCount += 1;
+  }
+  handoff.reassignedTaskCount = reassignedCount;
+  handoff.activeCloudGeminiIds = targetGeminiIds;
+  handoff.chairmanGeminiAccountId = chairmanAcc.id;
+  markStep(
+    'reassign_gemini',
+    'completed',
+    `Đã phân công lại ${reassignedCount} tác vụ dang dở sang ${targetGeminiIds.length} tài khoản Gemini Cloud.`
+  );
+
+  // STEP 6: Kiểm tra Cloud đã tiếp nhận thành công và có thể tiếp tục thực thi (BẮT BUỘC TRƯỚC KHI NGẮT MUSE!)
+  markStep('verify_cloud', 'running');
+  try {
+    // 6a. Verify backup checkpoint bundle is readable & valid JSON
+    const rawBackup = fs.readFileSync(backupFilePath, 'utf8');
+    const parsedBackup = JSON.parse(rawBackup);
+    if (!parsedBackup?.projectMemory || !Array.isArray(parsedBackup?.tasks)) {
+      throw new Error('Gói dữ liệu checkpoint trên Cloud không đầy đủ.');
+    }
+
+    // 6b. Live ping Gemini Chairman API to confirm Cloud execution readiness
+    const pingRes = await testGeminiAccountConnection(chairmanAcc.id);
+    if (!pingRes.ok) {
+      throw new Error(`Gemini Cloud (${chairmanAcc.label}) không vượt qua kiểm tra kết nối: ${pingRes.message}`);
+    }
+
+    markStep(
+      'verify_cloud',
+      'completed',
+      `Xác thực Cloud thành công: gói checkpoint nguyên vẹn · ${chairmanAcc.label} phản hồi ${pingRes.latencyMs}ms (${pingRes.model}).`
+    );
+  } catch (err: any) {
+    throw abortSafelyKeepingMuseConnected(
+      'verify_cloud',
+      String(err?.message || err || 'Xác thực Cloud thất bại — giữ nguyên AI Muse cục bộ.')
+    );
+  }
+
+  // STEP 7: CHỈ SAU KHI BƯỚC 6 THÀNH CÔNG → Mới ngắt kết nối AI Muse cục bộ và cho phép tắt máy!
+  markStep('disconnect_muse', 'running');
+  run.aiWorkforceMode = 'gemini_only';
+  run.selectedGeminiAccountIds = targetGeminiIds;
+  run.chairmanGeminiAccountId = chairmanAcc.id;
+  run.pipelineLocked = true;
+
+  handoff.status = 'cloud_active';
+  handoff.inProgress = false;
+  handoff.localDeviceStatus = 'safe_to_shutdown';
+  handoff.museConnectionStatus = 'disconnected';
+  handoff.cloudStatus = 'running';
+  handoff.safeToShutdownLocalPc = true;
+  handoff.completedAt = Date.now();
+  handoff.error = undefined;
+
+  if (['paused', 'needs_attention', 'failed'].includes(run.status) && reassignedCount > 0) {
+    run.status = 'producing';
+    run.error = undefined;
+  }
+
+  markStep(
+    'disconnect_muse',
+    'completed',
+    'Đã ngắt kết nối AI Muse cục bộ an toàn. Phiên đang chạy hoàn toàn trên Gemini Cloud — bạn có thể tắt máy cá nhân.'
+  );
+
+  appendConversationMessage({
+    channel: 'commander',
+    projectId: mem.projectId,
+    runId: run.id,
+    senderType: 'agent',
+    senderId: 'chairman',
+    senderName: `${getChairmanDisplayName()} (${chairmanAcc.label})`,
+    messageKind: 'deliverable',
+    content: `CHUYỂN GIAO LÊN ĐÁM MÂY HOÀN TẤT (7/7 BƯỚC).\n• Checkpoint khóa thành công: ${preservedImages} ảnh + ${preservedVideos} video đã xong (không tạo trùng).\n• Đã tiếp nhận & phân công ${reassignedCount} tác vụ còn dang dở cho ${targetGeminiIds.length} Gemini Cloud API.\n• AI Muse trên máy cá nhân đã ngắt kết nối an toàn — bạn có thể tắt máy tính cá nhân.`,
+  });
+
+  addActivityLog(
+    'success',
+    'Chuyển giao phiên lên Đám mây thành công',
+    `Phiên "${run.title}" đã bàn giao 7/7 bước sang Gemini Cloud (${targetGeminiIds.length} API). An toàn để tắt máy cá nhân.`,
+    { agentId: 'chairman', runId: run.id }
+  );
+
+  saveStateAtomic();
+  const nextState = await getCommandCenterState(false);
+  emitCommandCenterEvent('run:updated', enrichProductionRun(run));
+  return { state: nextState, handoff };
 }

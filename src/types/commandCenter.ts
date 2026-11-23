@@ -359,10 +359,94 @@ export interface CommandTask {
   timeoutMs?: number;
   executedByProvider?: string;
   boundAccountUsed?: string;
+  assignedGeminiAccountId?: string;
+  assignedGeminiAccountLabel?: string;
+  checkpointed?: boolean;
   externalTaskId?: string;
   outputText?: string;
   outputArtifactUrl?: string;
   error?: string;
+}
+
+export type AiWorkforceMode = 'gemini_only' | 'muse_only' | 'hybrid_gemini_muse';
+
+export type GeminiAccountStatus = 'healthy' | 'quota_exceeded' | 'auth_error' | 'error' | 'untested';
+
+export interface GeminiAccountPublic {
+  id: string;
+  label: string;
+  source: 'env' | 'custom';
+  maskedKey: string;
+  enabled: boolean;
+  isChairman: boolean;
+  note?: string;
+  preferredModel?: string;
+  status: GeminiAccountStatus;
+  lastCheckedAt?: number;
+  lastLatencyMs?: number;
+  quotaStatus?: string;
+  lastError?: string;
+  requestsCount: number;
+  successCount: number;
+  errorCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type CloudHandoffStepId =
+  | 'pause_local'
+  | 'save_checkpoint'
+  | 'sync_cloud'
+  | 'chairman_takeover'
+  | 'reassign_gemini'
+  | 'verify_cloud'
+  | 'disconnect_muse';
+
+export type CloudHandoffStepStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface CloudHandoffStep {
+  id: CloudHandoffStepId;
+  order: number;
+  title: string;
+  detail: string;
+  status: CloudHandoffStepStatus;
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+}
+
+export interface CloudHandoffState {
+  status: 'local_active' | 'handing_off' | 'cloud_active' | 'failed';
+  inProgress: boolean;
+  localDeviceStatus: 'connected' | 'pausing' | 'safe_to_shutdown';
+  museConnectionStatus: 'active' | 'draining' | 'disconnected' | 'inactive';
+  cloudStatus: 'ready' | 'syncing' | 'running' | 'unavailable';
+  safeToShutdownLocalPc: boolean;
+  startedAt?: number;
+  completedAt?: number;
+  checkpointBackupId?: string;
+  checkpointMemoryVersion?: number;
+  reassignedTaskCount: number;
+  preservedCompletedImages: number;
+  preservedCompletedVideos: number;
+  activeCloudGeminiIds: string[];
+  chairmanGeminiAccountId?: string;
+  error?: string;
+  steps: CloudHandoffStep[];
+}
+
+export interface GeminiWorkerProgress {
+  accountId: string;
+  label: string;
+  isChairman: boolean;
+  status: GeminiAccountStatus;
+  completedTasks: number;
+  runningTasks: number;
+  queuedTasks: number;
+  failedTasks: number;
+  totalTasks: number;
+  progressPct: number;
+  currentTaskTitle?: string;
 }
 
 export interface MuseRunProgress {
@@ -410,6 +494,12 @@ export interface ProductionRun {
   runningScenes?: number;
   pendingScenes?: number;
   failedScenes?: number;
+  aiWorkforceMode?: AiWorkforceMode;
+  selectedGeminiAccountIds?: string[];
+  chairmanGeminiAccountId?: string;
+  pipelineLocked?: boolean;
+  cloudHandoff?: CloudHandoffState;
+  perGeminiProgress?: GeminiWorkerProgress[];
   error?: string;
 }
 
@@ -462,7 +552,7 @@ export interface CommandActivityLog {
 export interface CommandBackupRecord {
   id: string;
   createdAt: number;
-  kind: 'auto' | 'manual' | 'pre_restore';
+  kind: 'auto' | 'manual' | 'pre_restore' | 'cloud_handoff';
   projectId: string;
   runId?: string;
   summary: string;
@@ -747,4 +837,5 @@ export interface CommandCenterState {
   fastCommStats: FastCommStats;
   cloudConfig: CloudOrchestratorConfig;
   integrationHealth: MuseIntegrationHealth;
+  geminiAccounts?: GeminiAccountPublic[];
 }

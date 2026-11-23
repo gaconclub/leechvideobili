@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  CloudUpload,
   Cpu,
   Download,
   Film,
@@ -28,7 +29,7 @@ interface ProductionMonitorPanelProps {
   sseConnected: boolean;
   onRefresh: (forceHealth?: boolean) => Promise<CommandCenterState | null>;
   onOpenCommandCenter?: (
-    subTab?: 'overview' | 'chairman' | 'chat' | 'tasks' | 'pipeline' | 'qa' | 'incidents' | 'perf'
+    subTab?: 'overview' | 'progress' | 'chairman' | 'chat' | 'tasks' | 'pipeline' | 'qa' | 'incidents' | 'perf'
   ) => void;
 }
 
@@ -312,6 +313,20 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
               <RefreshCw className={`w-3.5 h-3.5 ${busyKey === 'refresh_mon' ? 'animate-spin' : ''}`} />
               <span>Làm mới</span>
             </button>
+            {onOpenCommandCenter && (
+              <button
+                type="button"
+                onClick={() => onOpenCommandCenter('progress')}
+                className="px-3 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <CloudUpload className="w-3.5 h-3.5" />
+                <span>
+                  {selectedRun?.cloudHandoff?.safeToShutdownLocalPc
+                    ? 'Cloud đang chạy · Tiến độ AI'
+                    : 'Tiến độ AI & Chuyển giao Cloud'}
+                </span>
+              </button>
+            )}
           </div>
         </div>
 
