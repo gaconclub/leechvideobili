@@ -112,6 +112,18 @@ import {
   updateMuseAgentConfig,
   uploadCommandCenterAttachment,
 } from './server/commandCenter';
+import {
+  extractBearerToken,
+  fetchSessionDriveAndSheetReport,
+  generateAppsScriptBridgeCode,
+  getAppsScriptSessionStatus,
+  getPublicWorkspaceConfig,
+  handleAppsScriptDispatch,
+  initializeWorkspaceSync,
+  pullQueuedCommandsFromGoogleSheets,
+  pushSessionToGoogleWorkspace,
+  verifyAppsScriptSecret,
+} from './server/googleWorkspaceSync';
 
 const require = createRequire(import.meta.url);
 const { ZipArchive } = require('archiver') as {
@@ -6302,6 +6314,113 @@ async function startServer() {
     const fp = resolveArtifactDiskPath(req.params.filename);
     if (!fp) return res.status(404).json({ error: 'Không tìm thấy tệp artifact.' });
     res.sendFile(fp);
+  });
+
+  // ── Google Sheets & Google Drive Session Sync + 24/7 Apps Script Bridge ──
+  app.get('/api/workspace/config', (_req, res) => {
+    res.json(getPublicWorkspaceConfig());
+  });
+
+  app.post('/api/workspace/init', async (req, res) => {
+    try {
+      const token = extractBearerToken(req.headers.authorization);
+      const config = await initializeWorkspaceSync({
+        token,
+        existingSpreadsheetId: req.body?.existingSpreadsheetId,
+        spreadsheetTitle: req.body?.spreadsheetTitle,
+      });
+      res.json(config);
+    } catch (err: any) {
+      res.status(err?.status === 401 ? 401 : 400).json({
+        error: err?.message || 'Không thể khởi tạo Google Sheets & Drive.',
+      });
+    }
+  });
+
+  app.post('/api/workspace/sessions/:runId/push', async (req, res) => {
+    try {
+      const token = extractBearerToken(req.headers.authorization);
+      const result = await pushSessionToGoogleWorkspace({
+        token,
+        runId: req.params.runId,
+        uploadMediaToDrive: req.body?.uploadMediaToDrive !== false,
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(err?.status === 401 ? 401 : 400).json({
+        error: err?.message || 'Không thể đồng bộ phiên lên Google Sheets & Drive.',
+      });
+    }
+  });
+
+  app.post('/api/workspace/sheets/pull-and-execute', async (req, res) => {
+    try {
+      const token = extractBearerToken(req.headers.authorization);
+      const result = await pullQueuedCommandsFromGoogleSheets({ token });
+      res.json(result);
+    } catch (err: any) {
+      res.status(err?.status === 401 ? 401 : 400).json({
+        error: err?.message || 'Không thể đọc lệnh từ Google Sheets.',
+      });
+    }
+  });
+
+  app.get('/api/workspace/sessions/:runId/report', async (req, res) => {
+    try {
+      const token = extractBearerToken(req.headers.authorization);
+      const report = await fetchSessionDriveAndSheetReport({
+        token,
+        runId: req.params.runId === 'all' ? undefined : req.params.runId,
+      });
+      res.json(report);
+    } catch (err: any) {
+      res.status(err?.status === 401 ? 401 : 400).json({
+        error: err?.message || 'Không thể tải báo cáo từ Google Sheets & Drive.',
+      });
+    }
+  });
+
+  app.get('/api/workspace/apps-script', (req, res) => {
+    try {
+      const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https');
+      const host = String(req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3000');
+      const baseUrl =
+        process.env.APP_URL && process.env.APP_URL.startsWith('http')
+          ? process.env.APP_URL
+          : `${proto}://${host}`;
+      res.json(generateAppsScriptBridgeCode(baseUrl));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tạo mã Apps Script.' });
+    }
+  });
+
+  app.post('/api/workspace/webhook/dispatch', async (req, res) => {
+    try {
+      if (!verifyAppsScriptSecret(String(req.headers['x-workspace-bridge-secret'] || ''))) {
+        return res.status(401).json({ error: 'Sai khóa bảo mật Apps Script Bridge.' });
+      }
+      const result = await handleAppsScriptDispatch(req.body || {});
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tiếp nhận lệnh tự động.' });
+    }
+  });
+
+  app.get('/api/workspace/webhook/status/:runId', (req, res) => {
+    try {
+      if (!verifyAppsScriptSecret(String(req.headers['x-workspace-bridge-secret'] || ''))) {
+        return res.status(401).json({ error: 'Sai khóa bảo mật Apps Script Bridge.' });
+      }
+      const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https');
+      const host = String(req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3000');
+      const baseUrl =
+        process.env.APP_URL && process.env.APP_URL.startsWith('http')
+          ? process.env.APP_URL
+          : `${proto}://${host}`;
+      res.json(getAppsScriptSessionStatus(req.params.runId, baseUrl));
+    } catch (err: any) {
+      res.status(404).json({ error: err?.message || 'Không tìm thấy phiên sản xuất.' });
+    }
   });
 
   app.get('/api/derivative/jobs/:jobId', (req, res) => {

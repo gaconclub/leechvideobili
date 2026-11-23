@@ -9064,3 +9064,134 @@ export async function executeChairmanPlanOption(params: {
     executedSummary,
   };
 }
+
+export function getProductionSessionSnapshot(runId?: string): {
+  run: ProductionRun | null;
+  memory: ProjectMemory;
+  tasks: CommandTask[];
+  qaReports: QaInspectionReport[];
+  artifacts: Array<{
+    kind: 'character' | 'keyframe' | 'video' | 'final_film';
+    key: string;
+    label: string;
+    sceneIndex?: number;
+    artifactUrl: string;
+    diskPath: string;
+    fileName: string;
+    mimeType: string;
+  }>;
+} {
+  const targetRun =
+    (runId ? storeDoc.runs.find((r) => r.id === runId) : null) ||
+    (storeDoc.selectedRunId ? storeDoc.runs.find((r) => r.id === storeDoc.selectedRunId) : null) ||
+    storeDoc.runs[0] ||
+    null;
+
+  const mem = getRunMemory(targetRun?.id);
+  const tasks = targetRun ? storeDoc.tasks.filter((t) => t.runId === targetRun.id) : [];
+  const qaReports = targetRun ? storeDoc.qaReports.filter((q) => q.runId === targetRun.id) : [];
+  const artifacts: Array<{
+    kind: 'character' | 'keyframe' | 'video' | 'final_film';
+    key: string;
+    label: string;
+    sceneIndex?: number;
+    artifactUrl: string;
+    diskPath: string;
+    fileName: string;
+    mimeType: string;
+  }> = [];
+
+  const guessMime = (fp: string): string => {
+    const ext = path.extname(fp).toLowerCase();
+    if (ext === '.mp4') return 'video/mp4';
+    if (ext === '.webm') return 'video/webm';
+    if (ext === '.png') return 'image/png';
+    if (ext === '.webp') return 'image/webp';
+    if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+    return 'application/octet-stream';
+  };
+  const safeSlug = (s: string) =>
+    String(s || 'item')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 42) || 'item';
+
+  for (const ch of mem.characters) {
+    const url = getCharacterCanonicalImageRefUrl(ch) || ch.artifactUrl;
+    const fp = artifactUrlToDiskPath(url);
+    if (url && fp && fs.existsSync(fp)) {
+      const ext = path.extname(fp) || '.png';
+      artifacts.push({
+        kind: 'character',
+        key: `char:${ch.id}:${path.basename(fp)}`,
+        label: `Nhân vật: ${ch.name}`,
+        artifactUrl: url,
+        diskPath: fp,
+        fileName: `00_NhanVat_${safeSlug(ch.name)}${ext}`,
+        mimeType: guessMime(fp),
+      });
+    }
+  }
+
+  for (const sc of mem.scenes) {
+    const padIdx = String(sc.index).padStart(2, '0');
+    if (sc.keyframeImageUrl) {
+      const fp = artifactUrlToDiskPath(sc.keyframeImageUrl);
+      if (fp && fs.existsSync(fp)) {
+        const ext = path.extname(fp) || '.png';
+        artifacts.push({
+          kind: 'keyframe',
+          key: `kf:${sc.sceneId}:${path.basename(fp)}`,
+          label: `Ảnh Cảnh ${padIdx}: ${sc.title}`,
+          sceneIndex: sc.index,
+          artifactUrl: sc.keyframeImageUrl,
+          diskPath: fp,
+          fileName: `Canh_${padIdx}_Anh_${safeSlug(sc.title)}${ext}`,
+          mimeType: guessMime(fp),
+        });
+      }
+    }
+    if (sc.videoUrl) {
+      const fp = artifactUrlToDiskPath(sc.videoUrl);
+      if (fp && fs.existsSync(fp)) {
+        const ext = path.extname(fp) || '.mp4';
+        artifacts.push({
+          kind: 'video',
+          key: `vid:${sc.sceneId}:${path.basename(fp)}`,
+          label: `Video Cảnh ${padIdx}: ${sc.title}`,
+          sceneIndex: sc.index,
+          artifactUrl: sc.videoUrl,
+          diskPath: fp,
+          fileName: `Canh_${padIdx}_Video_${safeSlug(sc.title)}${ext}`,
+          mimeType: guessMime(fp),
+        });
+      }
+    }
+  }
+
+  if (targetRun?.finalVideoUrl) {
+    const fp = artifactUrlToDiskPath(targetRun.finalVideoUrl);
+    if (fp && fs.existsSync(fp)) {
+      const ext = path.extname(fp) || '.mp4';
+      artifacts.push({
+        kind: 'final_film',
+        key: `final:${targetRun.id}:${path.basename(fp)}`,
+        label: `Phim hoàn chỉnh: ${targetRun.title}`,
+        artifactUrl: targetRun.finalVideoUrl,
+        diskPath: fp,
+        fileName: `PHIM_HOAN_CHINH_${safeSlug(targetRun.title)}${ext}`,
+        mimeType: guessMime(fp),
+      });
+    }
+  }
+
+  return {
+    run: targetRun,
+    memory: mem,
+    tasks,
+    qaReports,
+    artifacts,
+  };
+}

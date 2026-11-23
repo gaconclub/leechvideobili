@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import type { CommandCenterState, ProductionRun, SceneProductionStage } from '../types/commandCenter';
 import { AgentAvatar } from './command-center/AgentAvatar';
+import { WorkspaceSyncSection } from './WorkspaceSyncSection';
 import { commandCenterApiJson } from '../hooks/useCommandCenterLive';
 
 interface ProductionMonitorPanelProps {
@@ -138,7 +139,7 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
   const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
   const [newSessionTitle, setNewSessionTitle] = useState('');
   const [confirmCancelRun, setConfirmCancelRun] = useState<ProductionRun | null>(null);
-  const [detailTab, setDetailTab] = useState<'scenes' | 'tasks' | 'logs'>('scenes');
+  const [detailTab, setDetailTab] = useState<'scenes' | 'tasks' | 'logs' | 'workspace'>('scenes');
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const selectedRun: ProductionRun | null = useMemo(() => {
@@ -484,15 +485,23 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
         {/* Selected Session Live View */}
         <div className="xl:col-span-8 space-y-5">
           {!selectedRun ? (
-            <section className="glass-card rounded-2xl p-10 text-center space-y-3">
-              <Film className="w-8 h-8 text-slate-400 mx-auto" />
-              <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                Chọn hoặc tạo một phiên sản xuất để theo dõi trực tiếp
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-                Mọi phiên sản xuất đều lưu độc lập kịch bản, nhân vật, ảnh phân cảnh, video và nhật ký để có thể mở lại bất cứ lúc nào.
-              </p>
-            </section>
+            <div className="space-y-5">
+              <section className="glass-card rounded-2xl p-8 text-center space-y-3">
+                <Film className="w-8 h-8 text-slate-400 mx-auto" />
+                <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                  Chọn hoặc tạo một phiên sản xuất để theo dõi trực tiếp
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                  Mọi phiên sản xuất đều lưu độc lập kịch bản, nhân vật, ảnh phân cảnh, video và nhật ký để có thể mở lại bất cứ lúc nào.
+                </p>
+              </section>
+              <section className="glass-card rounded-2xl p-5">
+                <WorkspaceSyncSection
+                  selectedRun={null}
+                  onAfterCommandDispatch={() => onRefresh(true)}
+                />
+              </section>
+            </div>
           ) : (
             <>
               {/* Session Header + Timing + Pause/Resume/Cancel */}
@@ -678,6 +687,7 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                       [
                         { id: 'scenes', label: `Phân cảnh (${memory?.scenes.length || 0})` },
                         { id: 'tasks', label: `Tác vụ phiên (${sessionTasks.length})` },
+                        { id: 'workspace', label: 'Google Sheets & Drive' },
                         { id: 'logs', label: `Nhật ký (${sessionLogs.length})` },
                       ] as const
                     ).map((tb) => (
@@ -803,6 +813,13 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                       })
                     )}
                   </div>
+                )}
+
+                {detailTab === 'workspace' && (
+                  <WorkspaceSyncSection
+                    selectedRun={selectedRun}
+                    onAfterCommandDispatch={() => onRefresh(true)}
+                  />
                 )}
 
                 {detailTab === 'logs' && (
