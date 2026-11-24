@@ -2918,6 +2918,402 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ VỚI MẢNG "ideas" CÓ
   };
 }
 
+async function extractDenseVideoFrames(
+  asset: StudioAssetRecord,
+  maxFrames = 8
+): Promise<{ timestampLabel: string; mimeType: string; base64: string }[]> {
+  if (!asset.filePath || !fs.existsSync(asset.filePath)) return [];
+  const duration = Math.max(1, Number(asset.durationSec || 0));
+  const frameCount = Math.max(3, Math.min(maxFrames, duration <= 12 ? 5 : duration <= 35 ? 7 : maxFrames));
+  const results: { timestampLabel: string; mimeType: string; base64: string }[] = [];
+
+  for (let i = 0; i < frameCount; i += 1) {
+    const frac = frameCount === 1 ? 0.5 : 0.06 + (0.88 * i) / (frameCount - 1);
+    const seekSec = Math.max(0.1, Math.min(Math.max(0.2, duration - 0.15), duration * frac));
+    const frameOut = path.join(
+      STUDIO_ASSETS_DIR,
+      `watch_${asset.assetId}_${Date.now()}_${i}_${crypto.randomBytes(2).toString('hex')}.jpg`
+    );
+    try {
+      const frameRes = await spawnPromise(
+        'ffmpeg',
+        ['-y', '-ss', seekSec.toFixed(2), '-i', asset.filePath, '-vframes', '1', '-vf', 'scale=720:-2', '-q:v', '4', frameOut],
+        STUDIO_ASSETS_DIR,
+        15_000
+      ).catch(() => ({ code: 1, stdout: '', stderr: '' }));
+      if (frameRes.code === 0 && fs.existsSync(frameOut)) {
+        const jpgBuf = fs.readFileSync(frameOut);
+        if (jpgBuf.byteLength > 500) {
+          const mm = String(Math.floor(seekSec / 60)).padStart(2, '0');
+          const ss = String(Math.floor(seekSec % 60)).padStart(2, '0');
+          results.push({
+            timestampLabel: `${mm}:${ss}`,
+            mimeType: 'image/jpeg',
+            base64: jpgBuf.toString('base64'),
+          });
+        }
+      }
+    } finally {
+      try {
+        if (fs.existsSync(frameOut)) fs.unlinkSync(frameOut);
+      } catch {
+        // ignore cleanup error
+      }
+    }
+  }
+  return results;
+}
+
+export async function analyzeReferenceVideosToIdeaPrompt(params: {
+  videos: DerivativeSourceInput[];
+  outputLanguage?: DerivativeOutputLanguage;
+  videoStyle?: StudioVideoStyle;
+  customStylePrompt?: string;
+  characterSummary?: string;
+  allowFreeCostumeChange?: boolean;
+  aiProvider?: AiProviderId;
+  useProModel?: boolean;
+}): Promise<{
+  detailedPrompt: string;
+  suggestedSetting?: string;
+  sceneHighlights: string[];
+  watchedVideoCount: number;
+  usedProvider: AiProviderId;
+  usedModel: string;
+}> {
+  const safeVideos = Array.isArray(params.videos) ? params.videos.slice(0, 8) : [];
+  if (safeVideos.length === 0) {
+    throw new Error('Vui lòng tải lên hoặc chọn ít nhất 1 video tham chiếu trước khi nhờ AI xem và phân tích.');
+  }
+
+  const provider: AiProviderId =
+    params.aiProvider === 'openai' ||
+    params.aiProvider === 'meta' ||
+    params.aiProvider === 'muse2api' ||
+    params.aiProvider === 'xingchi' ||
+    params.aiProvider === 'alibaba'
+      ? params.aiProvider
+      : 'gemini';
+
+  const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
+  const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
+  const contexts = await gatherSourceContexts(safeVideos);
+
+  // Prepare multimodal parts: native video inlineData (Gemini, <= 14MB) + dense chronological keyframes fallback
+  const geminiNativeParts: any[] = [];
+  const keyframeParts: any[] = [];
+  const openAiImageUrls: string[] = [];
+  let hasNativeVideoBytes = false;
+  let totalFramesAttached = 0;
+
+  for (let i = 0; i < contexts.length; i += 1) {
+    const ctx = contexts[i];
+    const src = ctx.source;
+    const label = `Video tham chiếu #${i + 1}: "${src.translatedTitle || src.title}" (${
+      src.duration > 0 ? `${Math.round(src.duration)}s` : 'không rõ thời lượng'
+    })`;
+
+    if (src.localAssetId) {
+      const asset = getStudioAsset(src.localAssetId);
+      let attachedNativeForThis = false;
+      if (provider === 'gemini' && asset?.filePath && fs.existsSync(asset.filePath) && contexts.length <= 2) {
+        try {
+          const stat = fs.statSync(asset.filePath);
+          if (stat.size > 1024 && stat.size <= 14 * 1024 * 1024) {
+            const videoBuf = fs.readFileSync(asset.filePath);
+            geminiNativeParts.push({ text: `[Tệp video gốc đầy đủ — ${label}]` });
+            geminiNativeParts.push({
+              inlineData: {
+                mimeType: asset.mimeType || 'video/mp4',
+                data: videoBuf.toString('base64'),
+              },
+            });
+            hasNativeVideoBytes = true;
+            attachedNativeForThis = true;
+          }
+        } catch {
+          // fall back to dense keyframes below
+        }
+      }
+
+      const denseFrames = asset
+        ? await extractDenseVideoFrames(asset, contexts.length === 1 ? 8 : 5)
+        : [];
+
+      if (denseFrames.length > 0) {
+        keyframeParts.push({ text: `[Chuỗi ${denseFrames.length} khung hình theo trình tự thời gian của ${label}]` });
+        if (!attachedNativeForThis) {
+          geminiNativeParts.push({ text: `[Chuỗi ${denseFrames.length} khung hình theo trình tự thời gian của ${label}]` });
+        }
+        for (const f of denseFrames) {
+          const labelPart = { text: `[Mốc ${f.timestampLabel}]` };
+          const imgPart = { inlineData: { mimeType: f.mimeType, data: f.base64 } };
+          keyframeParts.push(labelPart, imgPart);
+          if (!attachedNativeForThis) {
+            geminiNativeParts.push(labelPart, imgPart);
+          }
+          if (openAiImageUrls.length < 8) {
+            openAiImageUrls.push(`data:${f.mimeType};base64,${f.base64}`);
+          }
+          totalFramesAttached += 1;
+        }
+      } else if (src.keyframes && src.keyframes.length > 0) {
+        keyframeParts.push({ text: `[Khung hình đại diện của ${label}]` });
+        if (!attachedNativeForThis) {
+          geminiNativeParts.push({ text: `[Khung hình đại diện của ${label}]` });
+        }
+        for (const kf of src.keyframes.slice(0, 4)) {
+          const parsedKf = parseDataUrlToBuffer(kf);
+          if (parsedKf) {
+            const imgPart = {
+              inlineData: { mimeType: parsedKf.mimeType, data: parsedKf.buffer.toString('base64') },
+            };
+            keyframeParts.push(imgPart);
+            if (!attachedNativeForThis) geminiNativeParts.push(imgPart);
+            if (openAiImageUrls.length < 8) openAiImageUrls.push(kf);
+            totalFramesAttached += 1;
+          }
+        }
+      }
+    } else if (ctx.thumbnail) {
+      const labelPart = { text: `[Ảnh đại diện ${label}]` };
+      const imgPart = {
+        inlineData: {
+          mimeType: ctx.thumbnail.mimeType,
+          data: ctx.thumbnail.buffer.toString('base64'),
+        },
+      };
+      keyframeParts.push(labelPart, imgPart);
+      geminiNativeParts.push(labelPart, imgPart);
+      if (openAiImageUrls.length < 8) {
+        openAiImageUrls.push(`data:${ctx.thumbnail.mimeType};base64,${ctx.thumbnail.buffer.toString('base64')}`);
+      }
+      totalFramesAttached += 1;
+    }
+  }
+
+  const dossierLines = contexts.map((ctx) => {
+    const s = ctx.source;
+    return [
+      `=== VIDEO THAM CHIẾU #${ctx.index + 1} ===`,
+      `- Nguồn: ${s.localAssetId ? 'Video người dùng tải lên' : s.platformLabel}`,
+      `- Tiêu đề: ${s.translatedTitle ? `${s.translatedTitle} (Gốc: ${s.title})` : s.title}`,
+      `- Thời lượng: ${s.duration > 0 ? `${Math.round(s.duration)} giây` : 'Chưa rõ'}`,
+      ctx.tags.length > 0 ? `- Tags: ${ctx.tags.join(', ')}` : '',
+      ctx.description ? `- Mô tả: ${ctx.description.slice(0, 600)}` : '',
+      ctx.captionsText ? `- Lời thoại / Âm thanh trích xuất:\n${ctx.captionsText.slice(0, 2200)}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  });
+
+  const watchPrompt = `Bạn là Chuyên gia Phân tích Phim & Biên kịch Video AI.
+NHIỆM VỤ: Hãy XEM KỸ toàn bộ hình ảnh, diễn biến, chuyển động, không gian, ánh sáng và âm thanh/lời thoại trong ${contexts.length} video tham chiếu đính kèm, rồi viết một BẢN PROMPT MÔ TẢ CHI TIẾT CÁC BỐI CẢNH VÀ TÌNH TIẾT XUẤT HIỆN TRONG VIDEO.
+Bản mô tả này sẽ được dùng trực tiếp làm dữ liệu "Tóm tắt ý tưởng ban đầu" để bước tiếp theo AI triển khai ý tưởng và viết kịch bản phái sinh.
+
+THÔNG TIN BỔ SUNG:
+- Ngôn ngữ đầu ra BẮT BUỘC: ${OUTPUT_LANG_LABELS[outputLang]}
+- Phong cách định hướng hiện tại: ${styleMeta.labelVi} (${styleMeta.visualToneVi})
+${params.characterSummary?.trim() ? `- Lưu ý nhân vật đồng bộ (nếu dùng lại nhân vật tham chiếu, CHỈ tập trung mô tả bối cảnh, hành động, tình tiết và vai trò trong video nguồn): ${params.characterSummary.trim()}` : ''}
+
+TƯ LIỆU KÈM THEO TỪ VIDEO:
+${dossierLines.join('\n\n')}
+
+YÊU CẦU CHẤT LƯỢNG BẮT BUỘC CHO "detailedPrompt":
+1. Viết mạch lạc, súc tích nhưng CỰC KỲ CHI TIẾT (khoảng 180–350 chữ) theo đúng trình tự diễn biến thật xuất hiện trong video — KHÔNG bịa đặt chi tiết không liên quan.
+2. Bao gồm đầy đủ 5 lớp nội dung rõ ràng trong "detailedPrompt":
+   - Chủ đề, thể loại & mô-típ cốt truyện cốt lõi của video.
+   - Bối cảnh không gian cụ thể: địa điểm, kiến trúc/cảnh vật, thời điểm (ngày/đêm), thời tiết, tông ánh sáng, màu sắc và bầu không khí.
+   - Nhân vật/đối tượng xuất hiện & hành vi/biểu cảm đặc trưng trong từng khoảnh khắc.
+   - Trình tự từng bối cảnh & tình tiết nổi bật (Mở đầu → Diễn biến → Cao trào/Bước ngoặt → Kết thúc), các đạo cụ/phương tiện/vật thể quan trọng và nội dung lời thoại/thông điệp chính (nếu có).
+   - Góc máy, chuyển động camera và nhịp độ dựng phim đặc trưng.
+3. Điền thêm:
+   - "suggestedSetting": 1 câu ngắn gọn tóm tắt bối cảnh không gian & tông ánh sáng chủ đạo của video.
+   - "sceneHighlights": Mảng 3–6 câu ngắn tóm tắt từng mốc bối cảnh/tình tiết nối tiếp xuất hiện trong video (VD: "01. Mở đầu trên con đường vắng ban đêm...").
+
+TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không giải thích thừa):
+{
+  "detailedPrompt": "Đoạn prompt mô tả cực kỳ chi tiết các bối cảnh, nhân vật, hành vi và tình tiết theo đúng diễn biến xuất hiện trong video...",
+  "suggestedSetting": "1 câu tóm tắt không gian, thời điểm & tông ánh sáng chủ đạo",
+  "sceneHighlights": [
+    "Mốc cảnh 1: ...",
+    "Mốc cảnh 2: ...",
+    "Mốc cảnh 3: ..."
+  ]
+}`;
+
+  let parsed: any = {};
+  let usedModel = 'gemini-4-hydrogen';
+
+  try {
+    if (provider === 'muse2api') {
+      const st = await getMuse2ApiStatus();
+      if (!st.reachable || !st.ready) {
+        throw new Error(
+          st.error ||
+            'Muse2API chưa sẵn sàng hoặc chưa có tài khoản muse.ai hợp lệ. Hãy kiểm tra phần Quản lý Muse2API trong Cấu hình.'
+        );
+      }
+      usedModel = 'muse-spark (Muse2API)';
+      const raw = await chatWithMuse2ApiSpark([
+        {
+          role: 'system',
+          content:
+            'Chỉ trả về 1 đối tượng JSON thuần túy hợp lệ gồm detailedPrompt, suggestedSetting, sceneHighlights, không giải thích ngoài JSON.',
+        },
+        { role: 'user', content: watchPrompt },
+      ]);
+      parsed = parseAiBlueprintJsonSafe(raw);
+    } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi' || provider === 'alibaba') {
+      const cfg = resolveOpenAiCompatibleConfig(provider);
+      if (!cfg.apiKey) {
+        throw new Error(`Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env.`);
+      }
+      usedModel = cfg.model;
+      const userContent: any =
+        openAiImageUrls.length > 0
+          ? [
+              { type: 'text', text: watchPrompt },
+              ...openAiImageUrls.slice(0, 6).map((url) => ({
+                type: 'image_url',
+                image_url: { url },
+              })),
+            ]
+          : watchPrompt;
+
+      const sendOpenAiReq = async (contentPayload: any) =>
+        fetch(`${cfg.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+          body: JSON.stringify({
+            model: cfg.model,
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'Chỉ trả về 1 đối tượng JSON hợp lệ gồm detailedPrompt, suggestedSetting và sceneHighlights.',
+              },
+              { role: 'user', content: contentPayload },
+            ],
+            response_format: { type: 'json_object' },
+          }),
+          signal: AbortSignal.timeout(70_000),
+        });
+
+      let res = await sendOpenAiReq(userContent);
+      // Fallback to text-only if the selected OpenAI-compatible text model does not support image_url parts
+      if (!res.ok && Array.isArray(userContent)) {
+        res = await sendOpenAiReq(watchPrompt);
+      }
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        throw new Error(`${cfg.label} lỗi HTTP ${res.status}: ${errBody.slice(0, 180) || res.statusText}`);
+      }
+      const data = (await res.json()) as any;
+      parsed = parseAiBlueprintJsonSafe(String(data?.choices?.[0]?.message?.content || '{}'));
+    } else {
+      const ai = getGeminiClient();
+      const baseCandidates = params.useProModel
+        ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
+        : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+      const candidateModels = prioritizeGeminiCandidateModels(baseCandidates);
+      let lastErr: any;
+
+      const runGeminiWatch = async (
+        candidateModel: string,
+        mediaParts: any[],
+        timeoutMs: number,
+        retryDelays: number[]
+      ) =>
+        retryWithGeminiBackoff(
+          () =>
+            ai.models.generateContent({
+              model: candidateModel,
+              contents: { parts: [...mediaParts, { text: watchPrompt }] },
+              config: {
+                httpOptions: { timeout: timeoutMs },
+                maxOutputTokens: 4096,
+                ...(candidateModel.startsWith('gemini-4-')
+                  ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                  : {}),
+                systemInstruction:
+                  'Xem thật kỹ toàn bộ video/khung hình tham chiếu và trả về JSON thuần túy gồm detailedPrompt (mô tả chi tiết bối cảnh & tình tiết), suggestedSetting và sceneHighlights.',
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  required: ['detailedPrompt', 'suggestedSetting', 'sceneHighlights'],
+                  properties: {
+                    detailedPrompt: { type: Type.STRING },
+                    suggestedSetting: { type: Type.STRING },
+                    sceneHighlights: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                  },
+                },
+              },
+            }),
+          retryDelays
+        );
+
+      for (let mIdx = 0; mIdx < candidateModels.length; mIdx += 1) {
+        const candidateModel = candidateModels[mIdx];
+        const isLastCandidate = mIdx === candidateModels.length - 1;
+        const callTimeoutMs = hasNativeVideoBytes ? 75_000 : isLastCandidate ? 50_000 : 32_000;
+        const retryDelays = isLastCandidate ? [800] : [];
+        try {
+          let response;
+          try {
+            response = await runGeminiWatch(candidateModel, geminiNativeParts, callTimeoutMs, retryDelays);
+          } catch (nativeErr: any) {
+            // If native video inline bytes rejected or timed out, retry cleanly with dense keyframes on the same model
+            if (hasNativeVideoBytes && keyframeParts.length > 0) {
+              response = await runGeminiWatch(candidateModel, keyframeParts, 45_000, retryDelays);
+            } else {
+              throw nativeErr;
+            }
+          }
+          parsed = parseAiBlueprintJsonSafe(response.text || '{}');
+          usedModel = `${candidateModel}${hasNativeVideoBytes ? ' (Video+Vision)' : totalFramesAttached > 0 ? ` (${totalFramesAttached} frames)` : ''}`;
+          lastErr = null;
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          markGeminiModelOverloaded(candidateModel, err);
+          if (!shouldFallbackGeminiModel(err) && !(err instanceof SyntaxError)) {
+            throw err;
+          }
+          if (isLastCandidate) throw err;
+        }
+      }
+      if (lastErr) throw lastErr;
+    }
+  } catch (err: any) {
+    if (provider === 'gemini') {
+      throw new Error(formatGeminiError(err));
+    }
+    throw new Error(String(err?.message || err || 'AI không thể xem và phân tích video tham chiếu lúc này.'));
+  }
+
+  const detailedPrompt = String(parsed?.detailedPrompt || '').trim();
+  if (!detailedPrompt) {
+    throw new Error('AI chưa trích xuất được mô tả chi tiết từ video tham chiếu. Vui lòng thử lại.');
+  }
+
+  const sceneHighlights = Array.isArray(parsed?.sceneHighlights)
+    ? parsed.sceneHighlights.map((s: any) => String(s || '').trim()).filter(Boolean).slice(0, 8)
+    : [];
+
+  return {
+    detailedPrompt,
+    suggestedSetting: String(parsed?.suggestedSetting || '').trim() || undefined,
+    sceneHighlights,
+    watchedVideoCount: contexts.length,
+    usedProvider: provider,
+    usedModel,
+  };
+}
+
 export async function learnVideosAndCreateBlueprint(params: {
   mode?: StudioCreationMode;
   scriptMode?: StudioScriptMode;
@@ -3094,6 +3490,12 @@ NGUYÊN TẮC TỐI THƯỢNG (KHÔNG ĐƯỢC VI PHẠM):
 - Nhiệm vụ duy nhất là chuyển hóa chính xác ý tưởng gốc này thành kịch bản phân cảnh chi tiết, lời thoại/thuyết minh, chỉ đạo máy quay, ánh sáng và prompt hình ảnh/video hoàn chỉnh.`
         : `NGUỒN ĐẦU VÀO: STUDIO SÁNG TẠO TỪ Ý TƯỞNG VĂN BẢN.
 Ý tưởng / Chủ đề người dùng nhập: "${ideaText}".`
+      : preserveExactIdea && ideaText
+      ? `NGUỒN ĐẦU VÀO: TẠO KỊCH BẢN PHÁI SINH TRỰC TIẾP TỪ Ý TƯỞNG ĐÃ CHỌN & ${contexts.length} VIDEO THAM CHIẾU (BẮT BUỘC BẢO TOÀN 100% Ý TƯỞNG ĐÃ CHỌN).
+${selectedIdeaTitle ? `Tiêu đề ý tưởng đã chọn: "${selectedIdeaTitle}"\n` : ''}Nội dung ý tưởng BẮT BUỘC GIỮ NGUYÊN: "${ideaText}".
+NGUYÊN TẮC BẮT BUỘC:
+- Phân tích chi tiết 9 chiều video tham chiếu vào object "referenceAnalysis" để giữ chuẩn phong cách quay dựng, ánh sáng, nhịp độ.
+- ĐỒNG THỜI BÁM SÁT 100% VÀ BẢO TOÀN TRỌN VẸN ý tưởng người dùng vừa chọn ở trên (giữ nguyên cốt truyện, tình huống, nhân vật/vai trò và diễn biến), TUYỆT ĐỐI KHÔNG tự ý đổi sang câu chuyện khác.`
       : `NGUỒN ĐẦU VÀO: TẠO VIDEO PHÁI SINH TỪ ${contexts.length} VIDEO THAM CHIẾU.
 Định hướng mở rộng từ người dùng: "${ideaText || 'Phân tích chuyên sâu video tham chiếu để phát triển kịch bản sáng tạo mới'}".
 NGUYÊN TẮC BẮT BUỘC VỚI VIDEO PHÁI SINH:

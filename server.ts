@@ -46,6 +46,7 @@ import {
   getStudioAsset,
   importRenderedJobAsLibraryAsset,
   initStudioChunkedUpload,
+  analyzeReferenceVideosToIdeaPrompt,
   expandStudioIdeaWithAi,
   installAndWarmupVieNeu,
   learnAndCreateIndependentBatch,
@@ -5543,6 +5544,64 @@ async function startServer() {
     } catch (err: any) {
       const msg = String(err?.message || 'Không thể triển khai ý tưởng lúc này.');
       res.status(msg.includes('Vui lòng') ? 400 : msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500).json({ error: msg });
+    }
+  });
+
+  app.post('/api/studio/analyze-video-idea', async (req, res) => {
+    try {
+      const {
+        videos = [],
+        outputLanguage = 'vi',
+        videoStyle = 'cinematic',
+        customStylePrompt = '',
+        characterSummary = '',
+        allowFreeCostumeChange = false,
+        aiProvider = 'gemini',
+        useProModel = false,
+      } = (req.body || {}) as {
+        videos?: DerivativeSourceInput[];
+        outputLanguage?: DerivativeOutputLanguage;
+        videoStyle?: StudioVideoStyle;
+        customStylePrompt?: string;
+        characterSummary?: string;
+        allowFreeCostumeChange?: boolean;
+        aiProvider?: AiProviderId;
+        useProModel?: boolean;
+      };
+
+      const safeVideos = Array.isArray(videos) ? videos.slice(0, 8) : [];
+      if (safeVideos.length === 0) {
+        return res.status(400).json({
+          error: 'Vui lòng tải lên hoặc chọn ít nhất 1 video tham chiếu trước khi nhờ AI xem video.',
+        });
+      }
+
+      const validProvider: AiProviderId =
+        aiProvider === 'openai' ||
+        aiProvider === 'meta' ||
+        aiProvider === 'muse2api' ||
+        aiProvider === 'xingchi' ||
+        aiProvider === 'alibaba'
+          ? aiProvider
+          : 'gemini';
+
+      const result = await analyzeReferenceVideosToIdeaPrompt({
+        videos: safeVideos,
+        outputLanguage,
+        videoStyle,
+        customStylePrompt: String(customStylePrompt || ''),
+        characterSummary: String(characterSummary || ''),
+        allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
+        aiProvider: validProvider,
+        useProModel: Boolean(useProModel),
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      const msg = String(err?.message || 'Không thể xem và phân tích video tham chiếu lúc này.');
+      res
+        .status(msg.includes('Vui lòng') ? 400 : msg.includes('503') ? 503 : msg.includes('429') ? 429 : 500)
+        .json({ error: msg });
     }
   });
 

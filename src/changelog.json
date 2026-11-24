@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.22",
+    "version": "1.0.23",
     "date": "24/11/2026",
-    "title": "feat: implement batch script generation with motif consistency",
+    "title": "feat(studio): add video analysis feature for idea generation",
     "changes": [
-      "feat: implement batch script generation with motif consistency"
+      "feat(studio): add video analysis feature for idea generation"
     ]
   },
   {
