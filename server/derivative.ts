@@ -5314,8 +5314,9 @@ export async function generateSceneVideoWithOmniFlash(params: {
     if (videoPart.data) {
       videoBuffer = Buffer.from(videoPart.data, 'base64');
     } else if (videoPart.uri) {
+      const effectiveKey = (params.geminiApiKey || process.env.GEMINI_API_KEY || '').trim();
       const dl = await fetch(videoPart.uri, {
-        headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY?.trim() || '' },
+        headers: { 'x-goog-api-key': effectiveKey },
         signal: AbortSignal.timeout(60_000),
       });
       if (dl.ok) {

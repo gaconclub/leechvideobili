@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   CloudUpload,
   Download,
+  ExternalLink,
   Film,
   Image as ImageIcon,
   Loader2,
@@ -16,8 +17,10 @@ import {
   Save,
   Search,
   Siren,
+  Sparkles,
   Square,
   Upload,
+  Wrench,
 } from 'lucide-react';
 import type {
   DerivativeAspectRatio,
@@ -36,6 +39,7 @@ import type {
   MuseAgentId,
   ProductionRun,
   SceneProductionStage,
+  VideoGenerationEngine,
 } from '../types/commandCenter';
 import {
   AgentAvatar,
@@ -46,6 +50,7 @@ import {
 import { AiProgressBoardTab } from './command-center/AiProgressBoardTab';
 import { ChairmanCommandPanel } from './command-center/ChairmanCommandPanel';
 import { CommunicationHub } from './command-center/CommunicationHub';
+import { GoogleFlowModal } from './command-center/GoogleFlowModal';
 import { IncidentCommandTab } from './command-center/IncidentCommandTab';
 import { PerformanceMonitorTab } from './command-center/PerformanceMonitorTab';
 
@@ -223,6 +228,9 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   const [aspectRatio, setAspectRatio] = useState<DerivativeAspectRatio>('16:9');
   const [videoStyle, setVideoStyle] = useState<StudioVideoStyle>('cinematic');
   const [allowFreeCostumeChange, setAllowFreeCostumeChange] = useState<boolean>(false);
+  const [videoGenerationEngine, setVideoGenerationEngine] = useState<VideoGenerationEngine>('gemini');
+  const [flowModalOpen, setFlowModalOpen] = useState(false);
+  const [flowFocusSceneId, setFlowFocusSceneId] = useState<string | null>(null);
   const [studioProfiles, setStudioProfiles] = useState<StudioProjectProfile[]>([]);
   const [hasManualFormEdit, setHasManualFormEdit] = useState(false);
   const hydratedSyncAtRef = useRef<number>(0);
@@ -271,10 +279,11 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   const [cloudKey, setCloudKey] = useState('');
   const [parallelLimit, setParallelLimit] = useState(4);
   const [perAgentConcurrencyLimit, setPerAgentConcurrencyLimit] = useState(2);
-  const [qaThreshold, setQaThreshold] = useState(80);
+  const [qaThreshold, setQaThreshold] = useState(72);
   const [maxRetries, setMaxRetries] = useState(2);
   const [maxIncidentRetries, setMaxIncidentRetries] = useState(3);
   const [autoDirectorIncidentResponse, setAutoDirectorIncidentResponse] = useState(true);
+  const [autoApproveAfterMaxRetries, setAutoApproveAfterMaxRetries] = useState(true);
   const [autoBackup, setAutoBackup] = useState(true);
   const [newAccLabel, setNewAccLabel] = useState('');
   const [newAccCookie, setNewAccCookie] = useState('');
@@ -325,6 +334,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
       setMaxRetries(state.cloudConfig.maxRetriesPerScene);
       setMaxIncidentRetries(state.cloudConfig.maxIncidentRetries ?? 3);
       setAutoDirectorIncidentResponse(state.cloudConfig.autoDirectorIncidentResponse !== false);
+      setAutoApproveAfterMaxRetries(state.cloudConfig.autoApproveAfterMaxRetries !== false);
       setAutoBackup(state.cloudConfig.autoBackupRealtime);
       setCloudSyncedOnce(true);
     }
@@ -399,9 +409,16 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
             aspectRatio,
             videoStyle,
             allowFreeCostumeChange,
+            videoGenerationEngine,
           }),
         }),
-      'Đã bàn giao kịch bản cho Muse AI 01 — Tổng đạo diễn và khởi động hàng đợi Cloud.'
+      `Đã khởi động sản xuất với nguồn video: ${
+        videoGenerationEngine === 'gemini'
+          ? 'AI Gemini (Omni Flash)'
+          : videoGenerationEngine === 'google_flow'
+          ? 'Google Flow (Xuất kịch bản & nạp MP4)'
+          : 'AI Muse (Tự dự phòng AI Gemini)'
+      }.`
     );
   };
 
@@ -562,6 +579,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
             maxRetriesPerScene: maxRetries,
             maxIncidentRetries,
             autoDirectorIncidentResponse,
+            autoApproveAfterMaxRetries,
             autoBackupRealtime: autoBackup,
           }),
         }),
@@ -1189,6 +1207,58 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                 </div>
               </div>
 
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700/60 bg-slate-50/75 dark:bg-[#0c1021]/65 p-3 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-900 dark:text-white">
+                    <Sparkles className="w-3.5 h-3.5 text-sky-500" />
+                    <span>Nguồn tạo video sản xuất</span>
+                  </div>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Có thể đổi ngay giữa chừng mà không cần chạy lại từ đầu
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {(
+                    [
+                      {
+                        id: 'gemini' as VideoGenerationEngine,
+                        title: 'AI Gemini (Khuyên dùng)',
+                        desc: 'Dựng video trực tiếp qua Gemini Omni Flash, không phụ thuộc cookie Muse.ai.',
+                      },
+                      {
+                        id: 'google_flow' as VideoGenerationEngine,
+                        title: 'Google Flow',
+                        desc: 'Xuất kịch bản & khung hình chuẩn để tạo video trên Google Flow rồi nạp MP4 về ghép phim.',
+                      },
+                      {
+                        id: 'muse' as VideoGenerationEngine,
+                        title: 'AI Muse (Tự dự phòng)',
+                        desc: 'Ưu tiên Muse.ai, tự động chuyển sang AI Gemini ngay khi Muse lỗi để không bị treo.',
+                      },
+                    ] as const
+                  ).map((opt) => {
+                    const active = videoGenerationEngine === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setVideoGenerationEngine(opt.id)}
+                        className={`text-left p-2.5 rounded-xl border transition cursor-pointer ${
+                          active
+                            ? 'border-sky-500 bg-sky-500/12 text-slate-900 dark:text-white shadow-xs'
+                            : 'border-slate-200 dark:border-slate-700/60 bg-white/70 dark:bg-[#131a35]/60 text-slate-700 dark:text-slate-300 hover:border-slate-400'
+                        }`}
+                      >
+                        <div className="text-xs font-semibold">{opt.title}</div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug mt-0.5">
+                          {opt.desc}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
                 <div className="text-xs text-slate-500 dark:text-slate-400">
                   Cloud Worker ID: <span className="font-mono">{state?.cloudConfig.workerBootId}</span>
@@ -1254,6 +1324,61 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                     </div>
                   )}
 
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-700/60 bg-slate-50/75 dark:bg-[#0c1021]/65 p-2.5 space-y-2">
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="font-semibold text-slate-700 dark:text-slate-200">
+                        Nguồn tạo video phiên hiện tại
+                      </span>
+                      <span className="font-mono text-sky-600 dark:text-sky-400">
+                        {activeRun.videoGenerationEngine === 'google_flow'
+                          ? 'Google Flow'
+                          : activeRun.videoGenerationEngine === 'muse'
+                          ? 'AI Muse (Auto-failover Gemini)'
+                          : 'AI Gemini'}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(
+                        [
+                          { id: 'gemini' as VideoGenerationEngine, label: 'AI Gemini' },
+                          { id: 'google_flow' as VideoGenerationEngine, label: 'Google Flow' },
+                          { id: 'muse' as VideoGenerationEngine, label: 'AI Muse' },
+                        ] as const
+                      ).map((eng) => {
+                        const isCur = (activeRun.videoGenerationEngine || 'gemini') === eng.id;
+                        return (
+                          <button
+                            key={eng.id}
+                            type="button"
+                            disabled={busyAction === 'switch_engine'}
+                            onClick={() =>
+                              runAction(
+                                'switch_engine',
+                                () =>
+                                  apiJson<CommandCenterState>(
+                                    `/api/command-center/productions/${activeRun.id}/video-engine`,
+                                    {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ engine: eng.id }),
+                                    }
+                                  ),
+                                `Đã chuyển nguồn tạo video phiên hiện tại sang ${eng.label}.`
+                              )
+                            }
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition cursor-pointer ${
+                              isCur
+                                ? 'bg-sky-600 text-white border-sky-600'
+                                : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-sky-500'
+                            }`}
+                          >
+                            {eng.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   <div className="flex flex-wrap items-center gap-2">
                     {activeRun.status !== 'paused' &&
                       activeRun.status !== 'completed' &&
@@ -1290,6 +1415,56 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                         <span>Tiếp tục chạy</span>
                       </button>
                     )}
+
+                    <button
+                      type="button"
+                      disabled={busyAction === 'unstick_run'}
+                      onClick={() =>
+                        runAction(
+                          'unstick_run',
+                          async () => {
+                            const res = await apiJson<{ state: CommandCenterState; summary: string }>(
+                              `/api/command-center/productions/${activeRun.id}/unstick`,
+                              { method: 'POST' }
+                            );
+                            if (res.summary) setBannerNotice(res.summary);
+                            return res.state;
+                          }
+                        )
+                      }
+                      className="px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-800 dark:text-amber-300 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {busyAction === 'unstick_run' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Wrench className="w-3.5 h-3.5" />
+                      )}
+                      <span>Gỡ treo đội AI</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFlowFocusSceneId(null);
+                        setFlowModalOpen(true);
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Gói Google Flow</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setChatInitialChannel('gemini');
+                        setSubTab('chat');
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-sky-600/15 hover:bg-sky-600/25 border border-sky-500/35 text-sky-700 dark:text-sky-300 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Chat AI Gemini</span>
+                    </button>
 
                     {activeRun.status !== 'completed' && activeRun.status !== 'cancelled' && (
                       <button
@@ -2168,11 +2343,11 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                   Hệ thống AI Muse giám sát đồng nhất (Muse AI 05)
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Kiểm định độc lập 3 trạng thái (PASS / PASS WITH TOLERANCE / FAIL): ngưỡng tổng ≤ 5% sau khi loại trừ phụ kiện được phép, đồng thời tách riêng kiểm tra lõi khuôn mặt, vóc dáng và trang phục chính. Mọi cảnh FAIL được báo trực tiếp về Gemini AI – Chủ tịch.
+                  Kiểm định đồng nhất thực tế (PASS / PASS WITH TOLERANCE / FAIL): chấp nhận sai khác góc máy, ánh sáng và biểu cảm tự nhiên. Sau tối đa {state?.cloudConfig.maxIncidentRetries ?? 3} vòng tự sửa, hệ thống tự thông qua bản tốt nhất hoặc chuyển gói Google Flow thay vì treo đội AI.
                 </p>
               </div>
               <div className="text-xs font-mono tabular-nums text-slate-600 dark:text-slate-300">
-                Ngưỡng duyệt: {state?.cloudConfig.qaPassThreshold}/100 · Sai lệch tổng ≤ 5% · Tối đa sửa: {state?.cloudConfig.maxRetriesPerScene} lần/cảnh
+                Ngưỡng duyệt: {state?.cloudConfig.qaPassThreshold}/100 · Chống treo sau {state?.cloudConfig.maxIncidentRetries ?? 3} vòng · Tối đa sửa: {state?.cloudConfig.maxRetriesPerScene} lần/cảnh
               </div>
             </div>
 
@@ -2735,6 +2910,18 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                 <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200 cursor-pointer">
                   <input
                     type="checkbox"
+                    checked={autoApproveAfterMaxRetries}
+                    onChange={(e) => setAutoApproveAfterMaxRetries(e.target.checked)}
+                    className="rounded border-slate-300"
+                  />
+                  <span>Tự thông qua bản tốt nhất sau 3 vòng (chống treo đội AI)</span>
+                </label>
+              </div>
+
+              <div className="flex items-end pb-1.5">
+                <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200 cursor-pointer">
+                  <input
+                    type="checkbox"
                     checked={autoBackup}
                     onChange={(e) => setAutoBackup(e.target.checked)}
                     className="rounded border-slate-300"
@@ -2919,6 +3106,17 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
           </div>
         </div>
       )}
+
+      <GoogleFlowModal
+        open={flowModalOpen}
+        onClose={() => {
+          setFlowModalOpen(false);
+          setFlowFocusSceneId(null);
+        }}
+        runId={activeRun?.id}
+        focusSceneId={flowFocusSceneId}
+        onStateUpdated={(nextState) => setState(nextState)}
+      />
     </div>
   );
 };

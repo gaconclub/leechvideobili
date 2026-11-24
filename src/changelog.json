@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.15",
-    "date": "23/11/2026",
-    "title": "chore: update Firebase configuration credentials",
+    "version": "1.0.16",
+    "date": "24/11/2026",
+    "title": "feat(command-center): add video generation engine support",
     "changes": [
-      "chore: update Firebase configuration credentials"
+      "feat(command-center): add video generation engine support"
     ]
   },
   {
