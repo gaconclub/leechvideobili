@@ -51,6 +51,7 @@ import {
   DerivativeVisualMode,
   DerivativeVoiceId,
   DerivativeVoiceMode,
+  ExpandedCreativeIdeaItem,
   LearnedVideoStyle,
   OfflineTtsVoiceOption,
   ServerCapabilitiesStatus,
@@ -158,8 +159,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   // Separate Studio Mode: 'creative' (Studio Sáng Tạo) vs 'derivative' (Tạo Video Phái Sinh)
   const [studioMode, setStudioMode] = useState<StudioCreationMode>('creative');
 
-  // Mode 1: Creative Idea Inputs (Seed Summary -> AI Expanded Concept -> Step 2 Script)
+  // Mode 1: Creative Idea Inputs (Seed Summary -> N AI Expanded Ideas -> Direct Per-Idea Script Prompt -> Step 2)
   const [ideaPrompt, setIdeaPrompt] = useState('');
+  const [ideaCount, setIdeaCount] = useState<number>(3);
+  const [expandedIdeas, setExpandedIdeas] = useState<ExpandedCreativeIdeaItem[]>([]);
+  const [editingIdeaId, setEditingIdeaId] = useState<string | null>(null);
+  const [generatingIdeaId, setGeneratingIdeaId] = useState<string | null>(null);
   const [expandedIdeaPrompt, setExpandedIdeaPrompt] = useState('');
   const [isExpandingIdea, setIsExpandingIdea] = useState(false);
   const [expandIdeaError, setExpandIdeaError] = useState('');
@@ -244,9 +249,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [productionFormat, setProductionFormat] = useState<StudioProductionFormat>('dialogue_film');
   const [allowFreeCostumeChange, setAllowFreeCostumeChange] = useState<boolean>(false);
   const [showManualNarrationMusic, setShowManualNarrationMusic] = useState(false);
-  const [batchVideoCount, setBatchVideoCount] = useState<number>(3);
-  const [batchDurationMode, setBatchDurationMode] = useState<'uniform' | 'per_video'>('uniform');
-  const [perVideoDurations, setPerVideoDurations] = useState<number[]>([30, 30, 30]);
   const [showScriptModeGuide, setShowScriptModeGuide] = useState(false);
   const [desiredSceneCount, setDesiredSceneCount] = useState<number | 'auto'>('auto');
   const [customInstruction, setCustomInstruction] = useState('');
@@ -316,17 +318,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     });
   };
 
-  const handleUpdateBatchVideoCount = (nextRaw: number) => {
-    const count = Math.max(2, Math.min(15, Math.round(nextRaw || 2)));
-    setBatchVideoCount(count);
-    setPerVideoDurations((prev) => {
-      const next = [...prev];
-      while (next.length < count) {
-        next.push(targetDurationSec);
-      }
-      return next.slice(0, count);
-    });
-  };
+  const unifiedUnitCount = Math.max(1, Math.min(15, Math.round(Number(ideaCount || 3))));
+  const unifiedTotalDurationSec = unifiedUnitCount * targetDurationSec;
 
   // Per-scene generation states
   const [imageEngineMode, setImageEngineMode] = useState<'gemini_standard' | 'gemini_pro' | 'muse2api' | 'qwen'>(
@@ -1162,8 +1155,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       .filter(Boolean)
       .join('; ');
 
+    const clampedCount = Math.max(1, Math.min(15, Math.round(Number(ideaCount || 3))));
     try {
       const { res, data } = await fetchStudioJsonWithAutoRetry<{
+        ideas?: ExpandedCreativeIdeaItem[];
         expandedIdea?: string;
         suggestedSetting?: string;
         error?: string;
@@ -1176,6 +1171,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           videoStyle,
           customStylePrompt: customStylePrompt.trim(),
           scriptMode,
+          ideaCount: clampedCount,
           targetDurationSec,
           outputLanguage,
           characterSummary: charSummary,
@@ -1194,13 +1190,40 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         }),
       });
 
-      if (!res.ok || !data.expandedIdea) {
+      const returnedIdeas: ExpandedCreativeIdeaItem[] =
+        Array.isArray(data.ideas) && data.ideas.length > 0
+          ? data.ideas
+          : data.expandedIdea
+          ? [
+              {
+                id: `idea_${Date.now()}_1`,
+                index: 1,
+                title: seed.slice(0, 64),
+                summary: data.expandedIdea.trim().slice(0, 220),
+                detail: data.expandedIdea.trim(),
+                suggestedSetting: data.suggestedSetting,
+              },
+            ]
+          : [];
+
+      if (!res.ok || returnedIdeas.length === 0) {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
 
-      setExpandedIdeaPrompt(data.expandedIdea.trim());
-      if (!settingBibleDraft.trim() && data.suggestedSetting?.trim()) {
-        setSettingBibleDraft(data.suggestedSetting.trim());
+      setExpandedIdeas(returnedIdeas);
+      setEditingIdeaId(null);
+      const firstIdea = returnedIdeas[0];
+      setExpandedIdeaPrompt(
+        [
+          firstIdea.title,
+          firstIdea.summary,
+          firstIdea.detail && firstIdea.detail !== firstIdea.summary ? firstIdea.detail : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+      );
+      if (!settingBibleDraft.trim() && (firstIdea.suggestedSetting || data.suggestedSetting)?.trim()) {
+        setSettingBibleDraft((firstIdea.suggestedSetting || data.suggestedSetting || '').trim());
       }
     } catch (err: any) {
       setExpandIdeaError(err?.message || 'AI không thể triển khai ý tưởng lúc này.');
@@ -1209,9 +1232,25 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // AI Learn & Create Script (supports Series mode & Independent Multi-Video Batch mode)
-  const handleLearnAndCreateScript = async () => {
-    const effectiveCreativeIdea = expandedIdeaPrompt.trim() || ideaPrompt.trim();
+  // AI Learn & Create Script (supports Direct Per-Idea Script Prompt with 100% Idea Preservation & Same-Motif Independent Batch)
+  const handleLearnAndCreateScript = async (override?: {
+    selectedIdea?: ExpandedCreativeIdeaItem;
+    preserveExactIdea?: boolean;
+  }) => {
+    const selectedIdea = override?.selectedIdea;
+    const preserveExactIdea = Boolean(override?.preserveExactIdea || selectedIdea);
+    const formattedSelectedIdea = selectedIdea
+      ? [
+          `Tiêu đề ý tưởng: ${selectedIdea.title}`,
+          selectedIdea.summary,
+          selectedIdea.detail && selectedIdea.detail !== selectedIdea.summary ? selectedIdea.detail : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+      : '';
+    const effectiveCreativeIdea = formattedSelectedIdea || expandedIdeaPrompt.trim() || ideaPrompt.trim();
+    const effectiveSettingBible = (selectedIdea?.suggestedSetting || settingBibleDraft).trim();
+
     if (studioMode === 'creative') {
       if (!effectiveCreativeIdea && !customInstruction.trim()) {
         setLearnError('Vui lòng nhập tóm tắt ý tưởng (hoặc dùng AI triển khai ý tưởng) ở Bước 1 để lên kịch bản.');
@@ -1220,6 +1259,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     } else if (sources.length === 0) {
       setLearnError('Vui lòng tải lên hoặc thêm ít nhất 1 video tham chiếu ở Bước 1.');
       return;
+    }
+
+    if (selectedIdea) {
+      setExpandedIdeaPrompt(formattedSelectedIdea);
+      if (selectedIdea.suggestedSetting?.trim()) {
+        setSettingBibleDraft(selectedIdea.suggestedSetting.trim());
+      }
+      setGeneratingIdeaId(selectedIdea.id);
+    } else {
+      setGeneratingIdeaId(null);
     }
 
     setIsLearning(true);
@@ -1266,18 +1315,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       })
       .join('; ');
 
-    const effectiveBatchDurations =
-      scriptMode === 'independent_batch'
-        ? Array.from({ length: batchVideoCount }, (_, idx) =>
-            batchDurationMode === 'per_video' ? perVideoDurations[idx] || targetDurationSec : targetDurationSec
-          )
-        : undefined;
-
     const effectiveStylePreset: DerivativeStylePreset = enableNarrativeStyle
       ? stylePreset === 'none'
         ? 'storytelling_review'
         : stylePreset
       : 'none';
+
+    const seriesTotalDurationSec = unifiedUnitCount * targetDurationSec;
 
     try {
       const { res, data } = await fetchStudioJsonWithAutoRetry<{
@@ -1292,8 +1336,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           mode: studioMode,
           scriptMode,
           productionFormat,
-          videoCount: scriptMode === 'independent_batch' ? batchVideoCount : 1,
-          perVideoDurations: effectiveBatchDurations,
+          ideaCount: unifiedUnitCount,
+          videoCount: scriptMode === 'independent_batch' ? unifiedUnitCount : 1,
           ideaPrompt: studioMode === 'creative' ? effectiveCreativeIdea : ideaPrompt.trim(),
           query: studioMode === 'creative' ? effectiveCreativeIdea : searchQueryInput.trim() || incomingQuery,
           videos: studioMode === 'derivative' ? sources : [],
@@ -1301,8 +1345,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           videoStyle,
           customStylePrompt: customStylePrompt.trim(),
           aspectRatio,
-          targetDurationSec,
-          desiredSceneCount: desiredSceneCount === 'auto' ? undefined : desiredSceneCount,
+          targetDurationSec: scriptMode === 'series' ? seriesTotalDurationSec : targetDurationSec,
+          sceneDurationSec: scriptMode === 'series' ? targetDurationSec : undefined,
+          desiredSceneCount:
+            scriptMode === 'series'
+              ? unifiedUnitCount
+              : desiredSceneCount === 'auto'
+              ? undefined
+              : desiredSceneCount,
           outputLanguage,
           useProModel: aiProvider === 'gemini' && useProModel,
           characterSummary: charSummary,
@@ -1316,11 +1366,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             syncProfile: c.syncProfile,
           })),
           characterBible: characterBibleDraft.trim(),
-          settingBible: settingBibleDraft.trim(),
+          settingBible: effectiveSettingBible,
           visualStyleBible: visualStyleBibleDraft.trim(),
           costumeBible: costumeBibleDraft.trim(),
           continuityBible: continuityBibleDraft.trim(),
           allowFreeCostumeChange,
+          preserveExactIdea,
+          selectedIdeaTitle: selectedIdea?.title || '',
           customInstruction: customInstruction.trim(),
           enableVoiceover: voiceMode !== 'none',
           aiProvider,
@@ -1393,11 +1445,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       ).label;
       if (scriptMode === 'independent_batch') {
         setLearnSuccess(
-          `Đã sáng tạo ${returnedList.length} kịch bản video độc lập cùng tinh thần tham chiếu (${styleLabel}).`
+          `Đã tạo lô ${returnedList.length} kịch bản video độc lập phái sinh cùng mô-típ từ ý tưởng gốc (${styleLabel}).`
         );
       } else {
         setLearnSuccess(
-          `Đã khởi tạo kịch bản Series ${first.scenes.length} phân cảnh nối tiếp liên hoàn (${styleLabel}).`
+          selectedIdea
+            ? `Đã chuyển ý tưởng "${selectedIdea.title}" thành kịch bản ${first.scenes.length} phân cảnh bảo toàn nguyên cốt truyện (${styleLabel}).`
+            : `Đã khởi tạo kịch bản Series ${first.scenes.length} phân cảnh nối tiếp liên hoàn (${styleLabel}).`
         );
       }
       setActiveStudioStep(2);
@@ -1406,6 +1460,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       setLearnError(err?.message || 'AI không thể phân tích hoặc tạo kịch bản.');
     } finally {
       setIsLearning(false);
+      setGeneratingIdeaId(null);
     }
   };
 
@@ -2287,14 +2342,237 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const totalSceneSec = blueprint
     ? Math.round(blueprint.scenes.reduce((sum, s) => sum + Number(s.durationSec || 0), 0))
     : 0;
-  const hasExpandedCreativeIdea = Boolean(expandedIdeaPrompt.trim());
   const canSubmitLearn =
     studioMode === 'creative'
-      ? Boolean(expandedIdeaPrompt.trim() || ideaPrompt.trim() || customInstruction.trim())
+      ? Boolean(expandedIdeas.length > 0 || expandedIdeaPrompt.trim() || ideaPrompt.trim() || customInstruction.trim())
       : sources.length > 0;
 
   const inputCls =
     'w-full h-9 px-3 text-xs bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-violet-400';
+
+  const productionAndBatchControls = (
+    <div className="space-y-3.5 pt-3 border-t border-slate-200/80 dark:border-slate-400/15 text-xs">
+      {/* 2 Video Production Format Modes: Phim có lời thoại vs Phim thuyết minh kể chuyện */}
+      <div className="space-y-2 pb-3 border-b border-slate-200/80 dark:border-slate-400/15">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="font-bold text-slate-800 dark:text-white">
+            Chế độ sản xuất video
+          </span>
+          <span className="text-[10px] font-medium text-cyan-700 dark:text-cyan-300">
+            {productionFormat === 'dialogue_film'
+              ? 'Đồng bộ nhân vật · giọng đúng độ tuổi'
+              : '1 giọng dẫn chuyện · AI tự ghép nhạc'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {PRODUCTION_FORMAT_OPTIONS.map((fmt) => {
+            const active = productionFormat === fmt.value;
+            return (
+              <button
+                key={fmt.value}
+                type="button"
+                onClick={() => {
+                  setProductionFormat(fmt.value);
+                  if (fmt.value === 'narration_story') {
+                    if (voiceMode === 'none') setVoiceMode('ai_online');
+                    if (musicMode === 'none') setMusicMode('auto_adaptive');
+                    setShowManualNarrationMusic(false);
+                  } else if (musicMode === 'auto_adaptive') {
+                    setMusicMode('none');
+                  }
+                }}
+                className={`text-left p-2.5 rounded-xl border transition cursor-pointer space-y-0.5 ${
+                  active
+                    ? fmt.value === 'dialogue_film'
+                      ? 'bg-violet-500/15 border-violet-400/60 text-slate-900 dark:text-white shadow-sm'
+                      : 'bg-emerald-500/15 border-emerald-400/60 text-slate-900 dark:text-white shadow-sm'
+                    : 'bg-slate-50 dark:bg-[#0c1021] border-slate-200 dark:border-slate-400/20 text-slate-600 dark:text-slate-300 hover:border-cyan-400/40'
+                }`}
+              >
+                <div className="font-bold flex items-center justify-between gap-1.5">
+                  <span>{fmt.label}</span>
+                  {active && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/80 dark:bg-white/10 text-slate-800 dark:text-white font-semibold">
+                      Đang chọn
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] opacity-85 leading-snug">{fmt.shortDesc}</div>
+              </button>
+            );
+          })}
+        </div>
+
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+          {PRODUCTION_FORMAT_OPTIONS.find((f) => f.value === productionFormat)?.detailDesc}
+        </p>
+      </div>
+
+      {/* Script Mode Segmented Selector + Comparison Help */}
+      <div className="space-y-2 pb-3 border-b border-slate-200/80 dark:border-slate-400/15">
+        <div className="flex items-center justify-between">
+          <span className="font-semibold text-slate-700 dark:text-slate-200">Kiểu tạo lô video</span>
+          <button
+            type="button"
+            onClick={() => setShowScriptModeGuide((v) => !v)}
+            className="inline-flex items-center gap-1 text-[11px] text-cyan-700 dark:text-cyan-300 hover:underline cursor-pointer"
+          >
+            <HelpCircle className="w-3.5 h-3.5" />
+            <span>{showScriptModeGuide ? 'Ẩn so sánh' : 'Phân biệt 2 chế độ'}</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setScriptMode('series');
+            }}
+            className={`text-left p-2.5 rounded-xl border transition cursor-pointer ${
+              scriptMode === 'series'
+                ? 'bg-violet-500/15 border-violet-400/50 text-slate-900 dark:text-white'
+                : 'bg-slate-50 dark:bg-[#0c1021] border-slate-200 dark:border-slate-400/20 text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            <div className="font-bold">Series liên hoàn</div>
+            <div className="text-[11px] opacity-80">
+              1 kịch bản tổng thể – {unifiedUnitCount} phân cảnh liên tiếp
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setScriptMode('independent_batch');
+              if (desiredSceneCount !== 'auto') setDesiredSceneCount('auto');
+            }}
+            className={`text-left p-2.5 rounded-xl border transition cursor-pointer ${
+              scriptMode === 'independent_batch'
+                ? 'bg-violet-500/15 border-violet-400/50 text-slate-900 dark:text-white'
+                : 'bg-slate-50 dark:bg-[#0c1021] border-slate-200 dark:border-slate-400/20 text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            <div className="font-bold">Lô nhiều video độc lập</div>
+            <div className="text-[11px] opacity-80">
+              {unifiedUnitCount} kịch bản độc lập phái sinh cùng mô-típ
+            </div>
+          </button>
+        </div>
+
+        {showScriptModeGuide && (
+          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 text-[11px] space-y-1.5 text-slate-600 dark:text-slate-300">
+            <p>
+              <strong className="text-violet-600 dark:text-violet-300">Series liên hoàn (1 kịch bản – {unifiedUnitCount} phân cảnh):</strong> AI viết <strong>01 kịch bản tổng thể duy nhất</strong> bám sát 100% ý tưởng gốc, rồi chia thành <strong>{unifiedUnitCount} phân cảnh liên tiếp</strong>, mỗi phân cảnh dài <strong>{targetDurationSec}s</strong> (tổng <strong>{unifiedTotalDurationSec}s</strong>), tình tiết nối tiếp logic xuyên suốt.
+            </p>
+            <p>
+              <strong className="text-cyan-600 dark:text-cyan-300">Lô nhiều video độc lập ({unifiedUnitCount} kịch bản độc lập):</strong> AI tạo <strong>{unifiedUnitCount} kịch bản riêng biệt</strong>, mỗi video dài <strong>{targetDurationSec}s</strong> (tổng lô <strong>{unifiedTotalDurationSec}s</strong>), cùng chủ đề &amp; mô-típ cốt lõi nhưng khác nhân vật, phương tiện, bối cảnh cụ thể, hành vi và diễn biến — không liên kết nối tiếp nhau.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Unified Single Duration Selector Bar */}
+      <div className="space-y-1.5 pb-3 border-b border-slate-200/80 dark:border-slate-400/15">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-slate-600 dark:text-slate-300">
+          <span className="inline-flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300" />
+            <span>
+              {scriptMode === 'series'
+                ? 'Thời lượng video (mỗi phân cảnh):'
+                : 'Thời lượng video (mỗi kịch bản độc lập):'}
+            </span>
+          </span>
+          <span className="text-[10px] font-mono text-cyan-700 dark:text-cyan-300">
+            {targetDurationSec}s / {scriptMode === 'series' ? 'phân cảnh' : 'video'}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20">
+          {DURATION_PRESETS.map((preset) => (
+            <button
+              key={preset.sec}
+              type="button"
+              onClick={() => setTargetDurationSec(preset.sec)}
+              className={`h-7 px-2 text-[11px] rounded-lg border transition tabular-nums cursor-pointer whitespace-nowrap ${
+                targetDurationSec === preset.sec
+                  ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-700 dark:text-cyan-200 font-bold'
+                  : 'bg-white dark:bg-[#131a35] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-400/20 hover:border-cyan-400/40'
+              }`}
+            >
+              {preset.label}
+            </button>
+          ))}
+          <div className="inline-flex items-center gap-1 pl-1 ml-auto">
+            <input
+              type="number"
+              min={10}
+              max={900}
+              step={5}
+              value={targetDurationSec}
+              onChange={(e) => setTargetDurationSec(Math.max(10, Math.min(900, Number(e.target.value) || 10)))}
+              aria-label="Nhập số giây tùy ý"
+              className="w-16 h-7 px-1.5 text-xs font-mono tabular-nums text-center bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400"
+            />
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 pr-1">giây</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Unified Quantity Selector + Live Architectural Formula Preview */}
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+            Số lượng ý tưởng muốn AI sáng tạo:
+          </span>
+          <div className="flex flex-wrap items-center gap-1">
+            {[1, 3, 5, 8, 10].map((cnt) => (
+              <button
+                key={cnt}
+                type="button"
+                onClick={() => setIdeaCount(cnt)}
+                className={`h-7 px-2.5 text-[11px] rounded-lg border transition tabular-nums cursor-pointer ${
+                  unifiedUnitCount === cnt
+                    ? 'bg-cyan-500/20 text-cyan-700 dark:text-cyan-200 border-cyan-400/50 font-bold'
+                    : 'bg-white dark:bg-[#131a35] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-400/20 hover:border-cyan-400/40'
+                }`}
+              >
+                {cnt}
+              </button>
+            ))}
+            <input
+              type="number"
+              min={1}
+              max={15}
+              value={unifiedUnitCount}
+              onChange={(e) =>
+                setIdeaCount(Math.max(1, Math.min(15, Math.round(Number(e.target.value) || 1))))
+              }
+              aria-label="Số lượng ý tưởng muốn AI sáng tạo"
+              className="w-14 h-7 px-1.5 text-[11px] font-mono tabular-nums text-center bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white"
+            />
+          </div>
+        </div>
+
+        <div className="rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/20 p-2.5 space-y-1">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+            <span className="font-bold text-slate-800 dark:text-white">
+              {scriptMode === 'series'
+                ? `Series liên hoàn: 01 kịch bản · ${unifiedUnitCount} phân cảnh × ${targetDurationSec}s`
+                : `Lô độc lập: ${unifiedUnitCount} kịch bản riêng × ${targetDurationSec}s`}
+            </span>
+            <span className="px-2 py-0.5 rounded bg-violet-500/15 text-violet-700 dark:text-violet-200 border border-violet-400/30 font-mono font-bold text-[10px]">
+              Tổng: {unifiedTotalDurationSec}s
+            </span>
+          </div>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+            {scriptMode === 'series'
+              ? `1 câu chuyện xuyên suốt bám sát ý tưởng gốc, chia thành ${unifiedUnitCount} phân cảnh liên tiếp (Phân cảnh 01 → ${String(unifiedUnitCount).padStart(2, '0')}), mỗi phân cảnh dài đúng ${targetDurationSec}s.`
+              : `${unifiedUnitCount} câu chuyện độc lập phái sinh cùng chủ đề & mô-típ cốt lõi, mỗi video dài đúng ${targetDurationSec}s (không nối tiếp tình tiết giữa các video).`}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -2559,11 +2837,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       type="button"
                       onClick={() => {
                         setIdeaPrompt(starter.idea);
+                        setExpandedIdeas([]);
                         setExpandedIdeaPrompt('');
+                        setEditingIdeaId(null);
                         setExpandIdeaError('');
                         setVideoStyle(starter.style);
-                        setDesiredSceneCount(starter.scenes);
-                        setTargetDurationSec(starter.dur);
+                        const starterScenes = Math.max(1, Math.min(15, Math.round(starter.scenes || 3)));
+                        const starterUnitSec = Math.max(10, Math.round((starter.dur || 30) / starterScenes));
+                        setIdeaCount(starterScenes);
+                        setTargetDurationSec(starterUnitSec);
+                        setDesiredSceneCount('auto');
                       }}
                       className="px-2.5 py-1 text-[11px] font-medium bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 hover:border-cyan-400/50 text-slate-700 dark:text-slate-200 rounded-lg transition cursor-pointer whitespace-nowrap"
                     >
@@ -2580,32 +2863,35 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   className={inputCls}
                 />
 
-                {/* Button: Dùng AI triển khai ý tưởng của bạn */}
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                {/* Moved from Thiết lập AI & Sản xuất: Chế độ sản xuất video, Kiểu tạo lô video, Thời lượng video */}
+                {productionAndBatchControls}
+
+                {/* Trigger AI Idea Expansion (uses unified ideaCount above) */}
+                <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/85 border border-slate-200 dark:border-slate-400/20">
                   <button
                     type="button"
-                    disabled={isExpandingIdea || !ideaPrompt.trim()}
+                    disabled={isExpandingIdea || isLearning || !ideaPrompt.trim()}
                     onClick={() => void handleExpandIdeaWithAi()}
                     className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 via-indigo-500 to-violet-600 hover:brightness-110 disabled:opacity-45 text-white font-bold text-xs shadow-md shadow-indigo-500/20 transition cursor-pointer"
                   >
                     {isExpandingIdea ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>AI đang triển khai ý tưởng...</span>
+                        <span>AI đang tạo {unifiedUnitCount} ý tưởng...</span>
                       </>
                     ) : (
                       <>
                         <Wand2 className="w-3.5 h-3.5" />
                         <span>
-                          {expandedIdeaPrompt.trim()
-                            ? 'Dùng AI triển khai lại ý tưởng'
-                            : 'Dùng AI triển khai ý tưởng của bạn'}
+                          {expandedIdeas.length > 0
+                            ? `Dùng AI triển khai lại (${unifiedUnitCount} ý tưởng)`
+                            : `Dùng AI triển khai ${unifiedUnitCount} ý tưởng`}
                         </span>
                       </>
                     )}
                   </button>
                   <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Kết quả trả về bên dưới sẽ truyền thẳng sang Bước 2
+                    Bấm <strong>Tạo prompt kịch bản</strong> trực tiếp trên ý tưởng bạn chọn để sang Bước 2
                   </span>
                 </div>
 
@@ -2621,43 +2907,138 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </div>
                 )}
 
-                {/* Result returned directly below & passed to Step 2 AI Lên Kịch Bản */}
-                {(expandedIdeaPrompt || isExpandingIdea) && (
-                  <div className="rounded-xl border border-cyan-400/40 bg-cyan-500/5 dark:bg-cyan-500/10 p-3 space-y-2">
+                {/* Generated Ideas List — Each Idea Has Its Own "Tạo prompt kịch bản" Button */}
+                {(expandedIdeas.length > 0 || isExpandingIdea) && (
+                  <div className="rounded-xl border border-cyan-400/40 bg-cyan-500/5 dark:bg-cyan-500/10 p-3 space-y-2.5">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <Sparkles className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300 shrink-0" />
                         <span className="text-xs font-bold text-slate-900 dark:text-white">
-                          Ý tưởng đã triển khai
+                          Danh sách ý tưởng đã triển khai ({expandedIdeas.length})
                         </span>
                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-400/30">
-                          Truyền sang Bước 2 · AI Lên Kịch Bản
+                          {scriptMode === 'independent_batch'
+                            ? `${unifiedUnitCount} kịch bản độc lập × ${targetDurationSec}s = ${unifiedTotalDurationSec}s`
+                            : `01 kịch bản · ${unifiedUnitCount} phân cảnh × ${targetDurationSec}s = ${unifiedTotalDurationSec}s`}
                         </span>
                       </div>
-                      {expandedIdeaPrompt && (
+                      {expandedIdeas.length > 0 && !isLearning && (
                         <button
                           type="button"
-                          onClick={() => setExpandedIdeaPrompt('')}
+                          onClick={() => {
+                            setExpandedIdeas([]);
+                            setExpandedIdeaPrompt('');
+                            setEditingIdeaId(null);
+                          }}
                           className="text-[11px] text-slate-500 hover:text-rose-500 cursor-pointer"
                         >
-                          Xóa kết quả
+                          Xóa danh sách
                         </button>
                       )}
                     </div>
 
-                    {isExpandingIdea && !expandedIdeaPrompt ? (
-                      <div className="flex items-center gap-2 py-4 justify-center text-xs text-cyan-700 dark:text-cyan-200">
+                    {isExpandingIdea && expandedIdeas.length === 0 ? (
+                      <div className="flex items-center gap-2 py-5 justify-center text-xs text-cyan-700 dark:text-cyan-200">
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Đang phân tích tóm tắt và triển khai nội dung chi tiết...</span>
+                        <span>AI đang sáng tạo đúng {ideaCount} ý tưởng riêng biệt theo chủ đề của bạn...</span>
                       </div>
                     ) : (
-                      <textarea
-                        rows={6}
-                        value={expandedIdeaPrompt}
-                        onChange={(e) => setExpandedIdeaPrompt(e.target.value)}
-                        aria-label="Kết quả ý tưởng đã triển khai"
-                        className="w-full p-2.5 text-xs bg-white dark:bg-[#0c1021] border border-cyan-400/35 rounded-xl text-slate-900 dark:text-slate-100 focus:outline-none focus:border-cyan-400 resize-y leading-relaxed"
-                      />
+                      <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-0.5">
+                        {expandedIdeas.map((item, idx) => {
+                          const code = String(item.index || idx + 1).padStart(2, '0');
+                          const isEditing = editingIdeaId === item.id;
+                          const isThisGenerating = isLearning && generatingIdeaId === item.id;
+                          return (
+                            <div
+                              key={item.id}
+                              className="rounded-xl bg-white dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/25 p-3 space-y-2 shadow-xs"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 dark:text-white leading-snug">
+                                  <span className="text-cyan-700 dark:text-cyan-300 font-mono mr-1.5">
+                                    Ý tưởng {code}:
+                                  </span>
+                                  {item.title}
+                                </h3>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingIdeaId(isEditing ? null : item.id)}
+                                  className="text-[11px] text-slate-500 hover:text-cyan-600 dark:hover:text-cyan-300 shrink-0 cursor-pointer"
+                                >
+                                  {isEditing ? 'Thu gọn' : 'Chi tiết / Sửa'}
+                                </button>
+                              </div>
+
+                              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                                {item.summary}
+                              </p>
+
+                              {isEditing && (
+                                <div className="space-y-1.5 pt-1 border-t border-slate-200/70 dark:border-slate-400/15">
+                                  <input
+                                    type="text"
+                                    value={item.title}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setExpandedIdeas((prev) =>
+                                        prev.map((x) => (x.id === item.id ? { ...x, title: val } : x))
+                                      );
+                                    }}
+                                    aria-label={`Tiêu đề Ý tưởng ${code}`}
+                                    className="w-full h-8 px-2.5 text-xs font-semibold bg-slate-50 dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400"
+                                  />
+                                  <textarea
+                                    rows={4}
+                                    value={item.detail}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setExpandedIdeas((prev) =>
+                                        prev.map((x) => (x.id === item.id ? { ...x, detail: val } : x))
+                                      );
+                                    }}
+                                    aria-label={`Nội dung chi tiết Ý tưởng ${code}`}
+                                    className="w-full p-2 text-xs bg-slate-50 dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-none focus:border-cyan-400 resize-y leading-relaxed"
+                                  />
+                                </div>
+                              )}
+
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                                <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[60%]">
+                                  {item.suggestedSetting ? `Bối cảnh: ${item.suggestedSetting}` : 'Giữ nguyên cốt truyện & tình huống gốc'}
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={isLearning || isExpandingIdea}
+                                  onClick={() =>
+                                    void handleLearnAndCreateScript({
+                                      selectedIdea: item,
+                                      preserveExactIdea: true,
+                                    })
+                                  }
+                                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 disabled:opacity-50 text-white font-bold text-xs shadow-sm shadow-violet-600/20 transition cursor-pointer whitespace-nowrap"
+                                >
+                                  {isThisGenerating ? (
+                                    <>
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      <span>
+                                        {scriptMode === 'independent_batch'
+                                          ? `Đang tạo ${unifiedUnitCount} kịch bản độc lập (${learningElapsedSec}s)...`
+                                          : `Đang tạo 1 kịch bản · ${unifiedUnitCount} phân cảnh (${learningElapsedSec}s)...`}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Sparkles className="w-3.5 h-3.5" />
+                                      <span>Tạo prompt kịch bản</span>
+                                      <ArrowRight className="w-3.5 h-3.5" />
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
                 )}
@@ -2933,6 +3314,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     )}
                   </div>
                 )}
+
+                {/* Chế độ sản xuất video, Kiểu tạo lô video, Thời lượng video */}
+                {productionAndBatchControls}
               </div>
             )}
 
@@ -3570,212 +3954,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             {/* CONFIG TAB 1: SCRIPT & FRAME PARAMETERS */}
             {configTab === 'script' && (
               <div className="space-y-4 text-xs">
-                {/* 2 Video Production Format Modes: Phim có lời thoại vs Phim thuyết minh kể chuyện */}
-                <div className="space-y-2 pb-3 border-b border-slate-200/80 dark:border-slate-400/15">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-bold text-slate-800 dark:text-white">
-                      Chế độ sản xuất video
-                    </span>
-                    <span className="text-[10px] font-medium text-cyan-700 dark:text-cyan-300">
-                      {productionFormat === 'dialogue_film'
-                        ? 'Đồng bộ nhân vật · giọng đúng độ tuổi'
-                        : '1 giọng dẫn chuyện · AI tự ghép nhạc'}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {PRODUCTION_FORMAT_OPTIONS.map((fmt) => {
-                      const active = productionFormat === fmt.value;
-                      return (
-                        <button
-                          key={fmt.value}
-                          type="button"
-                          onClick={() => {
-                            setProductionFormat(fmt.value);
-                            if (fmt.value === 'narration_story') {
-                              if (voiceMode === 'none') setVoiceMode('ai_online');
-                              if (musicMode === 'none') setMusicMode('auto_adaptive');
-                              setShowManualNarrationMusic(false);
-                            } else if (musicMode === 'auto_adaptive') {
-                              setMusicMode('none');
-                            }
-                          }}
-                          className={`text-left p-2.5 rounded-xl border transition cursor-pointer space-y-0.5 ${
-                            active
-                              ? fmt.value === 'dialogue_film'
-                                ? 'bg-violet-500/15 border-violet-400/60 text-slate-900 dark:text-white shadow-sm'
-                                : 'bg-emerald-500/15 border-emerald-400/60 text-slate-900 dark:text-white shadow-sm'
-                              : 'bg-slate-50 dark:bg-[#0c1021] border-slate-200 dark:border-slate-400/20 text-slate-600 dark:text-slate-300 hover:border-cyan-400/40'
-                          }`}
-                        >
-                          <div className="font-bold flex items-center justify-between gap-1.5">
-                            <span>{fmt.label}</span>
-                            {active && (
-                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/80 dark:bg-white/10 text-slate-800 dark:text-white font-semibold">
-                                Đang chọn
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[10px] opacity-85 leading-snug">{fmt.shortDesc}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                    {PRODUCTION_FORMAT_OPTIONS.find((f) => f.value === productionFormat)?.detailDesc}
-                  </p>
-                </div>
-
-                {/* Script Mode Segmented Selector + Comparison Help */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-slate-700 dark:text-slate-200">Kiểu tạo lô video</span>
-                    <button
-                      type="button"
-                      onClick={() => setShowScriptModeGuide((v) => !v)}
-                      className="inline-flex items-center gap-1 text-[11px] text-cyan-700 dark:text-cyan-300 hover:underline cursor-pointer"
-                    >
-                      <HelpCircle className="w-3.5 h-3.5" />
-                      <span>{showScriptModeGuide ? 'Ẩn so sánh' : 'Phân biệt 2 chế độ'}</span>
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setScriptMode('series');
-                      }}
-                      className={`text-left p-2.5 rounded-xl border transition cursor-pointer ${
-                        scriptMode === 'series'
-                          ? 'bg-violet-500/15 border-violet-400/50 text-slate-900 dark:text-white'
-                          : 'bg-slate-50 dark:bg-[#0c1021] border-slate-200 dark:border-slate-400/20 text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      <div className="font-bold">1 video Series liên hoàn</div>
-                      <div className="text-[11px] opacity-80">1 câu chuyện đồng nhất xuyên suốt</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setScriptMode('independent_batch');
-                        if (desiredSceneCount === 10) setDesiredSceneCount('auto');
-                      }}
-                      className={`text-left p-2.5 rounded-xl border transition cursor-pointer ${
-                        scriptMode === 'independent_batch'
-                          ? 'bg-violet-500/15 border-violet-400/50 text-slate-900 dark:text-white'
-                          : 'bg-slate-50 dark:bg-[#0c1021] border-slate-200 dark:border-slate-400/20 text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      <div className="font-bold">Lô nhiều video độc lập (2–15)</div>
-                      <div className="text-[11px] opacity-80">Nhiều câu chuyện riêng cùng chủ đề</div>
-                    </button>
-                  </div>
-
-                  {showScriptModeGuide && (
-                    <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 text-[11px] space-y-1 text-slate-600 dark:text-slate-300">
-                      <p>
-                        <strong className="text-violet-600 dark:text-violet-300">Series:</strong> Kể 1 cốt truyện liên tục nhiều cảnh (mặc định 10 cảnh), khóa chặt nhân vật &amp; bối cảnh từ đầu đến cuối.
-                      </p>
-                      <p>
-                        <strong className="text-cyan-600 dark:text-cyan-300">Nhiều video độc lập:</strong> Tạo cùng lúc 2–15 kịch bản tách rời nhau, giữ chung tinh thần/phong cách để xuất hàng loạt.
-                      </p>
-                    </div>
-                  )}
-
-                  {scriptMode === 'independent_batch' && (
-                    <div className="p-3 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/20 space-y-2.5">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">Số video độc lập:</span>
-                        <div className="flex flex-wrap items-center gap-1">
-                          {[2, 3, 5, 8, 10].map((cnt) => (
-                            <button
-                              key={cnt}
-                              type="button"
-                              onClick={() => handleUpdateBatchVideoCount(cnt)}
-                              className={`h-7 px-2.5 text-[11px] rounded-lg border transition tabular-nums cursor-pointer ${
-                                batchVideoCount === cnt
-                                  ? 'bg-violet-500/20 text-violet-700 dark:text-violet-200 border-violet-400/50 font-bold'
-                                  : 'bg-white dark:bg-[#131a35] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-400/20'
-                              }`}
-                            >
-                              {cnt}
-                            </button>
-                          ))}
-                          <input
-                            type="number"
-                            min={2}
-                            max={15}
-                            value={batchVideoCount}
-                            onChange={(e) => handleUpdateBatchVideoCount(Number(e.target.value))}
-                            aria-label="Số lượng video muốn tạo"
-                            className="w-14 h-7 px-1.5 text-[11px] font-mono tabular-nums text-center bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200/70 dark:border-slate-400/15">
-                        <span className="text-[11px] text-slate-500 dark:text-slate-400">Thời lượng mỗi video:</span>
-                        <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-400/20 overflow-hidden bg-white dark:bg-[#131a35]">
-                          <button
-                            type="button"
-                            onClick={() => setBatchDurationMode('uniform')}
-                            className={`px-2 py-1 text-[11px] cursor-pointer ${
-                              batchDurationMode === 'uniform'
-                                ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-bold'
-                                : 'text-slate-600 dark:text-slate-300'
-                            }`}
-                          >
-                            Chung ({targetDurationSec}s)
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setBatchDurationMode('per_video')}
-                            className={`px-2 py-1 text-[11px] cursor-pointer ${
-                              batchDurationMode === 'per_video'
-                                ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-bold'
-                                : 'text-slate-600 dark:text-slate-300'
-                            }`}
-                          >
-                            Riêng từng video
-                          </button>
-                        </div>
-                      </div>
-
-                      {batchDurationMode === 'per_video' && (
-                        <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
-                          {Array.from({ length: batchVideoCount }, (_, idx) => (
-                            <label
-                              key={idx}
-                              className="flex items-center justify-between gap-1 px-2 py-1 rounded-lg bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20"
-                            >
-                              <span className="text-[10px] font-mono text-slate-500">V{idx + 1}</span>
-                              <input
-                                type="number"
-                                min={10}
-                                max={900}
-                                step={5}
-                                value={perVideoDurations[idx] ?? targetDurationSec}
-                                onChange={(e) => {
-                                  const val = Math.max(10, Math.min(900, Number(e.target.value) || 10));
-                                  setPerVideoDurations((prev) => {
-                                    const next = Array.from({ length: batchVideoCount }, (__, j) => prev[j] ?? targetDurationSec);
-                                    next[idx] = val;
-                                    return next;
-                                  });
-                                }}
-                                className="w-12 text-[11px] font-mono text-right bg-transparent text-slate-900 dark:text-white focus:outline-none"
-                              />
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
                 {/* Core 6 Dropdowns in clean 2-col grid */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <label className="space-y-1">
@@ -3836,29 +4014,43 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     </select>
                   </label>
 
-                  <label className="space-y-1">
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                      {scriptMode === 'independent_batch' ? 'Số cảnh mỗi video' : 'Số phân cảnh Series'}
-                    </span>
-                    <select
-                      value={String(desiredSceneCount)}
-                      onChange={(e) => setDesiredSceneCount(e.target.value === 'auto' ? 'auto' : Number(e.target.value))}
-                      className={inputCls}
-                    >
-                      <option value="auto">Tự động khớp thời lượng (Khuyên dùng)</option>
-                      <option value="1">1 phân cảnh (Toàn bộ thời lượng)</option>
-                      <option value="2">2 phân cảnh</option>
-                      <option value="3">3 phân cảnh</option>
-                      <option value="4">4 phân cảnh</option>
-                      <option value="5">5 phân cảnh</option>
-                      <option value="6">6 phân cảnh</option>
-                      <option value="8">8 phân cảnh</option>
-                      <option value="10">10 phân cảnh</option>
-                      <option value="12">12 phân cảnh</option>
-                      <option value="16">16 phân cảnh</option>
-                      <option value="20">20 phân cảnh</option>
-                    </select>
-                  </label>
+                  {scriptMode === 'series' ? (
+                    <div className="space-y-1">
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Số phân cảnh Series (đồng bộ tự động)
+                      </span>
+                      <div className="h-9 px-3 flex items-center justify-between gap-2 text-xs bg-violet-500/10 border border-violet-400/35 rounded-xl text-violet-800 dark:text-violet-200 font-semibold">
+                        <span className="truncate">
+                          {unifiedUnitCount} phân cảnh × {targetDurationSec}s
+                        </span>
+                        <span className="text-[10px] font-mono shrink-0">
+                          Tổng {unifiedTotalDurationSec}s
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Số cảnh trong mỗi video ({targetDurationSec}s)
+                      </span>
+                      <select
+                        value={String(desiredSceneCount)}
+                        onChange={(e) => setDesiredSceneCount(e.target.value === 'auto' ? 'auto' : Number(e.target.value))}
+                        className={inputCls}
+                      >
+                        <option value="auto">Tự động khớp {targetDurationSec}s (Khuyên dùng)</option>
+                        <option value="1">1 phân cảnh ({targetDurationSec}s)</option>
+                        <option value="2">2 phân cảnh</option>
+                        <option value="3">3 phân cảnh</option>
+                        <option value="4">4 phân cảnh</option>
+                        <option value="5">5 phân cảnh</option>
+                        <option value="6">6 phân cảnh</option>
+                        <option value="8">8 phân cảnh</option>
+                        <option value="10">10 phân cảnh</option>
+                        <option value="12">12 phân cảnh</option>
+                      </select>
+                    </label>
+                  )}
 
                   <div className="space-y-1">
                     <div className="flex items-center justify-between">
@@ -4052,43 +4244,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     </div>
                   );
                 })()}
-
-                {/* Unified Single Duration Selector Bar */}
-                <div className="space-y-1.5 pt-2 border-t border-slate-200/80 dark:border-slate-400/15">
-                  <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300">
-                    <Clock className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300" />
-                    <span>Thời lượng video:</span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20">
-                    {DURATION_PRESETS.map((preset) => (
-                      <button
-                        key={preset.sec}
-                        type="button"
-                        onClick={() => setTargetDurationSec(preset.sec)}
-                        className={`h-7 px-2 text-[11px] rounded-lg border transition tabular-nums cursor-pointer whitespace-nowrap ${
-                          targetDurationSec === preset.sec
-                            ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-700 dark:text-cyan-200 font-bold'
-                            : 'bg-white dark:bg-[#131a35] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-400/20 hover:border-cyan-400/40'
-                        }`}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
-                    <div className="inline-flex items-center gap-1 pl-1 ml-auto">
-                      <input
-                        type="number"
-                        min={10}
-                        max={900}
-                        step={5}
-                        value={targetDurationSec}
-                        onChange={(e) => setTargetDurationSec(Math.max(10, Math.min(900, Number(e.target.value) || 10)))}
-                        aria-label="Nhập số giây tùy ý"
-                        className="w-16 h-7 px-1.5 text-xs font-mono tabular-nums text-center bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400"
-                      />
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400 pr-1">giây</span>
-                    </div>
-                  </div>
-                </div>
 
                 {/* Dedicated Skill Option: Phong cách quay phim điện ảnh */}
                 <div
@@ -4584,7 +4739,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             <button
               type="button"
               disabled={isLearning}
-              onClick={handleLearnAndCreateScript}
+              onClick={() => void handleLearnAndCreateScript({ preserveExactIdea: studioMode === 'creative' })}
               className="px-3 py-1.5 text-[11px] font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-lg cursor-pointer"
             >
               Thử lại ngay
@@ -4597,13 +4752,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             <span>
               <span className="font-semibold text-slate-900 dark:text-white">Tóm tắt Bước 1:</span>{' '}
               {productionFormat === 'narration_story' ? 'Phim thuyết minh kể chuyện' : 'Phim có lời thoại'} ·{' '}
-              {scriptMode === 'independent_batch' ? `${batchVideoCount} video độc lập` : '1 Series'} · {aspectRatio} ·{' '}
-              {targetDurationSec}s · {voiceMode === 'none' ? 'Không lồng tiếng' : voiceMode === 'offline_system' ? 'VieNeu Offline' : 'AI Voice'}
+              {scriptMode === 'independent_batch'
+                ? `${unifiedUnitCount} kịch bản độc lập × ${targetDurationSec}s (tổng ${unifiedTotalDurationSec}s)`
+                : `1 kịch bản Series · ${unifiedUnitCount} phân cảnh × ${targetDurationSec}s (tổng ${unifiedTotalDurationSec}s)`}{' '}
+              · {aspectRatio} ·{' '}
+              {voiceMode === 'none' ? 'Không lồng tiếng' : voiceMode === 'offline_system' ? 'VieNeu Offline' : 'AI Voice'}
             </span>
-            {studioMode === 'creative' && hasExpandedCreativeIdea && (
+            {studioMode === 'creative' && expandedIdeas.length > 0 && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-700 dark:text-cyan-200 border border-cyan-400/30 text-[10px] font-semibold">
                 <Sparkles className="w-3 h-3" />
-                Truyền ý tưởng AI đã triển khai
+                Chọn nút &quot;Tạo prompt kịch bản&quot; ngay trên từng ý tưởng ở trên
               </span>
             )}
           </div>
@@ -4631,24 +4789,47 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               )}
               <span>Giao Phòng Điều Hành (5 Muse AI)</span>
             </button>
-            <button
-              type="button"
-              disabled={isLearning || !canSubmitLearn}
-              onClick={handleLearnAndCreateScript}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 text-white font-bold text-xs sm:text-sm shadow-lg shadow-violet-600/25 transition disabled:opacity-50 cursor-pointer"
-            >
-              {isLearning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-              <span>
-                {isLearning
-                  ? scriptMode === 'independent_batch'
-                    ? `Đang sáng tạo ${batchVideoCount} kịch bản (${learningElapsedSec}s)...`
-                    : `AI đang lên kịch bản (${learningElapsedSec}s)...`
-                  : scriptMode === 'independent_batch'
-                  ? `AI Lên ${batchVideoCount} Kịch Bản & Sang Bước 2`
-                  : 'AI Lên Kịch Bản & Sang Bước 2'}
-              </span>
-              {!isLearning && <ArrowRight className="w-4 h-4" />}
-            </button>
+
+            {/* In Creative mode with expanded ideas, remove bottom "AI Lên Kịch Bản & Sang Bước 2" so AI never re-invents away from the chosen idea */}
+            {studioMode === 'derivative' ? (
+              <button
+                type="button"
+                disabled={isLearning || !canSubmitLearn}
+                onClick={() => void handleLearnAndCreateScript()}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 text-white font-bold text-xs sm:text-sm shadow-lg shadow-violet-600/25 transition disabled:opacity-50 cursor-pointer"
+              >
+                {isLearning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                <span>
+                  {isLearning
+                    ? scriptMode === 'independent_batch'
+                      ? `Đang sáng tạo ${unifiedUnitCount} kịch bản (${learningElapsedSec}s)...`
+                      : `AI đang lên 1 kịch bản · ${unifiedUnitCount} phân cảnh (${learningElapsedSec}s)...`
+                    : scriptMode === 'independent_batch'
+                    ? `AI Lên ${unifiedUnitCount} Kịch Bản Độc Lập & Sang Bước 2`
+                    : `AI Lên Kịch Bản (${unifiedUnitCount} phân cảnh) & Sang Bước 2`}
+                </span>
+                {!isLearning && <ArrowRight className="w-4 h-4" />}
+              </button>
+            ) : expandedIdeas.length === 0 ? (
+              <button
+                type="button"
+                disabled={isLearning || !canSubmitLearn}
+                onClick={() => void handleLearnAndCreateScript({ preserveExactIdea: true })}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 text-white font-bold text-xs sm:text-sm shadow-lg shadow-violet-600/25 transition disabled:opacity-50 cursor-pointer"
+              >
+                {isLearning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                <span>
+                  {isLearning
+                    ? scriptMode === 'independent_batch'
+                      ? `Đang tạo ${unifiedUnitCount} kịch bản độc lập (${learningElapsedSec}s)...`
+                      : `Đang tạo 1 kịch bản · ${unifiedUnitCount} phân cảnh (${learningElapsedSec}s)...`
+                    : scriptMode === 'independent_batch'
+                    ? `Tạo ${unifiedUnitCount} prompt kịch bản độc lập từ ý tưởng gốc`
+                    : `Tạo prompt kịch bản (${unifiedUnitCount} phân cảnh × ${targetDurationSec}s)`}
+                </span>
+                {!isLearning && <ArrowRight className="w-4 h-4" />}
+              </button>
+            ) : null}
           </div>
         </div>
         {commandCenterError && (
@@ -4670,7 +4851,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               Chưa có kịch bản nào ở chế độ này
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-              Quay lại <strong>Bước 1</strong> để nhập ý tưởng hoặc thêm video tham chiếu rồi bấm <strong>AI Lên Kịch Bản</strong>.
+              Quay lại <strong>Bước 1</strong> để chọn một ý tưởng đã triển khai rồi bấm <strong>Tạo prompt kịch bản</strong> (hoặc thêm video tham chiếu).
             </p>
             <div className="flex items-center justify-center gap-2 pt-1">
               <button
@@ -4681,15 +4862,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 <ArrowLeft className="w-3.5 h-3.5" />
                 <span>Về Bước 1</span>
               </button>
-              {canSubmitLearn && (
+              {canSubmitLearn && !(studioMode === 'creative' && expandedIdeas.length > 0) && (
                 <button
                   type="button"
                   disabled={isLearning}
-                  onClick={handleLearnAndCreateScript}
+                  onClick={() => void handleLearnAndCreateScript({ preserveExactIdea: studioMode === 'creative' })}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold cursor-pointer"
                 >
                   {isLearning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                  <span>Tạo kịch bản ngay</span>
+                  <span>Tạo prompt kịch bản ngay</span>
                 </button>
               )}
             </div>

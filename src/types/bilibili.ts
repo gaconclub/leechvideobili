@@ -588,6 +588,15 @@ export interface AlibabaModelStudioStatus {
   modelsFetchedAt?: number;
 }
 
+export interface ExpandedCreativeIdeaItem {
+  id: string;
+  index: number;
+  title: string;
+  summary: string;
+  detail: string;
+  suggestedSetting?: string;
+}
+
 export interface ReferenceVideoAnalysis {
   mainTheme: string;
   plotProgression: string;
