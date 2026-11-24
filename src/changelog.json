@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.17",
+    "version": "1.0.18",
     "date": "24/11/2026",
-    "title": "feat(studio): add support for multi-engine production",
+    "title": "feat(ai): integrate Xingchi API as an AI provider",
     "changes": [
-      "feat(studio): add support for multi-engine production"
+      "feat(ai): integrate Xingchi API as an AI provider"
     ]
   },
   {

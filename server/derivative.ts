@@ -12,6 +12,7 @@ import {
   getMuse2ApiStatus,
 } from './muse2api';
 import { resolveChairmanGeminiAccount } from './geminiPool';
+import { getXingchiRuntimeConfig, recordXingchiUsage, testXingchiConnection } from './xingchiApi';
 import {
   buildCinematicFilmmakingScriptDirective,
   CINEMATIC_FILMMAKING_SKILL,
@@ -112,7 +113,7 @@ export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
 export type DerivativeMusicMode = 'none' | 'auto_adaptive' | 'ai_lyria' | 'public_free' | 'uploaded';
 export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
-export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api';
+export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api' | 'xingchi';
 export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
 
 export interface CharacterVoiceProfile {
@@ -1447,7 +1448,7 @@ export function parseAiBlueprintJsonSafe(rawText: string): any {
   }
 }
 
-function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta') {
+function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta' | 'xingchi') {
   if (provider === 'openai') {
     return {
       label: 'OpenAI ChatGPT',
@@ -1455,6 +1456,16 @@ function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta') {
       apiKey: process.env.OPENAI_API_KEY?.trim() || '',
       baseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
       model: (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim(),
+    };
+  }
+  if (provider === 'xingchi') {
+    const xc = getXingchiRuntimeConfig();
+    return {
+      label: 'Xingchi API (api.xingchiapi.com)',
+      envName: 'XINGCHI_API_KEY',
+      apiKey: xc.enabled ? xc.apiKey : '',
+      baseUrl: xc.v1BaseUrl,
+      model: xc.model,
     };
   }
   return {
@@ -1467,7 +1478,7 @@ function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta') {
 }
 
 async function generateBlueprintViaOpenAiCompatible(params: {
-  provider: 'openai' | 'meta';
+  provider: 'openai' | 'meta' | 'xingchi';
   contexts: EnrichedVideoContext[];
   promptText: string;
   desiredScenes: number;
@@ -1573,6 +1584,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh đ�
     }
   }
 
+  const startedAt = Date.now();
   const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -1595,11 +1607,18 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh đ�
     signal: AbortSignal.timeout(75_000),
   });
 
+  const latencyMs = Math.max(1, Date.now() - startedAt);
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
+    if (params.provider === 'xingchi') {
+      recordXingchiUsage(false, { latencyMs, statusCode: res.status, errorMsg: errBody });
+    }
     throw new Error(
       `${cfg.label} lỗi HTTP ${res.status}: ${errBody.slice(0, 180) || res.statusText}`
     );
+  }
+  if (params.provider === 'xingchi') {
+    recordXingchiUsage(true, { latencyMs });
   }
   const data = (await res.json()) as any;
   const rawContent = String(data?.choices?.[0]?.message?.content || '{}').trim();
@@ -1674,6 +1693,17 @@ export async function testAiProviderConnection(provider: AiProviderId): Promise<
       }
     }
     return { ok: false, model: models[0], message: formatGeminiError(lastErr) };
+  }
+
+  if (provider === 'xingchi') {
+    const res = await testXingchiConnection();
+    return {
+      ok: res.ok,
+      model: res.model,
+      message: res.ok
+        ? `${res.message}${res.reply ? ` · Phản hồi: "${res.reply.slice(0, 40)}"` : ''}`
+        : res.message,
+    };
   }
 
   const cfg = resolveOpenAiCompatibleConfig(provider === 'openai' ? 'openai' : 'meta');
@@ -2560,7 +2590,10 @@ export async function expandStudioIdeaWithAi(params: {
   }
 
   const provider: AiProviderId =
-    params.aiProvider === 'openai' || params.aiProvider === 'meta' || params.aiProvider === 'muse2api'
+    params.aiProvider === 'openai' ||
+    params.aiProvider === 'meta' ||
+    params.aiProvider === 'muse2api' ||
+    params.aiProvider === 'xingchi'
       ? params.aiProvider
       : 'gemini';
 
@@ -2637,7 +2670,7 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
         { role: 'user', content: expandPrompt },
       ]);
       parsed = parseAiBlueprintJsonSafe(raw);
-    } else if (provider === 'openai' || provider === 'meta') {
+    } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi') {
       const cfg = resolveOpenAiCompatibleConfig(provider);
       if (!cfg.apiKey) {
         throw new Error(`Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env.`);
@@ -2793,7 +2826,10 @@ export async function learnVideosAndCreateBlueprint(params: {
   }
 
   const provider: AiProviderId =
-    params.aiProvider === 'openai' || params.aiProvider === 'meta' || params.aiProvider === 'muse2api'
+    params.aiProvider === 'openai' ||
+    params.aiProvider === 'meta' ||
+    params.aiProvider === 'muse2api' ||
+    params.aiProvider === 'xingchi'
       ? params.aiProvider
       : 'gemini';
 
@@ -3147,7 +3183,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         },
       ]);
       parsed = parseAiBlueprintJsonSafe(rawMuseReply);
-    } else if (provider === 'openai' || provider === 'meta') {
+    } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi') {
       usedModel = resolveOpenAiCompatibleConfig(provider).model;
       parsed = await generateBlueprintViaOpenAiCompatible({
         provider,
@@ -3845,7 +3881,7 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
       { role: 'user', content: planPrompt },
     ]);
     parsed = parseAiBlueprintJsonSafe(raw);
-  } else if (params.provider === 'openai' || params.provider === 'meta') {
+  } else if (params.provider === 'openai' || params.provider === 'meta' || params.provider === 'xingchi') {
     const cfg = resolveOpenAiCompatibleConfig(params.provider);
     if (!cfg.apiKey) {
       throw new Error(`Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env.`);
@@ -4031,7 +4067,10 @@ export async function learnAndCreateIndependentBatch(params: {
   }
 
   const provider: AiProviderId =
-    params.aiProvider === 'openai' || params.aiProvider === 'meta' || params.aiProvider === 'muse2api'
+    params.aiProvider === 'openai' ||
+    params.aiProvider === 'meta' ||
+    params.aiProvider === 'muse2api' ||
+    params.aiProvider === 'xingchi'
       ? params.aiProvider
       : 'gemini';
 
@@ -4802,7 +4841,10 @@ export async function analyzeCharactersFivePartProfiles(params: {
 
   const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
   const provider: AiProviderId =
-    params.aiProvider === 'openai' || params.aiProvider === 'meta' || params.aiProvider === 'muse2api'
+    params.aiProvider === 'openai' ||
+    params.aiProvider === 'meta' ||
+    params.aiProvider === 'muse2api' ||
+    params.aiProvider === 'xingchi'
       ? params.aiProvider
       : 'gemini';
 
@@ -4872,7 +4914,7 @@ TRẢ VỀ DUY NHẤT JSON HỢP LỆ THEO MẪU:
       ]);
       ingestParsed(parseAiBlueprintJsonSafe(rawReply));
     }
-  } else if (provider === 'openai' || provider === 'meta') {
+  } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi') {
     const cfg = resolveOpenAiCompatibleConfig(provider);
     if (cfg.apiKey) {
       usedModel = cfg.model;

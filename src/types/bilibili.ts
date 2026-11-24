@@ -311,7 +311,7 @@ export type DerivativeMusicMode = 'none' | 'auto_adaptive' | 'ai_lyria' | 'publi
 export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
 
-export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api';
+export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api' | 'xingchi';
 export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
 
 export type CookieSiteId =
@@ -462,6 +462,15 @@ export interface ServerCapabilitiesStatus {
       healthyAccounts: number;
       source: 'env' | 'local_dotenv' | 'none';
     };
+    xingchi?: {
+      configured: boolean;
+      enabled: boolean;
+      status: 'ready' | 'untested' | 'auth_error' | 'quota_exceeded' | 'error' | 'unconfigured';
+      model: string;
+      protocol: 'openai' | 'anthropic';
+      baseUrl: string;
+      source: 'env' | 'none';
+    };
   };
   paidModels: {
     omniVideoModel: string;
@@ -488,6 +497,43 @@ export interface ServerCapabilitiesStatus {
       engineId?: 'vieneu' | 'win_sapi' | 'macos_say' | 'espeak';
     };
   };
+}
+
+export type XingchiProtocol = 'openai' | 'anthropic';
+export type XingchiConnectionStatus =
+  | 'ready'
+  | 'untested'
+  | 'auth_error'
+  | 'quota_exceeded'
+  | 'error'
+  | 'unconfigured';
+
+export interface XingchiModelItem {
+  id: string;
+  ownedBy?: string;
+  family: 'claude' | 'gpt' | 'gemini' | 'other';
+  created?: number;
+}
+
+export interface XingchiPublicStatus {
+  baseUrl: string;
+  hasKey: boolean;
+  maskedKey: string;
+  keySource: 'env' | 'none';
+  enabled: boolean;
+  configured: boolean;
+  protocol: XingchiProtocol;
+  selectedModel: string;
+  timeoutSec: number;
+  status: XingchiConnectionStatus;
+  lastCheckedAt?: number;
+  lastLatencyMs?: number;
+  lastError?: string;
+  requestsCount: number;
+  successCount: number;
+  errorCount: number;
+  models: XingchiModelItem[];
+  modelsFetchedAt?: number;
 }
 
 export interface ReferenceVideoAnalysis {
