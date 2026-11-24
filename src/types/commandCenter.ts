@@ -511,8 +511,11 @@ export interface ProductionRun {
   error?: string;
 }
 
+export type GeminiDmChannelId = `gemini:${string}`;
+
 export type CommunicationChannelId =
   | 'gemini'
+  | GeminiDmChannelId
   | 'commander'
   | 'incident'
   | 'production'
@@ -539,7 +542,7 @@ export interface ConversationMessage {
   messageKind?: 'chat' | 'ai_bus' | 'ack' | 'alert' | 'deliverable' | 'incident';
   incidentId?: string;
   roleBadge?: string;
-  targetAgentIds?: (MuseAgentId | 'chairman' | 'gemini')[];
+  targetAgentIds?: (MuseAgentId | 'chairman' | 'gemini' | GeminiDmChannelId)[];
   content: string;
   promptDelivered?: string;
   taskId?: string;

@@ -12,6 +12,7 @@ import {
   setMuse2ApiRuntimeOverride,
 } from './muse2api';
 import {
+  getGeminiAccountSecretById,
   getGeminiPoolSummary,
   hasAnyEnabledGeminiAccount,
   listGeminiAccountsPublic,
@@ -761,6 +762,9 @@ function addActivityLog(
 
 function mapLegacyChannel(ch?: string): CommunicationChannelId {
   if (!ch || ch === 'group') return 'commander';
+  if (ch.startsWith('gemini:') && ch.length > 'gemini:'.length) {
+    return ch as CommunicationChannelId;
+  }
   if (
     ch === 'commander' ||
     ch === 'gemini' ||
@@ -3702,12 +3706,19 @@ Lưu ý:
     run.updatedAt = Date.now();
   }
 
+  const preferredRunVideoEngine = run?.videoGenerationEngine;
+  const isFlowMode = preferredRunVideoEngine === 'google_flow';
+  const isGeminiDirectMode = preferredRunVideoEngine === 'google_flow' || preferredRunVideoEngine === 'gemini';
+
   task.executedByProvider = res.provider;
   task.boundAccountUsed = res.accountUsed;
-  task.outputText = `${chairmanName} đã bóc tách ${normalizedChars.length} nhân vật (5 thành phần) và ${normalizedScenes.length} phân cảnh, khóa Project Memory v${newVer} và phân công cho 4 Muse sản xuất (Muse AI 01–04).`;
+  task.outputText = isFlowMode
+    ? `${chairmanName} đã bóc tách ${normalizedChars.length} nhân vật và ${normalizedScenes.length} phân cảnh (Memory v${newVer}), chuyển sang AI Gemini vẽ ảnh keyframe & xuất gói kịch bản Google Flow (không dùng Muse AI).`
+    : isGeminiDirectMode
+    ? `${chairmanName} đã bóc tách ${normalizedChars.length} nhân vật và ${normalizedScenes.length} phân cảnh (Memory v${newVer}), chạy toàn bộ ảnh & video trực tiếp bằng AI Gemini (không dùng Muse AI).`
+    : `${chairmanName} đã bóc tách ${normalizedChars.length} nhân vật (5 thành phần) và ${normalizedScenes.length} phân cảnh, khóa Project Memory v${newVer} và phân công cho 4 Muse sản xuất (Muse AI 01–04).`;
 
-  // Character Reference Sheet Tasks (ONLY for characters lacking confirmed ref images, distributed across Muse 01, 02, 03, 04)
-  // NOTE: Do NOT gate scene keyframes on self-comparing QA of a brand-new generated portrait (fixes character ref deadlock!).
+  // Character Reference Sheet Tasks (ONLY for characters lacking confirmed ref images)
   const charTaskIds: string[] = [];
   const charsToGenerate = normalizedChars.slice(0, 4);
   for (let ci = 0; ci < charsToGenerate.length; ci += 1) {
@@ -3715,7 +3726,9 @@ Lưu ý:
     if (ch.artifactUrl || ch.dataUrl || ch.confirmedOriginalArtifactUrl) {
       continue;
     }
-    const producerId = PRODUCTION_AGENT_IDS[ci % PRODUCTION_AGENT_IDS.length];
+    const producerId: MuseAgentId | 'chairman' = isGeminiDirectMode
+      ? 'chairman'
+      : PRODUCTION_AGENT_IDS[ci % PRODUCTION_AGENT_IDS.length];
     const ct = enqueueTask({
       runId: task.runId,
       type: 'design_character_ref',
@@ -3730,15 +3743,24 @@ Lưu ý:
     charTaskIds.push(ct.id);
   }
 
-  // Non-blocking Per-Scene Multitasking Pipeline across ALL 4 production Muses (Muse Director 01, Muse 02, 03, 04):
+  // Non-blocking Per-Scene Multitasking Pipeline
   const sceneVideoTaskBySceneId = new Map<string, string>();
   const qaTaskIds: string[] = [];
   const sceneImgDeps = charTaskIds.length > 0 ? charTaskIds : [task.id];
-  const preferredRunVideoEngine = run?.videoGenerationEngine;
 
   for (let si = 0; si < normalizedScenes.length; si += 1) {
     const sc = normalizedScenes[si];
-    const producerId = sc.assignedProducerAgentId || PRODUCTION_AGENT_IDS[si % PRODUCTION_AGENT_IDS.length];
+    const producerId: MuseAgentId | 'chairman' = isGeminiDirectMode
+      ? 'chairman'
+      : sc.assignedProducerAgentId || PRODUCTION_AGENT_IDS[si % PRODUCTION_AGENT_IDS.length];
+    if (isGeminiDirectMode) {
+      sc.assignedProducerAgentId = undefined;
+      sc.videoEngineUsed = preferredRunVideoEngine;
+      if (isFlowMode) {
+        sc.flowPrompt = buildGoogleFlowScenePrompt(mem, sc);
+        sc.flowStatus = 'ready';
+      }
+    }
     const imgTask = enqueueTask({
       runId: task.runId,
       type: 'design_scene_image',
@@ -3753,13 +3775,13 @@ Lưu ý:
     });
 
     const videoDeps: string[] = [];
-    if (!allowFree && normalizedChars.length > 0) {
+    if (!isFlowMode && !allowFree && normalizedChars.length > 0) {
       const imgQaTask = enqueueTask({
         runId: task.runId,
         type: 'qa_inspect_image',
         title: `Kiểm định ảnh keyframe Cảnh ${sc.index}: "${sc.title}"`,
         instructions: `Đối chiếu thực tế ảnh keyframe Cảnh ${sc.index} với ảnh tham chiếu gốc & trang phục chính trước khi mở khóa dựng video.`,
-        assignedAgentId: 'muse-05',
+        assignedAgentId: isGeminiDirectMode ? 'chairman' : 'muse-05',
         dependsOnTaskIds: [imgTask.id],
         sceneId: sc.sceneId,
         sceneIndex: sc.index,
@@ -3769,14 +3791,18 @@ Lưu ý:
     } else {
       videoDeps.push(imgTask.id);
     }
-    if (sc.continuityAnchorFromSceneId && sceneVideoTaskBySceneId.has(sc.continuityAnchorFromSceneId)) {
+    if (!isFlowMode && sc.continuityAnchorFromSceneId && sceneVideoTaskBySceneId.has(sc.continuityAnchorFromSceneId)) {
       videoDeps.push(sceneVideoTaskBySceneId.get(sc.continuityAnchorFromSceneId)!);
     }
 
     const vidTask = enqueueTask({
       runId: task.runId,
       type: 'produce_scene_video',
-      title: `Cảnh ${sc.index}: Quay & dựng video "${sc.title}" (${sc.durationSec}s)`,
+      title: isFlowMode
+        ? `Cảnh ${sc.index}: Chuẩn bị gói Google Flow "${sc.title}" (${sc.durationSec}s)`
+        : isGeminiDirectMode
+        ? `Cảnh ${sc.index}: Tạo video AI Gemini "${sc.title}" (${sc.durationSec}s)`
+        : `Cảnh ${sc.index}: Quay & dựng video "${sc.title}" (${sc.durationSec}s)`,
       instructions: `${sc.actionDetail}. Timeline: ${sc.videoTimeline || 'chuyển động mượt liên tục'}. ${sc.dialogue ? `Lời thoại: ${sc.dialogue}` : ''}`,
       preferredVideoEngine: preferredRunVideoEngine,
       assignedAgentId: producerId,
@@ -3788,25 +3814,31 @@ Lưu ý:
     });
     sceneVideoTaskBySceneId.set(sc.sceneId, vidTask.id);
 
-    const qaTask = enqueueTask({
-      runId: task.runId,
-      type: 'qa_inspect_scene',
-      title: `Kiểm định 8 tiêu chí & ngưỡng 5% Cảnh ${sc.index}: "${sc.title}"`,
-      instructions: `Đối chiếu Cảnh ${sc.index} với ảnh tham chiếu & Project Memory v${newVer} (tách phụ kiện được phép, kiểm tra ngưỡng <= 5%).`,
-      assignedAgentId: 'muse-05',
-      dependsOnTaskIds: [vidTask.id],
-      sceneId: sc.sceneId,
-      sceneIndex: sc.index,
-      priority: 5,
-    });
-    qaTaskIds.push(qaTask.id);
+    if (isFlowMode) {
+      qaTaskIds.push(vidTask.id);
+    } else {
+      const qaTask = enqueueTask({
+        runId: task.runId,
+        type: 'qa_inspect_scene',
+        title: `Kiểm định đồng nhất video Cảnh ${sc.index}: "${sc.title}"`,
+        instructions: `Đối chiếu thực tế Cảnh ${sc.index} với ảnh tham chiếu & Project Memory v${newVer}.`,
+        assignedAgentId: isGeminiDirectMode ? 'chairman' : 'muse-05',
+        dependsOnTaskIds: [vidTask.id],
+        sceneId: sc.sceneId,
+        sceneIndex: sc.index,
+        priority: 5,
+      });
+      qaTaskIds.push(qaTask.id);
+    }
   }
 
   enqueueTask({
     runId: task.runId,
     type: 'assemble_final_film',
-    title: `Ghép xuất phim hoàn chỉnh (${normalizedScenes.length} phân cảnh)`,
-    instructions: `Tổng hợp toàn bộ phân cảnh đã đạt kiểm định Muse AI 05 thành video MP4 hoàn chỉnh và bàn giao.`,
+    title: isFlowMode
+      ? `Sẵn sàng ghép phim sau khi nạp MP4 Google Flow (${normalizedScenes.length} cảnh)`
+      : `Ghép xuất phim hoàn chỉnh (${normalizedScenes.length} phân cảnh)`,
+    instructions: `Tổng hợp toàn bộ phân cảnh đã có video thành tệp MP4 hoàn chỉnh và bàn giao.`,
     assignedAgentId: 'chairman',
     dependsOnTaskIds: qaTaskIds,
     priority: 1,
@@ -3815,11 +3847,15 @@ Lưu ý:
   appendProjectCoordinationLog(task.runId, {
     actorId: 'chairman',
     actorName: chairmanName,
-    targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+    targetAgentIds: isGeminiDirectMode ? ['chairman'] : ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
     kind: 'directive',
     runId: task.runId,
     taskId: task.id,
-    summary: `Bóc tách xong ${normalizedScenes.length} cảnh & ${normalizedChars.length} nhân vật (Memory v${newVer}), phân công song song cho 4 Muse sản xuất (Muse AI 01–04).`,
+    summary: isFlowMode
+      ? `Bóc tách xong ${normalizedScenes.length} cảnh & ${normalizedChars.length} nhân vật (Memory v${newVer}), giao AI Gemini tạo ảnh & xuất gói Google Flow.`
+      : isGeminiDirectMode
+      ? `Bóc tách xong ${normalizedScenes.length} cảnh & ${normalizedChars.length} nhân vật (Memory v${newVer}), chạy toàn bộ bằng AI Gemini.`
+      : `Bóc tách xong ${normalizedScenes.length} cảnh & ${normalizedChars.length} nhân vật (Memory v${newVer}), phân công song song cho 4 Muse sản xuất (Muse AI 01–04).`,
   });
 
   appendConversationMessage({
@@ -6287,7 +6323,8 @@ async function tickOrchestratorQueue(): Promise<void> {
 
       if (task.assignedAgentId === 'chairman') {
         const currentChairmanActive = activeByAgent.get('chairman') || 0;
-        if (currentChairmanActive >= 2) continue;
+        const chairmanCap = wf.mode === 'gemini_only' ? maxParallel : 2;
+        if (currentChairmanActive >= chairmanCap) continue;
         if (task.type !== 'assemble_final_film' && !health.geminiConfigured && wf.mode !== 'muse_only') {
           task.status = 'failed';
           task.error =
@@ -7242,11 +7279,77 @@ export async function startProductionOrchestration(params: {
     createBackupSnapshot('pre_restore', `Sao lưu trước phiên sản xuất mới (${storeDoc.projectMemory.title})`);
   }
 
+  const now = Date.now();
+  const resolvedVideoEngine: VideoGenerationEngine =
+    params.videoGenerationEngine ||
+    (params.aiWorkforceMode === 'muse_only' ? 'muse' : 'gemini');
+  const resolvedWorkforceMode: AiWorkforceMode =
+    resolvedVideoEngine === 'google_flow' || resolvedVideoEngine === 'gemini'
+      ? 'gemini_only'
+      : params.aiWorkforceMode || 'hybrid_gemini_muse';
+
   const targetExisting = params.runId ? storeDoc.runs.find((r) => r.id === params.runId && r.status === 'idle') : undefined;
-  const runId = targetExisting ? targetExisting.id : `run_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
   const title =
     (params.title || targetExisting?.title || params.studioBlueprint?.derivativeTitle || '').trim() ||
     `Phim AI ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`;
+
+  // Anti-double-click idempotency guard: if an identical active run was created < 6s ago, reuse it
+  if (!targetExisting) {
+    const recentIdentical = storeDoc.runs.find(
+      (r) =>
+        ['planning', 'producing', 'inspecting', 'assembling'].includes(r.status) &&
+        now - r.createdAt < 6000 &&
+        r.title.trim().toLowerCase() === title.trim().toLowerCase() &&
+        (r.videoGenerationEngine || 'gemini') === resolvedVideoEngine
+    );
+    if (recentIdentical) {
+      storeDoc.selectedRunId = recentIdentical.id;
+      return getCommandCenterState(false);
+    }
+
+    // Single Active Production Run guarantee: automatically supersede & stop any older active run(s)
+    // so starting a new production NEVER leaves 2 concurrent runs fighting over agents!
+    let supersededCount = 0;
+    for (const oldRun of storeDoc.runs) {
+      if (['planning', 'producing', 'inspecting', 'assembling'].includes(oldRun.status)) {
+        oldRun.status = 'cancelled';
+        oldRun.cancelledAt = now;
+        oldRun.updatedAt = now;
+        oldRun.error = `Đã tự động dừng do khởi chạy phiên mới "${title}".`;
+        supersededCount += 1;
+        for (const t of storeDoc.tasks) {
+          if (t.runId === oldRun.id && ['queued', 'blocked_by_deps', 'running'].includes(t.status)) {
+            t.status = 'cancelled';
+            t.completedAt = now;
+            t.error = 'Đã hủy do chuyển sang phiên sản xuất mới.';
+            activeTaskIds.delete(t.id);
+            emitCommandCenterEvent('task:updated', t);
+          }
+        }
+        emitCommandCenterEvent('run:updated', enrichProductionRun(oldRun));
+      }
+    }
+    if (supersededCount > 0) {
+      for (const ag of storeDoc.agents) {
+        const stillRunning = storeDoc.tasks.some(
+          (t) => t.assignedAgentId === ag.id && t.status === 'running' && activeTaskIds.has(t.id)
+        );
+        if (!stillRunning && ['working', 'waiting', 'supervising', 'error'].includes(ag.status)) {
+          ag.status = 'online';
+          ag.currentTaskId = undefined;
+          ag.currentTaskSummary = undefined;
+        }
+      }
+      addActivityLog(
+        'info',
+        'Tự động đóng phiên cũ trước khi chạy phiên mới',
+        `Đã dừng ${supersededCount} phiên đang chạy trước đó để tránh trùng lặp 2 phiên song song.`,
+        { agentId: 'system' }
+      );
+    }
+  }
+
+  const runId = targetExisting ? targetExisting.id : `run_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
 
   const freshMemory = targetExisting ? getRunMemory(runId) : createEmptyProjectMemory();
   freshMemory.title = title;
@@ -7274,7 +7377,8 @@ export async function startProductionOrchestration(params: {
     cachedBp &&
     cachedBp.scenes &&
     cachedBp.scenes.length > 0 &&
-    script.slice(0, 120) === cachedBp.scriptOrCommand.slice(0, 120)
+    (script.slice(0, 120) === cachedBp.scriptOrCommand.slice(0, 120) ||
+      (title && cachedBp.title && title.toLowerCase() === cachedBp.title.toLowerCase()))
   ) {
     preSeededScenes = structuredClone(cachedBp.scenes);
     if (preSeededChars.length === 0 && cachedBp.characters) {
@@ -7293,16 +7397,11 @@ export async function startProductionOrchestration(params: {
   storeDoc.projectMemory = freshMemory;
 
   const hasPreSeededScenes = preSeededScenes.length > 0;
-  const now = Date.now();
   let run: ProductionRun;
   const geminiSummary = getGeminiPoolSummary();
   const defaultEnabledGeminiIds = listGeminiAccountsPublic()
     .filter((a) => a.enabled)
     .map((a) => a.id);
-
-  const resolvedVideoEngine: VideoGenerationEngine =
-    params.videoGenerationEngine ||
-    (params.aiWorkforceMode === 'gemini_only' ? 'gemini' : 'muse');
 
   if (targetExisting) {
     targetExisting.title = title;
@@ -7314,7 +7413,7 @@ export async function startProductionOrchestration(params: {
     targetExisting.completedScenes = 0;
     targetExisting.passedQaScenes = 0;
     targetExisting.escalatedScenes = 0;
-    if (params.aiWorkforceMode) targetExisting.aiWorkforceMode = params.aiWorkforceMode;
+    targetExisting.aiWorkforceMode = resolvedWorkforceMode;
     targetExisting.videoGenerationEngine = resolvedVideoEngine;
     if (params.selectedGeminiAccountIds) targetExisting.selectedGeminiAccountIds = params.selectedGeminiAccountIds;
     if (params.chairmanGeminiAccountId) targetExisting.chairmanGeminiAccountId = params.chairmanGeminiAccountId;
@@ -7334,7 +7433,7 @@ export async function startProductionOrchestration(params: {
       completedScenes: 0,
       passedQaScenes: 0,
       escalatedScenes: 0,
-      aiWorkforceMode: params.aiWorkforceMode || 'hybrid_gemini_muse',
+      aiWorkforceMode: resolvedWorkforceMode,
       videoGenerationEngine: resolvedVideoEngine,
       selectedGeminiAccountIds: params.selectedGeminiAccountIds?.length
         ? params.selectedGeminiAccountIds
@@ -7346,43 +7445,63 @@ export async function startProductionOrchestration(params: {
     if (storeDoc.runs.length > 25) storeDoc.runs = storeDoc.runs.slice(0, 25);
   }
 
+  const isFlowMode = run.videoGenerationEngine === 'google_flow';
+  const isGeminiDirectMode = run.videoGenerationEngine === 'google_flow' || run.videoGenerationEngine === 'gemini';
+
   appendConversationMessage({
-    channel: 'commander',
+    channel: isGeminiDirectMode ? 'gemini' : 'commander',
     projectId: freshMemory.projectId,
     runId,
     senderType: 'user',
     senderId: 'user',
     senderName: 'Đạo diễn (Bạn)',
-    targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+    targetAgentIds: isGeminiDirectMode
+      ? ['chairman', 'gemini']
+      : ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
     content: script || title,
   });
 
   const chairmanName = getChairmanDisplayName();
+  const videoEngineLabel =
+    run.videoGenerationEngine === 'gemini'
+      ? 'AI Gemini (Omni Flash)'
+      : run.videoGenerationEngine === 'google_flow'
+      ? 'Google Flow (Xuất kịch bản + keyframe, không dùng Muse AI)'
+      : 'AI Muse (tự dự phòng Gemini)';
+
   if (hasPreSeededScenes) {
-    // Gemini AI – Chairman locks Studio Blueprint & dispatches parallel production across all 4 production Muses (Muse 01–04)!
     const planTask = enqueueTask({
       runId,
       type: 'plan_production',
-      title: `${chairmanName} tiếp nhận kịch bản Studio (${preSeededScenes.length} phân cảnh)`,
+      title: isFlowMode
+        ? `${chairmanName} tiếp nhận kịch bản & chuyển gói Google Flow (${preSeededScenes.length} phân cảnh)`
+        : isGeminiDirectMode
+        ? `${chairmanName} tiếp nhận kịch bản chạy trực tiếp AI Gemini (${preSeededScenes.length} phân cảnh)`
+        : `${chairmanName} tiếp nhận kịch bản Studio (${preSeededScenes.length} phân cảnh)`,
       instructions: script || title,
       assignedAgentId: 'chairman',
       priority: 10,
     });
     planTask.status = 'completed';
     planTask.completedAt = Date.now();
-    planTask.executedByProvider = 'studio-blueprint';
-    planTask.outputText = `${chairmanName} đã tiếp nhận kịch bản hoàn chỉnh từ Studio (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh), khóa dữ liệu nhân vật và phân công song song cho 4 Muse sản xuất (Muse AI 01–04).`;
+    planTask.executedByProvider = isFlowMode ? 'google-flow-blueprint' : 'studio-blueprint';
+    planTask.outputText = isFlowMode
+      ? `${chairmanName} đã khóa kịch bản (${preSeededChars.length} nhân vật, ${preSeededScenes.length} cảnh) và giao AI Gemini tạo keyframe + đóng gói prompt Google Flow (không gửi lệnh sang Muse AI).`
+      : isGeminiDirectMode
+      ? `${chairmanName} đã khóa kịch bản (${preSeededChars.length} nhân vật, ${preSeededScenes.length} cảnh) và triển khai trực tiếp trên AI Gemini Cloud (không gửi lệnh sang Muse AI).`
+      : `${chairmanName} đã tiếp nhận kịch bản hoàn chỉnh từ Studio (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh), khóa dữ liệu nhân vật và phân công song song cho 4 Muse sản xuất (Muse AI 01–04).`;
 
     preSeededChars.forEach(ensureCharacterOriginalAnchors);
 
-    // Character Reference Tasks (ONLY for characters lacking confirmed images, distributed across Muse 01, 02, 03, 04)
-    // NOTE: Do NOT gate all scenes on self-comparing QA of a newly created portrait (prevents character ref deadlock!)
+    // Character Reference Tasks (ONLY for characters lacking confirmed images)
     const charTaskIds: string[] = [];
     const charsList = preSeededChars.slice(0, 4);
     for (let ci = 0; ci < charsList.length; ci += 1) {
       const ch = charsList[ci];
       if (!ch.artifactUrl && !ch.dataUrl && !ch.confirmedOriginalArtifactUrl) {
-        const producerId = PRODUCTION_AGENT_IDS[ci % PRODUCTION_AGENT_IDS.length];
+        const producerId: MuseAgentId | 'chairman' = isGeminiDirectMode
+          ? 'chairman'
+          : PRODUCTION_AGENT_IDS[ci % PRODUCTION_AGENT_IDS.length];
         const ct = enqueueTask({
           runId,
           type: 'design_character_ref',
@@ -7403,13 +7522,20 @@ export async function startProductionOrchestration(params: {
 
     for (let si = 0; si < preSeededScenes.length; si += 1) {
       const sc = preSeededScenes[si];
-      const producerId = PRODUCTION_AGENT_IDS[si % PRODUCTION_AGENT_IDS.length];
-      sc.assignedProducerAgentId = producerId;
+      const producerId: MuseAgentId | 'chairman' = isGeminiDirectMode
+        ? 'chairman'
+        : PRODUCTION_AGENT_IDS[si % PRODUCTION_AGENT_IDS.length];
+      sc.assignedProducerAgentId = isGeminiDirectMode ? undefined : (producerId as MuseAgentId);
+      sc.videoEngineUsed = run.videoGenerationEngine;
       sc.lockedPromptVersion = freshMemory.version;
+      if (isFlowMode) {
+        sc.flowPrompt = buildGoogleFlowScenePrompt(freshMemory, sc);
+        sc.flowStatus = 'ready';
+      }
 
       const videoDeps: string[] = [];
       const hasValidPreSeededKf = isValidImageArtifactOnDisk(sc.keyframeImageUrl);
-      const enforceImageQaGate = !resolvedAllowFreeCostumeChange && preSeededChars.length > 0;
+      const enforceImageQaGate = !isFlowMode && !resolvedAllowFreeCostumeChange && preSeededChars.length > 0;
       if (!hasValidPreSeededKf) {
         sc.imageValidated = false;
         sc.productionStage = 'waiting_data';
@@ -7431,7 +7557,7 @@ export async function startProductionOrchestration(params: {
             type: 'qa_inspect_image',
             title: `Kiểm định đồng nhất ảnh Cảnh ${sc.index}: "${sc.title}"`,
             instructions: `Kiểm tra thực tế ảnh keyframe Cảnh ${sc.index} so với ảnh tham chiếu & trang phục chính trước khi dựng video.`,
-            assignedAgentId: 'muse-05',
+            assignedAgentId: isGeminiDirectMode ? 'chairman' : 'muse-05',
             dependsOnTaskIds: [imgTask.id],
             sceneId: sc.sceneId,
             sceneIndex: sc.index,
@@ -7454,7 +7580,7 @@ export async function startProductionOrchestration(params: {
             type: 'qa_inspect_image',
             title: `Kiểm định đồng nhất ảnh Cảnh ${sc.index}: "${sc.title}"`,
             instructions: `Kiểm tra thực tế ảnh keyframe Cảnh ${sc.index} so với ảnh tham chiếu & hồ sơ gốc trước khi dựng video.`,
-            assignedAgentId: 'muse-05',
+            assignedAgentId: isGeminiDirectMode ? 'chairman' : 'muse-05',
             sceneId: sc.sceneId,
             sceneIndex: sc.index,
             priority: 7,
@@ -7463,15 +7589,18 @@ export async function startProductionOrchestration(params: {
         }
       }
 
-      if (sc.continuityAnchorFromSceneId && sceneVideoTaskBySceneId.has(sc.continuityAnchorFromSceneId)) {
+      if (!isFlowMode && sc.continuityAnchorFromSceneId && sceneVideoTaskBySceneId.has(sc.continuityAnchorFromSceneId)) {
         videoDeps.push(sceneVideoTaskBySceneId.get(sc.continuityAnchorFromSceneId)!);
       }
 
-      // SAME producer handles Stage 3 (video) immediately after Stage 2 (image) completes!
       const vidTask = enqueueTask({
         runId,
         type: 'produce_scene_video',
-        title: `Cảnh ${sc.index}: Quay & dựng video "${sc.title}" (${sc.durationSec}s)`,
+        title: isFlowMode
+          ? `Cảnh ${sc.index}: Chuẩn bị gói Google Flow "${sc.title}" (${sc.durationSec}s)`
+          : isGeminiDirectMode
+          ? `Cảnh ${sc.index}: Tạo video AI Gemini "${sc.title}" (${sc.durationSec}s)`
+          : `Cảnh ${sc.index}: Quay & dựng video "${sc.title}" (${sc.durationSec}s)`,
         instructions: `${sc.actionDetail}. Timeline: ${sc.videoTimeline || 'chuyển động mượt liên tục'}. ${sc.dialogue ? `Lời thoại: ${sc.dialogue}` : ''}`,
         preferredVideoEngine: run.videoGenerationEngine,
         assignedAgentId: producerId,
@@ -7483,76 +7612,86 @@ export async function startProductionOrchestration(params: {
       });
       sceneVideoTaskBySceneId.set(sc.sceneId, vidTask.id);
 
-      const qaTask = enqueueTask({
-        runId,
-        type: 'qa_inspect_scene',
-        title: `Kiểm định video Cảnh ${sc.index}: "${sc.title}"`,
-        instructions: `Đối chiếu thực tế Cảnh ${sc.index} với ảnh keyframe & Project Memory v${freshMemory.version}.`,
-        assignedAgentId: 'muse-05',
-        dependsOnTaskIds: [vidTask.id],
-        sceneId: sc.sceneId,
-        sceneIndex: sc.index,
-        priority: 5,
-      });
-      qaTaskIds.push(qaTask.id);
+      if (isFlowMode) {
+        qaTaskIds.push(vidTask.id);
+      } else {
+        const qaTask = enqueueTask({
+          runId,
+          type: 'qa_inspect_scene',
+          title: `Kiểm định video Cảnh ${sc.index}: "${sc.title}"`,
+          instructions: `Đối chiếu thực tế Cảnh ${sc.index} với ảnh keyframe & Project Memory v${freshMemory.version}.`,
+          assignedAgentId: isGeminiDirectMode ? 'chairman' : 'muse-05',
+          dependsOnTaskIds: [vidTask.id],
+          sceneId: sc.sceneId,
+          sceneIndex: sc.index,
+          priority: 5,
+        });
+        qaTaskIds.push(qaTask.id);
+      }
     }
 
     enqueueTask({
       runId,
       type: 'assemble_final_film',
-      title: `Ghép xuất phim hoàn chỉnh (${preSeededScenes.length} phân cảnh)`,
+      title: isFlowMode
+        ? `Sẵn sàng ghép phim sau khi nạp MP4 Google Flow (${preSeededScenes.length} phân cảnh)`
+        : `Ghép xuất phim hoàn chỉnh (${preSeededScenes.length} phân cảnh)`,
       instructions: `Tổng hợp toàn bộ phân cảnh có video thành tệp MP4 hoàn chỉnh và bàn giao.`,
       assignedAgentId: 'chairman',
       dependsOnTaskIds: qaTaskIds,
       priority: 1,
     });
 
-    const videoEngineLabel =
-      run.videoGenerationEngine === 'gemini'
-        ? 'AI Gemini (Omni Flash)'
-        : run.videoGenerationEngine === 'google_flow'
-        ? 'Google Flow (Xuất kịch bản + keyframe)'
-        : 'AI Muse (tự dự phòng Gemini)';
-
     appendConversationMessage({
-      channel: 'commander',
+      channel: isGeminiDirectMode ? 'gemini' : 'commander',
       projectId: freshMemory.projectId,
       runId,
       sessionId: runId,
       senderType: 'agent',
-      senderId: 'chairman',
-      senderName: chairmanName,
-      senderColor: '#D97706',
-      roleBadge: 'Lệnh Chủ tịch',
-      targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+      senderId: isGeminiDirectMode ? 'gemini' : 'chairman',
+      senderName: isGeminiDirectMode ? 'AI Gemini · Điều phối sản xuất' : chairmanName,
+      senderColor: isGeminiDirectMode ? '#2563EB' : '#D97706',
+      roleBadge: isFlowMode ? 'Google Flow' : isGeminiDirectMode ? 'AI Gemini' : 'Lệnh Chủ tịch',
+      targetAgentIds: isGeminiDirectMode ? ['chairman'] : ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
       taskId: planTask.id,
       messageKind: 'ack',
-      content: `Đã tiếp nhận kịch bản đồng bộ từ Studio cho "${title}" (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh). Nguồn dựng video: ${videoEngineLabel}. Đã phân công song song cho 4 Muse sản xuất (Muse AI 01–04) và bật chống treo tự động sau 3 vòng kiểm định.`,
+      content: isFlowMode
+        ? `Đã nhận kịch bản "${title}" (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh) ở chế độ **Google Flow**. Toàn bộ ảnh keyframe & prompt chuẩn Google Flow sẽ do AI Gemini tạo trực tiếp (KHÔNG gửi lệnh sang Muse AI). Bạn có thể mở "Gói Google Flow" ngay trong Phiên Sản Xuất để copy prompt và nạp MP4 về.`
+        : isGeminiDirectMode
+        ? `Đã nhận kịch bản "${title}" (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh) ở chế độ **AI Gemini**. Toàn bộ ảnh keyframe & video Omni Flash được xử lý trực tiếp trên AI Gemini (KHÔNG dùng Muse AI).`
+        : `Đã tiếp nhận kịch bản đồng bộ từ Studio cho "${title}" (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh). Nguồn dựng video: ${videoEngineLabel}. Đã phân công song song cho 4 Muse sản xuất (Muse AI 01–04) và bật chống treo tự động sau 3 vòng kiểm định.`,
     });
 
     appendProjectCoordinationLog(runId, {
       actorId: 'chairman',
       actorName: chairmanName,
-      targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+      targetAgentIds: isGeminiDirectMode ? ['chairman'] : ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
       kind: 'directive',
       runId,
       taskId: planTask.id,
-      summary: `Tiếp nhận kịch bản Studio "${title}" (${preSeededScenes.length} cảnh) và phân công cho 4 Muse sản xuất (Muse 01–04).`,
+      summary: isFlowMode
+        ? `Khởi chạy chế độ Google Flow cho "${title}" (${preSeededScenes.length} cảnh) trên AI Gemini — bỏ qua Muse AI.`
+        : isGeminiDirectMode
+        ? `Khởi chạy chế độ AI Gemini cho "${title}" (${preSeededScenes.length} cảnh) — bỏ qua Muse AI.`
+        : `Tiếp nhận kịch bản Studio "${title}" (${preSeededScenes.length} cảnh) và phân công cho 4 Muse sản xuất (Muse 01–04).`,
     });
 
     addActivityLog(
       'info',
-      'Chủ tịch tiếp nhận kịch bản Studio',
-      `${chairmanName} đã phân công ${preSeededScenes.length} phân cảnh của "${title}" cho 4 Muse sản xuất (Muse AI 01–04).`,
+      isFlowMode ? 'Khởi chạy gói Google Flow' : isGeminiDirectMode ? 'Khởi chạy AI Gemini Cloud' : 'Chủ tịch tiếp nhận kịch bản Studio',
+      `${chairmanName} đã khởi động "${title}" (${preSeededScenes.length} cảnh) với nguồn video: ${videoEngineLabel}.`,
       { agentId: 'chairman', runId }
     );
   } else {
-    // Gemini AI – Chairman directly analyzes script & dispatches tasks to Muse 01–04 + Muse 05
     enqueueTask({
       runId,
       type: 'analyze_script',
-      title: `${chairmanName} phân tích kịch bản & chia việc cho 5 Muse AI: ${title}`,
-      instructions: `Trực tiếp phân tích kịch bản "${title}", khóa nhân vật 5 thành phần, lời thoại, timeline từng giây và phân công song song cho 4 Muse sản xuất (Muse AI 01, 02, 03, 04) cùng kiểm định Muse AI 05.\n\nKịch bản gốc:\n${script}`,
+      title: isFlowMode
+        ? `AI Gemini phân tích kịch bản & xuất gói Google Flow: ${title}`
+        : isGeminiDirectMode
+        ? `AI Gemini phân tích kịch bản & sản xuất trực tiếp: ${title}`
+        : `${chairmanName} phân tích kịch bản & chia việc cho 5 Muse AI: ${title}`,
+      instructions: `Trực tiếp phân tích kịch bản "${title}", khóa nhân vật 5 thành phần, lời thoại, timeline từng giây.\nNguồn video: ${videoEngineLabel}.\n\nKịch bản gốc:\n${script}`,
       assignedAgentId: 'chairman',
       expectedMemoryVersion: freshMemory.version,
       priority: 10,
@@ -7561,16 +7700,16 @@ export async function startProductionOrchestration(params: {
     appendProjectCoordinationLog(runId, {
       actorId: 'chairman',
       actorName: chairmanName,
-      targetAgentIds: ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+      targetAgentIds: isGeminiDirectMode ? ['chairman'] : ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
       kind: 'directive',
       runId,
-      summary: `Tiếp nhận lệnh sản xuất "${title}", khởi động bước phân tích kịch bản & phân công cho 4 Muse sản xuất.`,
+      summary: `Tiếp nhận lệnh sản xuất "${title}" (${videoEngineLabel}), khởi động phân tích kịch bản.`,
     });
 
     addActivityLog(
       'info',
-      'Khởi động dây chuyền dưới quyền Chủ tịch Gemini AI',
-      `Phiên "${title}" đã được ${chairmanName} tiếp nhận phân tích kịch bản và điều phối cho 5 Muse AI.`,
+      isFlowMode ? 'Khởi động phiên Google Flow' : isGeminiDirectMode ? 'Khởi động phiên AI Gemini' : 'Khởi động dây chuyền dưới quyền Chủ tịch Gemini AI',
+      `Phiên "${title}" đã khởi động với nguồn video: ${videoEngineLabel}.`,
       { agentId: 'chairman', runId }
     );
   }
@@ -7922,7 +8061,8 @@ const DEFAULT_AGENT_BY_CHANNEL: Record<string, MuseAgentId | 'chairman' | 'gemin
 export async function sendCommandCenterChat(params: {
   channel: CommunicationChannelId | 'group';
   message: string;
-  targetAgentId?: MuseAgentId | 'chairman' | 'gemini';
+  targetAgentId?: MuseAgentId | 'chairman' | 'gemini' | `gemini:${string}`;
+  geminiAccountId?: string;
   attachments?: string[];
   sceneId?: string;
   sessionId?: string;
@@ -7935,10 +8075,16 @@ export async function sendCommandCenterChat(params: {
   const runId = params.sessionId || getEffectiveSelectedRunId() || undefined;
   const mem = getRunMemory(runId);
 
-  const isDm = channel.startsWith('muse-');
-  const responderId: MuseAgentId | 'chairman' | 'gemini' = isDm
+  const isMuseDm = channel.startsWith('muse-');
+  const isGeminiAccountDm = channel.startsWith('gemini:');
+  const responderId: MuseAgentId | 'chairman' | 'gemini' | `gemini:${string}` = isMuseDm
     ? (channel as MuseAgentId)
-    : params.targetAgentId || DEFAULT_AGENT_BY_CHANNEL[channel] || 'chairman';
+    : isGeminiAccountDm
+    ? (channel as `gemini:${string}`)
+    : params.targetAgentId ||
+      (params.geminiAccountId ? (`gemini:${params.geminiAccountId}` as `gemini:${string}`) : undefined) ||
+      DEFAULT_AGENT_BY_CHANNEL[channel as keyof typeof DEFAULT_AGENT_BY_CHANNEL] ||
+      'chairman';
 
   appendConversationMessage({
     channel,
@@ -7949,22 +8095,53 @@ export async function sendCommandCenterChat(params: {
     senderType: 'user',
     senderId: 'user',
     senderName: 'Người dùng (Chỉ đạo)',
-    targetAgentIds: isDm ? [channel as MuseAgentId] : ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
+    targetAgentIds: isMuseDm
+      ? [channel as MuseAgentId]
+      : isGeminiAccountDm || responderId === 'gemini' || String(responderId).startsWith('gemini:')
+      ? [responderId as 'gemini' | `gemini:${string}`]
+      : ['muse-01', 'muse-02', 'muse-03', 'muse-04', 'muse-05'],
     attachments,
     content: text || '(Đã gửi tệp đính kèm)',
   });
 
-  // === DIRECT AI GEMINI PROGRESS & EXECUTION ASSISTANT ===
-  if (responderId === 'gemini') {
+  // === DIRECT AI GEMINI (GENERAL OR SPECIFIC ACCOUNT FROM SETTINGS) ===
+  const isSpecificGeminiTarget = String(responderId).startsWith('gemini:');
+  if (responderId === 'gemini' || isSpecificGeminiTarget) {
     const activeRunObj = runId ? storeDoc.runs.find((r) => r.id === runId) : storeDoc.runs[0];
     const effectiveRunId = activeRunObj?.id || runId;
-    const chairmanAcc = resolveChairmanGeminiAccount(activeRunObj?.chairmanGeminiAccountId);
-    const workerAcc =
-      chairmanAcc ||
-      pickWorkerGeminiAccount({
-        allowedAccountIds: activeRunObj?.selectedGeminiAccountIds,
-        chairmanAccountId: activeRunObj?.chairmanGeminiAccountId,
-      });
+    const requestedGeminiId = isSpecificGeminiTarget
+      ? String(responderId).slice('gemini:'.length)
+      : params.geminiAccountId || undefined;
+
+    const allGeminiPublic = listGeminiAccountsPublic();
+    let workerAcc: { id: string; label: string; apiKey: string } | null = null;
+    let workerPublic = requestedGeminiId
+      ? allGeminiPublic.find((a) => a.id === requestedGeminiId) || null
+      : null;
+
+    if (requestedGeminiId) {
+      if (workerPublic && !workerPublic.enabled) {
+        throw new Error(
+          `AI Gemini "${workerPublic.label}" đang ở trạng thái TẮT trong Cài đặt. Hãy bật tài khoản này để trao đổi trực tiếp.`
+        );
+      }
+      workerAcc = getGeminiAccountSecretById(requestedGeminiId);
+      if (!workerAcc) {
+        throw new Error(
+          `Không tìm thấy API Key khả dụng cho AI Gemini "${workerPublic?.label || requestedGeminiId}". Vui lòng kiểm tra lại trong Cài đặt.`
+        );
+      }
+    } else {
+      const chairmanAcc = resolveChairmanGeminiAccount(activeRunObj?.chairmanGeminiAccountId);
+      workerAcc =
+        chairmanAcc ||
+        pickWorkerGeminiAccount({
+          allowedAccountIds: activeRunObj?.selectedGeminiAccountIds,
+          chairmanAccountId: activeRunObj?.chairmanGeminiAccountId,
+        });
+      workerPublic = workerAcc ? allGeminiPublic.find((a) => a.id === workerAcc!.id) || null : null;
+    }
+
     const health = await refreshIntegrationHealth(false);
     if (!workerAcc && !health.geminiConfigured && !hasAnyEnabledGeminiAccount()) {
       throw new Error('Chưa cấu hình API Gemini nào. Hãy kiểm tra Gemini API Key trong cài đặt.');
@@ -7980,45 +8157,104 @@ export async function sendCommandCenterChat(params: {
     const openIncCount = storeDoc.incidents.filter((i) => i.status !== 'resolved').length;
     const progressPct = totalScenes > 0 ? Math.round(((imagesReady * 0.4 + videosReady * 0.6) / totalScenes) * 100) : 0;
 
+    // Live work status of this specific Gemini account
+    const accountTasks = workerAcc
+      ? runTasks.filter(
+          (t) =>
+            t.assignedGeminiAccountId === workerAcc!.id ||
+            (workerPublic?.isChairman && t.assignedAgentId === 'chairman')
+        )
+      : [];
+    const accRunningTasks = accountTasks.filter((t) => t.status === 'running');
+    const accQueuedTasks = accountTasks.filter((t) => t.status === 'queued' || t.status === 'blocked_by_deps');
+    const accCompletedTasks = accountTasks.filter((t) => t.status === 'completed');
+    const accFailedTasks = accountTasks.filter((t) => t.status === 'failed');
+
+    const geminiFleetSummary = allGeminiPublic
+      .map((a) => {
+        const busy = runTasks.filter(
+          (t) => t.status === 'running' && (t.assignedGeminiAccountId === a.id || (a.isChairman && t.assignedAgentId === 'chairman'))
+        ).length;
+        const st = !a.enabled
+          ? 'Đã tắt'
+          : busy > 0
+          ? `Đang làm việc (${busy} tác vụ)`
+          : a.status === 'healthy'
+          ? `Sẵn sàng (${a.lastLatencyMs || 0}ms)`
+          : a.status === 'quota_exceeded'
+          ? 'Hết hạn mức 429'
+          : a.status === 'error'
+          ? 'Gặp lỗi'
+          : 'Sẵn sàng (chưa test)';
+        return `- ${a.label}${a.isChairman ? ' [Chủ tịch]' : ''}: ${st} | Thành công: ${a.successCount} | Lỗi: ${a.errorCount}`;
+      })
+      .join('\n');
+
     const sceneDigest = mem.scenes
       .slice(0, 15)
       .map(
         (s) =>
-          `- [${s.sceneId}] Cảnh ${s.index} "${s.title}": Ảnh=${s.keyframeImageUrl ? (s.imageValidated !== false ? 'ĐÃ DUYỆT QA' : 'có ảnh') : 'chưa có'} | Video=${s.videoUrl ? `ĐÃ XONG (${s.videoEngineUsed || 'muse'})` : s.flowStatus === 'ready' ? 'Sẵn sàng Google Flow' : 'chưa có'} | QA=${s.qaStatus} | Stage=${s.productionStage || 'pending'}`
+          `- [${s.sceneId}] Cảnh ${s.index} "${s.title}": Ảnh=${s.keyframeImageUrl ? (s.imageValidated !== false ? 'ĐÃ DUYỆT QA' : 'có ảnh') : 'chưa có'} | Video=${s.videoUrl ? `ĐÃ XONG (${s.videoEngineUsed || 'gemini'})` : s.flowStatus === 'ready' ? 'Sẵn sàng Google Flow' : 'chưa có'} | QA=${s.qaStatus} | Stage=${s.productionStage || 'pending'}`
       )
       .join('\n');
 
+    const recentChannelHistory = storeDoc.conversations
+      .filter((m) => m.channel === channel)
+      .slice(-8, -1)
+      .map((m) => `${m.senderName}: ${m.content.slice(0, 260)}`)
+      .join('\n');
+
+    const personaName = workerAcc?.label || 'AI Gemini';
     const ai = getGeminiClient(workerAcc?.apiKey);
-    const geminiSys = `Bạn là AI Gemini — Trợ lý Báo cáo Tiến độ & Điều phối Video trực tiếp trong Trung tâm Giao tiếp của Phòng Điều Hành.
+    const geminiSys = `Bạn là ${personaName}${workerPublic?.isChairman ? ' (Chủ tịch Điều phối AI Gemini)' : ' (Thành viên đội AI Gemini)'} trong Trung tâm Giao tiếp của Phòng Điều Hành.
 Nhiệm vụ của bạn:
-1. Báo cáo tiến độ sản xuất trung thực, ngắn gọn, có số liệu rõ ràng bằng tiếng Việt (tổng % tiến độ, bao nhiêu ảnh đã duyệt QA, bao nhiêu video đã hoàn thành, tác vụ nào đang bị kẹt/treo, nguồn tạo video hiện tại: AI Gemini / Google Flow / AI Muse).
+1. Báo cáo trung thực tình trạng sẵn sàng & khối lượng công việc của chính bạn (đang làm việc hay rảnh, số tác vụ đang chạy/xong/lỗi, tình trạng kết nối) và tiến độ toàn bộ phiên sản xuất bằng tiếng Việt ngắn gọn, có số liệu cụ thể.
 2. Khi người dùng yêu cầu thực thi trực tiếp, trả về trường "action" phù hợp để hệ thống THỰC THI NGAY:
-   - "unstick_all": khi người dùng yêu cầu gỡ treo đội AI Muse, mở khóa các tác vụ bị kẹt/blocked, tiếp tục chạy.
+   - "unstick_all": khi người dùng yêu cầu gỡ treo đội AI, mở khóa các tác vụ bị kẹt/blocked, tiếp tục chạy.
    - "generate_approved_videos_gemini": khi người dùng yêu cầu tạo video ngay bằng AI Gemini cho tất cả ảnh đã thông qua QA (hoặc 1 sceneId cụ thể).
    - "export_google_flow_all": khi người dùng muốn truyền/xuất kịch bản sang Google Flow cho tất cả phân cảnh (hoặc 1 sceneId cụ thể).
    - "switch_video_engine": khi người dùng yêu cầu đổi nguồn tạo video của phiên sang "gemini", "google_flow", hoặc "muse".
-   - "none": khi người dùng chỉ hỏi báo cáo tiến độ hoặc trao đổi thông thường.
-Luôn trả lời thân thiện, súc tích, thực tế (không hứa hẹn suông). Trả về JSON đúng schema.`;
+   - "none": khi người dùng chỉ hỏi kiểm tra trạng thái, báo cáo tiến độ hoặc trao đổi thông thường.
+Luôn trả lời trực diện, rõ ràng, đúng thực tế dữ liệu bên dưới. Trả về JSON đúng schema.`;
 
-    const geminiUserPrompt = `TỔNG QUAN PHIÊN HIỆN TẠI:
+    const geminiUserPrompt = `THÔNG TIN TÀI KHOẢN AI GEMINI ĐANG TRẢ LỜI:
+- Tên: ${personaName} (${workerPublic?.isChairman ? 'Vai trò: Chủ tịch Điều phối' : 'Vai trò: AI Gemini Thực thi'})
+- Trạng thái hiện tại của bạn: ${accRunningTasks.length > 0 ? `ĐANG LÀM VIỆC (${accRunningTasks.length} tác vụ: ${accRunningTasks.map((t) => t.title).join('; ')})` : 'SẴN SÀNG NHẬN LỆNH (đang rảnh)'}
+- Thống kê phiên của bạn: Đang chạy=${accRunningTasks.length} | Đang chờ=${accQueuedTasks.length} | Hoàn thành=${accCompletedTasks.length} | Lỗi=${accFailedTasks.length}
+- Thống kê API của bạn: Tổng gọi=${workerPublic?.requestsCount || 0} | Thành công=${workerPublic?.successCount || 0} | Lỗi=${workerPublic?.errorCount || 0} | Độ trễ gần nhất=${workerPublic?.lastLatencyMs ? `${workerPublic.lastLatencyMs}ms` : 'chưa đo'}
+
+TÌNH TRẠNG TOÀN ĐỘI AI GEMINI TRONG CÀI ĐẶT:
+${geminiFleetSummary || '(Chỉ có tài khoản mặc định)'}
+
+TỔNG QUAN PHIÊN HIỆN TẠI:
 - Dự án: "${mem.title}" (Run: ${effectiveRunId || 'chưa chạy'}, Trạng thái: ${activeRunObj?.status || 'idle'})
-- Nguồn tạo video đang chọn: ${activeRunObj?.videoGenerationEngine || 'muse'}
+- Nguồn tạo video đang chọn: ${activeRunObj?.videoGenerationEngine || 'gemini'}
 - Tiến độ ước tính: ${progressPct}% | Tổng cảnh: ${totalScenes} | Ảnh đã tạo: ${imagesReady}/${totalScenes} (Đã duyệt QA: ${imagesQaPassed}) | Video đã xong: ${videosReady}/${totalScenes} | Đạt QA cuối: ${passedQa}/${totalScenes}
 - Tác vụ bị kẹt/lỗi: ${hungOrBlocked} | Sự cố đang mở: ${openIncCount}
 - Trạng thái đội Muse: ${storeDoc.agents.map((a) => `${a.name}:${a.status}`).join(', ')}
 
 CHI TIẾT TỪNG PHÂN CẢNH:
 ${sceneDigest || '(Chưa có phân cảnh nào trong Project Memory)'}
-
+${recentChannelHistory ? `\nHỘI THOẠI GẦN ĐÂY TRONG KÊNH:\n${recentChannelHistory}\n` : ''}
 TIN NHẮN CỦA NGƯỜI DÙNG:
 ${text}`;
 
-    const candidateModels = prioritizeGeminiCandidateModels(['gemini-4-hydrogen', 'gemini-3.1-flash-lite']);
+    const allowedChatModels = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-4-neon'];
+    const preferredFromAcc =
+      workerPublic?.preferredModel && allowedChatModels.includes(workerPublic.preferredModel)
+        ? workerPublic.preferredModel
+        : null;
+    const baseModels = preferredFromAcc
+      ? [preferredFromAcc, ...['gemini-4-hydrogen', 'gemini-3.1-flash-lite'].filter((m) => m !== preferredFromAcc)]
+      : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+    const candidateModels = prioritizeGeminiCandidateModels(baseModels);
+
     let resp: any = null;
     let lastErr: any = null;
+    const startedAt = Date.now();
     for (const modelName of candidateModels) {
       try {
-        const isThinkingModel = modelName === 'gemini-4-hydrogen';
+        const isThinkingModel = modelName === 'gemini-4-hydrogen' || modelName === 'gemini-4-neon';
         resp = await retryWithGeminiBackoff(
           () =>
             ai.models.generateContent({
@@ -8048,7 +8284,9 @@ ${text}`;
             }),
           [800, 1500]
         );
-        if (workerAcc) recordGeminiAccountUsage(workerAcc.id, true);
+        if (workerAcc) {
+          recordGeminiAccountUsage(workerAcc.id, true, { latencyMs: Date.now() - startedAt });
+        }
         break;
       } catch (err: any) {
         lastErr = err;
@@ -8056,11 +8294,25 @@ ${text}`;
           markGeminiModelOverloaded(modelName, err);
           continue;
         }
-        throw err;
+        if (workerAcc) {
+          recordGeminiAccountUsage(workerAcc.id, false, {
+            latencyMs: Date.now() - startedAt,
+            errorMsg: formatGeminiError(err),
+          });
+        }
+        throw new Error(`[${personaName}] ${formatGeminiError(err)}`);
       }
     }
     if (!resp) {
-      throw lastErr || new Error('Không thể kết nối AI Gemini. Vui lòng kiểm tra Gemini API Key.');
+      if (workerAcc) {
+        recordGeminiAccountUsage(workerAcc.id, false, {
+          latencyMs: Date.now() - startedAt,
+          errorMsg: formatGeminiError(lastErr),
+        });
+      }
+      throw new Error(
+        `[${personaName}] ${lastErr ? formatGeminiError(lastErr) : 'Không thể kết nối AI Gemini. Vui lòng kiểm tra Gemini API Key.'}`
+      );
     }
 
     const parsed = parseAiBlueprintJsonSafe((resp.text || '').trim()) || {};
@@ -8078,7 +8330,11 @@ ${text}`;
         rawEng === 'google_flow' ? 'google_flow' : rawEng === 'muse' ? 'muse' : 'gemini';
       if (effectiveRunId) {
         await setRunVideoEngine(effectiveRunId, targetEng);
-        actNotes.push(`Đã chuyển nguồn tạo video của phiên sang: ${targetEng === 'gemini' ? 'AI Gemini' : targetEng === 'google_flow' ? 'Google Flow' : 'AI Muse'}.`);
+        actNotes.push(
+          `Đã chuyển nguồn tạo video của phiên sang: ${
+            targetEng === 'gemini' ? 'AI Gemini' : targetEng === 'google_flow' ? 'Google Flow' : 'AI Muse'
+          }.`
+        );
       }
     } else if (actType === 'generate_approved_videos_gemini') {
       const targets = actSceneId
@@ -8101,12 +8357,18 @@ ${text}`;
         await triggerSceneVideoNow({ runId: effectiveRunId, sceneId: sc.sceneId, engine: 'google_flow' });
         exported += 1;
       }
-      actNotes.push(`Đã xuất kịch bản chuẩn Google Flow cho ${exported} phân cảnh. Mở nút "Gói Google Flow" để copy prompt & tải ảnh keyframe.`);
+      actNotes.push(
+        `Đã xuất kịch bản chuẩn Google Flow cho ${exported} phân cảnh. Mở nút "Gói Google Flow" để copy prompt & tải ảnh keyframe.`
+      );
     }
 
     if (actNotes.length > 0) {
       replyText = `${replyText}\n\n[THỰC THI TỰ ĐỘNG]\n• ${actNotes.join('\n• ')}`;
     }
+
+    const replySenderId = isSpecificGeminiTarget && workerAcc ? `gemini:${workerAcc.id}` : 'gemini';
+    const replySenderName = isSpecificGeminiTarget && workerAcc ? workerAcc.label : `${personaName} · Tiến độ & Video`;
+    const replyRoleBadge = workerPublic?.isChairman ? 'AI Gemini · Chủ tịch' : 'AI Gemini';
 
     const geminiReply = appendConversationMessage({
       channel,
@@ -8115,10 +8377,10 @@ ${text}`;
       sessionId: effectiveRunId,
       sceneId: params.sceneId,
       senderType: 'agent',
-      senderId: 'gemini',
-      senderName: 'AI Gemini · Tiến độ & Video',
-      senderColor: '#2563EB',
-      roleBadge: 'AI Gemini',
+      senderId: replySenderId,
+      senderName: replySenderName,
+      senderColor: workerPublic?.isChairman ? '#D97706' : '#2563EB',
+      roleBadge: replyRoleBadge,
       promptDelivered: text,
       content: replyText,
     });
@@ -8495,7 +8757,7 @@ Nguyên tắc điều hành:
 Vai trò: ${responder.description}
 Dự án/Phiên hiện tại: "${mem.title}" (Project Memory v${mem.version}, ${mem.characters.length} nhân vật, ${mem.scenes.length} cảnh).${studioDirectiveNote}${memoryScenesNote}${openIncidentsNote}
 ${
-  isDm
+  isMuseDm
     ? 'Bạn đang trao đổi riêng 1-1 trong Chat Room. Hãy trả lời bám sát dữ liệu dự án hiện tại và tuân thủ khóa nhân vật.'
     : `Bạn đang phản hồi trong ${channelContextDesc[channel] || channel}. Hãy trả lời ngắn gọn, bám sát đúng chuyên môn và dữ liệu thực tế của phiên.`
 }`;
@@ -10612,8 +10874,10 @@ export async function triggerSceneVideoNow(params: {
     emitCommandCenterEvent('run:updated', run);
   }
 
-  const producerId: MuseAgentId =
-    sc.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(sc.assignedProducerAgentId)
+  const assignedOwner: MuseAgentId | 'chairman' =
+    params.engine === 'gemini'
+      ? 'chairman'
+      : sc.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(sc.assignedProducerAgentId)
       ? sc.assignedProducerAgentId
       : pickNextHealthyProducer();
 
@@ -10622,7 +10886,7 @@ export async function triggerSceneVideoNow(params: {
     type: 'produce_scene_video',
     title: `[Tạo ngay · ${params.engine === 'gemini' ? 'AI Gemini' : 'AI Muse'}] Cảnh ${sc.index}: "${sc.title}" (${sc.durationSec}s)`,
     instructions: `${sc.actionDetail}. Timeline: ${sc.videoTimeline || 'chuyển động mượt liên tục'}. ${sc.dialogue ? `Lời thoại: ${sc.dialogue}` : ''}`,
-    assignedAgentId: producerId,
+    assignedAgentId: assignedOwner,
     sceneId: sc.sceneId,
     sceneIndex: sc.index,
     expectedMemoryVersion: mem.version,
@@ -10631,18 +10895,20 @@ export async function triggerSceneVideoNow(params: {
     priority: 10,
   });
 
-  enqueueTask({
-    runId,
-    type: 'qa_inspect_scene',
-    title: `[Kiểm định sau tạo ngay] Cảnh ${sc.index}: "${sc.title}"`,
-    instructions: `Kiểm định thực tế video Cảnh ${sc.index} vừa tạo bằng ${params.engine === 'gemini' ? 'AI Gemini' : 'AI Muse'}.`,
-    assignedAgentId: 'muse-05',
-    dependsOnTaskIds: [vidTask.id],
-    sceneId: sc.sceneId,
-    sceneIndex: sc.index,
-    allowMultipleVariants: true,
-    priority: 8,
-  });
+  if (params.engine === 'muse') {
+    enqueueTask({
+      runId,
+      type: 'qa_inspect_scene',
+      title: `[Kiểm định sau tạo ngay] Cảnh ${sc.index}: "${sc.title}"`,
+      instructions: `Kiểm định thực tế video Cảnh ${sc.index} vừa tạo bằng AI Muse.`,
+      assignedAgentId: 'muse-05',
+      dependsOnTaskIds: [vidTask.id],
+      sceneId: sc.sceneId,
+      sceneIndex: sc.index,
+      allowMultipleVariants: true,
+      priority: 8,
+    });
+  }
 
   appendConversationMessage({
     channel: 'qa',
@@ -10651,8 +10917,11 @@ export async function triggerSceneVideoNow(params: {
     sceneId: sc.sceneId,
     taskId: vidTask.id,
     senderType: 'agent',
-    senderId: params.engine === 'gemini' ? 'gemini' : producerId,
-    senderName: params.engine === 'gemini' ? 'AI Gemini · Tạo Video Ngay' : `${storeDoc.agents.find((a) => a.id === producerId)?.name || producerId}`,
+    senderId: params.engine === 'gemini' ? 'gemini' : assignedOwner,
+    senderName:
+      params.engine === 'gemini'
+        ? 'AI Gemini · Tạo Video Ngay'
+        : `${storeDoc.agents.find((a) => a.id === assignedOwner)?.name || assignedOwner}`,
     senderColor: params.engine === 'gemini' ? '#2563EB' : '#0891B2',
     roleBadge: 'Đã nhận lệnh',
     content: `Đã kích hoạt tạo video NGAY LẬP TỨC cho Cảnh ${sc.index} "${sc.title}" bằng ${params.engine === 'gemini' ? 'AI Gemini (Omni Flash)' : 'AI Muse'} (Mã tác vụ ${vidTask.code}).`,
@@ -10662,7 +10931,7 @@ export async function triggerSceneVideoNow(params: {
     'info',
     `Tạo video ngay Cảnh ${sc.index} (${params.engine})`,
     `Người dùng yêu cầu dựng video ngay từ ảnh đã duyệt (${vidTask.code}).`,
-    { agentId: params.engine === 'gemini' ? 'chairman' : producerId, taskId: vidTask.id, runId }
+    { agentId: params.engine === 'gemini' ? 'chairman' : assignedOwner, taskId: vidTask.id, runId }
   );
 
   saveStateAtomic();
@@ -10836,32 +11105,65 @@ export async function setRunVideoEngine(
   const run = storeDoc.runs.find((r) => r.id === runId);
   if (!run) throw new Error('Không tìm thấy phiên sản xuất.');
   run.videoGenerationEngine = engine;
+  run.aiWorkforceMode = engine === 'muse' ? 'hybrid_gemini_muse' : 'gemini_only';
   run.updatedAt = Date.now();
 
+  const mem = getRunMemory(runId);
+  const isGeminiDirect = engine === 'gemini' || engine === 'google_flow';
   let updatedTasks = 0;
   for (const t of storeDoc.tasks) {
-    if (
-      t.runId === runId &&
-      t.type === 'produce_scene_video' &&
-      ['queued', 'blocked_by_deps'].includes(t.status)
-    ) {
-      t.preferredVideoEngine = engine;
-      updatedTasks += 1;
+    if (t.runId !== runId) continue;
+    if (['queued', 'blocked_by_deps'].includes(t.status)) {
+      if (isGeminiDirect && t.assignedAgentId !== 'chairman') {
+        t.assignedAgentId = 'chairman';
+      }
+      if (t.type === 'produce_scene_video') {
+        t.preferredVideoEngine = engine;
+        if (engine === 'google_flow') {
+          t.title = t.title.replace(/Quay & dựng video|Tạo video AI Gemini/i, 'Chuẩn bị gói Google Flow');
+        } else if (engine === 'gemini') {
+          t.title = t.title.replace(/Quay & dựng video|Chuẩn bị gói Google Flow/i, 'Tạo video AI Gemini');
+        }
+        updatedTasks += 1;
+      }
+      if (engine === 'google_flow' && (t.type === 'qa_inspect_image' || t.type === 'qa_inspect_scene')) {
+        t.status = 'completed';
+        t.completedAt = Date.now();
+        t.outputText = 'Đã chuyển sang chế độ Google Flow — bỏ qua bước kiểm định Muse AI 05.';
+      }
       emitCommandCenterEvent('task:updated', t);
     }
+  }
+
+  if (engine === 'google_flow') {
+    commitSessionMemoryUpdate(runId, 'chairman', 'Chuẩn bị sẵn prompt Google Flow cho toàn bộ cảnh', (m) => {
+      for (const sc of m.scenes) {
+        sc.videoEngineUsed = 'google_flow';
+        sc.assignedProducerAgentId = undefined;
+        if (!sc.flowPrompt) sc.flowPrompt = buildGoogleFlowScenePrompt(m, sc);
+        if (!sc.videoUrl) sc.flowStatus = 'ready';
+      }
+    });
+  } else if (engine === 'gemini') {
+    commitSessionMemoryUpdate(runId, 'chairman', 'Chuyển toàn bộ cảnh sang AI Gemini', (m) => {
+      for (const sc of m.scenes) {
+        sc.videoEngineUsed = 'gemini';
+        sc.assignedProducerAgentId = undefined;
+      }
+    });
   }
 
   const label =
     engine === 'gemini'
       ? 'AI Gemini (Omni Flash)'
       : engine === 'google_flow'
-      ? 'Google Flow (Xuất kịch bản)'
+      ? 'Google Flow (Xuất kịch bản — không dùng Muse AI)'
       : 'AI Muse (Tự dự phòng Gemini)';
 
   addActivityLog(
     'info',
     `Đổi nguồn tạo video → ${label}`,
-    `Đã áp dụng cho phiên "${run.title}" và ${updatedTasks} tác vụ dựng video đang chờ.`,
+    `Đã áp dụng cho phiên "${run.title}" (${updatedTasks} tác vụ dựng video đang chờ, ${mem.scenes.length} cảnh).`,
     { agentId: 'chairman', runId }
   );
   saveStateAtomic();

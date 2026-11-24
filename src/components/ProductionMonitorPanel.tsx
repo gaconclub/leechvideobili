@@ -7,6 +7,7 @@ import {
   CloudUpload,
   Cpu,
   Download,
+  ExternalLink,
   Film,
   History,
   Loader2,
@@ -14,11 +15,19 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Sparkles,
   Square,
+  Wrench,
   X,
 } from 'lucide-react';
-import type { CommandCenterState, ProductionRun, SceneProductionStage } from '../types/commandCenter';
+import type {
+  CommandCenterState,
+  ProductionRun,
+  SceneProductionStage,
+  VideoGenerationEngine,
+} from '../types/commandCenter';
 import { AgentAvatar } from './command-center/AgentAvatar';
+import { GoogleFlowModal } from './command-center/GoogleFlowModal';
 import { WorkspaceSyncSection } from './WorkspaceSyncSection';
 import { commandCenterApiJson } from '../hooks/useCommandCenterLive';
 
@@ -142,6 +151,8 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
   const [confirmCancelRun, setConfirmCancelRun] = useState<ProductionRun | null>(null);
   const [detailTab, setDetailTab] = useState<'scenes' | 'tasks' | 'logs' | 'workspace'>('scenes');
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [flowModalOpen, setFlowModalOpen] = useState(false);
+  const [flowFocusSceneId, setFlowFocusSceneId] = useState<string | null>(null);
 
   const selectedRun: ProductionRun | null = useMemo(() => {
     if (!state) return null;
@@ -255,6 +266,19 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
 
   const perMuse = selectedRun?.perMuseProgress || [];
   const workingMuseCount = perMuse.filter((p) => p.runningTasks > 0).length;
+  const selectedEngine: VideoGenerationEngine =
+    selectedRun?.videoGenerationEngine || (selectedRun?.aiWorkforceMode === 'gemini_only' ? 'gemini' : 'muse');
+  const isGoogleFlowRun = selectedEngine === 'google_flow';
+  const isGeminiDirectRun = selectedEngine === 'gemini' || isGoogleFlowRun;
+  const chairmanTasks = sessionTasks.filter((t) => t.assignedAgentId === 'chairman');
+  const chairmanCompletedCount = chairmanTasks.filter((t) => t.status === 'completed').length;
+  const chairmanRunningCount = chairmanTasks.filter((t) => t.status === 'running').length;
+  const chairmanProgressPct =
+    chairmanTasks.length > 0 ? Math.round((chairmanCompletedCount / chairmanTasks.length) * 100) : 0;
+  const flowReadyScenesCount = (memory?.scenes || []).filter(
+    (s) => s.flowStatus === 'ready' || Boolean(s.flowPrompt) || Boolean(s.keyframeImageUrl)
+  ).length;
+  const flowImportedScenesCount = (memory?.scenes || []).filter((s) => Boolean(s.videoUrl)).length;
 
   const elapsedMs = selectedRun
     ? (selectedRun.completedAt || selectedRun.cancelledAt || selectedRun.pausedAt || (isRunning ? nowMs : selectedRun.updatedAt)) -
@@ -346,13 +370,37 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
           </div>
 
           <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
-            <div className="text-xs text-slate-500 dark:text-slate-400">Muse đang chạy (phiên này)</div>
-            <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-cyan-600 dark:text-cyan-400">
-              {workingMuseCount}/5
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-              Toàn hệ thống: {state?.metrics.workingAgents ?? 0} đang xử lý
-            </div>
+            {isGoogleFlowRun ? (
+              <>
+                <div className="text-xs text-slate-500 dark:text-slate-400">Nguồn video: Google Flow</div>
+                <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                  {flowReadyScenesCount}/{memory?.scenes.length || selectedRun?.sceneCount || 0}
+                </div>
+                <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
+                  {flowImportedScenesCount} cảnh đã nạp MP4 · Không dùng Muse AI
+                </div>
+              </>
+            ) : isGeminiDirectRun ? (
+              <>
+                <div className="text-xs text-slate-500 dark:text-slate-400">Nguồn video: AI Gemini</div>
+                <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-sky-600 dark:text-sky-400">
+                  {chairmanRunningCount} luồng
+                </div>
+                <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
+                  {chairmanCompletedCount}/{chairmanTasks.length} tác vụ Gemini · Không dùng Muse AI
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-xs text-slate-500 dark:text-slate-400">Muse đang chạy (phiên này)</div>
+                <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-cyan-600 dark:text-cyan-400">
+                  {workingMuseCount}/5
+                </div>
+                <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
+                  Toàn hệ thống: {state?.metrics.workingAgents ?? 0} đang xử lý
+                </div>
+              </>
+            )}
           </div>
 
           <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
@@ -488,6 +536,13 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
 
                     <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
                       <span>{r.completedScenes}/{r.sceneCount} cảnh</span>
+                      <span>
+                        {r.videoGenerationEngine === 'google_flow'
+                          ? 'Google Flow'
+                          : r.videoGenerationEngine === 'gemini'
+                          ? 'AI Gemini'
+                          : 'AI Muse'}
+                      </span>
                       <span>{r.passedQaScenes} đạt QA</span>
                     </div>
                   </button>
@@ -549,6 +604,40 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
 
                   {/* Session Control Buttons */}
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFlowFocusSceneId(null);
+                        setFlowModalOpen(true);
+                      }}
+                      className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Gói Google Flow</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={busyKey === `unstick_${selectedRun.id}`}
+                      onClick={() =>
+                        runAction(
+                          `unstick_${selectedRun.id}`,
+                          async () => {
+                            const res = await commandCenterApiJson<{ state: CommandCenterState; summary: string }>(
+                              `/api/command-center/productions/${encodeURIComponent(selectedRun.id)}/unstick`,
+                              { method: 'POST' }
+                            );
+                            if (res.summary) setNotice(res.summary);
+                            return res.state;
+                          }
+                        )
+                      }
+                      className="px-3 py-2 rounded-lg border border-amber-400/60 bg-amber-50/70 dark:bg-amber-950/25 hover:bg-amber-100 dark:hover:bg-amber-950/40 text-xs font-semibold text-amber-800 dark:text-amber-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <Wrench className="w-3.5 h-3.5" />
+                      <span>Gỡ treo</span>
+                    </button>
+
                     {isRunning && (
                       <button
                         type="button"
@@ -587,86 +676,213 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                   </div>
                 </div>
 
+                {/* Live Video Engine Selector */}
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-slate-50/75 dark:bg-[#0c1021]/65 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs">
+                    <Sparkles className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                    <span className="font-semibold text-slate-700 dark:text-slate-200">Nguồn tạo video phiên này:</span>
+                    <span className="font-mono font-semibold text-sky-600 dark:text-sky-400">
+                      {isGoogleFlowRun
+                        ? 'Google Flow (AI Gemini chuẩn bị keyframe & prompt · Không dùng Muse AI)'
+                        : isGeminiDirectRun
+                        ? 'AI Gemini (Omni Flash · Không dùng Muse AI)'
+                        : 'AI Muse (Tự dự phòng AI Gemini)'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(
+                      [
+                        { id: 'gemini' as VideoGenerationEngine, label: 'AI Gemini' },
+                        { id: 'google_flow' as VideoGenerationEngine, label: 'Google Flow' },
+                        { id: 'muse' as VideoGenerationEngine, label: 'AI Muse' },
+                      ] as const
+                    ).map((eng) => {
+                      const active = selectedEngine === eng.id;
+                      return (
+                        <button
+                          key={eng.id}
+                          type="button"
+                          disabled={busyKey === `engine_${selectedRun.id}`}
+                          onClick={() =>
+                            runAction(
+                              `engine_${selectedRun.id}`,
+                              () =>
+                                commandCenterApiJson<CommandCenterState>(
+                                  `/api/command-center/productions/${encodeURIComponent(selectedRun.id)}/video-engine`,
+                                  {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ engine: eng.id }),
+                                  }
+                                ),
+                              `Đã chuyển phiên sang nguồn tạo video: ${eng.label}.`
+                            )
+                          }
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition cursor-pointer ${
+                            active
+                              ? 'bg-sky-600 text-white border-sky-600'
+                              : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-sky-500'
+                          }`}
+                        >
+                          {eng.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {selectedRun.error && (
                   <div className="rounded-xl border border-rose-300 dark:border-rose-700/60 bg-rose-50 dark:bg-rose-950/35 px-3.5 py-2.5 text-xs text-rose-800 dark:text-rose-200">
                     {selectedRun.error}
                   </div>
                 )}
 
-                {/* Per-Muse 5 AI Live Progress Matrix */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200">
-                    <span>Tiến độ từng Muse AI trong phiên</span>
-                    <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                      {sessionTasks.length} tác vụ tổng cộng
-                    </span>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {agents.map((ag) => {
-                      const mp = perMuse.find((p) => p.agentId === ag.id) || {
-                        agentId: ag.id,
-                        progressPct: 0,
-                        completedTasks: 0,
-                        totalTasks: 0,
-                        runningTasks: 0,
-                        failedTasks: 0,
-                      };
-                      const barColor = ag.accentColor || '#7C3AED';
-                      return (
-                        <div
-                          key={ag.id}
-                          className="rounded-xl border border-slate-200 dark:border-slate-700/45 bg-white/80 dark:bg-[#0c1021]/80 p-3 space-y-2"
+                {/* Worker Matrix: Google Flow / AI Gemini OR 5 Muse AI */}
+                {isGoogleFlowRun ? (
+                  <div className="rounded-xl border border-emerald-500/35 bg-emerald-500/8 p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                          Chế độ Google Flow đang hoạt động (Không gửi lệnh sang Muse AI)
+                        </div>
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
+                          AI Gemini tự động vẽ ảnh keyframe &amp; đóng gói prompt chuẩn từng phân cảnh. Bạn chỉ cần copy prompt + tải keyframe sang Google Flow rồi nạp tệp MP4 về để ghép phim.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <a
+                          href="https://labs.google/fx/tools/flow"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-white/80 dark:bg-[#0c1021]/80 text-emerald-700 dark:text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5"
                         >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <AgentAvatar agent={ag} size="sm" showStatusDot />
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                                    {ag.name}
-                                  </span>
-                                  <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                                    {ag.roleTitle}
-                                  </span>
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Mở Google Flow</span>
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFlowFocusSceneId(null);
+                            setFlowModalOpen(true);
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer"
+                        >
+                          Mở Gói Kịch Bản &amp; Nạp MP4 ({flowReadyScenesCount}/{memory?.scenes.length || selectedRun.sceneCount})
+                        </button>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                        <span>
+                          AI Gemini chuẩn bị keyframe &amp; prompt Google Flow ({chairmanCompletedCount}/{chairmanTasks.length} tác vụ)
+                        </span>
+                        <span className="font-bold text-emerald-700 dark:text-emerald-300">{chairmanProgressPct}%</span>
+                      </div>
+                      <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-emerald-500 transition-all duration-300"
+                          style={{ width: `${chairmanProgressPct}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : isGeminiDirectRun ? (
+                  <div className="rounded-xl border border-sky-500/35 bg-sky-500/8 p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-xs font-bold text-sky-800 dark:text-sky-300">
+                          AI Gemini Cloud đang trực tiếp sản xuất (Không dùng Muse AI)
+                        </div>
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
+                          Toàn bộ ảnh keyframe &amp; video Omni Flash đang được điều phối song song qua các tài khoản Gemini API.
+                        </p>
+                      </div>
+                      <span className="text-xs font-mono font-bold text-sky-700 dark:text-sky-300 tabular-nums">
+                        {chairmanCompletedCount}/{chairmanTasks.length} tác vụ ({chairmanProgressPct}%)
+                      </span>
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-sky-500 transition-all duration-300"
+                        style={{ width: `${chairmanProgressPct}%` }}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200">
+                      <span>Tiến độ từng Muse AI trong phiên</span>
+                      <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                        {sessionTasks.length} tác vụ tổng cộng
+                      </span>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {agents.map((ag) => {
+                        const mp = perMuse.find((p) => p.agentId === ag.id) || {
+                          agentId: ag.id,
+                          progressPct: 0,
+                          completedTasks: 0,
+                          totalTasks: 0,
+                          runningTasks: 0,
+                          failedTasks: 0,
+                        };
+                        const barColor = ag.accentColor || '#7C3AED';
+                        return (
+                          <div
+                            key={ag.id}
+                            className="rounded-xl border border-slate-200 dark:border-slate-700/45 bg-white/80 dark:bg-[#0c1021]/80 p-3 space-y-2"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <AgentAvatar agent={ag} size="sm" showStatusDot />
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                      {ag.name}
+                                    </span>
+                                    <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                                      {ag.roleTitle}
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] text-slate-600 dark:text-slate-300 truncate">
+                                    {mp.runningTasks > 1
+                                      ? `Đang chạy ${mp.runningTasks} tác vụ song song · ${mp.currentTaskTitle || ''}`
+                                      : mp.currentTaskTitle
+                                      ? `Đang làm: ${mp.currentTaskTitle}`
+                                      : mp.totalTasks === 0
+                                      ? 'Chưa có tác vụ trong phiên này'
+                                      : mp.completedTasks === mp.totalTasks
+                                      ? 'Đã hoàn thành phần việc trong phiên'
+                                      : 'Đang chờ điều phối phụ thuộc'}
+                                  </div>
                                 </div>
-                                <div className="text-[11px] text-slate-600 dark:text-slate-300 truncate">
-                                  {mp.runningTasks > 1
-                                    ? `Đang chạy ${mp.runningTasks} tác vụ song song · ${mp.currentTaskTitle || ''}`
-                                    : mp.currentTaskTitle
-                                    ? `Đang làm: ${mp.currentTaskTitle}`
-                                    : mp.totalTasks === 0
-                                    ? 'Chưa có tác vụ trong phiên này'
-                                    : mp.completedTasks === mp.totalTasks
-                                    ? 'Đã hoàn thành phần việc trong phiên'
-                                    : 'Đang chờ điều phối phụ thuộc'}
-                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-3 text-xs font-mono tabular-nums shrink-0">
+                                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                  {mp.runningTasks > 0 ? `${mp.runningTasks} đang chạy · ` : ''}
+                                  {mp.completedTasks}/{mp.totalTasks} tác vụ
+                                  {mp.failedTasks > 0 ? ` · ${mp.failedTasks} lỗi` : ''}
+                                </span>
+                                <span className="font-bold text-slate-900 dark:text-white w-10 text-right">
+                                  {mp.progressPct}%
+                                </span>
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-3 text-xs font-mono tabular-nums shrink-0">
-                              <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                                {mp.runningTasks > 0 ? `${mp.runningTasks} đang chạy · ` : ''}
-                                {mp.completedTasks}/{mp.totalTasks} tác vụ
-                                {mp.failedTasks > 0 ? ` · ${mp.failedTasks} lỗi` : ''}
-                              </span>
-                              <span className="font-bold text-slate-900 dark:text-white w-10 text-right">
-                                {mp.progressPct}%
-                              </span>
+                            <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                              <div
+                                className="h-full rounded-full transition-all duration-300"
+                                style={{ width: `${mp.progressPct}%`, backgroundColor: barColor }}
+                              />
                             </div>
                           </div>
-
-                          <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all duration-300"
-                              style={{ width: `${mp.progressPct}%`, backgroundColor: barColor }}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Final Delivered Video Preview */}
                 {selectedRun.finalVideoUrl && (
@@ -740,9 +956,13 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                       </div>
                     ) : (
                       memory.scenes.map((sc) => {
-                        const producerLabel = sc.assignedProducerAgentId
+                        const producerLabel = isGoogleFlowRun
+                          ? 'Google Flow · AI Gemini'
+                          : isGeminiDirectRun
+                          ? 'AI Gemini'
+                          : sc.assignedProducerAgentId
                           ? sc.assignedProducerAgentId.replace('muse-', 'Muse ')
-                          : 'Pool Muse 02–04';
+                          : 'AI Gemini';
                         const stageLabel = sc.productionStage
                           ? SCENE_STAGE_LABELS[sc.productionStage] || sc.productionStage
                           : null;
@@ -785,6 +1005,47 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                           <p className="text-[11px] text-slate-600 dark:text-slate-300 line-clamp-2">
                             {sc.dialogue || sc.narration || sc.actionDetail}
                           </p>
+
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFlowFocusSceneId(sc.sceneId);
+                                setFlowModalOpen(true);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              <span>{sc.videoUrl ? 'Đổi MP4 Google Flow' : 'Prompt Google Flow / Nạp MP4'}</span>
+                            </button>
+                            {sc.keyframeImageUrl && !sc.videoUrl && (
+                              <button
+                                type="button"
+                                disabled={busyKey === `vid_${sc.sceneId}`}
+                                onClick={() =>
+                                  runAction(
+                                    `vid_${sc.sceneId}`,
+                                    async () => {
+                                      const res = await commandCenterApiJson<{ state: CommandCenterState; message?: string }>(
+                                        `/api/command-center/scenes/${encodeURIComponent(sc.sceneId)}/generate-video-now`,
+                                        {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ runId: selectedRun.id, engine: 'gemini' }),
+                                        }
+                                      );
+                                      if (res.message) setNotice(res.message);
+                                      return res.state;
+                                    }
+                                  )
+                                }
+                                className="px-2.5 py-1 rounded-lg bg-sky-600/15 hover:bg-sky-600/25 border border-sky-500/35 text-sky-700 dark:text-sky-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <Sparkles className="w-3 h-3" />
+                                <span>Tạo video ngay (AI Gemini)</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                         );
                       })
@@ -958,6 +1219,17 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
           </div>
         </div>
       )}
+
+      <GoogleFlowModal
+        open={flowModalOpen}
+        onClose={() => {
+          setFlowModalOpen(false);
+          setFlowFocusSceneId(null);
+        }}
+        runId={selectedRun?.id}
+        focusSceneId={flowFocusSceneId}
+        onStateUpdated={(nextState) => setState(nextState)}
+      />
     </div>
   );
 };
