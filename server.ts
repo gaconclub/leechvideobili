@@ -4771,6 +4771,8 @@ async function startServer() {
             enabled: ali.enabled,
             status: ali.status,
             model: ali.selectedModel,
+            imageModel: ali.imageModel,
+            videoModel: ali.videoModel,
             region: ali.region,
             baseUrl: ali.baseUrl,
             source: ali.keySource,
@@ -4781,6 +4783,8 @@ async function startServer() {
         omniVideoModel: 'gemini-omni-1.2-flash',
         muse2apiImageModel: 'muse-image',
         muse2apiVideoModel: 'muse-video',
+        qwenImageModel: getAlibabaModelStudioStatus().imageModel,
+        qwenVideoModel: getAlibabaModelStudioStatus().videoModel,
         imageModel: 'gemini-3.1-flash-lite-image',
         imageProModel: 'gemini-nano-banana-2.1',
         musicClipModel: 'lyria-3-clip-preview',
@@ -5251,7 +5255,7 @@ async function startServer() {
         prompt?: string;
         aspectRatio?: '1:1' | '9:16' | '16:9';
         quality?: 'standard' | 'pro';
-        engine?: 'gemini' | 'muse2api';
+        engine?: 'gemini' | 'muse2api' | 'qwen';
         videoStyle?: StudioVideoStyle;
         customStylePrompt?: string;
         characterBible?: string;
@@ -5288,7 +5292,7 @@ async function startServer() {
         prompt: String(prompt),
         aspectRatio,
         quality: quality === 'pro' ? 'pro' : 'standard',
-        engine: engine === 'muse2api' ? 'muse2api' : 'gemini',
+        engine: engine === 'muse2api' ? 'muse2api' : engine === 'qwen' ? 'qwen' : 'gemini',
         videoStyle,
         customStylePrompt: String(customStylePrompt || ''),
         characterBible: String(characterBible || ''),
@@ -5356,7 +5360,7 @@ async function startServer() {
         prompt?: string;
         aspectRatio?: DerivativeAspectRatio;
         durationSec?: number;
-        engine?: 'gemini' | 'muse2api';
+        engine?: 'gemini' | 'muse2api' | 'qwen';
         videoStyle?: StudioVideoStyle;
         customStylePrompt?: string;
         characterBible?: string;
@@ -5395,7 +5399,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Thiếu mô tả phân cảnh để dựng clip AI.' });
       }
       const result = await generateSceneVideoWithOmniFlash({
-        engine: engine === 'muse2api' ? 'muse2api' : 'gemini',
+        engine: engine === 'muse2api' ? 'muse2api' : engine === 'qwen' ? 'qwen' : 'gemini',
         prompt: String(prompt),
         aspectRatio: aspectRatio === '9:16' ? '9:16' : aspectRatio === '1:1' ? '1:1' : '16:9',
         durationSec: Number(durationSec) || 8,
@@ -5880,7 +5884,8 @@ async function startServer() {
       const validVisualMode: DerivativeVisualMode =
         visualMode === 'gemini_omni' ||
         visualMode === 'storyboard_motion' ||
-        visualMode === 'muse2api_video'
+        visualMode === 'muse2api_video' ||
+        visualMode === 'qwen_video'
           ? visualMode
           : 'remix';
 
@@ -6367,6 +6372,8 @@ async function startServer() {
             ? req.body.region
             : undefined,
         selectedModel: typeof req.body?.selectedModel === 'string' ? req.body.selectedModel : undefined,
+        imageModel: typeof req.body?.imageModel === 'string' ? req.body.imageModel : undefined,
+        videoModel: typeof req.body?.videoModel === 'string' ? req.body.videoModel : undefined,
         timeoutSec: req.body?.timeoutSec !== undefined ? Number(req.body.timeoutSec) : undefined,
       });
       res.json({ ok: true, status });
@@ -6465,8 +6472,8 @@ async function startServer() {
   app.post('/api/command-center/productions/:runId/video-engine', async (req, res) => {
     try {
       const engine = req.body?.engine;
-      if (engine !== 'gemini' && engine !== 'google_flow' && engine !== 'muse') {
-        return res.status(400).json({ error: 'Nguồn tạo video không hợp lệ (gemini | google_flow | muse).' });
+      if (engine !== 'gemini' && engine !== 'google_flow' && engine !== 'muse' && engine !== 'qwen') {
+        return res.status(400).json({ error: 'Nguồn tạo video không hợp lệ (gemini | google_flow | muse | qwen).' });
       }
       const state = await setRunVideoEngine(req.params.runId, engine);
       res.json(state);
@@ -6496,8 +6503,8 @@ async function startServer() {
   app.post('/api/command-center/scenes/:sceneId/generate-video-now', async (req, res) => {
     try {
       const engine = req.body?.engine;
-      if (engine !== 'gemini' && engine !== 'google_flow' && engine !== 'muse') {
-        return res.status(400).json({ error: 'Nguồn tạo video không hợp lệ (gemini | google_flow | muse).' });
+      if (engine !== 'gemini' && engine !== 'google_flow' && engine !== 'muse' && engine !== 'qwen') {
+        return res.status(400).json({ error: 'Nguồn tạo video không hợp lệ (gemini | google_flow | muse | qwen).' });
       }
       const result = await triggerSceneVideoNow({
         runId: typeof req.body?.runId === 'string' ? req.body.runId : undefined,

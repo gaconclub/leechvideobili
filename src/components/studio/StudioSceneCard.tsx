@@ -57,7 +57,7 @@ interface StudioSceneCardProps {
   queuedImg: boolean;
   busyVid: boolean;
   sceneErr?: string;
-  sceneVideoEngine: 'gemini' | 'muse2api';
+  sceneVideoEngine: 'gemini' | 'muse2api' | 'qwen';
   voiceMode: DerivativeVoiceMode;
   previewingSceneId: string | null;
   capabilities: ServerCapabilitiesStatus | null;
@@ -170,7 +170,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
       totalScenes,
       mediaType: 'video',
       hasAttachedRefs: hasCharacterRefs,
-      targetEngine: sceneVideoEngine,
+      targetEngine: sceneVideoEngine === 'muse2api' ? 'muse2api' : 'gemini',
       allowFreeCostumeChange,
     });
     onUpdateScene(scene.id, {
@@ -196,7 +196,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
     totalScenes,
     mediaType: 'video',
     hasAttachedRefs: hasCharacterRefs,
-    targetEngine: sceneVideoEngine,
+    targetEngine: sceneVideoEngine === 'muse2api' ? 'muse2api' : 'gemini',
     allowFreeCostumeChange,
   }).length;
 
@@ -388,9 +388,13 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
             {busyVid ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
             <span>
               {busyVid
-                ? sceneVideoEngine === 'muse2api'
+                ? sceneVideoEngine === 'qwen'
+                  ? 'Đang tạo Qwen...'
+                  : sceneVideoEngine === 'muse2api'
                   ? 'Đang tạo Muse2API...'
                   : 'Đang tạo Omni...'
+                : sceneVideoEngine === 'qwen'
+                ? 'Dựng clip Qwen'
                 : sceneVideoEngine === 'muse2api'
                 ? 'Dựng clip Muse2API'
                 : 'Dựng clip Omni'}

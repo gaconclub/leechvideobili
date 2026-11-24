@@ -14,6 +14,9 @@ import {
 import { resolveChairmanGeminiAccount } from './geminiPool';
 import { getXingchiRuntimeConfig, recordXingchiUsage, testXingchiConnection } from './xingchiApi';
 import {
+  generateImageViaAlibabaQwen,
+  generateVideoBufferViaAlibabaQwen,
+  getAlibabaModelStudioStatus,
   getAlibabaRuntimeConfig,
   recordAlibabaUsage,
   testAlibabaModelStudioConnection,
@@ -80,7 +83,12 @@ export interface LearnedVideoStyle {
   createdAt: number;
 }
 
-export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video';
+export type DerivativeVisualMode =
+  | 'remix'
+  | 'storyboard_motion'
+  | 'gemini_omni'
+  | 'muse2api_video'
+  | 'qwen_video';
 export type DerivativeStylePreset = 'none' | 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
 export type GeminiTtsVoiceId =
   | 'Kore'
@@ -4616,7 +4624,7 @@ export async function generateStudioImage(params: {
   prompt: string;
   aspectRatio?: '1:1' | '9:16' | '16:9';
   quality?: 'standard' | 'pro';
-  engine?: 'gemini' | 'muse2api';
+  engine?: 'gemini' | 'muse2api' | 'qwen';
   videoStyle?: StudioVideoStyle;
   customStylePrompt?: string;
   characterBible?: string;
@@ -4751,6 +4759,16 @@ export async function generateStudioImage(params: {
       accountId: params.museAccountId,
     });
     return { dataUrl: res.dataUrl, model: 'muse-image (Muse2API)' };
+  }
+
+  if (params.engine === 'qwen') {
+    const finalQwenPrompt = buildScenePrompt(selectedRefs, mappingDirective);
+    const res = await generateImageViaAlibabaQwen({
+      prompt: finalQwenPrompt,
+      aspectRatio,
+      referenceImages: selectedRefs.map((r) => r.dataUrl),
+    });
+    return { dataUrl: res.dataUrl, model: `${res.model} (Alibaba Qwen)` };
   }
 
   const ai = getGeminiClient(params.geminiApiKey);
@@ -5117,7 +5135,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
   prompt: string;
   aspectRatio: DerivativeAspectRatio;
   durationSec?: number;
-  engine?: 'gemini' | 'muse2api';
+  engine?: 'gemini' | 'muse2api' | 'qwen';
   videoStyle?: StudioVideoStyle;
   customStylePrompt?: string;
   characterBible?: string;
@@ -5314,6 +5332,43 @@ export async function generateSceneVideoWithOmniFlash(params: {
       durationSec: Math.round(finalDur * 10) / 10,
       hasAudio,
       model: 'muse-video (Muse2API)',
+    };
+  }
+
+  if (params.engine === 'qwen') {
+    const qwenDur = Math.min(10, clampedDur);
+    const firstFrameDataUrl = params.sceneImageDataUrl || attachedCharRefs[0]?.dataUrl;
+    const { buffer, mimeType, ext, model: qwenModel } = await generateVideoBufferViaAlibabaQwen({
+      prompt: promptText,
+      aspectRatio: params.aspectRatio,
+      durationSec: qwenDur,
+      firstFrameDataUrl,
+    });
+
+    const assetId = `qwenvid_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const outPath = path.join(STUDIO_ASSETS_DIR, `${assetId}${ext}`);
+    fs.writeFileSync(outPath, buffer);
+    const [probedDur, hasAudio] = await Promise.all([
+      probeDurationSeconds(outPath, STUDIO_ASSETS_DIR),
+      probeHasAudioStream(outPath, STUDIO_ASSETS_DIR),
+    ]);
+    const finalDur = probedDur || qwenDur;
+
+    studioAssets.set(assetId, {
+      assetId,
+      filePath: outPath,
+      fileName: `${assetId}${ext}`,
+      mimeType,
+      durationSec: finalDur,
+      createdAt: Date.now(),
+    });
+
+    return {
+      assetId,
+      previewUrl: `/api/studio/assets/${assetId}`,
+      durationSec: Math.round(finalDur * 10) / 10,
+      hasAudio,
+      model: `${qwenModel} (Alibaba Qwen)`,
     };
   }
 
@@ -7361,18 +7416,19 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     }
   }
 
-  // Generate missing AI video clips if visualMode === 'gemini_omni' or 'muse2api_video'
-  if (visualMode === 'gemini_omni' || visualMode === 'muse2api_video') {
+  // Generate missing AI video clips if visualMode === 'gemini_omni' | 'muse2api_video' | 'qwen_video'
+  if (visualMode === 'gemini_omni' || visualMode === 'muse2api_video' || visualMode === 'qwen_video') {
     const useMuseVideo = visualMode === 'muse2api_video';
+    const useQwenVideo = visualMode === 'qwen_video';
     const hasMissingScenes = scenes.some(
       (sc, idx) => !sceneOmniVideos.has(idx) && !(sceneCustomImages.has(idx) && sc.sceneImageSource === 'uploaded')
     );
-    let canGenerateWithMuse = true;
+    let canGenerateWithSelectedEngine = true;
 
     if (useMuseVideo && hasMissingScenes) {
       const museStatus = await getMuse2ApiStatus().catch(() => null);
       if (!museStatus?.ready) {
-        canGenerateWithMuse = false;
+        canGenerateWithSelectedEngine = false;
         const reason =
           museStatus?.error ||
           (!museStatus?.reachable
@@ -7384,14 +7440,28 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       }
     }
 
-    if (!useMuseVideo || canGenerateWithMuse) {
+    if (useQwenVideo && hasMissingScenes) {
+      const alibabaStatus = getAlibabaModelStudioStatus();
+      if (!alibabaStatus.configured) {
+        canGenerateWithSelectedEngine = false;
+        job.warnings.push(
+          'Chế độ AI Qwen Video chưa sẵn sàng (chưa đặt khóa DASHSCOPE_API_KEY hoặc đang tắt trong Cài đặt). Hệ thống tự động dùng tư liệu video/ảnh dự phòng.'
+        );
+      }
+    }
+
+    if (canGenerateWithSelectedEngine) {
       for (let i = 0; i < scenes.length; i += 1) {
         const sc = scenes[i];
         if (sceneOmniVideos.has(i)) continue;
         // Uploaded scene images default to being the scene's primary visual in final export
         if (sceneCustomImages.has(i) && sc.sceneImageSource === 'uploaded') continue;
         job.stepLabel = `Đang tạo video cảnh ${i + 1}/${scenes.length} bằng ${
-          useMuseVideo ? 'Muse2API (muse-video)' : 'Gemini Omni Flash'
+          useQwenVideo
+            ? 'AI Qwen (Alibaba Model Studio)'
+            : useMuseVideo
+            ? 'Muse2API (muse-video)'
+            : 'Gemini Omni Flash'
         }...`;
         job.progress = 10 + Math.round(((i + 1) / scenes.length) * 26);
         try {
@@ -7413,10 +7483,10 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
             allowFreeCostumeChange,
           });
           const clipRes = await generateSceneVideoWithOmniFlash({
-            engine: useMuseVideo ? 'muse2api' : 'gemini',
+            engine: useQwenVideo ? 'qwen' : useMuseVideo ? 'muse2api' : 'gemini',
             prompt: consistentPrompt,
             aspectRatio: blueprint.aspectRatio,
-            durationSec: Math.min(useMuseVideo ? 12 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
+            durationSec: Math.min(useQwenVideo ? 10 : useMuseVideo ? 12 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
             videoStyle: blueprint.videoStyle,
             customStylePrompt: customStyleHint,
             characterBible: blueprint.characterBible,
@@ -7647,7 +7717,8 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   );
   const shouldFetchSourceOrBroll =
     visualMode === 'remix' ||
-    ((visualMode === 'muse2api_video' || visualMode === 'gemini_omni') && hasUncoveredScenes);
+    ((visualMode === 'muse2api_video' || visualMode === 'gemini_omni' || visualMode === 'qwen_video') &&
+      hasUncoveredScenes);
 
   if (shouldFetchSourceOrBroll) {
     if (downloadSourceVideo && referencedIndices.length > 0) {

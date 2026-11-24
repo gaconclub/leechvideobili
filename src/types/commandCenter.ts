@@ -29,7 +29,7 @@ export type MuseAgentStatus =
 
 export type MuseAgentEngineMode = 'muse2api' | 'muse2api_with_gemini_fallback';
 
-export type VideoGenerationEngine = 'gemini' | 'google_flow' | 'muse';
+export type VideoGenerationEngine = 'gemini' | 'google_flow' | 'muse' | 'qwen';
 
 export type MuseAgentAvatarPreset =
   | 'director_clapboard'

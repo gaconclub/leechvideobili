@@ -4933,7 +4933,12 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
     return;
   }
 
-  let engine: 'muse2api' | 'gemini' = effectiveVideoEngine === 'gemini' ? 'gemini' : resolvedMedia.engine;
+  let engine: 'muse2api' | 'gemini' | 'qwen' =
+    effectiveVideoEngine === 'qwen'
+      ? 'qwen'
+      : effectiveVideoEngine === 'gemini'
+      ? 'gemini'
+      : resolvedMedia.engine;
   let geminiAccount = resolvedMedia.geminiAccount;
   if (engine === 'gemini' && !geminiAccount) {
     const wf = resolveSessionWorkforce(task.runId);
@@ -5016,7 +5021,7 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
         }`
       : task.instructions || latestScenePrompt;
 
-  const buildVideoRequest = (targetEng: 'muse2api' | 'gemini', gemKey?: string) => ({
+  const buildVideoRequest = (targetEng: 'muse2api' | 'gemini' | 'qwen', gemKey?: string) => ({
     engine: targetEng,
     prompt: `${basePromptText}${sc.lighting ? `. Lighting: ${sc.lighting}` : ''}`,
     aspectRatio: mem.aspectRatio,
@@ -5092,21 +5097,28 @@ async function executeProduceSceneVideoTask(task: CommandTask, agent: MuseAgentC
     stableFile = saved.fileName;
   }
 
-  commitSessionMemoryUpdate(task.runId, 'chairman', `Khóa video Cảnh ${sc.index} từ ${engine === 'gemini' ? 'AI Gemini' : agent.name}`, (m) => {
-    const target = m.scenes.find((s) => s.sceneId === sc.sceneId);
-    if (target) {
-      target.videoUrl = stableUrl;
-      target.videoArtifactName = stableFile;
-      target.videoAssetId = vidRes.assetId;
-      target.videoEngineUsed = engine === 'gemini' ? 'gemini' : 'muse';
-      target.probedDurationSec = vidRes.durationSec;
-      target.hasAudioStream = vidRes.hasAudio;
-      target.qaStatus = 'inspecting';
-      target.productionStage = 'inspecting_qa';
-      target.assignedProducerAgentId = agent.id;
-      target.lastModifiedBy = agent.id;
+  commitSessionMemoryUpdate(
+    task.runId,
+    'chairman',
+    `Khóa video Cảnh ${sc.index} từ ${
+      engine === 'qwen' ? 'AI Qwen (Alibaba)' : engine === 'gemini' ? 'AI Gemini' : agent.name
+    }`,
+    (m) => {
+      const target = m.scenes.find((s) => s.sceneId === sc.sceneId);
+      if (target) {
+        target.videoUrl = stableUrl;
+        target.videoArtifactName = stableFile;
+        target.videoAssetId = vidRes.assetId;
+        target.videoEngineUsed = engine === 'qwen' ? 'qwen' : engine === 'gemini' ? 'gemini' : 'muse';
+        target.probedDurationSec = vidRes.durationSec;
+        target.hasAudioStream = vidRes.hasAudio;
+        target.qaStatus = 'inspecting';
+        target.productionStage = 'inspecting_qa';
+        target.assignedProducerAgentId = agent.id;
+        target.lastModifiedBy = agent.id;
+      }
     }
-  });
+  );
 
   const run = storeDoc.runs.find((r) => r.id === task.runId);
   if (run) {
@@ -7281,10 +7293,18 @@ export async function startProductionOrchestration(params: {
 
   const now = Date.now();
   const resolvedVideoEngine: VideoGenerationEngine =
-    params.videoGenerationEngine ||
-    (params.aiWorkforceMode === 'muse_only' ? 'muse' : 'gemini');
+    params.videoGenerationEngine === 'google_flow' ||
+    params.videoGenerationEngine === 'gemini' ||
+    params.videoGenerationEngine === 'muse' ||
+    params.videoGenerationEngine === 'qwen'
+      ? params.videoGenerationEngine
+      : params.aiWorkforceMode === 'muse_only'
+      ? 'muse'
+      : 'gemini';
   const resolvedWorkforceMode: AiWorkforceMode =
-    resolvedVideoEngine === 'google_flow' || resolvedVideoEngine === 'gemini'
+    resolvedVideoEngine === 'google_flow' ||
+    resolvedVideoEngine === 'gemini' ||
+    resolvedVideoEngine === 'qwen'
       ? 'gemini_only'
       : params.aiWorkforceMode || 'hybrid_gemini_muse';
 
@@ -7446,7 +7466,11 @@ export async function startProductionOrchestration(params: {
   }
 
   const isFlowMode = run.videoGenerationEngine === 'google_flow';
-  const isGeminiDirectMode = run.videoGenerationEngine === 'google_flow' || run.videoGenerationEngine === 'gemini';
+  const isQwenMode = run.videoGenerationEngine === 'qwen';
+  const isGeminiDirectMode =
+    run.videoGenerationEngine === 'google_flow' ||
+    run.videoGenerationEngine === 'gemini' ||
+    run.videoGenerationEngine === 'qwen';
 
   appendConversationMessage({
     channel: isGeminiDirectMode ? 'gemini' : 'commander',
@@ -7463,7 +7487,9 @@ export async function startProductionOrchestration(params: {
 
   const chairmanName = getChairmanDisplayName();
   const videoEngineLabel =
-    run.videoGenerationEngine === 'gemini'
+    run.videoGenerationEngine === 'qwen'
+      ? 'AI Qwen (Alibaba Model Studio · Wan)'
+      : run.videoGenerationEngine === 'gemini'
       ? 'AI Gemini (Omni Flash)'
       : run.videoGenerationEngine === 'google_flow'
       ? 'Google Flow (Xuất kịch bản + keyframe, không dùng Muse AI)'
@@ -7475,6 +7501,8 @@ export async function startProductionOrchestration(params: {
       type: 'plan_production',
       title: isFlowMode
         ? `${chairmanName} tiếp nhận kịch bản & chuyển gói Google Flow (${preSeededScenes.length} phân cảnh)`
+        : isQwenMode
+        ? `${chairmanName} tiếp nhận kịch bản dựng video AI Qwen (${preSeededScenes.length} phân cảnh)`
         : isGeminiDirectMode
         ? `${chairmanName} tiếp nhận kịch bản chạy trực tiếp AI Gemini (${preSeededScenes.length} phân cảnh)`
         : `${chairmanName} tiếp nhận kịch bản Studio (${preSeededScenes.length} phân cảnh)`,
@@ -7487,6 +7515,8 @@ export async function startProductionOrchestration(params: {
     planTask.executedByProvider = isFlowMode ? 'google-flow-blueprint' : 'studio-blueprint';
     planTask.outputText = isFlowMode
       ? `${chairmanName} đã khóa kịch bản (${preSeededChars.length} nhân vật, ${preSeededScenes.length} cảnh) và giao AI Gemini tạo keyframe + đóng gói prompt Google Flow (không gửi lệnh sang Muse AI).`
+      : isQwenMode
+      ? `${chairmanName} đã khóa kịch bản (${preSeededChars.length} nhân vật, ${preSeededScenes.length} cảnh) và giao AI Qwen (Alibaba Cloud Model Studio) dựng video trực tiếp (không gửi lệnh sang Muse AI).`
       : isGeminiDirectMode
       ? `${chairmanName} đã khóa kịch bản (${preSeededChars.length} nhân vật, ${preSeededScenes.length} cảnh) và triển khai trực tiếp trên AI Gemini Cloud (không gửi lệnh sang Muse AI).`
       : `${chairmanName} đã tiếp nhận kịch bản hoàn chỉnh từ Studio (${preSeededChars.length} nhân vật, ${preSeededScenes.length} phân cảnh), khóa dữ liệu nhân vật và phân công song song cho 4 Muse sản xuất (Muse AI 01–04).`;
@@ -8327,12 +8357,24 @@ ${text}`;
     } else if (actType === 'switch_video_engine') {
       const rawEng = String(parsed.action?.videoEngine || '').trim();
       const targetEng: VideoGenerationEngine =
-        rawEng === 'google_flow' ? 'google_flow' : rawEng === 'muse' ? 'muse' : 'gemini';
+        rawEng === 'google_flow'
+          ? 'google_flow'
+          : rawEng === 'qwen'
+          ? 'qwen'
+          : rawEng === 'muse'
+          ? 'muse'
+          : 'gemini';
       if (effectiveRunId) {
         await setRunVideoEngine(effectiveRunId, targetEng);
         actNotes.push(
           `Đã chuyển nguồn tạo video của phiên sang: ${
-            targetEng === 'gemini' ? 'AI Gemini' : targetEng === 'google_flow' ? 'Google Flow' : 'AI Muse'
+            targetEng === 'qwen'
+              ? 'AI Qwen (Alibaba)'
+              : targetEng === 'gemini'
+              ? 'AI Gemini'
+              : targetEng === 'google_flow'
+              ? 'Google Flow'
+              : 'AI Muse'
           }.`
         );
       }
@@ -10841,6 +10883,9 @@ export async function triggerSceneVideoNow(params: {
     return { state: await getCommandCenterState(false), flowPrompt };
   }
 
+  const immediateEngineLabel =
+    params.engine === 'qwen' ? 'AI Qwen (Alibaba)' : params.engine === 'gemini' ? 'AI Gemini' : 'AI Muse';
+
   // Cancel any blocked/queued/failed previous produce_scene_video tasks for this scene so new immediate task runs RIGHT AWAY
   for (const t of storeDoc.tasks) {
     if (
@@ -10850,13 +10895,13 @@ export async function triggerSceneVideoNow(params: {
       ['blocked_by_deps', 'queued'].includes(t.status)
     ) {
       t.status = 'cancelled';
-      t.error = `Thay thế bằng lệnh tạo video ngay (${params.engine === 'gemini' ? 'AI Gemini' : 'AI Muse'}).`;
+      t.error = `Thay thế bằng lệnh tạo video ngay (${immediateEngineLabel}).`;
       emitCommandCenterEvent('task:updated', t);
     }
   }
 
   // Ensure scene image is validated & run is active
-  commitSessionMemoryUpdate(runId, 'user', `Kích hoạt tạo video ngay Cảnh ${sc.index} bằng ${params.engine === 'gemini' ? 'AI Gemini' : 'AI Muse'}`, (m) => {
+  commitSessionMemoryUpdate(runId, 'user', `Kích hoạt tạo video ngay Cảnh ${sc.index} bằng ${immediateEngineLabel}`, (m) => {
     const target = m.scenes.find((s) => s.sceneId === sc.sceneId);
     if (target) {
       target.imageValidated = true;
@@ -10875,7 +10920,7 @@ export async function triggerSceneVideoNow(params: {
   }
 
   const assignedOwner: MuseAgentId | 'chairman' =
-    params.engine === 'gemini'
+    params.engine === 'gemini' || params.engine === 'qwen'
       ? 'chairman'
       : sc.assignedProducerAgentId && PRODUCTION_AGENT_IDS.includes(sc.assignedProducerAgentId)
       ? sc.assignedProducerAgentId
@@ -10884,7 +10929,7 @@ export async function triggerSceneVideoNow(params: {
   const vidTask = enqueueTask({
     runId,
     type: 'produce_scene_video',
-    title: `[Tạo ngay · ${params.engine === 'gemini' ? 'AI Gemini' : 'AI Muse'}] Cảnh ${sc.index}: "${sc.title}" (${sc.durationSec}s)`,
+    title: `[Tạo ngay · ${immediateEngineLabel}] Cảnh ${sc.index}: "${sc.title}" (${sc.durationSec}s)`,
     instructions: `${sc.actionDetail}. Timeline: ${sc.videoTimeline || 'chuyển động mượt liên tục'}. ${sc.dialogue ? `Lời thoại: ${sc.dialogue}` : ''}`,
     assignedAgentId: assignedOwner,
     sceneId: sc.sceneId,
@@ -11109,7 +11154,7 @@ export async function setRunVideoEngine(
   run.updatedAt = Date.now();
 
   const mem = getRunMemory(runId);
-  const isGeminiDirect = engine === 'gemini' || engine === 'google_flow';
+  const isGeminiDirect = engine === 'gemini' || engine === 'google_flow' || engine === 'qwen';
   let updatedTasks = 0;
   for (const t of storeDoc.tasks) {
     if (t.runId !== runId) continue;
@@ -11120,9 +11165,20 @@ export async function setRunVideoEngine(
       if (t.type === 'produce_scene_video') {
         t.preferredVideoEngine = engine;
         if (engine === 'google_flow') {
-          t.title = t.title.replace(/Quay & dựng video|Tạo video AI Gemini/i, 'Chuẩn bị gói Google Flow');
+          t.title = t.title.replace(
+            /Quay & dựng video|Tạo video AI Gemini|Tạo video AI Qwen/i,
+            'Chuẩn bị gói Google Flow'
+          );
         } else if (engine === 'gemini') {
-          t.title = t.title.replace(/Quay & dựng video|Chuẩn bị gói Google Flow/i, 'Tạo video AI Gemini');
+          t.title = t.title.replace(
+            /Quay & dựng video|Chuẩn bị gói Google Flow|Tạo video AI Qwen/i,
+            'Tạo video AI Gemini'
+          );
+        } else if (engine === 'qwen') {
+          t.title = t.title.replace(
+            /Quay & dựng video|Chuẩn bị gói Google Flow|Tạo video AI Gemini/i,
+            'Tạo video AI Qwen'
+          );
         }
         updatedTasks += 1;
       }
@@ -11151,10 +11207,19 @@ export async function setRunVideoEngine(
         sc.assignedProducerAgentId = undefined;
       }
     });
+  } else if (engine === 'qwen') {
+    commitSessionMemoryUpdate(runId, 'chairman', 'Chuyển toàn bộ cảnh sang AI Qwen (Alibaba)', (m) => {
+      for (const sc of m.scenes) {
+        sc.videoEngineUsed = 'qwen';
+        sc.assignedProducerAgentId = undefined;
+      }
+    });
   }
 
   const label =
-    engine === 'gemini'
+    engine === 'qwen'
+      ? 'AI Qwen (Alibaba Model Studio · Wan)'
+      : engine === 'gemini'
       ? 'AI Gemini (Omni Flash)'
       : engine === 'google_flow'
       ? 'Google Flow (Xuất kịch bản — không dùng Muse AI)'

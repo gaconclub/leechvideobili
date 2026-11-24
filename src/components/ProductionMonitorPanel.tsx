@@ -269,7 +269,8 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
   const selectedEngine: VideoGenerationEngine =
     selectedRun?.videoGenerationEngine || (selectedRun?.aiWorkforceMode === 'gemini_only' ? 'gemini' : 'muse');
   const isGoogleFlowRun = selectedEngine === 'google_flow';
-  const isGeminiDirectRun = selectedEngine === 'gemini' || isGoogleFlowRun;
+  const isQwenRun = selectedEngine === 'qwen';
+  const isGeminiDirectRun = selectedEngine === 'gemini' || isGoogleFlowRun || isQwenRun;
   const chairmanTasks = sessionTasks.filter((t) => t.assignedAgentId === 'chairman');
   const chairmanCompletedCount = chairmanTasks.filter((t) => t.status === 'completed').length;
   const chairmanRunningCount = chairmanTasks.filter((t) => t.status === 'running').length;
@@ -537,7 +538,9 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                     <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
                       <span>{r.completedScenes}/{r.sceneCount} cảnh</span>
                       <span>
-                        {r.videoGenerationEngine === 'google_flow'
+                        {r.videoGenerationEngine === 'qwen'
+                          ? 'AI Qwen'
+                          : r.videoGenerationEngine === 'google_flow'
                           ? 'Google Flow'
                           : r.videoGenerationEngine === 'gemini'
                           ? 'AI Gemini'
@@ -684,6 +687,8 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                     <span className="font-mono font-semibold text-sky-600 dark:text-sky-400">
                       {isGoogleFlowRun
                         ? 'Google Flow (AI Gemini chuẩn bị keyframe & prompt · Không dùng Muse AI)'
+                        : isQwenRun
+                        ? 'AI Qwen (Alibaba Model Studio · Wan · Không dùng Muse AI)'
                         : isGeminiDirectRun
                         ? 'AI Gemini (Omni Flash · Không dùng Muse AI)'
                         : 'AI Muse (Tự dự phòng AI Gemini)'}
@@ -693,6 +698,7 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                     {(
                       [
                         { id: 'gemini' as VideoGenerationEngine, label: 'AI Gemini' },
+                        { id: 'qwen' as VideoGenerationEngine, label: 'AI Qwen' },
                         { id: 'google_flow' as VideoGenerationEngine, label: 'Google Flow' },
                         { id: 'muse' as VideoGenerationEngine, label: 'AI Muse' },
                       ] as const
@@ -1019,31 +1025,58 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                               <span>{sc.videoUrl ? 'Đổi MP4 Google Flow' : 'Prompt Google Flow / Nạp MP4'}</span>
                             </button>
                             {sc.keyframeImageUrl && !sc.videoUrl && (
-                              <button
-                                type="button"
-                                disabled={busyKey === `vid_${sc.sceneId}`}
-                                onClick={() =>
-                                  runAction(
-                                    `vid_${sc.sceneId}`,
-                                    async () => {
-                                      const res = await commandCenterApiJson<{ state: CommandCenterState; message?: string }>(
-                                        `/api/command-center/scenes/${encodeURIComponent(sc.sceneId)}/generate-video-now`,
-                                        {
-                                          method: 'POST',
-                                          headers: { 'Content-Type': 'application/json' },
-                                          body: JSON.stringify({ runId: selectedRun.id, engine: 'gemini' }),
-                                        }
-                                      );
-                                      if (res.message) setNotice(res.message);
-                                      return res.state;
-                                    }
-                                  )
-                                }
-                                className="px-2.5 py-1 rounded-lg bg-sky-600/15 hover:bg-sky-600/25 border border-sky-500/35 text-sky-700 dark:text-sky-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
-                              >
-                                <Sparkles className="w-3 h-3" />
-                                <span>Tạo video ngay (AI Gemini)</span>
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={busyKey === `vid_${sc.sceneId}`}
+                                  onClick={() =>
+                                    runAction(
+                                      `vid_${sc.sceneId}`,
+                                      async () => {
+                                        const res = await commandCenterApiJson<{ state: CommandCenterState; message?: string }>(
+                                          `/api/command-center/scenes/${encodeURIComponent(sc.sceneId)}/generate-video-now`,
+                                          {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ runId: selectedRun.id, engine: 'gemini' }),
+                                          }
+                                        );
+                                        if (res.message) setNotice(res.message);
+                                        return res.state;
+                                      }
+                                    )
+                                  }
+                                  className="px-2.5 py-1 rounded-lg bg-sky-600/15 hover:bg-sky-600/25 border border-sky-500/35 text-sky-700 dark:text-sky-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Sparkles className="w-3 h-3" />
+                                  <span>Tạo video ngay (AI Gemini)</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={busyKey === `vid_qwen_${sc.sceneId}`}
+                                  onClick={() =>
+                                    runAction(
+                                      `vid_qwen_${sc.sceneId}`,
+                                      async () => {
+                                        const res = await commandCenterApiJson<{ state: CommandCenterState; message?: string }>(
+                                          `/api/command-center/scenes/${encodeURIComponent(sc.sceneId)}/generate-video-now`,
+                                          {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ runId: selectedRun.id, engine: 'qwen' }),
+                                          }
+                                        );
+                                        if (res.message) setNotice(res.message);
+                                        return res.state;
+                                      }
+                                    )
+                                  }
+                                  className="px-2.5 py-1 rounded-lg bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/35 text-orange-700 dark:text-orange-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Sparkles className="w-3 h-3" />
+                                  <span>Tạo video ngay (AI Qwen)</span>
+                                </button>
+                              </>
                             )}
                           </div>
                         </div>

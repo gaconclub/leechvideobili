@@ -272,7 +272,7 @@ export type BuiltInStudioVideoStyle =
 
 export type StudioVideoStyle = BuiltInStudioVideoStyle | `learned:${string}`;
 
-export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video';
+export type DerivativeVisualMode = 'remix' | 'storyboard_motion' | 'gemini_omni' | 'muse2api_video' | 'qwen_video';
 export type DerivativeStylePreset = 'none' | 'summary_fast' | 'storytelling_review' | 'top_list' | 'tips_tutorial';
 export type GeminiTtsVoiceId =
   | 'Kore'
@@ -476,6 +476,8 @@ export interface ServerCapabilitiesStatus {
       enabled: boolean;
       status: 'ready' | 'untested' | 'auth_error' | 'quota_exceeded' | 'error' | 'unconfigured';
       model: string;
+      imageModel: string;
+      videoModel: string;
       region: 'intl' | 'us' | 'cn';
       baseUrl: string;
       source: 'env' | 'none';
@@ -485,6 +487,8 @@ export interface ServerCapabilitiesStatus {
     omniVideoModel: string;
     muse2apiImageModel: string;
     muse2apiVideoModel: string;
+    qwenImageModel?: string;
+    qwenVideoModel?: string;
     imageModel: string;
     imageProModel: string;
     musicClipModel: string;
@@ -570,6 +574,8 @@ export interface AlibabaModelStudioStatus {
   enabled: boolean;
   configured: boolean;
   selectedModel: string;
+  imageModel: string;
+  videoModel: string;
   timeoutSec: number;
   status: AlibabaConnectionStatus;
   lastCheckedAt?: number;
