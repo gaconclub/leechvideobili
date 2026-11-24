@@ -5470,6 +5470,7 @@ async function startServer() {
         videoStyle = 'cinematic',
         customStylePrompt = '',
         scriptMode = 'series',
+        ideaCount = 3,
         targetDurationSec = 60,
         outputLanguage = 'vi',
         characterSummary = '',
@@ -5483,6 +5484,7 @@ async function startServer() {
         videoStyle?: StudioVideoStyle;
         customStylePrompt?: string;
         scriptMode?: StudioScriptMode;
+        ideaCount?: number;
         targetDurationSec?: number;
         outputLanguage?: DerivativeOutputLanguage;
         characterSummary?: string;
@@ -5509,12 +5511,14 @@ async function startServer() {
           ? aiProvider
           : 'gemini';
 
+      const clampedIdeaCount = Math.max(1, Math.min(15, Math.round(Number(ideaCount || 3))));
       const result = await expandStudioIdeaWithAi({
         seedIdea: String(seedIdea || ''),
         settingHint: String(settingHint || ''),
         videoStyle,
         customStylePrompt: String(customStylePrompt || ''),
         scriptMode: scriptMode === 'independent_batch' ? 'independent_batch' : 'series',
+        ideaCount: clampedIdeaCount,
         targetDurationSec: Number(targetDurationSec || 60),
         outputLanguage,
         characterSummary: String(characterSummary || ''),
@@ -5549,6 +5553,7 @@ async function startServer() {
         scriptMode = 'series',
         productionFormat = 'dialogue_film',
         videoCount = 3,
+        ideaCount,
         perVideoDurations,
         ideaPrompt = '',
         query = '',
@@ -5558,6 +5563,7 @@ async function startServer() {
         customStylePrompt = '',
         aspectRatio = '9:16',
         targetDurationSec,
+        sceneDurationSec,
         targetDuration = 'short',
         desiredSceneCount,
         outputLanguage = 'vi',
@@ -5572,12 +5578,15 @@ async function startServer() {
         customInstruction = '',
         enableVoiceover = true,
         allowFreeCostumeChange = false,
+        preserveExactIdea = false,
+        selectedIdeaTitle = '',
         aiProvider = 'gemini',
       } = (req.body || {}) as {
         mode?: StudioCreationMode;
         scriptMode?: StudioScriptMode;
         productionFormat?: 'dialogue_film' | 'narration_story';
         videoCount?: number;
+        ideaCount?: number;
         perVideoDurations?: number[];
         ideaPrompt?: string;
         query?: string;
@@ -5587,6 +5596,7 @@ async function startServer() {
         customStylePrompt?: string;
         aspectRatio?: DerivativeAspectRatio;
         targetDurationSec?: number;
+        sceneDurationSec?: number;
         targetDuration?: 'short' | 'medium';
         desiredSceneCount?: number;
         outputLanguage?: DerivativeOutputLanguage;
@@ -5609,6 +5619,8 @@ async function startServer() {
         customInstruction?: string;
         enableVoiceover?: boolean;
         allowFreeCostumeChange?: boolean;
+        preserveExactIdea?: boolean;
+        selectedIdeaTitle?: string;
         aiProvider?: AiProviderId;
       };
 
@@ -5639,19 +5651,24 @@ async function startServer() {
         aspectRatio === '16:9' ? '16:9' : aspectRatio === '1:1' ? '1:1' : '9:16';
 
       if (resolvedScriptMode === 'independent_batch') {
-        const count = Math.max(2, Math.min(15, Math.round(Number(videoCount || 3))));
+        const count = Math.max(1, Math.min(15, Math.round(Number(videoCount || ideaCount || 3))));
+        const cleanUnitDur =
+          typeof targetDurationSec === 'number' && Number.isFinite(targetDurationSec)
+            ? Math.max(10, Math.min(900, Math.round(targetDurationSec)))
+            : undefined;
         const cleanDurations = Array.isArray(perVideoDurations)
-          ? perVideoDurations.map((d) => Math.max(10, Math.min(900, Math.round(Number(d) || 30))))
+          ? perVideoDurations.map((d) => Math.max(10, Math.min(900, Math.round(Number(d) || cleanUnitDur || 30))))
           : undefined;
         const batchResult = await learnAndCreateIndependentBatch({
           mode: studioMode,
           productionFormat: resolvedProductionFormat,
           ideaPrompt: String(ideaPrompt || ''),
+          selectedIdeaTitle: String(selectedIdeaTitle || ''),
           query: String(query || ''),
           videos: safeVideos,
           videoCount: count,
           perVideoDurations: cleanDurations,
-          targetDurationSec: typeof targetDurationSec === 'number' ? targetDurationSec : undefined,
+          targetDurationSec: cleanUnitDur,
           desiredSceneCount: typeof desiredSceneCount === 'number' ? desiredSceneCount : undefined,
           stylePreset,
           videoStyle,
@@ -5691,6 +5708,7 @@ async function startServer() {
           blueprint: batchResult.blueprints[0],
           blueprints: batchResult.blueprints,
           sharedSpiritNote: batchResult.sharedSpiritNote,
+          coreMotif: batchResult.coreMotif,
         });
       }
 
@@ -5699,6 +5717,8 @@ async function startServer() {
         scriptMode: 'series',
         productionFormat: resolvedProductionFormat,
         ideaPrompt: String(ideaPrompt || ''),
+        selectedIdeaTitle: String(selectedIdeaTitle || ''),
+        preserveExactIdea: Boolean(preserveExactIdea),
         query: String(query || ''),
         videos: safeVideos,
         stylePreset,
@@ -5706,8 +5726,17 @@ async function startServer() {
         customStylePrompt: String(customStylePrompt || ''),
         aspectRatio: resolvedAspectRatio,
         targetDurationSec: typeof targetDurationSec === 'number' ? targetDurationSec : undefined,
+        sceneDurationSec:
+          typeof sceneDurationSec === 'number' && Number.isFinite(sceneDurationSec)
+            ? Math.max(5, Math.min(300, Math.round(sceneDurationSec)))
+            : undefined,
         targetDuration: targetDuration === 'medium' ? 'medium' : 'short',
-        desiredSceneCount: typeof desiredSceneCount === 'number' ? desiredSceneCount : undefined,
+        desiredSceneCount:
+          typeof desiredSceneCount === 'number'
+            ? desiredSceneCount
+            : typeof ideaCount === 'number' && Number.isFinite(ideaCount)
+            ? Math.max(1, Math.min(15, Math.round(ideaCount)))
+            : undefined,
         outputLanguage,
         useProModel: Boolean(useProModel),
         characterSummary: String(characterSummary || ''),

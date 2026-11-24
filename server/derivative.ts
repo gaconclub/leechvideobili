@@ -2570,6 +2570,7 @@ export interface StudioCharacterRefMetaInput {
 export interface IndependentConceptOverride {
   title: string;
   premise: string;
+  coreMotif?: string;
   characterBible: string;
   settingBible: string;
   visualStyleBible?: string;
@@ -2581,6 +2582,15 @@ export interface IndependentConceptOverride {
   avoidTitles?: string[];
   batchIndex: number;
   batchTotal: number;
+}
+
+export interface ExpandedCreativeIdeaItem {
+  id: string;
+  index: number;
+  title: string;
+  summary: string;
+  detail: string;
+  suggestedSetting?: string;
 }
 
 function resolveDesiredSceneCount(
@@ -2609,6 +2619,7 @@ export async function expandStudioIdeaWithAi(params: {
   videoStyle?: StudioVideoStyle;
   customStylePrompt?: string;
   scriptMode?: StudioScriptMode;
+  ideaCount?: number;
   targetDurationSec?: number;
   outputLanguage?: DerivativeOutputLanguage;
   characterSummary?: string;
@@ -2617,6 +2628,7 @@ export async function expandStudioIdeaWithAi(params: {
   aiProvider?: AiProviderId;
   useProModel?: boolean;
 }): Promise<{
+  ideas: ExpandedCreativeIdeaItem[];
   expandedIdea: string;
   suggestedSetting?: string;
   usedProvider: AiProviderId;
@@ -2627,6 +2639,7 @@ export async function expandStudioIdeaWithAi(params: {
     throw new Error('Vui lòng nhập tóm tắt ý tưởng ban đầu trước khi nhờ AI triển khai.');
   }
 
+  const ideaCount = Math.max(1, Math.min(15, Math.round(Number(params.ideaCount || 3))));
   const provider: AiProviderId =
     params.aiProvider === 'openai' ||
     params.aiProvider === 'meta' ||
@@ -2652,44 +2665,60 @@ export async function expandStudioIdeaWithAi(params: {
   const styleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
   const durationSec = Math.max(10, Math.min(900, Math.round(Number(params.targetDurationSec || 60))));
+  const totalCombinedSec = ideaCount * durationSec;
   const modeLabel =
     params.scriptMode === 'independent_batch'
-      ? 'Nhiều video độc lập cùng tinh thần/chủ đề'
-      : '1 câu chuyện Series liền mạch';
+      ? `Lô nhiều video độc lập (${ideaCount} kịch bản độc lập phái sinh cùng mô-típ gốc, mỗi video ${durationSec}s, tổng lô ${totalCombinedSec}s)`
+      : `Series liên hoàn (1 kịch bản tổng thể chia thành ${ideaCount} phân cảnh liên tiếp, mỗi phân cảnh ${durationSec}s, tổng video ${totalCombinedSec}s)`;
 
   const expandPrompt = `Bạn là Giám đốc Sáng tạo & Biên kịch Bối cảnh Video AI chuyên nghiệp.
-NHIỆM VỤ: Từ "Tóm tắt ý tưởng ban đầu" ngắn gọn của người dùng, hãy triển khai thành một BẢN PHÁC THẢO BỐI CẢNH, HÀNH ĐỘNG & ĐẠO CỤ CHI TIẾT, HẤP DẪN, SẴN SÀNG CHUYỂN THÀNH KỊCH BẢN PHÂN CẢNH.
+NHIỆM VỤ: Từ "Tóm tắt ý tưởng ban đầu" của người dùng, hãy sáng tạo ĐÚNG ${ideaCount} Ý TƯỞNG RIÊNG BIỆT, RÕ RÀNG, HẤP DẪN để người dùng chọn 1 ý tưởng bất kỳ và chuyển thẳng thành prompt kịch bản hoàn chỉnh.
 
 DỮ LIỆU ĐẦU VÀO:
-- Tóm tắt ý tưởng ban đầu: "${seed}"
+- Tóm tắt ý tưởng / chủ đề ban đầu: "${seed}"
+- Số lượng ý tưởng BẮT BUỘC phải tạo: ĐÚNG ${ideaCount} ý tưởng (không thừa, không thiếu)
 ${params.settingHint?.trim() ? `- Gợi ý bối cảnh từ người dùng: "${params.settingHint.trim()}"` : ''}
 ${params.characterSummary?.trim() ? `- Danh sách tên nhân vật tham chiếu (CHỈ gọi đúng tên, KHÔNG mô tả lại ngoại hình/trang phục chính): ${params.characterSummary.trim()}` : ''}
 - Phong cách quay & hình ảnh: ${styleMeta.labelVi} (${styleMeta.visualToneVi})
-- Hình thức triển khai: ${modeLabel}
-- Thời lượng dự kiến: khoảng ${durationSec} giây
+- Hình thức triển khai dự kiến: ${modeLabel}
+- Thời lượng dự kiến: ${params.scriptMode === 'independent_batch' ? `${durationSec} giây / video độc lập` : `${durationSec} giây / phân cảnh (tổng ${totalCombinedSec} giây cho ${ideaCount} phân cảnh liên tiếp)`}
 - Ngôn ngữ đầu ra: ${OUTPUT_LANG_LABELS[outputLang]}
 ${CREATIVE_CONTEXT_CHARACTER_BOUNDARY_RULES}
 ${lockRulesText ? `\n${lockRulesText}` : ''}
 
-YÊU CẦU NỘI DUNG TRIỂN KHAI:
-1. Mở rộng trọn vẹn ý tưởng gốc (giữ đúng tinh thần ban đầu, KHÔNG lạc đề) thành một bản mô tả cốt truyện mạch lạc:
-   - Mở đầu gây tò mò (Hook thị giác / tình huống mở màn).
-   - Diễn biến cao trào, xung đột hoặc bước ngoặt cảm xúc chính.
-   - Kết thúc đọng lại thông điệp hoặc cảm xúc rõ nét.
-2. MÔ TẢ CHÍNH XÁC BỐI CẢNH & HÀNH ĐỘNG THEO RANH GIỚI BẮT BUỘC:
+YÊU CẦU BẮT BUỘC CHO TỪNG Ý TƯỞNG TRONG DANH SÁCH (${ideaCount} Ý TƯỞNG):
+1. TẤT CẢ ${ideaCount} ý tưởng PHẢI tuân thủ chặt chẽ chủ đề, thể loại, tinh thần và định hướng ban đầu của người dùng ("${seed}") — KHÔNG đi lạc đề.
+2. Mỗi ý tưởng PHẢI có nội dung, tình huống cụ thể, nút thắt và cao trào riêng biệt (KHÔNG trùng lặp máy móc giữa các ý tưởng).
+   ${
+     ideaCount === 1
+       ? '- Vì người dùng chọn 1 ý tưởng, hãy triển khai sâu sắc, trọn vẹn đúng ý tưởng gốc thành bản phác thảo hoàn chỉnh (Mở đầu gây tò mò -> Diễn biến cao trào -> Kết thúc ấn tượng).'
+       : `- Với ${ideaCount} ý tưởng, mỗi ý tưởng là 1 phương án kịch bản độc lập hoàn chỉnh, hấp dẫn ngay từ tiêu đề và phần tóm tắt 2-3 câu.`
+   }
+3. MÔ TẢ CHÍNH XÁC BỐI CẢNH & HÀNH ĐỘNG THEO RANH GIỚI BẮT BUỘC:
    - Tập trung sâu vào: không gian & kiến trúc, cảnh quan/môi trường/thời tiết, ánh sáng/màu sắc/không khí, vị trí/tư thế/hành động nhân vật, góc máy/bố cục/chuyển động camera và đạo cụ/phụ kiện độc lập được phép (${ALLOWED_ACCESSORIES_LIST_VI}).
-   - NGHIÊM CẤM TỰ MÔ TẢ NGOẠI HÌNH & TRANG PHỤC CHÍNH: Tuyệt đối KHÔNG viết vào văn bản các chi tiết về khuôn mặt, màu da, đường nét nhận dạng, kiểu tóc, màu tóc, chiều cao, vóc dáng, tỷ lệ cơ thể hay quần áo/áo khoác/váy/quần/màu sắc/kiểu dáng trang phục chính của nhân vật.
-3. Viết tự nhiên, súc tích, giàu hình ảnh điện ảnh (khoảng 120–240 chữ), chia đoạn rõ ràng để người dùng đọc xong có thể bấm thẳng sang "AI Lên Kịch Bản" ở Bước 2.
+   - NGHIÊM CẤM TỰ MÔ TẢ NGOẠI HÌNH & TRANG PHỤC CHÍNH của nhân vật tham chiếu (không tự bịa khuôn mặt, màu da, kiểu tóc, vóc dáng hay quần áo chính).
+4. Mỗi phần tử gồm:
+   - "title": Tiêu đề ngắn gọn, gợi tò mò (KHÔNG tự ghi tiền tố "Ý tưởng 01:", hệ thống sẽ tự đánh số).
+   - "summary": Đoạn tóm tắt tình huống cốt lõi 2–3 câu súc tích, rõ nhân vật/bối cảnh/sự kiện bất ngờ.
+   - "detail": Triển khai chi tiết diễn biến (Mở đầu - Cao trào - Bước ngoặt - Kết thúc), không gian, ánh sáng, nhịp quay và hành động (khoảng 100–180 chữ) để khi người dùng bấm "Tạo prompt kịch bản", AI giữ nguyên 100% cốt truyện này.
+   - "suggestedSetting": 1 câu ngắn mô tả không gian, thời điểm & ánh sáng chủ đạo của riêng ý tưởng này.
 ${SHORT_DRAMA_IDEA_EXPANSION_RULES}
 
-TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không giải thích thừa):
+TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ VỚI MẢNG "ideas" CÓ ĐÚNG ${ideaCount} PHẦN TỬ (không markdown, không giải thích thừa):
 {
-  "expandedIdea": "Toàn bộ nội dung ý tưởng đã được AI triển khai chi tiết (chỉ mô tả bối cảnh, hành động, góc máy, ánh sáng & đạo cụ/phụ kiện được phép — tuyệt đối không mô tả lại ngoại hình hay trang phục chính nhân vật)...",
-  "suggestedSetting": "Mô tả ngắn 1 câu về không gian, kiến trúc & tông ánh sáng chủ đạo (để điền vào ô bối cảnh nếu cần)"
+  "ideas": [
+    {
+      "title": "Tiêu đề ngắn gọn của ý tưởng #1",
+      "summary": "Tóm tắt cốt truyện và tình huống cốt lõi 2-3 câu rõ ràng, hấp dẫn...",
+      "detail": "Triển khai chi tiết diễn biến mở đầu - cao trào - kết thúc, bối cảnh, ánh sáng, hành động và góc quay...",
+      "suggestedSetting": "Mô tả ngắn 1 câu về không gian & tông ánh sáng chủ đạo"
+    }
+  ]
 }`;
 
   let parsed: any = {};
   let usedModel = 'gemini-4-hydrogen';
+  const dynamicMaxTokens = Math.min(12288, Math.max(2400, 1400 + ideaCount * 650));
 
   try {
     if (provider === 'muse2api') {
@@ -2704,7 +2733,7 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
       const raw = await chatWithMuse2ApiSpark([
         {
           role: 'system',
-          content: 'Chỉ trả về 1 đối tượng JSON thuần túy gồm key "expandedIdea" và "suggestedSetting", không giải thích ngoài JSON.',
+          content: `Chỉ trả về 1 đối tượng JSON thuần túy gồm mảng "ideas" có đúng ${ideaCount} phần tử (title, summary, detail, suggestedSetting), không giải thích ngoài JSON.`,
         },
         { role: 'user', content: expandPrompt },
       ]);
@@ -2721,13 +2750,16 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
         body: JSON.stringify({
           model: cfg.model,
           messages: [
-            { role: 'system', content: 'Chỉ trả về JSON hợp lệ theo schema.' },
+            {
+              role: 'system',
+              content: `Chỉ trả về JSON hợp lệ theo schema với đúng ${ideaCount} phần tử trong mảng "ideas".`,
+            },
             { role: 'user', content: expandPrompt },
           ],
           response_format: { type: 'json_object' },
-          temperature: 0.75,
+          temperature: 0.78,
         }),
-        signal: AbortSignal.timeout(45_000),
+        signal: AbortSignal.timeout(65_000),
       });
       if (!res.ok) {
         const errBody = await res.text().catch(() => '');
@@ -2745,7 +2777,7 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
       for (let mIdx = 0; mIdx < candidateModels.length; mIdx += 1) {
         const candidateModel = candidateModels[mIdx];
         const isLastCandidate = mIdx === candidateModels.length - 1;
-        const callTimeoutMs = isLastCandidate ? 30_000 : 18_000;
+        const callTimeoutMs = isLastCandidate ? 45_000 : 28_000;
         try {
           const response = await retryWithGeminiBackoff(
             () =>
@@ -2754,25 +2786,43 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
                 contents: [{ text: expandPrompt }],
                 config: {
                   httpOptions: { timeout: callTimeoutMs },
-                  maxOutputTokens: 2048,
+                  maxOutputTokens: dynamicMaxTokens,
                   ...(candidateModel.startsWith('gemini-4-')
                     ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
                     : {}),
+                  systemInstruction: `Luôn trả về ĐÚNG ${ideaCount} phần tử trong mảng "ideas" của JSON. Mỗi ý tưởng phải bám sát chủ đề ban đầu nhưng có tình huống & diễn biến riêng biệt, không trùng lặp.`,
                   responseMimeType: 'application/json',
                   responseSchema: {
                     type: Type.OBJECT,
-                    required: ['expandedIdea'],
+                    required: ['ideas'],
                     properties: {
-                      expandedIdea: { type: Type.STRING },
-                      suggestedSetting: { type: Type.STRING },
+                      ideas: {
+                        type: Type.ARRAY,
+                        minItems: String(ideaCount),
+                        maxItems: String(ideaCount),
+                        items: {
+                          type: Type.OBJECT,
+                          required: ['title', 'summary', 'detail'],
+                          properties: {
+                            title: { type: Type.STRING },
+                            summary: { type: Type.STRING },
+                            detail: { type: Type.STRING },
+                            suggestedSetting: { type: Type.STRING },
+                          },
+                        },
+                      },
                     },
                   },
                 },
               }),
             isLastCandidate ? [800] : []
           );
-          parsed = parseAiBlueprintJsonSafe((response?.text ?? '{}').trim());
-          if (String(parsed?.expandedIdea || '').trim()) {
+          const candidateParsed = parseAiBlueprintJsonSafe((response?.text ?? '{}').trim());
+          if (
+            (Array.isArray(candidateParsed?.ideas) && candidateParsed.ideas.length > 0) ||
+            String(candidateParsed?.expandedIdea || '').trim()
+          ) {
+            parsed = candidateParsed;
             usedModel = candidateModel;
             break;
           }
@@ -2784,7 +2834,11 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
           }
         }
       }
-      if (!String(parsed?.expandedIdea || '').trim() && lastErr) {
+      if (
+        !(Array.isArray(parsed?.ideas) && parsed.ideas.length > 0) &&
+        !String(parsed?.expandedIdea || '').trim() &&
+        lastErr
+      ) {
         throw lastErr;
       }
     }
@@ -2795,14 +2849,64 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
     throw new Error(String(err?.message || err || 'AI không thể triển khai ý tưởng lúc này.'));
   }
 
-  const expandedIdea = String(parsed?.expandedIdea || '').trim();
-  if (!expandedIdea) {
-    throw new Error('AI chưa trả về nội dung triển khai hợp lệ. Vui lòng thử lại.');
+  const rawIdeas: any[] = Array.isArray(parsed?.ideas) ? parsed.ideas : [];
+  const normalizedIdeas: ExpandedCreativeIdeaItem[] = rawIdeas
+    .filter((item) => item && (String(item.title || '').trim() || String(item.summary || '').trim() || String(item.detail || '').trim()))
+    .slice(0, ideaCount)
+    .map((item, idx) => {
+      const cleanTitle = String(item.title || '')
+        .replace(/^Ý\s*tưởng\s*\d+\s*[:.\-–—]\s*/i, '')
+        .trim();
+      const summary = String(item.summary || '').trim();
+      const detail = String(item.detail || summary || '').trim();
+      return {
+        id: `idea_${Date.now()}_${idx + 1}_${crypto.randomBytes(2).toString('hex')}`,
+        index: idx + 1,
+        title: cleanTitle || `Phương án ${String(idx + 1).padStart(2, '0')} · ${seed.slice(0, 48)}`,
+        summary: summary || detail.slice(0, 220),
+        detail: detail || summary,
+        suggestedSetting: String(item.suggestedSetting || '').trim() || undefined,
+      };
+    });
+
+  // Backward-compatibility fallback if an OpenAI-compatible provider returned legacy { expandedIdea }
+  if (normalizedIdeas.length === 0 && String(parsed?.expandedIdea || '').trim()) {
+    const legacyText = String(parsed.expandedIdea).trim();
+    normalizedIdeas.push({
+      id: `idea_${Date.now()}_1_${crypto.randomBytes(2).toString('hex')}`,
+      index: 1,
+      title: seed.slice(0, 64),
+      summary: legacyText.slice(0, 220),
+      detail: legacyText,
+      suggestedSetting: String(parsed?.suggestedSetting || '').trim() || undefined,
+    });
   }
 
+  if (normalizedIdeas.length === 0) {
+    throw new Error('AI chưa trả về danh sách ý tưởng hợp lệ. Vui lòng thử lại.');
+  }
+
+  // Guarantee exact requested count cleanly if a provider slightly under-returned
+  while (normalizedIdeas.length < ideaCount) {
+    const base = normalizedIdeas[normalizedIdeas.length % normalizedIdeas.length];
+    const nextNum = normalizedIdeas.length + 1;
+    normalizedIdeas.push({
+      id: `idea_${Date.now()}_${nextNum}_${crypto.randomBytes(2).toString('hex')}`,
+      index: nextNum,
+      title: `${base.title} (Góc tiếp cận #${String(nextNum).padStart(2, '0')})`,
+      summary: base.summary,
+      detail: `${base.detail} Khai thác góc nhìn tình huống mới và bước ngoặt bất ngờ khác biệt ở phần cao trào trong cùng chủ đề "${seed}".`,
+      suggestedSetting: base.suggestedSetting,
+    });
+  }
+
+  const first = normalizedIdeas[0];
+  const expandedIdea = `${first.title}\n\n${first.summary}${first.detail && first.detail !== first.summary ? `\n\n${first.detail}` : ''}`;
+
   return {
+    ideas: normalizedIdeas,
     expandedIdea,
-    suggestedSetting: String(parsed?.suggestedSetting || '').trim() || undefined,
+    suggestedSetting: first.suggestedSetting || String(parsed?.suggestedSetting || '').trim() || undefined,
     usedProvider: provider,
     usedModel,
   };
@@ -2820,6 +2924,7 @@ export async function learnVideosAndCreateBlueprint(params: {
   customStylePrompt?: string;
   aspectRatio: DerivativeAspectRatio;
   targetDurationSec?: number;
+  sceneDurationSec?: number;
   targetDuration?: 'short' | 'medium';
   desiredSceneCount?: number;
   outputLanguage?: DerivativeOutputLanguage;
@@ -2834,6 +2939,8 @@ export async function learnVideosAndCreateBlueprint(params: {
   customInstruction?: string;
   enableVoiceover?: boolean;
   allowFreeCostumeChange?: boolean;
+  preserveExactIdea?: boolean;
+  selectedIdeaTitle?: string;
   aiProvider?: AiProviderId;
   preGatheredContexts?: EnrichedVideoContext[];
   conceptOverride?: IndependentConceptOverride;
@@ -2888,15 +2995,28 @@ export async function learnVideosAndCreateBlueprint(params: {
       : params.targetDuration === 'medium'
       ? 45
       : 30;
-  const desiredTotalSec = Math.max(10, Math.min(900, Math.round(rawSec)));
+  const lockedSceneDur =
+    !params.conceptOverride &&
+    scriptMode === 'series' &&
+    typeof params.sceneDurationSec === 'number' &&
+    Number.isFinite(params.sceneDurationSec) &&
+    params.sceneDurationSec >= 5
+      ? Math.max(5, Math.min(300, Math.round(params.sceneDurationSec)))
+      : null;
 
   const desiredScenes = resolveDesiredSceneCount(
-    desiredTotalSec,
+    Math.max(10, Math.min(3600, Math.round(rawSec))),
     params.desiredSceneCount,
     params.conceptOverride ? 'independent_batch' : scriptMode
   );
 
-  const avgSceneDur = Math.max(4, Math.min(120, Math.round(desiredTotalSec / desiredScenes)));
+  const desiredTotalSec = lockedSceneDur
+    ? Math.max(10, Math.min(3600, lockedSceneDur * desiredScenes))
+    : Math.max(10, Math.min(900, Math.round(rawSec)));
+
+  const avgSceneDur = lockedSceneDur
+    ? lockedSceneDur
+    : Math.max(4, Math.min(120, Math.round(desiredTotalSec / desiredScenes)));
   const wordsMin = Math.max(6, Math.min(160, Math.round(avgSceneDur * 1.8)));
   const wordsMax = Math.max(wordsMin + 5, Math.min(210, Math.round(avgSceneDur * 2.5)));
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
@@ -2954,9 +3074,19 @@ export async function learnVideosAndCreateBlueprint(params: {
       ? `${desiredTotalSec} giây (~${(desiredTotalSec / 60).toFixed(1)} phút)`
       : `${desiredTotalSec} giây`;
 
+  const preserveExactIdea = params.preserveExactIdea === true && !params.conceptOverride;
+  const selectedIdeaTitle = String(params.selectedIdeaTitle || '').trim();
+
   const modeHeader =
     studioMode === 'creative'
-      ? `NGUỒN ĐẦU VÀO: STUDIO SÁNG TẠO TỪ Ý TƯỞNG VĂN BẢN.
+      ? preserveExactIdea
+        ? `NGUỒN ĐẦU VÀO: PHÁT TRIỂN KỊCH BẢN TRỰC TIẾP TỪ Ý TƯỞNG NGƯỜI DÙNG ĐÃ CHỌN (BẮT BUỘC BẢO TOÀN 100%).
+${selectedIdeaTitle ? `Tiêu đề ý tưởng đã chọn: "${selectedIdeaTitle}"\n` : ''}Nội dung gốc BẮT BUỘC PHẢI GIỮ NGUYÊN: "${ideaText}".
+NGUYÊN TẮC TỐI THƯỢNG (KHÔNG ĐƯỢC VI PHẠM):
+- Bám sát 100% và bảo toàn trọn vẹn ý tưởng đã chọn: giữ nguyên cốt truyện, tình huống cốt lõi, nhân vật/vai trò, không gian bối cảnh, chủ đề và tinh thần sáng tạo ban đầu.
+- NGHIÊM CẤM tự ý sáng tạo lại thành một câu chuyện khác, NGHIÊM CẤM thay đổi tình huống mở đầu/cao trào cốt lõi đã chốt.
+- Nhiệm vụ duy nhất là chuyển hóa chính xác ý tưởng gốc này thành kịch bản phân cảnh chi tiết, lời thoại/thuyết minh, chỉ đạo máy quay, ánh sáng và prompt hình ảnh/video hoàn chỉnh.`
+        : `NGUỒN ĐẦU VÀO: STUDIO SÁNG TẠO TỪ Ý TƯỞNG VĂN BẢN.
 Ý tưởng / Chủ đề người dùng nhập: "${ideaText}".`
       : `NGUỒN ĐẦU VÀO: TẠO VIDEO PHÁI SINH TỪ ${contexts.length} VIDEO THAM CHIẾU.
 Định hướng mở rộng từ người dùng: "${ideaText || 'Phân tích chuyên sâu video tham chiếu để phát triển kịch bản sáng tạo mới'}".
@@ -2965,21 +3095,26 @@ NGUYÊN TẮC BẮT BUỘC VỚI VIDEO PHÁI SINH:
 - Video phái sinh PHẢI là nội dung SÁNG TẠO MỚI có giá trị riêng, tuyệt đối KHÔNG sao chép nguyên xi từng cảnh trong video gốc; chỉ kế thừa tinh thần, chủ đề hoặc phong cách đã chọn.`;
 
   const scriptModeDirective = params.conceptOverride
-    ? `CHẾ ĐỘ KỊCH BẢN: VIDEO ĐỘC LẬP #${params.conceptOverride.batchIndex}/${params.conceptOverride.batchTotal} TRONG CÙNG CHỦ ĐỀ.
+    ? `CHẾ ĐỘ KỊCH BẢN: VIDEO PHÁI SINH ĐỘC LẬP #${params.conceptOverride.batchIndex}/${params.conceptOverride.batchTotal} (MỖI VIDEO DÀI ĐÚNG ${desiredTotalSec} GIÂY, PHÁI SINH CÙNG Ý TƯỞNG GỐC & MÔ-TÍP CỐT TRUYỆN).
 NGUYÊN TẮC BẮT BUỘC:
-- Đây là MỘT VIDEO ĐỘC LẬP hoàn chỉnh (Mở đầu - Diễn biến - Kết thúc riêng biệt), KHÔNG phải phần cắt nhỏ hay tập nối tiếp của các video khác.
-- Cốt truyện riêng phải triển khai cho Video #${params.conceptOverride.batchIndex}:
+- Đây là MỘT KỊCH BẢN VIDEO ĐỘC LẬP hoàn chỉnh dài ĐÚNG ${desiredTotalSec} giây (có mở đầu, diễn biến và kết thúc trọn vẹn trong ${desiredTotalSec}s), KHÔNG phải tập nối tiếp hay cắt nhỏ của các video khác.
+- MÔ-TÍP CỐT TRUYỆN & CẤU TRÚC TÌNH HUỐNG LÕI BẮT BUỘC PHẢI GIỮ NGUYÊN: "${params.conceptOverride.coreMotif || params.conceptOverride.sharedSpiritNote || ideaText}".
+- Triển khai CHÍNH XÁC biến thể phái sinh cho Video #${params.conceptOverride.batchIndex} dưới đây (KHÔNG tự ý bỏ mô-típ gốc sang câu chuyện ngẫu nhiên):
   + Tiêu đề định hướng: "${params.conceptOverride.title}"
-  + Ý tưởng cốt truyện riêng: "${params.conceptOverride.premise}"
+  + Tình huống & diễn biến phái sinh riêng: "${params.conceptOverride.premise}"
   + Nhân vật riêng của video này: "${params.conceptOverride.characterBible}"
   + Bối cảnh riêng của video này: "${params.conceptOverride.settingBible}"
-- Tuyệt đối KHÔNG lặp lại tình tiết của các video khác trong lô: ${params.conceptOverride.avoidTitles?.join(' | ') || 'Không trùng lặp'}.
-- Vẫn giữ tinh thần, cảm xúc và phong cách hình ảnh "${videoStyleMeta.labelVi}" đồng nhất với chủ đề gốc (${params.conceptOverride.sharedSpiritNote || ideaText}).`
-    : `CHẾ ĐỘ KỊCH BẢN: SERIES PHIM / CÂU CHUYỆN XUYÊN SUỐT (${desiredScenes} PHÂN CẢNH LIÊN TIẾP).
-NGUYÊN TẮC CỐT LÕI CHẾ ĐỘ SERIES:
-- Người dùng đang muốn KỂ MỘT CÂU CHUYỆN XUYÊN SUỐT bằng chuỗi ${desiredScenes} phân cảnh liên tiếp gắn kết chặt chẽ với nhau.
-- Diễn biến từng phân cảnh (Scene 01 → Scene ${String(desiredScenes).padStart(2, '0')}) phải tuân thủ tiến trình cốt truyện logic, hành động và trạng thái cuối cảnh trước phải nối tiếp trực tiếp sang cảnh sau.
-- Nhân vật chính, ngoại hình, trang phục và đặc điểm nhận dạng PHẢI duy trì đồng nhất 100% xuyên suốt.`;
+- Tuyệt đối KHÔNG lặp lại tình tiết cụ thể của các video phái sinh khác trong lô: ${params.conceptOverride.avoidTitles?.join(' | ') || 'Không trùng lặp'}.
+- Vẫn giữ tinh thần, chủ đề, cấu trúc tình huống cốt lõi và phong cách hình ảnh "${videoStyleMeta.labelVi}" đồng nhất với ý tưởng gốc.`
+    : `CHẾ ĐỘ KỊCH BẢN: SERIES LIÊN HOÀN — 01 KỊCH BẢN TỔNG THỂ DUY NHẤT CHIA THÀNH ĐÚNG ${desiredScenes} PHÂN CẢNH LIÊN TIẾP (MỖI PHÂN CẢNH DÀI ĐÚNG ${avgSceneDur} GIÂY · TỔNG THỜI LƯỢNG ${desiredTotalSec} GIÂY).
+NGUYÊN TẮC KIẾN TRÚC BẮT BUỘC:
+- QUY TRÌNH 2 BƯỚC NỘI BỘ: Trước hết xây dựng 01 kịch bản tổng thể duy nhất bám sát 100% ý tưởng gốc (KHÔNG tạo lại ý tưởng khác, KHÔNG chia thành nhiều câu chuyện rời rạc); sau đó phân bổ kịch bản đó thành ĐÚNG ${desiredScenes} phân cảnh liên tiếp đánh số 1..${desiredScenes}.
+- MỖI PHÂN CẢNH BẮT BUỘC CÓ durationSec = ${avgSceneDur} giây → TỔNG THỜI LƯỢNG VIDEO = ${desiredScenes} × ${avgSceneDur}s = ${desiredTotalSec} giây.
+- LIÊN KẾT NỘI DUNG XUYÊN SUỐT:
+  + Phân cảnh 01 (${avgSceneDur}s): Mở đầu câu chuyện, giới thiệu nhân vật và tình huống gốc.
+  ${desiredScenes > 2 ? `+ Các phân cảnh giữa (02 → ${String(desiredScenes - 1).padStart(2, '0')}, mỗi cảnh ${avgSceneDur}s): Tiếp nối trực tiếp sự kiện ở phân cảnh liền trước, phát triển và đẩy cao tình huống logic.` : ''}
+  ${desiredScenes >= 2 ? `+ Phân cảnh ${String(desiredScenes).padStart(2, '0')} (${avgSceneDur}s): Tiếp nối trực tiếp phân cảnh trước đó, tạo cao trào hoặc kết thúc trọn vẹn câu chuyện.` : ''}
+- Nhân vật chính, ngoại hình, trang phục và đặc điểm nhận dạng PHẢI duy trì đồng nhất 100% xuyên suốt cả ${desiredScenes} phân cảnh.`;
 
   const narrativeStyleDirective =
     activeStylePreset === 'none'
@@ -3068,10 +3203,10 @@ Tùy chọn Lồng tiếng (Voiceover): ${
         : `BẬT LỒNG TIẾNG & LỜI THOẠI — Tạo lời thoại nhân vật "dialogue" tự nhiên theo đúng nhân vật và điền "narration" (${wordsMin}-${wordsMax} chữ/cảnh) khi cần dẫn mạch truyện.`
       : 'TẮT LỒNG TIẾNG — BẮT BUỘC đặt "narration": "" (chuỗi rỗng) cho TẤT CẢ mọi phân cảnh, KHÔNG tạo dữ liệu giọng thuyết minh thừa; tập trung diễn đạt qua hình ảnh, hành động, lời thoại nhân vật (nếu có) và phụ đề ngắn.'
   }
-Tổng thời lượng mục tiêu BẮT BUỘC: khoảng ${targetMinutesLabel} chia thành ĐÚNG ${desiredScenes} phân cảnh đánh số lần lượt 1..${desiredScenes} (trung bình ~${avgSceneDur}s/cảnh).
+Tổng thời lượng mục tiêu BẮT BUỘC: ĐÚNG ${targetMinutesLabel} chia thành ĐÚNG ${desiredScenes} phân cảnh đánh số lần lượt 1..${desiredScenes} (${lockedSceneDur ? `mỗi phân cảnh BẮT BUỘC dài ĐÚNG ${lockedSceneDur}s` : `trung bình ~${avgSceneDur}s/cảnh`}).
 QUY TẮC THỜI LƯỢNG & BỐI CẢNH:
-- Mỗi bối cảnh / phân cảnh PHẢI tương ứng trọn vẹn với thời lượng được thiết lập (~${avgSceneDur}s/cảnh). Ví dụ nếu thiết lập 10 giây và tạo 1 phân cảnh thì viết 1 phân cảnh duy nhất dài 10 giây với hành động liên tục theo thời gian thực, TUYỆT ĐỐI KHÔNG tự ý xé lẻ thành nhiều đoạn vụn 3-4 giây.
-- Tổng "durationSec" của tất cả các cảnh cộng lại phải xấp xỉ ${desiredTotalSec} giây.
+- Mỗi phân cảnh PHẢI có thời lượng ${lockedSceneDur ? `CHÍNH XÁC ${lockedSceneDur} giây` : `tương ứng trọn vẹn ~${avgSceneDur}s/cảnh`}. Nếu thiết lập 10 giây và tạo 1 phân cảnh thì viết 1 phân cảnh duy nhất dài 10 giây với hành động liên tục theo thời gian thực, TUYỆT ĐỐI KHÔNG tự ý xé lẻ thành nhiều đoạn vụn 3-4 giây.
+- Tổng "durationSec" của tất cả ${desiredScenes} phân cảnh cộng lại BẮT BUỘC bằng ĐÚNG ${desiredTotalSec} giây.
 ${params.characterSummary?.trim() ? `DANH SÁCH NHÂN VẬT THAM CHIẾU ĐÃ KHÓA (BẮT BUỘC dùng ĐÚNG tên nhân vật dưới đây trong "charactersInScene", "dialogue", "characterVoiceProfiles", "imagePrompt" và "videoPrompt" để hệ thống ánh xạ đúng ảnh & giọng nói):\n${params.characterSummary.trim()}\nQUY TẮC GIỌNG NÓI NHÂN VẬT: Tất cả nhân vật dùng giọng đọc tiếng Việt chuẩn miền Bắc Việt Nam (Hà Nội) — lựa chọn cao độ & âm sắc đúng theo ĐỘ TUỔI và GIỚI TÍNH từng nhân vật, giữ nhất quán xuyên suốt.` : ''}
 ${lockedProjectAnchors ? `\nHỒ SƠ DỰ ÁN ĐÃ KHÓA (BẮT BUỘC GIỮ NGUYÊN ĐỒNG BỘ):\n${lockedProjectAnchors}` : ''}
 ${referenceLockRulesBlock ? `\n${referenceLockRulesBlock}` : ''}
@@ -3307,13 +3442,13 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         hashtags: { type: Type.ARRAY, items: { type: Type.STRING } },
         scenes: {
           type: Type.ARRAY,
-          ...(desiredScenes <= 5
+          ...(desiredScenes <= 15
             ? {
                 minItems: String(desiredScenes),
                 maxItems: String(desiredScenes),
               }
             : {}),
-          description: `BẮT BUỘC trả về ĐÚNG ${desiredScenes} phân cảnh tách biệt đánh số sceneIndex lần lượt từ 1 đến ${desiredScenes}.`,
+          description: `BẮT BUỘC trả về ĐÚNG ${desiredScenes} phân cảnh tách biệt đánh số sceneIndex lần lượt từ 1 đến ${desiredScenes}${lockedSceneDur ? `, mỗi phân cảnh durationSec = ${lockedSceneDur}` : ''}.`,
           items: {
             type: Type.OBJECT,
             required: [
@@ -3510,12 +3645,17 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
     const continuityBible = String(parsed?.continuityBible || params.continuityBible || '').trim();
 
     const rawScenes: any[] = Array.isArray(parsed?.scenes) ? parsed.scenes : [];
-    const scenes: DerivativeScene[] = rawScenes.slice(0, 24).map((sc, i) => {
+    const targetSliceCount = lockedSceneDur ? desiredScenes : Math.min(24, Math.max(rawScenes.length, desiredScenes));
+    const scenes: DerivativeScene[] = rawScenes.slice(0, targetSliceCount).map((sc, i) => {
       const idx =
         contexts.length > 0
           ? Math.max(0, Math.min(contexts.length - 1, Math.round(Number(sc?.sourceVideoIndex ?? i % contexts.length))))
           : 0;
-      const dur = Math.max(2, Math.min(120, Number(sc?.durationSec || avgSceneDur)));
+      const dur = lockedSceneDur
+        ? lockedSceneDur
+        : desiredScenes === 1
+        ? desiredTotalSec
+        : Math.max(2, Math.min(120, Number(sc?.durationSec || avgSceneDur)));
       const startPct = Math.max(0, Math.min(80, Math.round(Number(sc?.sourceStartPercent ?? (i * 18) % 70))));
       const sceneTitle = String(sc?.sceneTitle || sc?.onScreenText || `Phân cảnh ${i + 1}`).trim();
       const sceneSummary = String(sc?.sceneSummary || sc?.actionDetail || '').trim();
@@ -3824,8 +3964,10 @@ interface PlannedIndependentConcept {
 async function planIndependentVideoConcepts(params: {
   studioMode: StudioCreationMode;
   ideaText: string;
+  selectedIdeaTitle?: string;
   contexts: EnrichedVideoContext[];
   videoCount: number;
+  unitDurationSec?: number;
   videoStyleMeta: { labelVi: string; promptDirective: string; visualToneVi: string };
   stylePreset: DerivativeStylePreset;
   outputLang: DerivativeOutputLanguage;
@@ -3836,7 +3978,7 @@ async function planIndependentVideoConcepts(params: {
   characterRefsMeta?: StudioCharacterRefMetaInput[];
   allowFreeCostumeChange?: boolean;
   costumeBible?: string;
-}): Promise<{ sharedSpiritNote: string; concepts: PlannedIndependentConcept[] }> {
+}): Promise<{ sharedSpiritNote: string; coreMotif: string; concepts: PlannedIndependentConcept[] }> {
   const dossierText = params.contexts
     .map(
       (ctx) =>
@@ -3860,26 +4002,46 @@ async function planIndependentVideoConcepts(params: {
         })
       : '';
 
-  const planPrompt = `Bạn là Giám đốc Sáng tạo Nội dung AI.
-NHIỆM VỤ: Từ nguồn cảm hứng dưới đây, hãy lên ý tưởng cho ĐÚNG ${params.videoCount} VIDEO ĐỘC LẬP HOÀN TOÀN KHÁC NHAU.
+  const unitDurSec = Math.max(10, Math.min(900, Math.round(Number(params.unitDurationSec || 30))));
+  const totalBatchSec = params.videoCount * unitDurSec;
 
-NGUYÊN TẮC TỐI QUAN TRỌNG (KHÔNG ĐƯỢC VI PHẠM):
-- Người dùng KHÔNG muốn chia nhỏ một câu chuyện thành nhiều tập (KHÔNG phải Tập 1, Tập 2, Tập 3 hay Phần 1, Phần 2).
-- Người dùng muốn tạo ${params.videoCount} CÂU CHUYỆN RIÊNG BIỆT ĐỘC LẬP:
-  1. Mỗi video có 1 cốt truyện riêng biệt, không lặp lại ý tưởng hay tình huống của các video khác.
-  2. ${
-    lockBundle.seeds.length > 0
-      ? allowFreeCostumeChange
-        ? 'Nếu sử dụng lại các nhân vật tham chiếu đã chọn, BẮT BUỘC giữ nguyên khuôn mặt, kiểu tóc, vóc dáng và đặc điểm nhận dạng; có thể thay đổi trang phục theo bối cảnh riêng từng video.'
-        : 'Khi sử dụng nhân vật tham chiếu đã khóa, BẮT BUỘC giữ nguyên 100% khuôn mặt, kiểu tóc, vóc dáng, đặc điểm nhận dạng VÀ TRANG PHỤC cố định — KHÔNG tự ý đổi trang phục trong characterBible.'
-      : 'Mỗi video có thể sử dụng NHÂN VẬT HOÀN TOÀN KHÁC NHAU (tên, ngoại hình, trang phục, tính cách riêng).'
-  }
-  3. Bối cảnh, không gian và diễn biến của từng video được sáng tạo độc lập.
-  4. TẤT CẢ ${params.videoCount} video đều phải giữ chung **tinh thần, chủ đề, phong cách hình ảnh (${params.videoStyleMeta.labelVi}) và cảm xúc chủ đạo** của ý tưởng / video tham chiếu ban đầu.
+  const planPrompt = `Bạn là Giám đốc Sáng tạo Hệ thống Video Phái Sinh Hàng Loạt (Same-Motif Derivative Batch).
+NHIỆM VỤ: Từ Ý TƯỞNG GỐC dưới đây, hãy tạo ĐÚNG ${params.videoCount} KỊCH BẢN VIDEO PHÁI SINH ĐỘC LẬP DỰA TRÊN CÙNG MỘT Ý TƯỞNG GỐC & CÙNG MÔ-TÍP CỐT TRUYỆN.
+CÔNG THỨC THỜI LƯỢNG BẮT BUỘC:
+- Số kịch bản độc lập: ĐÚNG ${params.videoCount} video.
+- Thời lượng mỗi video độc lập: ĐÚNG ${unitDurSec} giây (tổng thời lượng cả lô = ${params.videoCount} × ${unitDurSec}s = ${totalBatchSec} giây).
+- Mỗi video PHẢI có mở đầu, diễn biến và điểm nhấn trọn vẹn phù hợp chính xác với thời lượng ${unitDurSec} giây.
+
+NGUYÊN TẮC BẮT BUỘC (TUYỆT ĐỐI KHÔNG ĐƯỢC VI PHẠM):
+1. PHÂN TÍCH & KHÓA CỨNG MÔ-TÍP CỐT LÕI ("coreMotif"):
+   - Giữ nguyên chủ đề, thể loại, mô-típ cốt truyện và cấu trúc tình huống cốt lõi của ý tưởng gốc.
+   - KHÔNG phải chia nhỏ thành Tập 1, Tập 2, Tập 3 nối tiếp nhau.
+   - NGHIÊM CẤM hiểu "nhiều video độc lập" là sáng tạo nhiều câu chuyện ngẫu nhiên khác mô-típ chỉ vì cùng thể loại!
+   - VÍ DỤ CHUẨN MỰC:
+     * Ý tưởng gốc: "Một người lái xe máy đi qua đoạn đường vắng ban đêm, bất ngờ gặp một đoàn người có ngoại hình kỳ dị đang thực hiện hành vi bất thường."
+     * Mô-típ lõi PHẢI GIỮ ở TẤT CẢ các video: "Một người di chuyển trên cung đường/không gian vắng ban đêm và chạm trán một nhóm/đoàn người có ngoại hình & hành vi kỳ dị".
+     * Biến thể 01 ĐÚNG: Người lái ô tô đi qua đường núi vắng gặp đoàn người mặc đồ cổ đứng quay lưng giữa đường; bấm còi thì tất cả đồng loạt quay đầu.
+     * Biến thể 02 ĐÚNG: Shipper chạy xe máy vào đường làng nửa đêm gặp đoàn người đi lùi và cười kỳ quái.
+     * Biến thể 03 ĐÚNG: Tài xế taxi qua đường vắng phát hiện nhóm người đứng chờ xe với cử chỉ bất thường.
+     * Biến thể SAI (CẤM TUYỆT ĐỐI): Chuyển sang câu chuyện căn nhà ma, chiếc gương bị nguyền rủa hoặc lớp học bỏ hoang (lệch mô-típ gốc!).
+2. CÁC YẾU TỐ ĐƯỢC PHÉP & BẮT BUỘC THAY ĐỔI ĐỂ MỖI VIDEO ĐỘC LẬP, HẤP DẪN, KHÔNG TRÙNG LẶP MÁY MÓC:
+   - ${
+     lockBundle.seeds.length > 0
+       ? allowFreeCostumeChange
+         ? 'Khi dùng nhân vật tham chiếu đã chọn, giữ nguyên khuôn mặt/tóc/vóc dáng/nhận dạng; thay đổi vai trò tình huống, phương tiện, bối cảnh cụ thể, hành vi đối tượng chạm trán và cách giải quyết ở mỗi video.'
+         : 'Khi dùng nhân vật tham chiếu đã khóa, giữ nguyên 100% nhận dạng & trang phục cố định; thay đổi phương tiện/cách tiếp cận, địa điểm cụ thể, biểu hiện/hành vi bất thường của tình huống chạm trán và cái kết ở mỗi video.'
+       : 'Thay đổi rõ rệt NHÂN VẬT CHÍNH (nghề nghiệp, vai trò, độ tuổi, tâm lý) và PHƯƠNG TIỆN / CÁCH TIẾP CẬN giữa từng video.'
+   }
+   - Thay đổi BỐI CẢNH CỤ THỂ (đường đèo núi, đường làng, đường ven sông sương mù, quốc lộ vắng, ngõ nhỏ vùng ven...).
+   - Thay đổi NGOẠI HÌNH & HÀNH VI KỲ LẠ / BIỂU HIỆN CỤ THỂ của tình huống cốt lõi.
+   - Thay đổi DIỄN BIẾN CAO TRÀO, BƯỚC NGOẶT VÀ CÁCH GIẢI QUYẾT TÌNH HUỐNG để mỗi video là một câu chuyện trọn vẹn độc lập trong ${unitDurSec} giây.
+3. TẤT CẢ ${params.videoCount} video đều đồng nhất về chủ đề, mô-típ cốt truyện, cảm xúc chủ đạo và phong cách hình ảnh (${params.videoStyleMeta.labelVi}) để dễ sản xuất hàng loạt theo chuỗi nội dung thống nhất.
 
 ĐẦU VÀO:
-- Nguồn: ${params.studioMode === 'creative' ? 'Ý tưởng sáng tạo gốc' : `${params.contexts.length} video tham chiếu`}
-- Nội dung chủ đề / ý tưởng: "${params.ideaText || 'Khai thác tinh thần từ video tham chiếu'}"
+- Nguồn: ${params.studioMode === 'creative' ? 'Ý tưởng gốc đã chọn' : `${params.contexts.length} video tham chiếu`}
+${params.selectedIdeaTitle?.trim() ? `- Tiêu đề ý tưởng gốc: "${params.selectedIdeaTitle.trim()}"` : ''}
+- Ý tưởng gốc BẮT BUỘC PHẢI BÁM MÔ-TÍP: "${params.ideaText || 'Khai thác mô-típ & tinh thần từ video tham chiếu'}"
+- Thời lượng mỗi video độc lập: ${unitDurSec} giây
 - Phong cách nội dung: ${STYLE_LABELS[params.stylePreset]}
 - Phong cách hình ảnh thống nhất: ${params.videoStyleMeta.labelVi} (${params.videoStyleMeta.visualToneVi})
 - Ngôn ngữ đầu ra: ${OUTPUT_LANG_LABELS[params.outputLang]}
@@ -3890,14 +4052,15 @@ ${dossierText ? `\nTƯ LIỆU THAM CHIẾU:\n${dossierText}` : ''}
 
 TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG MẢNG "concepts":
 {
-  "sharedSpiritNote": "Mô tả ngắn gọn tinh thần, chủ đề và phong cách nghệ thuật chung gắn kết cả ${params.videoCount} video",
+  "coreMotif": "Tóm tắt chính xác 1 câu về mô-típ cốt truyện & cấu trúc tình huống cốt lõi chung mà TẤT CẢ ${params.videoCount} video phái sinh phải tuân thủ",
+  "sharedSpiritNote": "Mô tả ngắn gọn chủ đề, mô-típ cốt lõi và phong cách nghệ thuật thống nhất gắn kết cả ${params.videoCount} video",
   "concepts": [
     {
-      "title": "Tiêu đề riêng hấp dẫn cho Video #1 (không đánh số Tập 1)",
-      "premise": "Tóm tắt cốt truyện độc lập có mở đầu - cao trào - kết thúc trọn vẹn (2-3 câu, khác biệt hoàn toàn các video còn lại)",
-      "characterBible": "Ngoại hình & trang phục cụ thể của nhân vật riêng trong video này",
-      "settingBible": "Bối cảnh không gian & tông màu ánh sáng riêng của video này",
-      "hookFormula": "Cách mở đầu giữ chân khán giả cho video này",
+      "title": "Tiêu đề riêng hấp dẫn cho Video phái sinh #1 (nêu rõ nhân vật/tình huống biến thể, không đánh số Tập 1)",
+      "premise": "Tóm tắt cốt truyện phái sinh độc lập (2-3 câu): giữ đúng mô-típ lõi nhưng nêu rõ nhân vật/phương tiện mới, bối cảnh cụ thể mới, hành vi/biểu hiện riêng và cao trào-kết thúc riêng",
+      "characterBible": "Vai trò, ngoại hình & trang phục cụ thể của nhân vật riêng trong video phái sinh này",
+      "settingBible": "Bối cảnh không gian cụ thể, thời điểm & tông màu ánh sáng riêng của video phái sinh này",
+      "hookFormula": "Cách mở đầu giữ chân khán giả cho video phái sinh này",
       "derivativeHook": "Câu hook ngắn <= 12 chữ hiện 3.5s đầu"
     }
   ]
@@ -3982,12 +4145,13 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
                   ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
                   : {}),
                 systemInstruction:
-                  `Luôn trả về ĐÚNG ${params.videoCount} video độc lập được yêu cầu trong mảng concepts của JSON. Mỗi video phải là một câu chuyện tách biệt hoàn toàn với nhân vật và bối cảnh riêng, tuyệt đối không viết thành các tập nối tiếp.`,
+                  `Luôn trả về ĐÚNG ${params.videoCount} video phái sinh độc lập trong mảng concepts của JSON. TẤT CẢ phải xoay quanh CÙNG MỘT mô-típ cốt truyện & cấu trúc tình huống lõi của ý tưởng gốc (coreMotif), KHÔNG tạo truyện ngẫu nhiên khác mô-típ và KHÔNG viết thành các tập nối tiếp; chỉ thay đổi nhân vật, phương tiện, bối cảnh cụ thể, hành vi và diễn biến giải quyết ở mỗi video.`,
                 responseMimeType: 'application/json',
                 responseSchema: {
                   type: Type.OBJECT,
-                  required: ['sharedSpiritNote', 'concepts'],
+                  required: ['coreMotif', 'sharedSpiritNote', 'concepts'],
                   properties: {
+                    coreMotif: { type: Type.STRING },
                     sharedSpiritNote: { type: Type.STRING },
                     concepts: {
                       type: Type.ARRAY,
@@ -4052,10 +4216,15 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
     throw new Error('AI chưa tạo được danh sách ý tưởng độc lập hợp lệ. Vui lòng thử lại.');
   }
 
+  const coreMotif = String(
+    parsed?.coreMotif || params.selectedIdeaTitle || params.ideaText || 'Mô-típ tình huống cốt lõi từ nguồn tham chiếu'
+  ).trim();
+
   return {
+    coreMotif,
     sharedSpiritNote: String(
       parsed?.sharedSpiritNote ||
-        `Giữ tinh thần chủ đề "${params.ideaText || 'nguồn tham chiếu'}" · Phong cách ${params.videoStyleMeta.labelVi}`
+        `Mô-típ cốt lõi: ${coreMotif} · Phong cách ${params.videoStyleMeta.labelVi}`
     ).trim(),
     concepts,
   };
@@ -4065,6 +4234,7 @@ export async function learnAndCreateIndependentBatch(params: {
   mode?: StudioCreationMode;
   productionFormat?: StudioProductionFormat;
   ideaPrompt?: string;
+  selectedIdeaTitle?: string;
   query?: string;
   videos?: DerivativeSourceInput[];
   videoCount: number;
@@ -4088,7 +4258,7 @@ export async function learnAndCreateIndependentBatch(params: {
   enableVoiceover?: boolean;
   allowFreeCostumeChange?: boolean;
   aiProvider?: AiProviderId;
-}): Promise<{ sharedSpiritNote: string; blueprints: DerivativeBlueprint[] }> {
+}): Promise<{ sharedSpiritNote: string; coreMotif: string; blueprints: DerivativeBlueprint[] }> {
   const studioMode: StudioCreationMode = params.mode === 'creative' ? 'creative' : 'derivative';
   const productionFormat: StudioProductionFormat =
     params.productionFormat === 'narration_story' ? 'narration_story' : 'dialogue_film';
@@ -4118,7 +4288,7 @@ export async function learnAndCreateIndependentBatch(params: {
   const videoStyleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
   const videoStyle = videoStyleMeta.styleKey;
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
-  const count = Math.max(2, Math.min(15, Math.round(Number(params.videoCount || 3))));
+  const count = Math.max(1, Math.min(15, Math.round(Number(params.videoCount || 3))));
   const defaultDur = Math.max(10, Math.min(900, Math.round(Number(params.targetDurationSec || 30))));
 
   const contexts = videosList.length > 0 ? await gatherSourceContexts(videosList) : [];
@@ -4126,8 +4296,10 @@ export async function learnAndCreateIndependentBatch(params: {
   const plan = await planIndependentVideoConcepts({
     studioMode,
     ideaText,
+    selectedIdeaTitle: params.selectedIdeaTitle,
     contexts,
     videoCount: count,
+    unitDurationSec: defaultDur,
     videoStyleMeta,
     stylePreset: activeStylePreset,
     outputLang,
@@ -4145,8 +4317,8 @@ export async function learnAndCreateIndependentBatch(params: {
     const base = plan.concepts[plan.concepts.length % Math.max(1, plan.concepts.length)];
     const n = plan.concepts.length + 1;
     plan.concepts.push({
-      title: `${base.title} (Biến thể góc nhìn #${n})`,
-      premise: `Một câu chuyện hoàn toàn độc lập lấy cảm hứng từ tinh thần chung: ${plan.sharedSpiritNote}. Khai thác nhân vật và xung đột mới mẻ khác biệt với các video trước.`,
+      title: `${base.title} (Biến thể phái sinh #${n})`,
+      premise: `Video phái sinh độc lập giữ đúng mô-típ cốt lõi (${plan.coreMotif}), thay đổi sang nhân vật, phương tiện, bối cảnh cụ thể và diễn biến giải quyết tình huống mới mẻ khác với các video trước.`,
       characterBible: '',
       settingBible: '',
       hookFormula: base.hookFormula,
@@ -4206,6 +4378,7 @@ export async function learnAndCreateIndependentBatch(params: {
           conceptOverride: {
             title: concept.title,
             premise: concept.premise,
+            coreMotif: plan.coreMotif,
             characterBible:
               !allowFreeCostumeChange && params.characterBible?.trim()
                 ? params.characterBible
@@ -4226,7 +4399,7 @@ export async function learnAndCreateIndependentBatch(params: {
     );
   }
 
-  return { sharedSpiritNote: plan.sharedSpiritNote, blueprints };
+  return { sharedSpiritNote: plan.sharedSpiritNote, coreMotif: plan.coreMotif, blueprints };
 }
 
 // ==========================================
