@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.21",
+    "version": "1.0.22",
     "date": "24/11/2026",
-    "title": "feat(studio): add support for generating multiple creative ideas",
+    "title": "feat: implement batch script generation with motif consistency",
     "changes": [
-      "feat(studio): add support for generating multiple creative ideas"
+      "feat: implement batch script generation with motif consistency"
     ]
   },
   {
