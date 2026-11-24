@@ -1441,17 +1441,19 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       }
       const effectiveAllowFree = blueprint?.allowFreeCostumeChange ?? allowFreeCostumeChange;
 
-      const res = await fetch('/api/command-center/productions/start', {
+      const res = await fetch('/api/command-center/studio-sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          sourceAction: 'manual_dispatch',
+          mode: studioMode,
           title: resolvedTitle,
-          script: fullDirective || resolvedTitle,
+          ideaOrCommand: fullDirective || resolvedTitle,
           productionFormat: blueprint?.productionFormat || productionFormat,
           aspectRatio,
           videoStyle: blueprint?.videoStyle || videoStyle,
           allowFreeCostumeChange: effectiveAllowFree,
-          studioBlueprint: blueprint || undefined,
+          blueprint: blueprint || undefined,
           characterRefs: syncedChars.slice(0, 8),
           visualBible: blueprint?.visualStyleBible ?? visualStyleBibleDraft.trim(),
           settingBible: blueprint?.settingBible ?? settingBibleDraft.trim(),
@@ -1461,7 +1463,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       });
       const data = await parseJsonSafe<{ error?: string }>(res);
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setProjectStatusMsg('Đã giao lệnh sản xuất sang Phòng Điều Hành 5 Muse AI.');
+      setProjectStatusMsg(
+        'Đã đồng bộ kịch bản & nhân vật sang Phòng Điều Hành. Chọn nguồn tạo video (AI Gemini / Google Flow / AI Muse) rồi bấm "Bắt đầu sản xuất".'
+      );
       onOpenCommandCenter?.();
     } catch (err: any) {
       const msg = err?.message || 'Không thể giao lệnh sang Phòng Điều Hành 5 Muse AI.';

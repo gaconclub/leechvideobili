@@ -27,12 +27,16 @@ import type {
   CommandCenterState,
   CommunicationChannelId,
   ConversationMessage,
+  GeminiAccountPublic,
+  GeminiDmChannelId,
   MuseAgentConfig,
   MuseAgentId,
   VideoGenerationEngine,
 } from '../../types/commandCenter';
 import { AgentAvatar } from './AgentAvatar';
 import { GoogleFlowModal } from './GoogleFlowModal';
+
+type ChatResponderId = MuseAgentId | 'chairman' | 'gemini' | GeminiDmChannelId;
 
 interface CommunicationHubProps {
   state: CommandCenterState;
@@ -48,13 +52,13 @@ interface ChannelMeta {
   name: string;
   shortLabel: string;
   description: string;
-  defaultResponder: MuseAgentId | 'chairman' | 'gemini';
+  defaultResponder: ChatResponderId;
 }
 
 interface QuickCommand {
   label: string;
   prompt: string;
-  target?: MuseAgentId | 'chairman' | 'gemini';
+  target?: ChatResponderId;
 }
 
 const WORK_CHANNELS: ChannelMeta[] = [
@@ -173,27 +177,28 @@ function formatFullDateTime(ts: number): string {
 }
 
 function getQuickCommandsForChannel(channel: CommunicationChannelId): QuickCommand[] {
-  if (channel === 'gemini') {
+  if (channel === 'gemini' || channel.startsWith('gemini:')) {
+    const target = channel as 'gemini' | GeminiDmChannelId;
     return [
       {
-        label: 'Báo cáo tiến độ chi tiết',
-        prompt: 'Báo cáo chi tiết tiến độ hiện tại: bao nhiêu ảnh đã duyệt QA, bao nhiêu video đã xong, cảnh nào đang kẹt?',
-        target: 'gemini',
+        label: 'Kiểm tra trạng thái & sẵn sàng',
+        prompt: 'Báo cáo tình trạng sẵn sàng của bạn, số tác vụ bạn đang phụ trách và tiến độ chi tiết của phiên hiện tại.',
+        target,
       },
       {
         label: 'Tạo video Gemini cho ảnh đã duyệt',
         prompt: 'Hãy tạo video ngay lập tức bằng AI Gemini cho toàn bộ các ảnh phân cảnh đã thông qua QA.',
-        target: 'gemini',
+        target,
       },
       {
         label: 'Xuất kịch bản sang Google Flow',
         prompt: 'Hãy chuyển và xuất toàn bộ kịch bản phân cảnh sang Google Flow để tôi render video.',
-        target: 'gemini',
+        target,
       },
       {
-        label: 'Gỡ treo đội AI Muse ngay',
-        prompt: 'Kiểm tra và gỡ treo toàn bộ các tác vụ/AI Muse đang bị kẹt để dây chuyền chạy tiếp ngay.',
-        target: 'gemini',
+        label: 'Gỡ treo đội AI ngay',
+        prompt: 'Kiểm tra và gỡ treo toàn bộ các tác vụ/AI đang bị kẹt để dây chuyền chạy tiếp ngay.',
+        target,
       },
     ];
   }
@@ -305,7 +310,10 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
   onJumpToIncident,
 }) => {
   const [activeChannel, setActiveChannel] = useState<CommunicationChannelId>(initialChannel || 'commander');
-  const [targetResponder, setTargetResponder] = useState<MuseAgentId | 'chairman' | 'gemini'>('chairman');
+  const [sidebarAiTab, setSidebarAiTab] = useState<'gemini' | 'muse'>('gemini');
+  const [targetResponder, setTargetResponder] = useState<ChatResponderId>('chairman');
+  const [testingGeminiId, setTestingGeminiId] = useState<string | null>(null);
+  const [testingAllGemini, setTestingAllGemini] = useState(false);
   const [inputText, setInputText] = useState('');
   const [selectedSceneId, setSelectedSceneId] = useState('');
   const [attachments, setAttachments] = useState<string[]>([]);
@@ -348,24 +356,45 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
     if (initialChannel) {
       setActiveChannel(initialChannel);
       setArchiveMode(false);
+      if (initialChannel.startsWith('gemini:')) setSidebarAiTab('gemini');
+      else if (initialChannel.startsWith('muse-')) setSidebarAiTab('muse');
     }
   }, [initialChannel]);
+
+  const geminiAccounts = useMemo(() => state.geminiAccounts || [], [state.geminiAccounts]);
+  const enabledGeminiAccounts = useMemo(
+    () => geminiAccounts.filter((a) => a.enabled),
+    [geminiAccounts]
+  );
 
   const activeWorkMeta = useMemo(
     () => WORK_CHANNELS.find((c) => c.id === activeChannel) || null,
     [activeChannel]
   );
 
-  const isDmChannel = activeChannel.startsWith('muse-');
+  const isMuseDmChannel = activeChannel.startsWith('muse-');
+  const isGeminiDmChannel = activeChannel.startsWith('gemini:');
+  const isDmChannel = isMuseDmChannel || isGeminiDmChannel;
   const activeDmAgent = useMemo(
-    () => (isDmChannel ? state.agents.find((a) => a.id === activeChannel) || null : null),
-    [isDmChannel, activeChannel, state.agents]
+    () => (isMuseDmChannel ? state.agents.find((a) => a.id === activeChannel) || null : null),
+    [isMuseDmChannel, activeChannel, state.agents]
+  );
+  const activeDmGemini = useMemo(
+    () =>
+      isGeminiDmChannel
+        ? geminiAccounts.find((a) => a.id === activeChannel.slice('gemini:'.length)) || null
+        : null,
+    [isGeminiDmChannel, activeChannel, geminiAccounts]
   );
 
   // Sync default responder cleanly when switching channels
   useEffect(() => {
     if (activeChannel.startsWith('muse-')) {
       setTargetResponder(activeChannel as MuseAgentId);
+      setSidebarAiTab('muse');
+    } else if (activeChannel.startsWith('gemini:')) {
+      setTargetResponder(activeChannel as GeminiDmChannelId);
+      setSidebarAiTab('gemini');
     } else {
       const meta = WORK_CHANNELS.find((c) => c.id === activeChannel);
       setTargetResponder(meta?.defaultResponder || 'chairman');
@@ -496,14 +525,16 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
 
   const dispatchMessage = async (
     overrideText?: string,
-    overrideTarget?: MuseAgentId | 'chairman' | 'gemini'
+    overrideTarget?: ChatResponderId
   ) => {
     const textToSend = (overrideText !== undefined ? overrideText : inputText).trim();
     const filesToSend = overrideText !== undefined ? [] : attachments;
     if ((!textToSend && filesToSend.length === 0) || sending) return;
 
-    const effectiveTarget: MuseAgentId | 'chairman' | 'gemini' = isDmChannel
+    const effectiveTarget: ChatResponderId = isMuseDmChannel
       ? (activeChannel as MuseAgentId)
+      : isGeminiDmChannel
+      ? (activeChannel as GeminiDmChannelId)
       : overrideTarget || targetResponder;
 
     setErrorBanner(null);
@@ -644,26 +675,193 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
     [activeScenes]
   );
 
+  const getGeminiLiveMeta = useCallback(
+    (acc: GeminiAccountPublic) => {
+      const workerProg = (activeRun?.perGeminiProgress || []).find((p) => p.accountId === acc.id);
+      const runTasksForAcc = state.tasks.filter(
+        (t) =>
+          (!activeRun || t.runId === activeRun.id) &&
+          (t.assignedGeminiAccountId === acc.id || (acc.isChairman && t.assignedAgentId === 'chairman'))
+      );
+      const runningList = runTasksForAcc.filter((t) => t.status === 'running');
+      const runningCount = Math.max(workerProg?.runningTasks || 0, runningList.length);
+      const completedCount = Math.max(
+        workerProg?.completedTasks || 0,
+        runTasksForAcc.filter((t) => t.status === 'completed').length
+      );
+      const currentTaskTitle = workerProg?.currentTaskTitle || runningList[0]?.title;
+
+      if (!acc.enabled) {
+        return {
+          label: 'Đã tắt',
+          dotClass: 'bg-slate-400',
+          textClass: 'text-slate-400 dark:text-slate-500',
+          runningCount: 0,
+          completedCount,
+          currentTaskTitle: undefined,
+          isReady: false,
+        };
+      }
+      if (runningCount > 0) {
+        return {
+          label: `Đang làm việc (${runningCount})`,
+          dotClass: 'bg-cyan-500 animate-pulse',
+          textClass: 'text-cyan-600 dark:text-cyan-400',
+          runningCount,
+          completedCount,
+          currentTaskTitle,
+          isReady: true,
+        };
+      }
+      if (acc.status === 'healthy') {
+        return {
+          label: acc.lastLatencyMs ? `Sẵn sàng · ${acc.lastLatencyMs}ms` : 'Sẵn sàng',
+          dotClass: 'bg-emerald-500',
+          textClass: 'text-emerald-600 dark:text-emerald-400',
+          runningCount: 0,
+          completedCount,
+          currentTaskTitle: undefined,
+          isReady: true,
+        };
+      }
+      if (acc.status === 'quota_exceeded') {
+        return {
+          label: 'Hết hạn mức (429)',
+          dotClass: 'bg-amber-500',
+          textClass: 'text-amber-600 dark:text-amber-400',
+          runningCount: 0,
+          completedCount,
+          currentTaskTitle: undefined,
+          isReady: false,
+        };
+      }
+      if (acc.status === 'error') {
+        return {
+          label: 'Gặp lỗi API',
+          dotClass: 'bg-rose-500',
+          textClass: 'text-rose-600 dark:text-rose-400',
+          runningCount: 0,
+          completedCount,
+          currentTaskTitle: undefined,
+          isReady: false,
+        };
+      }
+      return {
+        label: 'Sẵn sàng (chưa test)',
+        dotClass: 'bg-sky-500',
+        textClass: 'text-sky-600 dark:text-sky-400',
+        runningCount: 0,
+        completedCount,
+        currentTaskTitle: undefined,
+        isReady: true,
+      };
+    },
+    [activeRun, state.tasks]
+  );
+
+  const handleTestGeminiAccount = async (accId: string) => {
+    setTestingGeminiId(accId);
+    setErrorBanner(null);
+    setActionNotice(null);
+    try {
+      const res = await fetch(`/api/gemini-accounts/${encodeURIComponent(accId)}/test`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (Array.isArray(data.accounts)) {
+        setState((prev) => (prev ? { ...prev, geminiAccounts: data.accounts } : prev));
+      }
+      if (!res.ok || data.ok === false) {
+        setErrorBanner(`${data.account?.label || 'AI Gemini'}: ${data.message || data.error || 'Kiểm tra thất bại.'}`);
+      } else {
+        setActionNotice(`${data.account?.label || 'AI Gemini'}: ${data.message || 'Kết nối sẵn sàng.'}`);
+      }
+    } catch (err: any) {
+      setErrorBanner(err?.message || 'Không thể kiểm tra kết nối AI Gemini.');
+    } finally {
+      setTestingGeminiId(null);
+    }
+  };
+
+  const handleTestAllGeminiAccounts = async () => {
+    const targets = enabledGeminiAccounts;
+    if (targets.length === 0) {
+      setErrorBanner('Chưa có AI Gemini nào đang bật trong Cài đặt để kiểm tra.');
+      return;
+    }
+    setTestingAllGemini(true);
+    setErrorBanner(null);
+    setActionNotice(null);
+    let okCount = 0;
+    let latestAccounts: GeminiAccountPublic[] | null = null;
+    try {
+      for (const acc of targets) {
+        setTestingGeminiId(acc.id);
+        try {
+          const res = await fetch(`/api/gemini-accounts/${encodeURIComponent(acc.id)}/test`, {
+            method: 'POST',
+          });
+          const data = await res.json();
+          if (Array.isArray(data.accounts)) latestAccounts = data.accounts;
+          if (res.ok && data.ok) okCount += 1;
+        } catch {
+          // continue checking remaining accounts
+        }
+      }
+      if (latestAccounts) {
+        setState((prev) => (prev ? { ...prev, geminiAccounts: latestAccounts! } : prev));
+      }
+      setActionNotice(`Đã kiểm tra ${targets.length} AI Gemini: ${okCount}/${targets.length} sẵn sàng hoạt động.`);
+    } finally {
+      setTestingGeminiId(null);
+      setTestingAllGemini(false);
+    }
+  };
+
+  const geminiReadyCount = useMemo(
+    () => geminiAccounts.filter((a) => getGeminiLiveMeta(a).isReady).length,
+    [geminiAccounts, getGeminiLiveMeta]
+  );
+  const geminiWorkingCount = useMemo(
+    () => geminiAccounts.filter((a) => getGeminiLiveMeta(a).runningCount > 0).length,
+    [geminiAccounts, getGeminiLiveMeta]
+  );
+
   const responderLabel = useMemo(() => {
-    if (isDmChannel && activeDmAgent) return activeDmAgent.name;
+    if (isMuseDmChannel && activeDmAgent) return activeDmAgent.name;
+    if (isGeminiDmChannel && activeDmGemini) return activeDmGemini.label;
     if (targetResponder === 'gemini') return 'AI Gemini · Tiến độ & Video';
     if (targetResponder === 'chairman') return 'Gemini AI – Chủ tịch';
+    if (String(targetResponder).startsWith('gemini:')) {
+      const id = String(targetResponder).slice('gemini:'.length);
+      const foundGem = geminiAccounts.find((a) => a.id === id);
+      return foundGem ? foundGem.label : 'AI Gemini';
+    }
     const found = state.agents.find((a) => a.id === targetResponder);
-    return found ? found.name : targetResponder.toUpperCase();
-  }, [isDmChannel, activeDmAgent, targetResponder, state.agents]);
+    return found ? found.name : String(targetResponder).toUpperCase();
+  }, [isMuseDmChannel, activeDmAgent, isGeminiDmChannel, activeDmGemini, targetResponder, geminiAccounts, state.agents]);
 
   const contextTasks = useMemo(() => {
-    if (isDmChannel && activeDmAgent) {
+    if (isMuseDmChannel && activeDmAgent) {
       return state.tasks.filter((t) => t.assignedAgentId === activeDmAgent.id).slice(0, 8);
     }
+    if (isGeminiDmChannel && activeDmGemini) {
+      return state.tasks
+        .filter(
+          (t) =>
+            t.assignedGeminiAccountId === activeDmGemini.id ||
+            (activeDmGemini.isChairman && t.assignedAgentId === 'chairman')
+        )
+        .slice(0, 8);
+    }
     return state.tasks.filter((t) => t.status === 'running' || t.status === 'queued' || t.status === 'failed').slice(0, 8);
-  }, [isDmChannel, activeDmAgent, state.tasks]);
+  }, [isMuseDmChannel, activeDmAgent, isGeminiDmChannel, activeDmGemini, state.tasks]);
 
   const renderMessageItem = (msg: ConversationMessage) => {
     const isUser = msg.senderType === 'user';
     const isSystem = msg.senderType === 'system';
     const isChairman = msg.senderId === 'chairman';
-    const isGeminiDirect = msg.senderId === 'gemini';
+    const isGeminiDirect = msg.senderId === 'gemini' || msg.senderId.startsWith('gemini:');
     const senderAgent =
       !isUser && !isSystem && !isChairman && !isGeminiDirect
         ? state.agents.find((a) => a.id === msg.senderId) || null
@@ -946,7 +1144,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
       {/* =====================================================
           LEFT SIDEBAR: CLEAN CHANNEL & DIRECT AI NAVIGATION
          ===================================================== */}
-      <aside className="w-[244px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-slate-50/75 dark:bg-[#111622] flex flex-col">
+      <aside className="w-[268px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-slate-50/75 dark:bg-[#111622] flex flex-col">
         {/* Top Chairman & Direct AI Gemini Fast Entries */}
         <div className="p-3 border-b border-slate-200/80 dark:border-slate-800/80 space-y-2">
           <button
@@ -969,7 +1167,8 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-semibold truncate">AI Gemini · Tiến độ</div>
                 <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                  Báo cáo & tạo video Gemini/Flow
+                  {geminiReadyCount}/{geminiAccounts.length} sẵn sàng
+                  {geminiWorkingCount > 0 ? ` · ${geminiWorkingCount} đang chạy` : ''}
                 </div>
               </div>
             </div>
@@ -1004,56 +1203,217 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
 
         {/* Scrollable Nav Lists */}
         <div className="flex-1 overflow-y-auto px-2.5 py-3 space-y-5">
-          {/* Group 1: Direct 1-1 with 5 Muse AI */}
-          <div>
-            <div className="px-2 mb-1.5 flex items-center justify-between">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
-                Chat riêng 5 Muse AI
-              </span>
+          {/* Group 1: 2-Tab Switcher — AI Gemini (from Settings) | Chat riêng 5 Muse AI */}
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#0B0F1A] border border-slate-200/80 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setSidebarAiTab('gemini')}
+                className={`px-2 py-1.5 rounded-lg text-[11px] font-semibold transition-colors flex items-center justify-center gap-1 cursor-pointer ${
+                  sidebarAiTab === 'gemini'
+                    ? 'bg-white dark:bg-[#1A2236] text-blue-700 dark:text-blue-300 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Sparkles className="w-3 h-3 shrink-0" />
+                <span className="truncate">AI Gemini ({geminiAccounts.length})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSidebarAiTab('muse')}
+                className={`px-2 py-1.5 rounded-lg text-[11px] font-semibold transition-colors flex items-center justify-center gap-1 cursor-pointer ${
+                  sidebarAiTab === 'muse'
+                    ? 'bg-white dark:bg-[#1A2236] text-slate-900 dark:text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <span className="truncate">5 Muse AI</span>
+              </button>
             </div>
-            <div className="space-y-0.5">
-              {state.agents.map((agent) => {
-                const isSelected = !archiveMode && activeChannel === agent.id;
-                const count = messageCountByChannel[agent.id] || 0;
-                return (
+
+            {sidebarAiTab === 'gemini' ? (
+              <div className="space-y-1.5">
+                <div className="px-1.5 flex items-center justify-between gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                    Danh sách AI Gemini ({geminiReadyCount}/{geminiAccounts.length})
+                  </span>
                   <button
-                    key={agent.id}
                     type="button"
-                    onClick={() => {
-                      setArchiveMode(false);
-                      setActiveChannel(agent.id);
-                    }}
-                    className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left transition-colors ${
-                      isSelected
-                        ? 'bg-slate-900 text-white dark:bg-slate-800 dark:text-white'
-                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800/60'
-                    }`}
+                    disabled={testingAllGemini || testingGeminiId !== null}
+                    onClick={() => void handleTestAllGeminiAccounts()}
+                    title="Kiểm tra tình trạng sẵn sàng của tất cả AI Gemini"
+                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50 cursor-pointer"
                   >
-                    <AgentAvatar agent={agent} size="xs" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium truncate">{agent.name}</div>
-                      <div
-                        className={`text-[10px] truncate ${
-                          isSelected ? 'text-slate-300' : AGENT_STATUS_TEXT_CLASS[agent.status]
-                        }`}
-                      >
-                        {AGENT_STATUS_LABEL[agent.status]}
-                        {agent.id === 'muse-05' ? ' · QA' : ''}
-                      </div>
-                    </div>
-                    {count > 0 && (
-                      <span
-                        className={`text-[10px] tabular-nums ${
-                          isSelected ? 'text-slate-300' : 'text-slate-400 dark:text-slate-500'
-                        }`}
-                      >
-                        {count}
-                      </span>
-                    )}
+                    <RefreshCw className={`w-2.5 h-2.5 ${testingAllGemini ? 'animate-spin' : ''}`} />
+                    <span>Kiểm tra</span>
                   </button>
-                );
-              })}
-            </div>
+                </div>
+
+                {geminiAccounts.length === 0 ? (
+                  <div className="px-2.5 py-3 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-[11px] text-slate-500 dark:text-slate-400 text-center">
+                    Chưa có AI Gemini nào trong Cài đặt.
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {geminiAccounts.map((acc) => {
+                      const chId = `gemini:${acc.id}` as GeminiDmChannelId;
+                      const isSelected = !archiveMode && activeChannel === chId;
+                      const count = messageCountByChannel[chId] || 0;
+                      const meta = getGeminiLiveMeta(acc);
+                      const isPinging = testingGeminiId === acc.id;
+                      return (
+                        <div
+                          key={acc.id}
+                          onClick={() => {
+                            setArchiveMode(false);
+                            setActiveChannel(chId);
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setArchiveMode(false);
+                              setActiveChannel(chId);
+                            }
+                          }}
+                          className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'bg-blue-600 text-white'
+                              : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800/60'
+                          }`}
+                        >
+                          <div className="relative shrink-0">
+                            <div
+                              className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                                isSelected
+                                  ? 'bg-white/20 text-white'
+                                  : acc.isChairman
+                                  ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                  : 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                              }`}
+                            >
+                              {acc.isChairman ? (
+                                <Crown className="w-3.5 h-3.5" />
+                              ) : (
+                                <Sparkles className="w-3.5 h-3.5" />
+                              )}
+                            </div>
+                            <span
+                              className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 ${
+                                isSelected ? 'border-blue-600' : 'border-slate-50 dark:border-[#111622]'
+                              } ${meta.dotClass}`}
+                            />
+                          </div>
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1">
+                              <span className="text-xs font-medium truncate">{acc.label}</span>
+                            </div>
+                            <div
+                              className={`text-[10px] truncate ${
+                                isSelected ? 'text-blue-100' : meta.textClass
+                              }`}
+                            >
+                              {meta.label}
+                              {acc.isChairman ? ' · Chủ tịch' : ''}
+                            </div>
+                            {meta.currentTaskTitle && (
+                              <div
+                                className={`text-[9px] truncate ${
+                                  isSelected ? 'text-blue-100/90' : 'text-slate-500 dark:text-slate-400'
+                                }`}
+                              >
+                                {meta.currentTaskTitle}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            {count > 0 && (
+                              <span
+                                className={`text-[10px] tabular-nums ${
+                                  isSelected ? 'text-blue-100' : 'text-slate-400 dark:text-slate-500'
+                                }`}
+                              >
+                                {count}
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              disabled={isPinging || testingAllGemini}
+                              title={`Kiểm tra kết nối ${acc.label}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleTestGeminiAccount(acc.id);
+                              }}
+                              className={`p-1 rounded-md transition-colors cursor-pointer ${
+                                isSelected
+                                  ? 'text-white/80 hover:text-white hover:bg-white/15'
+                                  : 'text-slate-400 hover:text-blue-600 hover:bg-blue-500/10'
+                              }`}
+                            >
+                              <RefreshCw className={`w-3 h-3 ${isPinging ? 'animate-spin' : ''}`} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <div className="px-1.5 mb-1 flex items-center justify-between">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                    Chat riêng 5 Muse AI
+                  </span>
+                </div>
+                <div className="space-y-0.5">
+                  {state.agents.map((agent) => {
+                    const isSelected = !archiveMode && activeChannel === agent.id;
+                    const count = messageCountByChannel[agent.id] || 0;
+                    return (
+                      <button
+                        key={agent.id}
+                        type="button"
+                        onClick={() => {
+                          setArchiveMode(false);
+                          setActiveChannel(agent.id);
+                        }}
+                        className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left transition-colors ${
+                          isSelected
+                            ? 'bg-slate-900 text-white dark:bg-slate-800 dark:text-white'
+                            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-800/60'
+                        }`}
+                      >
+                        <AgentAvatar agent={agent} size="xs" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-medium truncate">{agent.name}</div>
+                          <div
+                            className={`text-[10px] truncate ${
+                              isSelected ? 'text-slate-300' : AGENT_STATUS_TEXT_CLASS[agent.status]
+                            }`}
+                          >
+                            {AGENT_STATUS_LABEL[agent.status]}
+                            {agent.id === 'muse-05' ? ' · QA' : ''}
+                          </div>
+                        </div>
+                        {count > 0 && (
+                          <span
+                            className={`text-[10px] tabular-nums ${
+                              isSelected ? 'text-slate-300' : 'text-slate-400 dark:text-slate-500'
+                            }`}
+                          >
+                            {count}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Group 2: Work Channels */}
@@ -1183,6 +1543,12 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
               >
                 <option value="">Tất cả người gửi</option>
                 <option value="chairman">Gemini AI – Chủ tịch</option>
+                <option value="gemini">AI Gemini · Tiến độ</option>
+                {geminiAccounts.map((g) => (
+                  <option key={g.id} value={`gemini:${g.id}`}>
+                    AI Gemini: {g.label}
+                  </option>
+                ))}
                 {state.agents.map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.name}
@@ -1248,8 +1614,18 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
             {/* Top Channel Header */}
             <header className="px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 shrink-0">
               <div className="flex items-center gap-3 min-w-0">
-                {isDmChannel && activeDmAgent ? (
+                {isMuseDmChannel && activeDmAgent ? (
                   <AgentAvatar agent={activeDmAgent} size="sm" />
+                ) : isGeminiDmChannel && activeDmGemini ? (
+                  <div
+                    className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                      activeDmGemini.isChairman
+                        ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                        : 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                    }`}
+                  >
+                    {activeDmGemini.isChairman ? <Crown className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />}
+                  </div>
                 ) : activeChannel === 'gemini' ? (
                   <div className="w-8 h-8 rounded-lg bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
                     <Sparkles className="w-4 h-4" />
@@ -1267,15 +1643,24 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                      {isDmChannel && activeDmAgent
+                      {isMuseDmChannel && activeDmAgent
                         ? activeDmAgent.name
+                        : isGeminiDmChannel && activeDmGemini
+                        ? activeDmGemini.label
                         : activeWorkMeta?.name || `#${activeChannel}`}
                     </h3>
-                    {isDmChannel && activeDmAgent && (
+                    {isMuseDmChannel && activeDmAgent && (
                       <span
                         className={`text-xs font-medium whitespace-nowrap ${AGENT_STATUS_TEXT_CLASS[activeDmAgent.status]}`}
                       >
                         · {AGENT_STATUS_LABEL[activeDmAgent.status]}
+                      </span>
+                    )}
+                    {isGeminiDmChannel && activeDmGemini && (
+                      <span
+                        className={`text-xs font-medium whitespace-nowrap ${getGeminiLiveMeta(activeDmGemini).textClass}`}
+                      >
+                        · {getGeminiLiveMeta(activeDmGemini).label}
                       </span>
                     )}
                     {lastReplyMs !== null && !sending && (
@@ -1285,8 +1670,15 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                     )}
                   </div>
                   <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                    {isDmChannel && activeDmAgent
+                    {isMuseDmChannel && activeDmAgent
                       ? `${activeDmAgent.roleTitle} · ${activeDmAgent.currentTaskSummary || 'Đang sẵn sàng nhận lệnh'}`
+                      : isGeminiDmChannel && activeDmGemini
+                      ? `AI Gemini (${activeDmGemini.maskedKey}) · ${
+                          getGeminiLiveMeta(activeDmGemini).currentTaskTitle ||
+                          activeDmGemini.lastError ||
+                          activeDmGemini.note ||
+                          'Sẵn sàng trao đổi & thực thi lệnh trực tiếp'
+                        }`
                       : activeWorkMeta?.description}
                   </p>
                 </div>
@@ -1294,6 +1686,17 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
 
               {/* Clean Header Action Controls */}
               <div className="flex items-center gap-1.5 shrink-0">
+                {isGeminiDmChannel && activeDmGemini && (
+                  <button
+                    type="button"
+                    disabled={testingGeminiId === activeDmGemini.id}
+                    onClick={() => void handleTestGeminiAccount(activeDmGemini.id)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-blue-500/35 bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 disabled:opacity-50 whitespace-nowrap cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${testingGeminiId === activeDmGemini.id ? 'animate-spin' : ''}`} />
+                    <span>Kiểm tra kết nối</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -1517,12 +1920,16 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                     </div>
                     <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                       Bắt đầu trao đổi tại{' '}
-                      {isDmChannel && activeDmAgent
+                      {isMuseDmChannel && activeDmAgent
                         ? activeDmAgent.name
+                        : isGeminiDmChannel && activeDmGemini
+                        ? activeDmGemini.label
                         : activeWorkMeta?.name || `#${activeChannel}`}
                     </h4>
                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                      Nhập chỉ đạo bên dưới hoặc bấm vào các lệnh nhanh để Chủ tịch và đội Muse AI phản hồi trực tiếp theo dữ liệu phiên hiện tại.
+                      {isGeminiDmChannel && activeDmGemini
+                        ? `Nhắn trực tiếp cho ${activeDmGemini.label} để kiểm tra tình trạng sẵn sàng, xem tiến độ thực thi hoặc kích hoạt tạo video AI Gemini / Google Flow.`
+                        : 'Nhập chỉ đạo bên dưới hoặc bấm vào các lệnh nhanh để AI Gemini, Chủ tịch và đội Muse AI phản hồi trực tiếp theo dữ liệu phiên hiện tại.'}
                     </p>
                   </div>
                 ) : (
@@ -1657,21 +2064,42 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                       <button
                         type="button"
                         onClick={() => setTargetResponder('gemini')}
-                        className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
+                        className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                           targetResponder === 'gemini'
-                            ? 'bg-blue-600/15 text-blue-700 dark:text-blue-300'
-                            : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                            ? 'bg-blue-600 text-white'
+                            : 'text-blue-700 dark:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20'
                         }`}
                       >
-                        AI Gemini
+                        AI Gemini (Chung)
                       </button>
+                      {enabledGeminiAccounts.map((acc) => {
+                        const tId = `gemini:${acc.id}` as GeminiDmChannelId;
+                        const active = targetResponder === tId;
+                        const gm = getGeminiLiveMeta(acc);
+                        return (
+                          <button
+                            key={acc.id}
+                            type="button"
+                            onClick={() => setTargetResponder(tId)}
+                            title={`${acc.label} — ${gm.label}`}
+                            className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1 cursor-pointer ${
+                              active
+                                ? 'bg-blue-600 text-white'
+                                : 'text-slate-600 dark:text-slate-300 hover:bg-blue-500/10 hover:text-blue-700 dark:hover:text-blue-300'
+                            }`}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-white' : gm.dotClass}`} />
+                            <span>{acc.label}</span>
+                          </button>
+                        );
+                      })}
                       <button
                         type="button"
                         onClick={() => setTargetResponder('chairman')}
-                        className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
+                        className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                           targetResponder === 'chairman'
-                            ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
-                            : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                            ? 'bg-amber-500 text-white'
+                            : 'text-amber-700 dark:text-amber-300 hover:bg-amber-500/15'
                         }`}
                       >
                         Chủ tịch Gemini
@@ -1681,7 +2109,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                           key={a.id}
                           type="button"
                           onClick={() => setTargetResponder(a.id)}
-                          className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
+                          className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                             targetResponder === a.id
                               ? 'bg-slate-900 text-white dark:bg-violet-600 dark:text-white'
                               : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -1695,7 +2123,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                     <div className="text-[11px] text-slate-500 dark:text-slate-400">
                       Trao đổi trực tiếp 1-1 với{' '}
                       <span className="font-semibold text-slate-800 dark:text-slate-200">
-                        {activeDmAgent?.name}
+                        {isGeminiDmChannel && activeDmGemini ? activeDmGemini.label : activeDmAgent?.name}
                       </span>
                     </div>
                   )}
@@ -1780,7 +2208,11 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
         <aside className="w-[296px] shrink-0 border-l border-slate-200 dark:border-slate-800 bg-slate-50/75 dark:bg-[#111622] flex flex-col overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200/80 dark:border-slate-800/80 flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-900 dark:text-white">
-              {isDmChannel && activeDmAgent ? `Hồ sơ ${activeDmAgent.name}` : 'Ngữ cảnh phiên hiện tại'}
+              {isMuseDmChannel && activeDmAgent
+                ? `Hồ sơ ${activeDmAgent.name}`
+                : isGeminiDmChannel && activeDmGemini
+                ? `Hồ sơ ${activeDmGemini.label}`
+                : 'Ngữ cảnh phiên hiện tại'}
             </span>
             <button
               type="button"
@@ -1811,8 +2243,60 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
               </div>
             </div>
 
+            {/* Active DM Gemini Account Stats */}
+            {isGeminiDmChannel && activeDmGemini && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    Tình trạng AI Gemini này
+                  </span>
+                  <button
+                    type="button"
+                    disabled={testingGeminiId === activeDmGemini.id}
+                    onClick={() => void handleTestGeminiAccount(activeDmGemini.id)}
+                    className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                  >
+                    {testingGeminiId === activeDmGemini.id ? 'Đang kiểm tra...' : 'Kiểm tra ngay'}
+                  </button>
+                </div>
+                <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-[#151B29] p-3 space-y-2.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-500">Trạng thái</span>
+                    <span className={`font-semibold ${getGeminiLiveMeta(activeDmGemini).textClass}`}>
+                      {getGeminiLiveMeta(activeDmGemini).label}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center pt-1 border-t border-slate-100 dark:border-slate-800">
+                    <div>
+                      <div className="text-sm font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                        {activeDmGemini.successCount}
+                      </div>
+                      <div className="text-[10px] text-slate-500">Thành công</div>
+                    </div>
+                    <div>
+                      <div className="text-sm font-bold text-rose-600 dark:text-rose-400 tabular-nums">
+                        {activeDmGemini.errorCount}
+                      </div>
+                      <div className="text-[10px] text-slate-500">Lỗi</div>
+                    </div>
+                    <div>
+                      <div className="text-sm font-bold text-slate-700 dark:text-slate-200 tabular-nums">
+                        {activeDmGemini.lastLatencyMs ? `${activeDmGemini.lastLatencyMs}ms` : '—'}
+                      </div>
+                      <div className="text-[10px] text-slate-500">Độ trễ</div>
+                    </div>
+                  </div>
+                  {activeDmGemini.lastError && (
+                    <div className="text-[11px] text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/30 rounded-lg p-2">
+                      {activeDmGemini.lastError}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Active DM Agent Stats */}
-            {isDmChannel && activeDmAgent && (
+            {isMuseDmChannel && activeDmAgent && (
               <div className="space-y-1.5">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                   Hiệu suất AI này
