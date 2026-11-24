@@ -326,7 +326,10 @@ setInterval(() => {
   }
 }, 15 * 60 * 1000).unref();
 
-export function getGeminiClient(apiKeyOverride?: string): GoogleGenAI {
+export function getGeminiClient(
+  apiKeyOverride?: string,
+  options?: { apiVersion?: 'v1' | 'v1beta' }
+): GoogleGenAI {
   const apiKey =
     apiKeyOverride?.trim() ||
     resolveChairmanGeminiAccount()?.apiKey ||
@@ -338,12 +341,17 @@ export function getGeminiClient(apiKeyOverride?: string): GoogleGenAI {
   }
   return new GoogleGenAI({
     apiKey,
+    ...(options?.apiVersion ? { apiVersion: options.apiVersion } : {}),
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
       },
     },
   });
+}
+
+export function getGeminiBetaClient(apiKeyOverride?: string): GoogleGenAI {
+  return getGeminiClient(apiKeyOverride, { apiVersion: 'v1beta' });
 }
 
 function isTransientGemini503Error(err: any): boolean {
@@ -5424,10 +5432,10 @@ export async function generateStudioImage(params: {
 
   let lastErr: any;
   for (const model of candidateModels) {
-    try {
-      const response = await retryWithGeminiBackoff(
+    const runGenerateImage = (client: GoogleGenAI) =>
+      retryWithGeminiBackoff(
         () =>
-          ai.models.generateContent({
+          client.models.generateContent({
             model,
             contents: { parts },
             config: {
@@ -5439,6 +5447,19 @@ export async function generateStudioImage(params: {
           }),
         [1500, 3200]
       );
+
+    try {
+      let response;
+      try {
+        response = await runGenerateImage(ai);
+      } catch (v1Err: any) {
+        const msg = String(v1Err?.message || v1Err || '').toLowerCase();
+        if (msg.includes('404') || msg.includes('not_found') || msg.includes('v1beta')) {
+          response = await runGenerateImage(getGeminiBetaClient(params.geminiApiKey));
+        } else {
+          throw v1Err;
+        }
+      }
 
       for (const part of response.candidates?.[0]?.content?.parts ?? []) {
         if (part.inlineData?.data) {
@@ -5996,7 +6017,8 @@ export async function generateSceneVideoWithOmniFlash(params: {
     };
   }
 
-  const ai = getGeminiClient(params.geminiApiKey);
+  // gemini-omni-1.2-flash requires v1beta under @google/genai 3.x (whose default apiVersion is v1)
+  const ai = getGeminiBetaClient(params.geminiApiKey);
   const inputParts: any[] = [];
 
   // Interleave explicit text labels BEFORE each image so Gemini Omni Flash NEVER treats Image #2 as an ending frame or blends/swaps faces!
@@ -6069,7 +6091,12 @@ export async function generateSceneVideoWithOmniFlash(params: {
     if (videoPart.data) {
       videoBuffer = Buffer.from(videoPart.data, 'base64');
     } else if (videoPart.uri) {
-      const effectiveKey = (params.geminiApiKey || process.env.GEMINI_API_KEY || '').trim();
+      const effectiveKey = (
+        params.geminiApiKey ||
+        resolveChairmanGeminiAccount()?.apiKey ||
+        process.env.GEMINI_API_KEY ||
+        ''
+      ).trim();
       const dl = await fetch(videoPart.uri, {
         headers: { 'x-goog-api-key': effectiveKey },
         signal: AbortSignal.timeout(60_000),
@@ -6117,7 +6144,7 @@ export async function generateStudioMusicWithLyria(params: {
   prompt: string;
   mode?: 'clip' | 'pro';
 }): Promise<{ assetId: string; previewUrl: string; mimeType: string; lyrics: string; durationSec: number; model: string }> {
-  const ai = getGeminiClient();
+  const ai = getGeminiBetaClient();
   const musicModels =
     params.mode === 'pro' ? ['lyria-3-pro-preview', 'lyria-3-clip-preview'] : ['lyria-3-clip-preview'];
   const musicPrompt =
@@ -7247,12 +7274,20 @@ async function synthesizeSceneVoiceWavWithDetail(
   let lastError = '';
   let sawModelNotFound = false;
 
+  // Interactions API TTS models (gemini-3.8-*-tts) require v1beta under @google/genai 3.x
+  let interactionsClient: GoogleGenAI = ai;
+  try {
+    interactionsClient = getGeminiBetaClient();
+  } catch {
+    interactionsClient = ai;
+  }
+
   for (const tryVoice of voicesToTry) {
     for (const ttsModel of ttsModels) {
       try {
         const interaction = await retryWithGeminiBackoff(
           () =>
-            ai.interactions.create({
+            interactionsClient.interactions.create({
               model: ttsModel,
               input: [
                 {
@@ -7303,7 +7338,7 @@ async function synthesizeSceneVoiceWavWithDetail(
   }
 
   // Fallback via v1beta generateContent (supports gemini-3.8-*-tts and public gemini-2.5-flash-preview-tts)
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  const apiKey = (resolveChairmanGeminiAccount()?.apiKey || process.env.GEMINI_API_KEY || '').trim();
   if (apiKey) {
     const aiBeta = new GoogleGenAI({
       apiKey,

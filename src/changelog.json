@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.23",
+    "version": "1.0.24",
     "date": "24/11/2026",
-    "title": "feat(studio): add video analysis feature for idea generation",
+    "title": "feat: add configurable API version to Gemini client",
     "changes": [
-      "feat(studio): add video analysis feature for idea generation"
+      "feat: add configurable API version to Gemini client"
     ]
   },
   {
