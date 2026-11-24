@@ -35,6 +35,7 @@ import {
   Volume2,
   ShieldCheck,
   Wrench,
+  Eye,
 } from 'lucide-react';
 import {
   AiProviderId,
@@ -177,6 +178,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [uploadProgressText, setUploadProgressText] = useState('');
   const [uploadError, setUploadError] = useState('');
   const videoUploadInputRef = useRef<HTMLInputElement>(null);
+  const [isWatchingReferenceVideo, setIsWatchingReferenceVideo] = useState(false);
+  const [watchVideoError, setWatchVideoError] = useState('');
+  const [watchVideoSuccess, setWatchVideoSuccess] = useState('');
+  const [watchedSceneHighlights, setWatchedSceneHighlights] = useState<string[]>([]);
 
   // Inline Project Library Drawer for Derivative Reference Videos
   const [libraryItems, setLibraryItems] = useState<StudioLibraryVideoItem[]>([]);
@@ -1124,6 +1129,85 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
+  const handleWatchReferenceVideosToIdeaPrompt = async () => {
+    if (sources.length === 0) {
+      setWatchVideoError('Vui lòng tải lên hoặc chọn ít nhất 1 video tham chiếu trước khi cho AI xem video.');
+      return;
+    }
+
+    setIsWatchingReferenceVideo(true);
+    setWatchVideoError('');
+    setWatchVideoSuccess('');
+    setExpandIdeaError('');
+    setLearnError('');
+
+    const { syncedChars, changed } = synthesizeSyncedCharacters(characters, costumeBibleDraft.trim());
+    if (changed) {
+      setCharacters(syncedChars);
+    }
+    const charSummary = syncedChars
+      .map((c) => {
+        const sp = c.syncProfile;
+        const profileBits = [
+          sp?.face ? `Mặt: ${sp.face}` : '',
+          sp?.physique ? `Dáng: ${sp.physique}` : '',
+          sp?.costume ? `Trang phục: ${sp.costume}` : '',
+          sp?.distinguishingMarks ? `Nhận dạng: ${sp.distinguishingMarks}` : '',
+        ]
+          .filter(Boolean)
+          .join(', ');
+        return [c.name, profileBits || c.description].filter(Boolean).join(' - ');
+      })
+      .filter(Boolean)
+      .join('; ');
+
+    try {
+      const { res, data } = await fetchStudioJsonWithAutoRetry<{
+        detailedPrompt?: string;
+        suggestedSetting?: string;
+        sceneHighlights?: string[];
+        watchedVideoCount?: number;
+        usedProvider?: string;
+        usedModel?: string;
+        error?: string;
+      }>('/api/studio/analyze-video-idea', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          videos: sources,
+          outputLanguage,
+          videoStyle,
+          customStylePrompt: customStylePrompt.trim(),
+          characterSummary: charSummary,
+          allowFreeCostumeChange,
+          aiProvider,
+          useProModel: aiProvider === 'gemini' && useProModel,
+        }),
+      });
+
+      const promptText = String(data.detailedPrompt || '').trim();
+      if (!res.ok || !promptText) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      setIdeaPrompt(promptText);
+      if (data.suggestedSetting?.trim()) {
+        setSettingBibleDraft(data.suggestedSetting.trim());
+      }
+      setWatchedSceneHighlights(Array.isArray(data.sceneHighlights) ? data.sceneHighlights : []);
+      setExpandedIdeas([]);
+      setExpandedIdeaPrompt('');
+      setEditingIdeaId(null);
+      setWatchVideoSuccess(
+        `AI đã xem ${data.watchedVideoCount || sources.length} video tham chiếu và viết prompt mô tả chi tiết đưa vào "Tóm tắt ý tưởng ban đầu". Bạn có thể chỉnh sửa hoặc bấm "Dùng AI triển khai ý tưởng" ngay bên dưới.`
+      );
+    } catch (err: any) {
+      setWatchVideoError(err?.message || 'AI chưa thể xem và phân tích video tham chiếu lúc này.');
+    } finally {
+      setIsWatchingReferenceVideo(false);
+    }
+  };
+
   const handleExpandIdeaWithAi = async () => {
     const seed = ideaPrompt.trim();
     if (!seed) {
@@ -1345,8 +1429,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           productionFormat,
           ideaCount: unifiedUnitCount,
           videoCount: batchIdeas ? batchIdeas.length : isRunningIndependentBatch ? unifiedUnitCount : 1,
-          ideaPrompt: studioMode === 'creative' ? effectiveCreativeIdea : ideaPrompt.trim(),
-          query: studioMode === 'creative' ? effectiveCreativeIdea : searchQueryInput.trim() || incomingQuery,
+          ideaPrompt: selectedIdea || studioMode === 'creative' ? effectiveCreativeIdea : ideaPrompt.trim(),
+          query: selectedIdea || studioMode === 'creative' ? effectiveCreativeIdea : searchQueryInput.trim() || incomingQuery,
           videos: studioMode === 'derivative' ? sources : [],
           stylePreset: effectiveStylePreset,
           videoStyle,
@@ -2598,6 +2682,213 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     </div>
   );
 
+  // Shared AI Idea Expansion + Per-Idea Direct Script Prompt block (used in BOTH Sáng tạo từ ý tưởng & Phái sinh từ video)
+  const ideaExpansionAndListBlock = (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/85 border border-slate-200 dark:border-slate-400/20">
+        <button
+          type="button"
+          disabled={isExpandingIdea || isLearning || isWatchingReferenceVideo || !ideaPrompt.trim()}
+          onClick={() => void handleExpandIdeaWithAi()}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 via-indigo-500 to-violet-600 hover:brightness-110 disabled:opacity-45 text-white font-bold text-xs shadow-md shadow-indigo-500/20 transition cursor-pointer"
+        >
+          {isExpandingIdea ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>AI đang tạo {unifiedUnitCount} ý tưởng...</span>
+            </>
+          ) : (
+            <>
+              <Wand2 className="w-3.5 h-3.5" />
+              <span>
+                {expandedIdeas.length > 0
+                  ? `Dùng AI triển khai lại (${unifiedUnitCount} ý tưởng)`
+                  : `Dùng AI triển khai ${unifiedUnitCount} ý tưởng`}
+              </span>
+            </>
+          )}
+        </button>
+        <span className="text-[11px] text-slate-500 dark:text-slate-400">
+          Bấm <strong>Tạo prompt kịch bản</strong> trực tiếp trên ý tưởng bạn chọn để sang Bước 2
+        </span>
+      </div>
+
+      <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 px-3 py-2 text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+        <span className="font-semibold text-cyan-700 dark:text-cyan-300">Quy tắc tách bối cảnh khỏi nhân vật: </span>
+        AI chỉ triển khai không gian, môi trường, ánh sáng, bầu không khí, hành động/tư thế, góc quay và đạo cụ/phụ kiện độc lập (mũ, nhẫn/trang sức, dây chuyền, giày dép, đồng hồ, túi xách, kính, đạo cụ cầm tay) — <strong className="text-slate-800 dark:text-slate-100">tuyệt đối không mô tả lại khuôn mặt, mái tóc, màu da, vóc dáng hay trang phục chính của nhân vật</strong>.
+      </div>
+
+      {expandIdeaError && (
+        <div className="flex items-start gap-2 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{expandIdeaError}</span>
+        </div>
+      )}
+
+      {(expandedIdeas.length > 0 || isExpandingIdea) && (
+        <div className="rounded-xl border border-cyan-400/40 bg-cyan-500/5 dark:bg-cyan-500/10 p-3 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Sparkles className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300 shrink-0" />
+              <span className="text-xs font-bold text-slate-900 dark:text-white">
+                Danh sách ý tưởng đã triển khai ({expandedIdeas.length})
+              </span>
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-400/30">
+                {scriptMode === 'independent_batch'
+                  ? `Bấm từng ý tưởng tạo ngay 1 kịch bản (${targetDurationSec}s) · không tạo lại ý tưởng`
+                  : `Bấm từng ý tưởng tạo 01 kịch bản · ${unifiedUnitCount} phân cảnh × ${targetDurationSec}s = ${unifiedTotalDurationSec}s`}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {scriptMode === 'independent_batch' && expandedIdeas.length >= 2 && (
+                <button
+                  type="button"
+                  disabled={isLearning || isExpandingIdea}
+                  onClick={() =>
+                    void handleLearnAndCreateScript({
+                      batchIdeas: expandedIdeas,
+                      preserveExactIdea: true,
+                    })
+                  }
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-[11px] font-bold transition cursor-pointer whitespace-nowrap"
+                >
+                  {isLearning && generatingIdeaId === '__ALL_BATCH__' ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>Đang tạo cả {expandedIdeas.length} ({learningElapsedSec}s)...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3 h-3" />
+                      <span>Tạo prompt cả {expandedIdeas.length} ý tưởng</span>
+                    </>
+                  )}
+                </button>
+              )}
+              {expandedIdeas.length > 0 && !isLearning && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpandedIdeas([]);
+                    setExpandedIdeaPrompt('');
+                    setEditingIdeaId(null);
+                  }}
+                  className="text-[11px] text-slate-500 hover:text-rose-500 cursor-pointer"
+                >
+                  Xóa danh sách
+                </button>
+              )}
+            </div>
+          </div>
+
+          {isExpandingIdea && expandedIdeas.length === 0 ? (
+            <div className="flex items-center gap-2 py-5 justify-center text-xs text-cyan-700 dark:text-cyan-200">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>AI đang sáng tạo đúng {ideaCount} ý tưởng riêng biệt theo chủ đề của bạn...</span>
+            </div>
+          ) : (
+            <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-0.5">
+              {expandedIdeas.map((item, idx) => {
+                const code = String(item.index || idx + 1).padStart(2, '0');
+                const isEditing = editingIdeaId === item.id;
+                const isThisGenerating = isLearning && generatingIdeaId === item.id;
+                return (
+                  <div
+                    key={item.id}
+                    className="rounded-xl bg-white dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/25 p-3 space-y-2 shadow-xs"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 dark:text-white leading-snug">
+                        <span className="text-cyan-700 dark:text-cyan-300 font-mono mr-1.5">
+                          Ý tưởng {code}:
+                        </span>
+                        {item.title}
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setEditingIdeaId(isEditing ? null : item.id)}
+                        className="text-[11px] text-slate-500 hover:text-cyan-600 dark:hover:text-cyan-300 shrink-0 cursor-pointer"
+                      >
+                        {isEditing ? 'Thu gọn' : 'Chi tiết / Sửa'}
+                      </button>
+                    </div>
+
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                      {item.summary}
+                    </p>
+
+                    {isEditing && (
+                      <div className="space-y-1.5 pt-1 border-t border-slate-200/70 dark:border-slate-400/15">
+                        <input
+                          type="text"
+                          value={item.title}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setExpandedIdeas((prev) =>
+                              prev.map((x) => (x.id === item.id ? { ...x, title: val } : x))
+                            );
+                          }}
+                          aria-label={`Tiêu đề Ý tưởng ${code}`}
+                          className="w-full h-8 px-2.5 text-xs font-semibold bg-slate-50 dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400"
+                        />
+                        <textarea
+                          rows={4}
+                          value={item.detail}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setExpandedIdeas((prev) =>
+                              prev.map((x) => (x.id === item.id ? { ...x, detail: val } : x))
+                            );
+                          }}
+                          aria-label={`Nội dung chi tiết Ý tưởng ${code}`}
+                          className="w-full p-2 text-xs bg-slate-50 dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-none focus:border-cyan-400 resize-y leading-relaxed"
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[60%]">
+                        {item.suggestedSetting ? `Bối cảnh: ${item.suggestedSetting}` : 'Giữ nguyên cốt truyện & tình huống gốc'}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isLearning || isExpandingIdea}
+                        onClick={() =>
+                          void handleLearnAndCreateScript({
+                            selectedIdea: item,
+                            preserveExactIdea: true,
+                          })
+                        }
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 disabled:opacity-50 text-white font-bold text-xs shadow-sm shadow-violet-600/20 transition cursor-pointer whitespace-nowrap"
+                      >
+                        {isThisGenerating ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>
+                              {scriptMode === 'independent_batch'
+                                ? `Đang tạo prompt kịch bản (${targetDurationSec}s · ${learningElapsedSec}s)...`
+                                : `Đang tạo prompt kịch bản (${unifiedUnitCount} cảnh × ${targetDurationSec}s · ${learningElapsedSec}s)...`}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Tạo prompt kịch bản</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="space-y-4">
       {/* ================================================================= */}
@@ -2734,8 +3025,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             </div>
             <span className="text-[11px] font-medium text-violet-600 dark:text-violet-300 shrink-0">
               {studioMode === 'derivative'
-                ? `${sources.length} nguồn`
-                : expandedIdeaPrompt.trim()
+                ? expandedIdeas.length > 0
+                  ? `${sources.length} nguồn · ${expandedIdeas.length} ý tưởng`
+                  : `${sources.length} nguồn`
+                : expandedIdeas.length > 0 || expandedIdeaPrompt.trim()
                 ? 'Đã triển khai AI'
                 : ideaPrompt.trim()
                 ? 'Đã có ý tưởng'
@@ -2890,209 +3183,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 {/* Moved from Thiết lập AI & Sản xuất: Chế độ sản xuất video, Kiểu tạo lô video, Thời lượng video */}
                 {productionAndBatchControls}
 
-                {/* Trigger AI Idea Expansion (uses unified ideaCount above) */}
-                <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/85 border border-slate-200 dark:border-slate-400/20">
-                  <button
-                    type="button"
-                    disabled={isExpandingIdea || isLearning || !ideaPrompt.trim()}
-                    onClick={() => void handleExpandIdeaWithAi()}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 via-indigo-500 to-violet-600 hover:brightness-110 disabled:opacity-45 text-white font-bold text-xs shadow-md shadow-indigo-500/20 transition cursor-pointer"
-                  >
-                    {isExpandingIdea ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>AI đang tạo {unifiedUnitCount} ý tưởng...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Wand2 className="w-3.5 h-3.5" />
-                        <span>
-                          {expandedIdeas.length > 0
-                            ? `Dùng AI triển khai lại (${unifiedUnitCount} ý tưởng)`
-                            : `Dùng AI triển khai ${unifiedUnitCount} ý tưởng`}
-                        </span>
-                      </>
-                    )}
-                  </button>
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Bấm <strong>Tạo prompt kịch bản</strong> trực tiếp trên ý tưởng bạn chọn để sang Bước 2
-                  </span>
-                </div>
-
-                <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 px-3 py-2 text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-                  <span className="font-semibold text-cyan-700 dark:text-cyan-300">Quy tắc tách bối cảnh khỏi nhân vật: </span>
-                  AI chỉ triển khai không gian, môi trường, ánh sáng, bầu không khí, hành động/tư thế, góc quay và đạo cụ/phụ kiện độc lập (mũ, nhẫn/trang sức, dây chuyền, giày dép, đồng hồ, túi xách, kính, đạo cụ cầm tay) — <strong className="text-slate-800 dark:text-slate-100">tuyệt đối không mô tả lại khuôn mặt, mái tóc, màu da, vóc dáng hay trang phục chính của nhân vật</strong>.
-                </div>
-
-                {expandIdeaError && (
-                  <div className="flex items-start gap-2 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
-                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>{expandIdeaError}</span>
-                  </div>
-                )}
-
-                {/* Generated Ideas List — Each Idea Has Its Own "Tạo prompt kịch bản" Button */}
-                {(expandedIdeas.length > 0 || isExpandingIdea) && (
-                  <div className="rounded-xl border border-cyan-400/40 bg-cyan-500/5 dark:bg-cyan-500/10 p-3 space-y-2.5">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Sparkles className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300 shrink-0" />
-                        <span className="text-xs font-bold text-slate-900 dark:text-white">
-                          Danh sách ý tưởng đã triển khai ({expandedIdeas.length})
-                        </span>
-                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-400/30">
-                          {scriptMode === 'independent_batch'
-                            ? `Bấm từng ý tưởng tạo ngay 1 kịch bản (${targetDurationSec}s) · không tạo lại ý tưởng`
-                            : `Bấm từng ý tưởng tạo 01 kịch bản · ${unifiedUnitCount} phân cảnh × ${targetDurationSec}s = ${unifiedTotalDurationSec}s`}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {scriptMode === 'independent_batch' && expandedIdeas.length >= 2 && (
-                          <button
-                            type="button"
-                            disabled={isLearning || isExpandingIdea}
-                            onClick={() =>
-                              void handleLearnAndCreateScript({
-                                batchIdeas: expandedIdeas,
-                                preserveExactIdea: true,
-                              })
-                            }
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-[11px] font-bold transition cursor-pointer whitespace-nowrap"
-                          >
-                            {isLearning && generatingIdeaId === '__ALL_BATCH__' ? (
-                              <>
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                <span>Đang tạo cả {expandedIdeas.length} ({learningElapsedSec}s)...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Sparkles className="w-3 h-3" />
-                                <span>Tạo prompt cả {expandedIdeas.length} ý tưởng</span>
-                              </>
-                            )}
-                          </button>
-                        )}
-                        {expandedIdeas.length > 0 && !isLearning && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setExpandedIdeas([]);
-                              setExpandedIdeaPrompt('');
-                              setEditingIdeaId(null);
-                            }}
-                            className="text-[11px] text-slate-500 hover:text-rose-500 cursor-pointer"
-                          >
-                            Xóa danh sách
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {isExpandingIdea && expandedIdeas.length === 0 ? (
-                      <div className="flex items-center gap-2 py-5 justify-center text-xs text-cyan-700 dark:text-cyan-200">
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>AI đang sáng tạo đúng {ideaCount} ý tưởng riêng biệt theo chủ đề của bạn...</span>
-                      </div>
-                    ) : (
-                      <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-0.5">
-                        {expandedIdeas.map((item, idx) => {
-                          const code = String(item.index || idx + 1).padStart(2, '0');
-                          const isEditing = editingIdeaId === item.id;
-                          const isThisGenerating = isLearning && generatingIdeaId === item.id;
-                          return (
-                            <div
-                              key={item.id}
-                              className="rounded-xl bg-white dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/25 p-3 space-y-2 shadow-xs"
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 dark:text-white leading-snug">
-                                  <span className="text-cyan-700 dark:text-cyan-300 font-mono mr-1.5">
-                                    Ý tưởng {code}:
-                                  </span>
-                                  {item.title}
-                                </h3>
-                                <button
-                                  type="button"
-                                  onClick={() => setEditingIdeaId(isEditing ? null : item.id)}
-                                  className="text-[11px] text-slate-500 hover:text-cyan-600 dark:hover:text-cyan-300 shrink-0 cursor-pointer"
-                                >
-                                  {isEditing ? 'Thu gọn' : 'Chi tiết / Sửa'}
-                                </button>
-                              </div>
-
-                              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                                {item.summary}
-                              </p>
-
-                              {isEditing && (
-                                <div className="space-y-1.5 pt-1 border-t border-slate-200/70 dark:border-slate-400/15">
-                                  <input
-                                    type="text"
-                                    value={item.title}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      setExpandedIdeas((prev) =>
-                                        prev.map((x) => (x.id === item.id ? { ...x, title: val } : x))
-                                      );
-                                    }}
-                                    aria-label={`Tiêu đề Ý tưởng ${code}`}
-                                    className="w-full h-8 px-2.5 text-xs font-semibold bg-slate-50 dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-400"
-                                  />
-                                  <textarea
-                                    rows={4}
-                                    value={item.detail}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      setExpandedIdeas((prev) =>
-                                        prev.map((x) => (x.id === item.id ? { ...x, detail: val } : x))
-                                      );
-                                    }}
-                                    aria-label={`Nội dung chi tiết Ý tưởng ${code}`}
-                                    className="w-full p-2 text-xs bg-slate-50 dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-none focus:border-cyan-400 resize-y leading-relaxed"
-                                  />
-                                </div>
-                              )}
-
-                              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                                <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[60%]">
-                                  {item.suggestedSetting ? `Bối cảnh: ${item.suggestedSetting}` : 'Giữ nguyên cốt truyện & tình huống gốc'}
-                                </span>
-                                <button
-                                  type="button"
-                                  disabled={isLearning || isExpandingIdea}
-                                  onClick={() =>
-                                    void handleLearnAndCreateScript({
-                                      selectedIdea: item,
-                                      preserveExactIdea: true,
-                                    })
-                                  }
-                                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 disabled:opacity-50 text-white font-bold text-xs shadow-sm shadow-violet-600/20 transition cursor-pointer whitespace-nowrap"
-                                >
-                                  {isThisGenerating ? (
-                                    <>
-                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                      <span>
-                                        {scriptMode === 'independent_batch'
-                                          ? `Đang tạo prompt kịch bản (${targetDurationSec}s · ${learningElapsedSec}s)...`
-                                          : `Đang tạo prompt kịch bản (${unifiedUnitCount} cảnh × ${targetDurationSec}s · ${learningElapsedSec}s)...`}
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Sparkles className="w-3.5 h-3.5" />
-                                      <span>Tạo prompt kịch bản</span>
-                                      <ArrowRight className="w-3.5 h-3.5" />
-                                    </>
-                                  )}
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
+                {/* Shared AI Idea Expansion + Per-Idea Direct Script Prompt */}
+                {ideaExpansionAndListBlock}
               </div>
             ) : (
               <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
@@ -3220,14 +3312,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                         })}
                       </div>
                     )}
-
-                    <input
-                      type="text"
-                      value={ideaPrompt}
-                      onChange={(e) => setIdeaPrompt(e.target.value)}
-                      placeholder="Góc nhìn / Ý tưởng phát triển thêm từ nguồn (tùy chọn)..."
-                      className={inputCls}
-                    />
                   </div>
                 )}
 
@@ -3366,8 +3450,128 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </div>
                 )}
 
+                {/* AI Watch Reference Videos -> Detailed Scene & Plot Prompt -> Tóm tắt ý tưởng ban đầu */}
+                <div className="pt-2 border-t border-slate-200/80 dark:border-slate-400/15 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-violet-500/10 dark:bg-violet-500/15 border border-violet-400/35">
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="text-xs font-bold text-slate-900 dark:text-white">
+                        AI xem video tham chiếu &amp; viết prompt mô tả chi tiết
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                        AI xem hình ảnh, bối cảnh và tình tiết xuất hiện trong video tham chiếu rồi tự động điền vào <strong>Tóm tắt ý tưởng ban đầu</strong> để triển khai ý tưởng phái sinh.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={sources.length === 0 || isWatchingReferenceVideo || isExpandingIdea || isLearning}
+                      onClick={() => void handleWatchReferenceVideosToIdeaPrompt()}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 disabled:opacity-45 text-white font-bold text-xs shadow-md shadow-violet-600/20 transition cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      {isWatchingReferenceVideo ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>AI đang xem {sources.length} video...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>AI xem video &amp; viết prompt mô tả chi tiết</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {watchVideoError && (
+                    <div className="flex items-start gap-2 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{watchVideoError}</span>
+                    </div>
+                  )}
+
+                  {watchVideoSuccess && (
+                    <div className="flex items-start justify-between gap-2 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-700 dark:text-emerald-300">
+                      <div className="flex items-start gap-2">
+                        <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                        <span>{watchVideoSuccess}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setWatchVideoSuccess('')}
+                        className="p-0.5 opacity-70 hover:opacity-100 cursor-pointer shrink-0"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  {watchedSceneHighlights.length > 0 && (
+                    <div className="rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/85 border border-slate-200 dark:border-slate-400/20 p-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold text-violet-700 dark:text-violet-300">
+                          Diễn biến &amp; bối cảnh AI đã xem được ({watchedSceneHighlights.length} mốc)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setWatchedSceneHighlights([])}
+                          className="text-[10px] text-slate-400 hover:text-rose-500 cursor-pointer"
+                        >
+                          Ẩn
+                        </button>
+                      </div>
+                      <ul className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed list-disc pl-4">
+                        {watchedSceneHighlights.map((hl, i) => (
+                          <li key={i}>{hl}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                        Tóm tắt ý tưởng ban đầu
+                      </span>
+                      {ideaPrompt.trim() && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIdeaPrompt('');
+                            setWatchedSceneHighlights([]);
+                            setWatchVideoSuccess('');
+                            setExpandIdeaError('');
+                          }}
+                          className="text-[11px] text-slate-400 hover:text-rose-500 cursor-pointer"
+                        >
+                          Xóa nháp
+                        </button>
+                      )}
+                    </div>
+                    <textarea
+                      rows={4}
+                      value={ideaPrompt}
+                      onChange={(e) => {
+                        setIdeaPrompt(e.target.value);
+                        if (expandIdeaError) setExpandIdeaError('');
+                      }}
+                      placeholder='Bấm "AI xem video & viết prompt mô tả chi tiết" ở trên để AI tự động điền bối cảnh và tình tiết từ video tham chiếu, hoặc tự nhập tóm tắt ý tưởng tại đây...'
+                      className="w-full p-3 text-xs sm:text-sm bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-violet-400 resize-y leading-relaxed"
+                    />
+                  </div>
+
+                  <input
+                    type="text"
+                    value={settingBibleDraft}
+                    onChange={(e) => setSettingBibleDraft(e.target.value)}
+                    placeholder="Bối cảnh chủ đạo mong muốn (tự điền sau khi AI xem video hoặc tự nhập)..."
+                    className={inputCls}
+                  />
+                </div>
+
                 {/* Chế độ sản xuất video, Kiểu tạo lô video, Thời lượng video */}
                 {productionAndBatchControls}
+
+                {/* Shared AI Idea Expansion + Per-Idea Direct Script Prompt (same workflow as Sáng tạo từ ý tưởng) */}
+                {ideaExpansionAndListBlock}
               </div>
             )}
 
@@ -4809,7 +5013,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               · {aspectRatio} ·{' '}
               {voiceMode === 'none' ? 'Không lồng tiếng' : voiceMode === 'offline_system' ? 'VieNeu Offline' : 'AI Voice'}
             </span>
-            {studioMode === 'creative' && expandedIdeas.length > 0 && (
+            {expandedIdeas.length > 0 && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-700 dark:text-cyan-200 border border-cyan-400/30 text-[10px] font-semibold">
                 <Sparkles className="w-3 h-3" />
                 Chọn nút &quot;Tạo prompt kịch bản&quot; ngay trên từng ý tưởng ở trên
@@ -4841,45 +5045,47 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               <span>Giao Phòng Điều Hành (5 Muse AI)</span>
             </button>
 
-            {/* In Creative mode with expanded ideas, remove bottom "AI Lên Kịch Bản & Sang Bước 2" so AI never re-invents away from the chosen idea */}
-            {studioMode === 'derivative' ? (
-              <button
-                type="button"
-                disabled={isLearning || !canSubmitLearn}
-                onClick={() => void handleLearnAndCreateScript()}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 text-white font-bold text-xs sm:text-sm shadow-lg shadow-violet-600/25 transition disabled:opacity-50 cursor-pointer"
-              >
-                {isLearning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                <span>
-                  {isLearning
-                    ? scriptMode === 'independent_batch'
-                      ? `Đang sáng tạo ${unifiedUnitCount} kịch bản (${learningElapsedSec}s)...`
-                      : `AI đang lên 1 kịch bản · ${unifiedUnitCount} phân cảnh (${learningElapsedSec}s)...`
-                    : scriptMode === 'independent_batch'
-                    ? `AI Lên ${unifiedUnitCount} Kịch Bản Độc Lập & Sang Bước 2`
-                    : `AI Lên Kịch Bản (${unifiedUnitCount} phân cảnh) & Sang Bước 2`}
-                </span>
-                {!isLearning && <ArrowRight className="w-4 h-4" />}
-              </button>
-            ) : expandedIdeas.length === 0 ? (
-              <button
-                type="button"
-                disabled={isLearning || !canSubmitLearn}
-                onClick={() => void handleLearnAndCreateScript({ preserveExactIdea: true })}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 text-white font-bold text-xs sm:text-sm shadow-lg shadow-violet-600/25 transition disabled:opacity-50 cursor-pointer"
-              >
-                {isLearning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                <span>
-                  {isLearning
-                    ? scriptMode === 'independent_batch'
-                      ? `Đang tạo ${unifiedUnitCount} kịch bản độc lập (${learningElapsedSec}s)...`
-                      : `Đang tạo 1 kịch bản · ${unifiedUnitCount} phân cảnh (${learningElapsedSec}s)...`
-                    : scriptMode === 'independent_batch'
-                    ? `Tạo ${unifiedUnitCount} prompt kịch bản độc lập từ ý tưởng gốc`
-                    : `Tạo prompt kịch bản (${unifiedUnitCount} phân cảnh × ${targetDurationSec}s)`}
-                </span>
-                {!isLearning && <ArrowRight className="w-4 h-4" />}
-              </button>
+            {/* Whenever expanded ideas exist (Creative or Derivative), hide bottom generate button so AI never re-invents away from the chosen idea */}
+            {expandedIdeas.length === 0 ? (
+              studioMode === 'derivative' ? (
+                <button
+                  type="button"
+                  disabled={isLearning || !canSubmitLearn}
+                  onClick={() => void handleLearnAndCreateScript()}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 text-white font-bold text-xs sm:text-sm shadow-lg shadow-violet-600/25 transition disabled:opacity-50 cursor-pointer"
+                >
+                  {isLearning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  <span>
+                    {isLearning
+                      ? scriptMode === 'independent_batch'
+                        ? `Đang sáng tạo ${unifiedUnitCount} kịch bản (${learningElapsedSec}s)...`
+                        : `AI đang lên 1 kịch bản · ${unifiedUnitCount} phân cảnh (${learningElapsedSec}s)...`
+                      : scriptMode === 'independent_batch'
+                      ? `AI Lên ${unifiedUnitCount} Kịch Bản Độc Lập & Sang Bước 2`
+                      : `AI Lên Kịch Bản (${unifiedUnitCount} phân cảnh) & Sang Bước 2`}
+                  </span>
+                  {!isLearning && <ArrowRight className="w-4 h-4" />}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={isLearning || !canSubmitLearn}
+                  onClick={() => void handleLearnAndCreateScript({ preserveExactIdea: true })}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:brightness-110 text-white font-bold text-xs sm:text-sm shadow-lg shadow-violet-600/25 transition disabled:opacity-50 cursor-pointer"
+                >
+                  {isLearning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  <span>
+                    {isLearning
+                      ? scriptMode === 'independent_batch'
+                        ? `Đang tạo ${unifiedUnitCount} kịch bản độc lập (${learningElapsedSec}s)...`
+                        : `Đang tạo 1 kịch bản · ${unifiedUnitCount} phân cảnh (${learningElapsedSec}s)...`
+                      : scriptMode === 'independent_batch'
+                      ? `Tạo ${unifiedUnitCount} prompt kịch bản độc lập từ ý tưởng gốc`
+                      : `Tạo prompt kịch bản (${unifiedUnitCount} phân cảnh × ${targetDurationSec}s)`}
+                  </span>
+                  {!isLearning && <ArrowRight className="w-4 h-4" />}
+                </button>
+              )
             ) : null}
           </div>
         </div>
@@ -4913,7 +5119,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 <ArrowLeft className="w-3.5 h-3.5" />
                 <span>Về Bước 1</span>
               </button>
-              {canSubmitLearn && !(studioMode === 'creative' && expandedIdeas.length > 0) && (
+              {canSubmitLearn && expandedIdeas.length === 0 && (
                 <button
                   type="button"
                   disabled={isLearning}
