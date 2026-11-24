@@ -40,6 +40,7 @@ import { COOKIE_SITES, DEFAULT_STUDIO_CONFIG } from '../utils/cookies';
 import { VOICE_OPTIONS } from './studio/studioConfig';
 import { GeminiApiSettingsTab } from './GeminiApiSettingsTab';
 import { XingchiApiSettingsTab } from './XingchiApiSettingsTab';
+import { AlibabaModelStudioSection } from './AlibabaModelStudioSection';
 
 interface SettingsPanelProps {
   perSiteCookies: PerSiteCookies;
@@ -261,6 +262,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       envVar: 'XINGCHI_API_KEY',
       configured: Boolean(capabilities?.aiProviders.xingchi?.configured),
       modelName: capabilities?.aiProviders.xingchi?.model || 'gpt-4o-mini',
+    },
+    {
+      id: 'alibaba',
+      title: 'Alibaba Model Studio (Qwen)',
+      subtitle: 'Cổng chính hãng Alibaba Cloud DashScope (qwen-plus, qwen-max, qwen3-max)',
+      envVar: 'DASHSCOPE_API_KEY',
+      configured: Boolean(capabilities?.aiProviders.alibaba?.configured),
+      modelName: capabilities?.aiProviders.alibaba?.model || 'qwen-plus',
     },
   ];
 
@@ -831,8 +840,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 </table>
               </div>
 
-              {/* 5 Clickable AI Provider Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 text-xs">
+              {/* 6 Clickable AI Provider Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
                 {aiCards.map((card) => {
                   const isActive = studioDefaults.aiProvider === card.id;
                   return (
@@ -890,10 +899,20 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 </div>
               )}
 
+              <AlibabaModelStudioSection
+                isDefaultAiProvider={studioDefaults.aiProvider === 'alibaba'}
+                onSelectAsDefaultProvider={() => {
+                  setAiTestResult(null);
+                  onUpdateStudioDefaults({ ...studioDefaults, aiProvider: 'alibaba' });
+                }}
+                onConfigChanged={() => void fetchCapabilities()}
+              />
+
               <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                 Bảo mật khóa API: Các khóa (<code className="font-mono">GEMINI_API_KEY</code>,{' '}
                 <code className="font-mono">OPENAI_API_KEY</code>, <code className="font-mono">META_API_KEY</code>,{' '}
-                <code className="font-mono">MUSE2API_KEY</code>, <code className="font-mono">XINGCHI_API_KEY</code>) được đọc an toàn phía máy chủ từ{' '}
+                <code className="font-mono">MUSE2API_KEY</code>, <code className="font-mono">XINGCHI_API_KEY</code>,{' '}
+                <code className="font-mono">DASHSCOPE_API_KEY</code>) được đọc an toàn phía máy chủ từ{' '}
                 <strong>Settings &gt; Secrets</strong> hoặc tệp <code className="font-mono">.env</code> /{' '}
                 <code className="font-mono">muse2api/.env</code>.
               </p>

@@ -14,6 +14,11 @@ import {
 import { resolveChairmanGeminiAccount } from './geminiPool';
 import { getXingchiRuntimeConfig, recordXingchiUsage, testXingchiConnection } from './xingchiApi';
 import {
+  getAlibabaRuntimeConfig,
+  recordAlibabaUsage,
+  testAlibabaModelStudioConnection,
+} from './alibabaModelStudio';
+import {
   buildCinematicFilmmakingScriptDirective,
   CINEMATIC_FILMMAKING_SKILL,
   enhancePromptWithCinematicSkill,
@@ -113,7 +118,7 @@ export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
 export type DerivativeMusicMode = 'none' | 'auto_adaptive' | 'ai_lyria' | 'public_free' | 'uploaded';
 export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
-export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api' | 'xingchi';
+export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api' | 'xingchi' | 'alibaba';
 export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
 
 export interface CharacterVoiceProfile {
@@ -1448,7 +1453,7 @@ export function parseAiBlueprintJsonSafe(rawText: string): any {
   }
 }
 
-function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta' | 'xingchi') {
+function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta' | 'xingchi' | 'alibaba') {
   if (provider === 'openai') {
     return {
       label: 'OpenAI ChatGPT',
@@ -1468,6 +1473,16 @@ function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta' | 'xingchi') 
       model: xc.model,
     };
   }
+  if (provider === 'alibaba') {
+    const ali = getAlibabaRuntimeConfig();
+    return {
+      label: 'Alibaba Cloud Model Studio (Qwen)',
+      envName: 'DASHSCOPE_API_KEY',
+      apiKey: ali.enabled ? ali.apiKey : '',
+      baseUrl: ali.baseUrl,
+      model: ali.model,
+    };
+  }
   return {
     label: 'Meta AI (Llama)',
     envName: 'META_API_KEY',
@@ -1478,7 +1493,7 @@ function resolveOpenAiCompatibleConfig(provider: 'openai' | 'meta' | 'xingchi') 
 }
 
 async function generateBlueprintViaOpenAiCompatible(params: {
-  provider: 'openai' | 'meta' | 'xingchi';
+  provider: 'openai' | 'meta' | 'xingchi' | 'alibaba';
   contexts: EnrichedVideoContext[];
   promptText: string;
   desiredScenes: number;
@@ -1612,6 +1627,8 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh đ�
     const errBody = await res.text().catch(() => '');
     if (params.provider === 'xingchi') {
       recordXingchiUsage(false, { latencyMs, statusCode: res.status, errorMsg: errBody });
+    } else if (params.provider === 'alibaba') {
+      recordAlibabaUsage(false, { latencyMs, statusCode: res.status, errorMsg: errBody });
     }
     throw new Error(
       `${cfg.label} lỗi HTTP ${res.status}: ${errBody.slice(0, 180) || res.statusText}`
@@ -1619,6 +1636,8 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh đ�
   }
   if (params.provider === 'xingchi') {
     recordXingchiUsage(true, { latencyMs });
+  } else if (params.provider === 'alibaba') {
+    recordAlibabaUsage(true, { latencyMs });
   }
   const data = (await res.json()) as any;
   const rawContent = String(data?.choices?.[0]?.message?.content || '{}').trim();
@@ -1697,6 +1716,17 @@ export async function testAiProviderConnection(provider: AiProviderId): Promise<
 
   if (provider === 'xingchi') {
     const res = await testXingchiConnection();
+    return {
+      ok: res.ok,
+      model: res.model,
+      message: res.ok
+        ? `${res.message}${res.reply ? ` · Phản hồi: "${res.reply.slice(0, 40)}"` : ''}`
+        : res.message,
+    };
+  }
+
+  if (provider === 'alibaba') {
+    const res = await testAlibabaModelStudioConnection();
     return {
       ok: res.ok,
       model: res.model,
@@ -2593,7 +2623,8 @@ export async function expandStudioIdeaWithAi(params: {
     params.aiProvider === 'openai' ||
     params.aiProvider === 'meta' ||
     params.aiProvider === 'muse2api' ||
-    params.aiProvider === 'xingchi'
+    params.aiProvider === 'xingchi' ||
+    params.aiProvider === 'alibaba'
       ? params.aiProvider
       : 'gemini';
 
@@ -2670,7 +2701,7 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
         { role: 'user', content: expandPrompt },
       ]);
       parsed = parseAiBlueprintJsonSafe(raw);
-    } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi') {
+    } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi' || provider === 'alibaba') {
       const cfg = resolveOpenAiCompatibleConfig(provider);
       if (!cfg.apiKey) {
         throw new Error(`Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env.`);
@@ -2829,7 +2860,8 @@ export async function learnVideosAndCreateBlueprint(params: {
     params.aiProvider === 'openai' ||
     params.aiProvider === 'meta' ||
     params.aiProvider === 'muse2api' ||
-    params.aiProvider === 'xingchi'
+    params.aiProvider === 'xingchi' ||
+    params.aiProvider === 'alibaba'
       ? params.aiProvider
       : 'gemini';
 
@@ -3183,7 +3215,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         },
       ]);
       parsed = parseAiBlueprintJsonSafe(rawMuseReply);
-    } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi') {
+    } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi' || provider === 'alibaba') {
       usedModel = resolveOpenAiCompatibleConfig(provider).model;
       parsed = await generateBlueprintViaOpenAiCompatible({
         provider,
@@ -3881,7 +3913,7 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
       { role: 'user', content: planPrompt },
     ]);
     parsed = parseAiBlueprintJsonSafe(raw);
-  } else if (params.provider === 'openai' || params.provider === 'meta' || params.provider === 'xingchi') {
+  } else if (params.provider === 'openai' || params.provider === 'meta' || params.provider === 'xingchi' || params.provider === 'alibaba') {
     const cfg = resolveOpenAiCompatibleConfig(params.provider);
     if (!cfg.apiKey) {
       throw new Error(`Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env.`);
@@ -4070,7 +4102,8 @@ export async function learnAndCreateIndependentBatch(params: {
     params.aiProvider === 'openai' ||
     params.aiProvider === 'meta' ||
     params.aiProvider === 'muse2api' ||
-    params.aiProvider === 'xingchi'
+    params.aiProvider === 'xingchi' ||
+    params.aiProvider === 'alibaba'
       ? params.aiProvider
       : 'gemini';
 
@@ -4844,7 +4877,8 @@ export async function analyzeCharactersFivePartProfiles(params: {
     params.aiProvider === 'openai' ||
     params.aiProvider === 'meta' ||
     params.aiProvider === 'muse2api' ||
-    params.aiProvider === 'xingchi'
+    params.aiProvider === 'xingchi' ||
+    params.aiProvider === 'alibaba'
       ? params.aiProvider
       : 'gemini';
 
@@ -4914,7 +4948,7 @@ TRẢ VỀ DUY NHẤT JSON HỢP LỆ THEO MẪU:
       ]);
       ingestParsed(parseAiBlueprintJsonSafe(rawReply));
     }
-  } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi') {
+  } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi' || provider === 'alibaba') {
     const cfg = resolveOpenAiCompatibleConfig(provider);
     if (cfg.apiKey) {
       usedModel = cfg.model;

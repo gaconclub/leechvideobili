@@ -3780,6 +3780,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                         Xingchi API ({capabilities?.aiProviders.xingchi?.model || 'api.xingchiapi.com'} ·{' '}
                         {capabilities?.aiProviders.xingchi?.configured ? 'Sẵn sàng' : 'Chưa đặt key'})
                       </option>
+                      <option value="alibaba">
+                        Alibaba Model Studio ({capabilities?.aiProviders.alibaba?.model || 'qwen-plus'} ·{' '}
+                        {capabilities?.aiProviders.alibaba?.configured ? 'Sẵn sàng' : 'Chưa đặt key'})
+                      </option>
                     </select>
                   </label>
 

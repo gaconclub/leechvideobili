@@ -100,6 +100,13 @@ import {
   updateXingchiConfig,
 } from './server/xingchiApi';
 import {
+  chatWithAlibabaModelStudio,
+  fetchAlibabaModels,
+  getAlibabaModelStudioStatus,
+  testAlibabaModelStudioConnection,
+  updateAlibabaConfig,
+} from './server/alibabaModelStudio';
+import {
   analyzeAndDirectWithChairman,
   commandIncidentAction,
   controlProductionRun,
@@ -4757,6 +4764,18 @@ async function startServer() {
             source: xc.keySource,
           };
         })(),
+        alibaba: (() => {
+          const ali = getAlibabaModelStudioStatus();
+          return {
+            configured: ali.configured,
+            enabled: ali.enabled,
+            status: ali.status,
+            model: ali.selectedModel,
+            region: ali.region,
+            baseUrl: ali.baseUrl,
+            source: ali.keySource,
+          };
+        })(),
       },
       paidModels: {
         omniVideoModel: 'gemini-omni-1.2-flash',
@@ -4789,7 +4808,8 @@ async function startServer() {
         rawProvider === 'openai' ||
         rawProvider === 'meta' ||
         rawProvider === 'muse2api' ||
-        rawProvider === 'xingchi'
+        rawProvider === 'xingchi' ||
+        rawProvider === 'alibaba'
           ? rawProvider
           : 'gemini';
       const result = await testAiProviderConnection(provider);
@@ -5110,7 +5130,8 @@ async function startServer() {
         aiProvider === 'openai' ||
         aiProvider === 'meta' ||
         aiProvider === 'muse2api' ||
-        aiProvider === 'xingchi'
+        aiProvider === 'xingchi' ||
+        aiProvider === 'alibaba'
           ? aiProvider
           : 'gemini';
 
@@ -5178,7 +5199,8 @@ async function startServer() {
         aiProvider === 'openai' ||
         aiProvider === 'meta' ||
         aiProvider === 'muse2api' ||
-        aiProvider === 'xingchi'
+        aiProvider === 'xingchi' ||
+        aiProvider === 'alibaba'
           ? aiProvider
           : 'gemini';
       const result = await analyzeCharactersFivePartProfiles({
@@ -5478,7 +5500,8 @@ async function startServer() {
         aiProvider === 'openai' ||
         aiProvider === 'meta' ||
         aiProvider === 'muse2api' ||
-        aiProvider === 'xingchi'
+        aiProvider === 'xingchi' ||
+        aiProvider === 'alibaba'
           ? aiProvider
           : 'gemini';
 
@@ -5604,7 +5627,8 @@ async function startServer() {
         aiProvider === 'openai' ||
         aiProvider === 'meta' ||
         aiProvider === 'muse2api' ||
-        aiProvider === 'xingchi'
+        aiProvider === 'xingchi' ||
+        aiProvider === 'alibaba'
           ? aiProvider
           : 'gemini';
       const resolvedAspectRatio: DerivativeAspectRatio =
@@ -6320,6 +6344,81 @@ async function startServer() {
       res.status(result.ok ? 200 : 400).json(result);
     } catch (err: any) {
       res.status(400).json({ ok: false, error: err?.message || 'Gửi yêu cầu thử tới Xingchi API thất bại.' });
+    }
+  });
+
+  // ==========================================
+  // ALIBABA CLOUD MODEL STUDIO (DASHSCOPE / QWEN)
+  // ==========================================
+  app.get('/api/alibaba/status', (_req, res) => {
+    try {
+      res.json(getAlibabaModelStudioStatus());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể tải trạng thái Alibaba Cloud Model Studio.' });
+    }
+  });
+
+  app.patch('/api/alibaba/config', (req, res) => {
+    try {
+      const status = updateAlibabaConfig({
+        enabled: typeof req.body?.enabled === 'boolean' ? req.body.enabled : undefined,
+        region:
+          req.body?.region === 'us' || req.body?.region === 'cn' || req.body?.region === 'intl'
+            ? req.body.region
+            : undefined,
+        selectedModel: typeof req.body?.selectedModel === 'string' ? req.body.selectedModel : undefined,
+        timeoutSec: req.body?.timeoutSec !== undefined ? Number(req.body.timeoutSec) : undefined,
+      });
+      res.json({ ok: true, status });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể lưu cấu hình Alibaba Cloud Model Studio.' });
+    }
+  });
+
+  app.get('/api/alibaba/models', async (req, res) => {
+    try {
+      const regionParam =
+        req.query?.region === 'us' || req.query?.region === 'cn' || req.query?.region === 'intl'
+          ? req.query.region
+          : undefined;
+      const result = await fetchAlibabaModels(regionParam);
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'Không thể tải danh sách model Alibaba Cloud.' });
+    }
+  });
+
+  app.post('/api/alibaba/test', async (req, res) => {
+    try {
+      const result = await testAlibabaModelStudioConnection({
+        model: typeof req.body?.model === 'string' ? req.body.model : undefined,
+        region:
+          req.body?.region === 'us' || req.body?.region === 'cn' || req.body?.region === 'intl'
+            ? req.body.region
+            : undefined,
+      });
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'Kiểm tra kết nối Alibaba Cloud thất bại.' });
+    }
+  });
+
+  app.post('/api/alibaba/chat', async (req, res) => {
+    try {
+      const result = await chatWithAlibabaModelStudio({
+        prompt: String(req.body?.prompt || ''),
+        systemPrompt: typeof req.body?.systemPrompt === 'string' ? req.body.systemPrompt : undefined,
+        model: typeof req.body?.model === 'string' ? req.body.model : undefined,
+        region:
+          req.body?.region === 'us' || req.body?.region === 'cn' || req.body?.region === 'intl'
+            ? req.body.region
+            : undefined,
+        maxTokens: req.body?.maxTokens !== undefined ? Number(req.body.maxTokens) : undefined,
+        temperature: req.body?.temperature !== undefined ? Number(req.body.temperature) : undefined,
+      });
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'Gọi thử Alibaba Model Studio thất bại.' });
     }
   });
 

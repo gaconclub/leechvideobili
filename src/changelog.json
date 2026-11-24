@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.18",
+    "version": "1.0.19",
     "date": "24/11/2026",
-    "title": "feat(ai): integrate Xingchi API as an AI provider",
+    "title": "feat: add Alibaba Model Studio as an AI provider",
     "changes": [
-      "feat(ai): integrate Xingchi API as an AI provider"
+      "feat: add Alibaba Model Studio as an AI provider"
     ]
   },
   {

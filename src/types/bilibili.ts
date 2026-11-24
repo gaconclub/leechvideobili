@@ -311,7 +311,7 @@ export type DerivativeMusicMode = 'none' | 'auto_adaptive' | 'ai_lyria' | 'publi
 export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
 
-export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api' | 'xingchi';
+export type AiProviderId = 'gemini' | 'openai' | 'meta' | 'muse2api' | 'xingchi' | 'alibaba';
 export type BrollSourceId = 'wikimedia' | 'auto' | 'pexels' | 'pixabay' | 'none';
 
 export type CookieSiteId =
@@ -471,6 +471,15 @@ export interface ServerCapabilitiesStatus {
       baseUrl: string;
       source: 'env' | 'none';
     };
+    alibaba?: {
+      configured: boolean;
+      enabled: boolean;
+      status: 'ready' | 'untested' | 'auth_error' | 'quota_exceeded' | 'error' | 'unconfigured';
+      model: string;
+      region: 'intl' | 'us' | 'cn';
+      baseUrl: string;
+      source: 'env' | 'none';
+    };
   };
   paidModels: {
     omniVideoModel: string;
@@ -533,6 +542,43 @@ export interface XingchiPublicStatus {
   successCount: number;
   errorCount: number;
   models: XingchiModelItem[];
+  modelsFetchedAt?: number;
+}
+
+export type AlibabaRegionId = 'intl' | 'us' | 'cn';
+export type AlibabaConnectionStatus =
+  | 'ready'
+  | 'untested'
+  | 'auth_error'
+  | 'quota_exceeded'
+  | 'error'
+  | 'unconfigured';
+
+export interface AlibabaModelItem {
+  id: string;
+  ownedBy?: string;
+  group: 'text' | 'vision' | 'reasoning' | 'coder' | 'other';
+}
+
+export interface AlibabaModelStudioStatus {
+  region: AlibabaRegionId;
+  regionLabel: string;
+  baseUrl: string;
+  hasKey: boolean;
+  maskedKey: string;
+  keySource: 'env' | 'none';
+  enabled: boolean;
+  configured: boolean;
+  selectedModel: string;
+  timeoutSec: number;
+  status: AlibabaConnectionStatus;
+  lastCheckedAt?: number;
+  lastLatencyMs?: number;
+  lastError?: string;
+  requestsCount: number;
+  successCount: number;
+  errorCount: number;
+  models: AlibabaModelItem[];
   modelsFetchedAt?: number;
 }
 
