@@ -3776,6 +3776,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       <option value="meta">
                         Meta AI Llama {capabilities?.aiProviders.meta.configured ? '(Sẵn sàng)' : '(Chưa đặt key)'}
                       </option>
+                      <option value="xingchi">
+                        Xingchi API ({capabilities?.aiProviders.xingchi?.model || 'api.xingchiapi.com'} ·{' '}
+                        {capabilities?.aiProviders.xingchi?.configured ? 'Sẵn sàng' : 'Chưa đặt key'})
+                      </option>
                     </select>
                   </label>
 

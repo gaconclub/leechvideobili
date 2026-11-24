@@ -93,6 +93,13 @@ import {
   updateGeminiAccount,
 } from './server/geminiPool';
 import {
+  chatWithXingchi,
+  fetchXingchiModels,
+  getXingchiPublicStatus,
+  testXingchiConnection,
+  updateXingchiConfig,
+} from './server/xingchiApi';
+import {
   analyzeAndDirectWithChairman,
   commandIncidentAction,
   controlProductionRun,
@@ -4738,6 +4745,18 @@ async function startServer() {
           healthyAccounts: muse2apiStatus?.healthyAccounts || 0,
           source: muse2apiStatus?.keySource || 'none',
         },
+        xingchi: (() => {
+          const xc = getXingchiPublicStatus();
+          return {
+            configured: xc.configured,
+            enabled: xc.enabled,
+            status: xc.status,
+            model: xc.selectedModel,
+            protocol: xc.protocol,
+            baseUrl: xc.baseUrl,
+            source: xc.keySource,
+          };
+        })(),
       },
       paidModels: {
         omniVideoModel: 'gemini-omni-1.2-flash',
@@ -4767,7 +4786,10 @@ async function startServer() {
     try {
       const rawProvider = String(req.body?.provider || 'gemini');
       const provider: AiProviderId =
-        rawProvider === 'openai' || rawProvider === 'meta' || rawProvider === 'muse2api'
+        rawProvider === 'openai' ||
+        rawProvider === 'meta' ||
+        rawProvider === 'muse2api' ||
+        rawProvider === 'xingchi'
           ? rawProvider
           : 'gemini';
       const result = await testAiProviderConnection(provider);
@@ -5085,7 +5107,10 @@ async function startServer() {
       }
 
       const validProvider: AiProviderId =
-        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse2api'
+        aiProvider === 'openai' ||
+        aiProvider === 'meta' ||
+        aiProvider === 'muse2api' ||
+        aiProvider === 'xingchi'
           ? aiProvider
           : 'gemini';
 
@@ -5150,7 +5175,10 @@ async function startServer() {
         return res.status(400).json({ error: 'Vui lòng tải lên hoặc tạo ít nhất 1 nhân vật để phân tích.' });
       }
       const validProvider: AiProviderId =
-        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse2api'
+        aiProvider === 'openai' ||
+        aiProvider === 'meta' ||
+        aiProvider === 'muse2api' ||
+        aiProvider === 'xingchi'
           ? aiProvider
           : 'gemini';
       const result = await analyzeCharactersFivePartProfiles({
@@ -5447,7 +5475,10 @@ async function startServer() {
       };
 
       const validProvider: AiProviderId =
-        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse2api'
+        aiProvider === 'openai' ||
+        aiProvider === 'meta' ||
+        aiProvider === 'muse2api' ||
+        aiProvider === 'xingchi'
           ? aiProvider
           : 'gemini';
 
@@ -5570,7 +5601,10 @@ async function startServer() {
       }
 
       const validProvider: AiProviderId =
-        aiProvider === 'openai' || aiProvider === 'meta' || aiProvider === 'muse2api'
+        aiProvider === 'openai' ||
+        aiProvider === 'meta' ||
+        aiProvider === 'muse2api' ||
+        aiProvider === 'xingchi'
           ? aiProvider
           : 'gemini';
       const resolvedAspectRatio: DerivativeAspectRatio =
@@ -6209,6 +6243,83 @@ async function startServer() {
       });
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không thể đổi Chỉ huy trưởng Gemini.' });
+    }
+  });
+
+  // ==========================================
+  // XINGCHI API GATEWAY (https://api.xingchiapi.com)
+  // ==========================================
+  app.get('/api/xingchi/status', (_req, res) => {
+    try {
+      res.json(getXingchiPublicStatus());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể tải trạng thái kết nối Xingchi API.' });
+    }
+  });
+
+  app.patch('/api/xingchi/config', (req, res) => {
+    try {
+      const status = updateXingchiConfig({
+        enabled: typeof req.body?.enabled === 'boolean' ? req.body.enabled : undefined,
+        protocol:
+          req.body?.protocol === 'anthropic'
+            ? 'anthropic'
+            : req.body?.protocol === 'openai'
+            ? 'openai'
+            : undefined,
+        selectedModel: typeof req.body?.selectedModel === 'string' ? req.body.selectedModel : undefined,
+        timeoutSec: req.body?.timeoutSec !== undefined ? Number(req.body.timeoutSec) : undefined,
+      });
+      res.json({ ok: true, status });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể lưu cấu hình Xingchi API.' });
+    }
+  });
+
+  app.get('/api/xingchi/models', async (_req, res) => {
+    try {
+      const result = await fetchXingchiModels();
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'Không thể tải danh sách model Xingchi API.' });
+    }
+  });
+
+  app.post('/api/xingchi/test', async (req, res) => {
+    try {
+      const result = await testXingchiConnection({
+        model: typeof req.body?.model === 'string' ? req.body.model : undefined,
+        protocol:
+          req.body?.protocol === 'anthropic'
+            ? 'anthropic'
+            : req.body?.protocol === 'openai'
+            ? 'openai'
+            : undefined,
+      });
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'Kiểm tra kết nối Xingchi API thất bại.' });
+    }
+  });
+
+  app.post('/api/xingchi/chat', async (req, res) => {
+    try {
+      const result = await chatWithXingchi({
+        prompt: String(req.body?.prompt || ''),
+        systemPrompt: typeof req.body?.systemPrompt === 'string' ? req.body.systemPrompt : undefined,
+        model: typeof req.body?.model === 'string' ? req.body.model : undefined,
+        protocol:
+          req.body?.protocol === 'anthropic'
+            ? 'anthropic'
+            : req.body?.protocol === 'openai'
+            ? 'openai'
+            : undefined,
+        maxTokens: req.body?.maxTokens !== undefined ? Number(req.body.maxTokens) : undefined,
+        temperature: req.body?.temperature !== undefined ? Number(req.body.temperature) : undefined,
+      });
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'Gửi yêu cầu thử tới Xingchi API thất bại.' });
     }
   });
 

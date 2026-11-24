@@ -22,6 +22,7 @@ import {
   Power,
   Mic,
   Bot,
+  Globe,
 } from 'lucide-react';
 import {
   AiProviderId,
@@ -38,6 +39,7 @@ import {
 import { COOKIE_SITES, DEFAULT_STUDIO_CONFIG } from '../utils/cookies';
 import { VOICE_OPTIONS } from './studio/studioConfig';
 import { GeminiApiSettingsTab } from './GeminiApiSettingsTab';
+import { XingchiApiSettingsTab } from './XingchiApiSettingsTab';
 
 interface SettingsPanelProps {
   perSiteCookies: PerSiteCookies;
@@ -47,7 +49,7 @@ interface SettingsPanelProps {
   onUpdateStudioDefaults: (next: StudioDefaultConfig) => void;
 }
 
-type SettingsUnifiedTab = 'cookies' | 'ai' | 'muse' | 'gemini';
+type SettingsUnifiedTab = 'cookies' | 'ai' | 'muse' | 'gemini' | 'xingchi';
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   perSiteCookies,
@@ -251,6 +253,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       envVar: 'MUSE2API_BASE_URL + KEY',
       configured: Boolean(capabilities?.aiProviders.muse2api?.configured),
       modelName: capabilities?.aiProviders.muse2api?.model || 'muse-spark / image / video',
+    },
+    {
+      id: 'xingchi',
+      title: 'Xingchi API (api.xingchiapi.com)',
+      subtitle: 'Cổng đa mô hình Claude, GPT & Gemini tương thích OpenAI / Anthropic',
+      envVar: 'XINGCHI_API_KEY',
+      configured: Boolean(capabilities?.aiProviders.xingchi?.configured),
+      modelName: capabilities?.aiProviders.xingchi?.model || 'gpt-4o-mini',
     },
   ];
 
@@ -458,6 +468,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           >
             4. API Gemini
           </button>
+          <button
+            type="button"
+            onClick={() => jumpToUnifiedTab('xingchi')}
+            className="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 text-slate-700 dark:text-slate-200 hover:border-cyan-400/60 transition cursor-pointer"
+          >
+            5. Xingchi API
+          </button>
           <a
             href="#cfg-broll-box"
             className="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 text-slate-700 dark:text-slate-200 hover:border-violet-400/60 transition"
@@ -473,21 +490,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         </div>
       </div>
 
-      {/* UNIFIED 4-TAB CARD (COOKIES | KẾT NỐI AI | MUSE2API | KẾT NỐI API GEMINI) */}
+      {/* UNIFIED 5-TAB CARD (COOKIES | KẾT NỐI AI | MUSE2API | KẾT NỐI API GEMINI | XINGCHI API) */}
       <section ref={unifiedCardRef} id="cfg-unified-table-card" className="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 dark:border-slate-400/15 pb-3.5">
           <div>
             <span className="text-[10px] font-bold uppercase tracking-widest text-cyan-600 dark:text-cyan-300">
-              BẢNG QUẢN LÝ HỢP NHẤT • 4 TAB CHỨC NĂNG
+              BẢNG QUẢN LÝ HỢP NHẤT • 5 TAB CHỨC NĂNG
             </span>
             <h2 className="font-display text-sm sm:text-base font-bold text-slate-900 dark:text-white mt-0.5">
-              Trung tâm Xác thực, AI Kịch bản, Muse2API &amp; API Gemini Pool
+              Trung tâm Xác thực, AI Kịch bản, Muse2API, API Gemini Pool &amp; Xingchi API
             </h2>
           </div>
 
           <div
             role="tablist"
-            aria-label="4 tab cấu hình hợp nhất"
+            aria-label="5 tab cấu hình hợp nhất"
             className="flex flex-wrap items-center gap-1.5 rounded-2xl bg-slate-100 dark:bg-[#0c1021]/95 border border-slate-200 dark:border-slate-400/20 p-1 text-xs"
           >
             <button
@@ -548,6 +565,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             >
               <Sparkles className="w-3.5 h-3.5" />
               <span>4. Kết nối API Gemini</span>
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeSettingsTab === 'xingchi'}
+              onClick={() => setActiveSettingsTab('xingchi')}
+              className={`px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+                activeSettingsTab === 'xingchi'
+                  ? 'font-bold bg-cyan-500/20 dark:bg-cyan-500/25 text-cyan-900 dark:text-cyan-200 border border-cyan-500/45 shadow-sm'
+                  : 'font-medium text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-white/5 border border-transparent'
+              }`}
+            >
+              <Globe className="w-3.5 h-3.5" />
+              <span>5. Xingchi API</span>
             </button>
           </div>
         </div>
@@ -799,8 +831,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 </table>
               </div>
 
-              {/* 4 Clickable AI Provider Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">
+              {/* 5 Clickable AI Provider Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 text-xs">
                 {aiCards.map((card) => {
                   const isActive = studioDefaults.aiProvider === card.id;
                   return (
@@ -861,7 +893,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                 Bảo mật khóa API: Các khóa (<code className="font-mono">GEMINI_API_KEY</code>,{' '}
                 <code className="font-mono">OPENAI_API_KEY</code>, <code className="font-mono">META_API_KEY</code>,{' '}
-                <code className="font-mono">MUSE2API_KEY</code>) được đọc an toàn phía máy chủ từ{' '}
+                <code className="font-mono">MUSE2API_KEY</code>, <code className="font-mono">XINGCHI_API_KEY</code>) được đọc an toàn phía máy chủ từ{' '}
                 <strong>Settings &gt; Secrets</strong> hoặc tệp <code className="font-mono">.env</code> /{' '}
                 <code className="font-mono">muse2api/.env</code>.
               </p>
@@ -1195,6 +1227,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
           {/* TAB 4: KẾT NỐI API GEMINI */}
           {activeSettingsTab === 'gemini' && <GeminiApiSettingsTab />}
+
+          {/* TAB 5: KẾT NỐI XINGCHI API */}
+          {activeSettingsTab === 'xingchi' && (
+            <XingchiApiSettingsTab
+              isDefaultAiProvider={studioDefaults.aiProvider === 'xingchi'}
+              onSelectAsDefaultProvider={() =>
+                onUpdateStudioDefaults({ ...studioDefaults, aiProvider: 'xingchi' })
+              }
+              onConfigChanged={() => void fetchCapabilities()}
+            />
+          )}
         </div>
       </section>
 
