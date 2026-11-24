@@ -5579,7 +5579,9 @@ async function startServer() {
         enableVoiceover = true,
         allowFreeCostumeChange = false,
         preserveExactIdea = false,
+        directFromSelectedIdea = false,
         selectedIdeaTitle = '',
+        prePlannedIdeas,
         aiProvider = 'gemini',
       } = (req.body || {}) as {
         mode?: StudioCreationMode;
@@ -5620,7 +5622,14 @@ async function startServer() {
         enableVoiceover?: boolean;
         allowFreeCostumeChange?: boolean;
         preserveExactIdea?: boolean;
+        directFromSelectedIdea?: boolean;
         selectedIdeaTitle?: string;
+        prePlannedIdeas?: {
+          title: string;
+          summary?: string;
+          detail?: string;
+          suggestedSetting?: string;
+        }[];
         aiProvider?: AiProviderId;
       };
 
@@ -5650,8 +5659,22 @@ async function startServer() {
       const resolvedAspectRatio: DerivativeAspectRatio =
         aspectRatio === '16:9' ? '16:9' : aspectRatio === '1:1' ? '1:1' : '9:16';
 
-      if (resolvedScriptMode === 'independent_batch') {
-        const count = Math.max(1, Math.min(15, Math.round(Number(videoCount || ideaCount || 3))));
+      if (resolvedScriptMode === 'independent_batch' && !directFromSelectedIdea) {
+        const cleanPrePlanned = Array.isArray(prePlannedIdeas)
+          ? prePlannedIdeas
+              .filter(
+                (it) =>
+                  it &&
+                  (String(it.title || '').trim() ||
+                    String(it.summary || '').trim() ||
+                    String(it.detail || '').trim())
+              )
+              .slice(0, 15)
+          : undefined;
+        const count =
+          cleanPrePlanned && cleanPrePlanned.length > 0
+            ? cleanPrePlanned.length
+            : Math.max(1, Math.min(15, Math.round(Number(videoCount || ideaCount || 3))));
         const cleanUnitDur =
           typeof targetDurationSec === 'number' && Number.isFinite(targetDurationSec)
             ? Math.max(10, Math.min(900, Math.round(targetDurationSec)))
@@ -5687,6 +5710,7 @@ async function startServer() {
           enableVoiceover: enableVoiceover !== false,
           allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
           aiProvider: validProvider,
+          prePlannedIdeas: cleanPrePlanned,
         });
         void syncStudioDirectiveToCommandCenter({
           sourceAction: 'learn_script',
@@ -5714,11 +5738,11 @@ async function startServer() {
 
       const blueprint = await learnVideosAndCreateBlueprint({
         mode: studioMode,
-        scriptMode: 'series',
+        scriptMode: directFromSelectedIdea ? resolvedScriptMode : 'series',
         productionFormat: resolvedProductionFormat,
         ideaPrompt: String(ideaPrompt || ''),
         selectedIdeaTitle: String(selectedIdeaTitle || ''),
-        preserveExactIdea: Boolean(preserveExactIdea),
+        preserveExactIdea: Boolean(preserveExactIdea || directFromSelectedIdea),
         query: String(query || ''),
         videos: safeVideos,
         stylePreset,
@@ -5727,14 +5751,14 @@ async function startServer() {
         aspectRatio: resolvedAspectRatio,
         targetDurationSec: typeof targetDurationSec === 'number' ? targetDurationSec : undefined,
         sceneDurationSec:
-          typeof sceneDurationSec === 'number' && Number.isFinite(sceneDurationSec)
+          resolvedScriptMode === 'series' && typeof sceneDurationSec === 'number' && Number.isFinite(sceneDurationSec)
             ? Math.max(5, Math.min(300, Math.round(sceneDurationSec)))
             : undefined,
         targetDuration: targetDuration === 'medium' ? 'medium' : 'short',
         desiredSceneCount:
           typeof desiredSceneCount === 'number'
             ? desiredSceneCount
-            : typeof ideaCount === 'number' && Number.isFinite(ideaCount)
+            : resolvedScriptMode === 'series' && typeof ideaCount === 'number' && Number.isFinite(ideaCount)
             ? Math.max(1, Math.min(15, Math.round(ideaCount)))
             : undefined,
         outputLanguage,

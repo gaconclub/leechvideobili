@@ -2688,12 +2688,18 @@ ${lockRulesText ? `\n${lockRulesText}` : ''}
 
 YÊU CẦU BẮT BUỘC CHO TỪNG Ý TƯỞNG TRONG DANH SÁCH (${ideaCount} Ý TƯỞNG):
 1. TẤT CẢ ${ideaCount} ý tưởng PHẢI tuân thủ chặt chẽ chủ đề, thể loại, tinh thần và định hướng ban đầu của người dùng ("${seed}") — KHÔNG đi lạc đề.
-2. Mỗi ý tưởng PHẢI có nội dung, tình huống cụ thể, nút thắt và cao trào riêng biệt (KHÔNG trùng lặp máy móc giữa các ý tưởng).
+${
+  params.scriptMode === 'independent_batch' && ideaCount > 1
+    ? `2. QUY TẮC LÔ NHIỀU VIDEO ĐỘC LẬP PHÁI SINH CÙNG MÔ-TÍP:
+   - Cả ${ideaCount} ý tưởng đều PHẢI xoay quanh CÙNG MỘT MÔ-TÍP CỐT TRUYỆN & CẤU TRÚC TÌNH HUỐNG CỐT LÕI của ý tưởng gốc ("${seed}"), KHÔNG được sáng tạo sang các câu chuyện ngẫu nhiên khác mô-típ chỉ vì cùng thể loại.
+   - Thay đổi rõ rệt nhân vật/nghề nghiệp, phương tiện/cách tiếp cận, bối cảnh cụ thể, ngoại hình/hành vi bất thường và diễn biến kết thúc để mỗi ý tưởng là 1 video độc lập trọn vẹn trong ${durationSec} giây (không liên kết nối tiếp thành tập 1-2-3).`
+    : `2. Mỗi ý tưởng PHẢI có nội dung, tình huống cụ thể, nút thắt và cao trào riêng biệt (KHÔNG trùng lặp máy móc giữa các ý tưởng).
    ${
      ideaCount === 1
        ? '- Vì người dùng chọn 1 ý tưởng, hãy triển khai sâu sắc, trọn vẹn đúng ý tưởng gốc thành bản phác thảo hoàn chỉnh (Mở đầu gây tò mò -> Diễn biến cao trào -> Kết thúc ấn tượng).'
        : `- Với ${ideaCount} ý tưởng, mỗi ý tưởng là 1 phương án kịch bản độc lập hoàn chỉnh, hấp dẫn ngay từ tiêu đề và phần tóm tắt 2-3 câu.`
-   }
+   }`
+}
 3. MÔ TẢ CHÍNH XÁC BỐI CẢNH & HÀNH ĐỘNG THEO RANH GIỚI BẮT BUỘC:
    - Tập trung sâu vào: không gian & kiến trúc, cảnh quan/môi trường/thời tiết, ánh sáng/màu sắc/không khí, vị trí/tư thế/hành động nhân vật, góc máy/bố cục/chuyển động camera và đạo cụ/phụ kiện độc lập được phép (${ALLOWED_ACCESSORIES_LIST_VI}).
    - NGHIÊM CẤM TỰ MÔ TẢ NGOẠI HÌNH & TRANG PHỤC CHÍNH của nhân vật tham chiếu (không tự bịa khuôn mặt, màu da, kiểu tóc, vóc dáng hay quần áo chính).
@@ -3106,6 +3112,12 @@ NGUYÊN TẮC BẮT BUỘC:
   + Bối cảnh riêng của video này: "${params.conceptOverride.settingBible}"
 - Tuyệt đối KHÔNG lặp lại tình tiết cụ thể của các video phái sinh khác trong lô: ${params.conceptOverride.avoidTitles?.join(' | ') || 'Không trùng lặp'}.
 - Vẫn giữ tinh thần, chủ đề, cấu trúc tình huống cốt lõi và phong cách hình ảnh "${videoStyleMeta.labelVi}" đồng nhất với ý tưởng gốc.`
+    : scriptMode === 'independent_batch' && preserveExactIdea
+    ? `CHẾ ĐỘ KỊCH BẢN: TẠO PROMPT KỊCH BẢN TRỰC TIẾP TỪ Ý TƯỞNG ĐÃ CHỌN (01 VIDEO ĐỘC LẬP DÀI ĐÚNG ${desiredTotalSec} GIÂY · ${desiredScenes} PHÂN CẢNH).
+NGUYÊN TẮC BẮT BUỘC:
+- Giữ nguyên 100% ý tưởng mà người dùng vừa bấm chọn — TUYỆT ĐỐI KHÔNG sáng tạo lại ý tưởng mới hay đổi sang cốt truyện khác.
+- Chuyển hóa chính xác ý tưởng này thành 01 kịch bản hoàn chỉnh dài ĐÚNG ${desiredTotalSec} giây (${desiredScenes} phân cảnh, tổng durationSec = ${desiredTotalSec}s) với mở đầu, diễn biến và điểm nhấn trọn vẹn.
+- Nhân vật chính, ngoại hình, trang phục và đặc điểm nhận dạng PHẢI duy trì đồng nhất 100%.`
     : `CHẾ ĐỘ KỊCH BẢN: SERIES LIÊN HOÀN — 01 KỊCH BẢN TỔNG THỂ DUY NHẤT CHIA THÀNH ĐÚNG ${desiredScenes} PHÂN CẢNH LIÊN TIẾP (MỖI PHÂN CẢNH DÀI ĐÚNG ${avgSceneDur} GIÂY · TỔNG THỜI LƯỢNG ${desiredTotalSec} GIÂY).
 NGUYÊN TẮC KIẾN TRÚC BẮT BUỘC:
 - QUY TRÌNH 2 BƯỚC NỘI BỘ: Trước hết xây dựng 01 kịch bản tổng thể duy nhất bám sát 100% ý tưởng gốc (KHÔNG tạo lại ý tưởng khác, KHÔNG chia thành nhiều câu chuyện rời rạc); sau đó phân bổ kịch bản đó thành ĐÚNG ${desiredScenes} phân cảnh liên tiếp đánh số 1..${desiredScenes}.
@@ -4258,6 +4270,12 @@ export async function learnAndCreateIndependentBatch(params: {
   enableVoiceover?: boolean;
   allowFreeCostumeChange?: boolean;
   aiProvider?: AiProviderId;
+  prePlannedIdeas?: {
+    title: string;
+    summary?: string;
+    detail?: string;
+    suggestedSetting?: string;
+  }[];
 }): Promise<{ sharedSpiritNote: string; coreMotif: string; blueprints: DerivativeBlueprint[] }> {
   const studioMode: StudioCreationMode = params.mode === 'creative' ? 'creative' : 'derivative';
   const productionFormat: StudioProductionFormat =
@@ -4267,9 +4285,14 @@ export async function learnAndCreateIndependentBatch(params: {
   const ideaText = (params.ideaPrompt || params.query || '').trim();
   const activeStylePreset: DerivativeStylePreset =
     params.stylePreset && params.stylePreset in STYLE_LABELS ? params.stylePreset : 'none';
+  const prePlanned = Array.isArray(params.prePlannedIdeas)
+    ? params.prePlannedIdeas
+        .filter((it) => it && (String(it.title || '').trim() || String(it.summary || '').trim() || String(it.detail || '').trim()))
+        .slice(0, 15)
+    : [];
 
   if (studioMode === 'creative') {
-    if (!ideaText && !params.customInstruction?.trim()) {
+    if (!ideaText && !params.customInstruction?.trim() && prePlanned.length === 0) {
       throw new Error('Vui lòng nhập ý tưởng hoặc mô tả chủ đề để Studio Sáng Tạo lên danh sách video.');
     }
   } else if (videosList.length === 0) {
@@ -4288,29 +4311,53 @@ export async function learnAndCreateIndependentBatch(params: {
   const videoStyleMeta = resolveVideoStyleMeta(params.videoStyle, params.customStylePrompt);
   const videoStyle = videoStyleMeta.styleKey;
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
-  const count = Math.max(1, Math.min(15, Math.round(Number(params.videoCount || 3))));
+  const count =
+    prePlanned.length > 0
+      ? prePlanned.length
+      : Math.max(1, Math.min(15, Math.round(Number(params.videoCount || 3))));
   const defaultDur = Math.max(10, Math.min(900, Math.round(Number(params.targetDurationSec || 30))));
 
   const contexts = videosList.length > 0 ? await gatherSourceContexts(videosList) : [];
 
-  const plan = await planIndependentVideoConcepts({
-    studioMode,
-    ideaText,
-    selectedIdeaTitle: params.selectedIdeaTitle,
-    contexts,
-    videoCount: count,
-    unitDurationSec: defaultDur,
-    videoStyleMeta,
-    stylePreset: activeStylePreset,
-    outputLang,
-    provider,
-    useProModel: params.useProModel,
-    customInstruction: params.customInstruction,
-    characterSummary: params.characterSummary,
-    characterRefsMeta: params.characterRefsMeta,
-    allowFreeCostumeChange,
-    costumeBible: params.costumeBible,
-  });
+  // If user already expanded ideas in Step 1 and chose to compile those exact ideas, DO NOT re-invent new concepts!
+  const plan =
+    prePlanned.length > 0
+      ? {
+          coreMotif: ideaText || prePlanned[0].title || 'Giữ nguyên danh sách ý tưởng đã triển khai',
+          sharedSpiritNote: `Giữ nguyên ${prePlanned.length} ý tưởng đã triển khai · Phong cách ${videoStyleMeta.labelVi}`,
+          concepts: prePlanned.map((it, idx) => {
+            const title = String(it.title || `Ý tưởng ${String(idx + 1).padStart(2, '0')}`).trim();
+            const premise = [String(it.summary || '').trim(), String(it.detail || '').trim()]
+              .filter((v, i, arr) => Boolean(v) && arr.indexOf(v) === i)
+              .join('\n');
+            return {
+              title,
+              premise: premise || title,
+              characterBible: '',
+              settingBible: String(it.suggestedSetting || '').trim(),
+              hookFormula: 'Mở đầu trực diện bám sát ý tưởng đã chọn',
+              derivativeHook: title.slice(0, 60),
+            };
+          }),
+        }
+      : await planIndependentVideoConcepts({
+          studioMode,
+          ideaText,
+          selectedIdeaTitle: params.selectedIdeaTitle,
+          contexts,
+          videoCount: count,
+          unitDurationSec: defaultDur,
+          videoStyleMeta,
+          stylePreset: activeStylePreset,
+          outputLang,
+          provider,
+          useProModel: params.useProModel,
+          customInstruction: params.customInstruction,
+          characterSummary: params.characterSummary,
+          characterRefsMeta: params.characterRefsMeta,
+          allowFreeCostumeChange,
+          costumeBible: params.costumeBible,
+        });
 
   // Top up cleanly if the model returned slightly fewer concepts than requested
   while (plan.concepts.length < count) {
@@ -4349,7 +4396,9 @@ export async function learnAndCreateIndependentBatch(params: {
           mode: studioMode,
           scriptMode: 'independent_batch',
           productionFormat,
-          ideaPrompt: ideaText,
+          ideaPrompt: prePlanned.length > 0 ? `${concept.title}\n\n${concept.premise}` : ideaText,
+          selectedIdeaTitle: concept.title,
+          preserveExactIdea: prePlanned.length > 0,
           query: params.query,
           videos: videosList,
           stylePreset: activeStylePreset,

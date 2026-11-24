@@ -1232,13 +1232,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // AI Learn & Create Script (supports Direct Per-Idea Script Prompt with 100% Idea Preservation & Same-Motif Independent Batch)
+  // AI Learn & Create Script (supports Direct Per-Idea Script Prompt with 100% Idea Preservation & Direct Batch Compile without re-planning ideas)
   const handleLearnAndCreateScript = async (override?: {
     selectedIdea?: ExpandedCreativeIdeaItem;
+    batchIdeas?: ExpandedCreativeIdeaItem[];
     preserveExactIdea?: boolean;
   }) => {
     const selectedIdea = override?.selectedIdea;
-    const preserveExactIdea = Boolean(override?.preserveExactIdea || selectedIdea);
+    const batchIdeas = Array.isArray(override?.batchIdeas) && override.batchIdeas.length > 0 ? override.batchIdeas : undefined;
+    const directFromSelectedIdea = Boolean(selectedIdea);
+    const preserveExactIdea = Boolean(override?.preserveExactIdea || selectedIdea || batchIdeas);
     const formattedSelectedIdea = selectedIdea
       ? [
           `Tiêu đề ý tưởng: ${selectedIdea.title}`,
@@ -1252,7 +1255,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     const effectiveSettingBible = (selectedIdea?.suggestedSetting || settingBibleDraft).trim();
 
     if (studioMode === 'creative') {
-      if (!effectiveCreativeIdea && !customInstruction.trim()) {
+      if (!effectiveCreativeIdea && !customInstruction.trim() && !batchIdeas) {
         setLearnError('Vui lòng nhập tóm tắt ý tưởng (hoặc dùng AI triển khai ý tưởng) ở Bước 1 để lên kịch bản.');
         return;
       }
@@ -1267,6 +1270,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         setSettingBibleDraft(selectedIdea.suggestedSetting.trim());
       }
       setGeneratingIdeaId(selectedIdea.id);
+    } else if (batchIdeas) {
+      setGeneratingIdeaId('__ALL_BATCH__');
     } else {
       setGeneratingIdeaId(null);
     }
@@ -1322,6 +1327,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       : 'none';
 
     const seriesTotalDurationSec = unifiedUnitCount * targetDurationSec;
+    const isRunningIndependentBatch =
+      !directFromSelectedIdea && (Boolean(batchIdeas) || scriptMode === 'independent_batch');
 
     try {
       const { res, data } = await fetchStudioJsonWithAutoRetry<{
@@ -1337,7 +1344,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           scriptMode,
           productionFormat,
           ideaCount: unifiedUnitCount,
-          videoCount: scriptMode === 'independent_batch' ? unifiedUnitCount : 1,
+          videoCount: batchIdeas ? batchIdeas.length : isRunningIndependentBatch ? unifiedUnitCount : 1,
           ideaPrompt: studioMode === 'creative' ? effectiveCreativeIdea : ideaPrompt.trim(),
           query: studioMode === 'creative' ? effectiveCreativeIdea : searchQueryInput.trim() || incomingQuery,
           videos: studioMode === 'derivative' ? sources : [],
@@ -1372,7 +1379,18 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           continuityBible: continuityBibleDraft.trim(),
           allowFreeCostumeChange,
           preserveExactIdea,
+          directFromSelectedIdea,
           selectedIdeaTitle: selectedIdea?.title || '',
+          ...(batchIdeas
+            ? {
+                prePlannedIdeas: batchIdeas.map((it) => ({
+                  title: it.title,
+                  summary: it.summary,
+                  detail: it.detail,
+                  suggestedSetting: it.suggestedSetting,
+                })),
+              }
+            : {}),
           customInstruction: customInstruction.trim(),
           enableVoiceover: voiceMode !== 'none',
           aiProvider,
@@ -1443,15 +1461,21 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         learnedStyles,
         customStylePrompt
       ).label;
-      if (scriptMode === 'independent_batch') {
+      if (directFromSelectedIdea && selectedIdea) {
+        setLearnSuccess(
+          `Đã tạo ngay prompt kịch bản từ "${selectedIdea.title}" (${first.scenes.length} phân cảnh · ${first.targetDurationSec}s, giữ nguyên 100% ý tưởng đã chọn — ${styleLabel}).`
+        );
+      } else if (batchIdeas) {
+        setLearnSuccess(
+          `Đã tạo trực tiếp ${returnedList.length} kịch bản độc lập từ đúng ${batchIdeas.length} ý tưởng đã triển khai (${styleLabel}).`
+        );
+      } else if (scriptMode === 'independent_batch') {
         setLearnSuccess(
           `Đã tạo lô ${returnedList.length} kịch bản video độc lập phái sinh cùng mô-típ từ ý tưởng gốc (${styleLabel}).`
         );
       } else {
         setLearnSuccess(
-          selectedIdea
-            ? `Đã chuyển ý tưởng "${selectedIdea.title}" thành kịch bản ${first.scenes.length} phân cảnh bảo toàn nguyên cốt truyện (${styleLabel}).`
-            : `Đã khởi tạo kịch bản Series ${first.scenes.length} phân cảnh nối tiếp liên hoàn (${styleLabel}).`
+          `Đã khởi tạo kịch bản Series ${first.scenes.length} phân cảnh nối tiếp liên hoàn (${styleLabel}).`
         );
       }
       setActiveStudioStep(2);
@@ -2918,23 +2942,50 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                         </span>
                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-400/30">
                           {scriptMode === 'independent_batch'
-                            ? `${unifiedUnitCount} kịch bản độc lập × ${targetDurationSec}s = ${unifiedTotalDurationSec}s`
-                            : `01 kịch bản · ${unifiedUnitCount} phân cảnh × ${targetDurationSec}s = ${unifiedTotalDurationSec}s`}
+                            ? `Bấm từng ý tưởng tạo ngay 1 kịch bản (${targetDurationSec}s) · không tạo lại ý tưởng`
+                            : `Bấm từng ý tưởng tạo 01 kịch bản · ${unifiedUnitCount} phân cảnh × ${targetDurationSec}s = ${unifiedTotalDurationSec}s`}
                         </span>
                       </div>
-                      {expandedIdeas.length > 0 && !isLearning && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setExpandedIdeas([]);
-                            setExpandedIdeaPrompt('');
-                            setEditingIdeaId(null);
-                          }}
-                          className="text-[11px] text-slate-500 hover:text-rose-500 cursor-pointer"
-                        >
-                          Xóa danh sách
-                        </button>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {scriptMode === 'independent_batch' && expandedIdeas.length >= 2 && (
+                          <button
+                            type="button"
+                            disabled={isLearning || isExpandingIdea}
+                            onClick={() =>
+                              void handleLearnAndCreateScript({
+                                batchIdeas: expandedIdeas,
+                                preserveExactIdea: true,
+                              })
+                            }
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-[11px] font-bold transition cursor-pointer whitespace-nowrap"
+                          >
+                            {isLearning && generatingIdeaId === '__ALL_BATCH__' ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span>Đang tạo cả {expandedIdeas.length} ({learningElapsedSec}s)...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-3 h-3" />
+                                <span>Tạo prompt cả {expandedIdeas.length} ý tưởng</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                        {expandedIdeas.length > 0 && !isLearning && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExpandedIdeas([]);
+                              setExpandedIdeaPrompt('');
+                              setEditingIdeaId(null);
+                            }}
+                            className="text-[11px] text-slate-500 hover:text-rose-500 cursor-pointer"
+                          >
+                            Xóa danh sách
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {isExpandingIdea && expandedIdeas.length === 0 ? (
@@ -3022,8 +3073,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                       <span>
                                         {scriptMode === 'independent_batch'
-                                          ? `Đang tạo ${unifiedUnitCount} kịch bản độc lập (${learningElapsedSec}s)...`
-                                          : `Đang tạo 1 kịch bản · ${unifiedUnitCount} phân cảnh (${learningElapsedSec}s)...`}
+                                          ? `Đang tạo prompt kịch bản (${targetDurationSec}s · ${learningElapsedSec}s)...`
+                                          : `Đang tạo prompt kịch bản (${unifiedUnitCount} cảnh × ${targetDurationSec}s · ${learningElapsedSec}s)...`}
                                       </span>
                                     </>
                                   ) : (
