@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "enabled": true,
+  "region": "intl",
+  "selectedModel": "qwen-plus",
+  "imageModel": "qwen-image-plus",
+  "videoModel": "wan2.5-i2v-preview",
+  "timeoutSec": 60,
+  "status": "unconfigured",
+  "requestsCount": 0,
+  "successCount": 0,
+  "errorCount": 0,
+  "models": []
+}

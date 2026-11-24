@@ -3,6 +3,8 @@ import {
   AlertCircle,
   CheckCircle2,
   Cloud,
+  Film,
+  Image as ImageIcon,
   KeyRound,
   Layers,
   Loader2,
@@ -73,6 +75,20 @@ const QWEN_PRESETS = [
   'qwq-plus',
 ];
 
+const QWEN_IMAGE_PRESETS = [
+  'qwen-image-plus',
+  'qwen-image',
+  'qwen-image-2.0-pro',
+  'qwen-image-max',
+];
+
+const QWEN_VIDEO_PRESETS = [
+  'wan2.5-i2v-preview',
+  'wan2.6-i2v',
+  'wan2.2-i2v-plus',
+  'wan2.5-t2v-preview',
+];
+
 export const AlibabaModelStudioSection: React.FC<AlibabaModelStudioSectionProps> = ({
   isDefaultAiProvider,
   onSelectAsDefaultProvider,
@@ -87,6 +103,8 @@ export const AlibabaModelStudioSection: React.FC<AlibabaModelStudioSectionProps>
   const [enabledDraft, setEnabledDraft] = useState(true);
   const [regionDraft, setRegionDraft] = useState<AlibabaRegionId>('intl');
   const [modelDraft, setModelDraft] = useState('qwen-plus');
+  const [imageModelDraft, setImageModelDraft] = useState('qwen-image-plus');
+  const [videoModelDraft, setVideoModelDraft] = useState('wan2.5-i2v-preview');
   const [timeoutDraft, setTimeoutDraft] = useState(60);
 
   const [modelSearch, setModelSearch] = useState('');
@@ -104,6 +122,8 @@ export const AlibabaModelStudioSection: React.FC<AlibabaModelStudioSectionProps>
     setEnabledDraft(st.enabled);
     setRegionDraft(st.region);
     setModelDraft(st.selectedModel || 'qwen-plus');
+    setImageModelDraft(st.imageModel || 'qwen-image-plus');
+    setVideoModelDraft(st.videoModel || 'wan2.5-i2v-preview');
     setTimeoutDraft(st.timeoutSec || 60);
   }, []);
 
@@ -130,6 +150,8 @@ export const AlibabaModelStudioSection: React.FC<AlibabaModelStudioSectionProps>
     enabled?: boolean;
     region?: AlibabaRegionId;
     selectedModel?: string;
+    imageModel?: string;
+    videoModel?: string;
     timeoutSec?: number;
   }) => {
     setBusyAction('save');
@@ -143,6 +165,8 @@ export const AlibabaModelStudioSection: React.FC<AlibabaModelStudioSectionProps>
           enabled: override?.enabled ?? enabledDraft,
           region: override?.region ?? regionDraft,
           selectedModel: (override?.selectedModel ?? modelDraft).trim(),
+          imageModel: (override?.imageModel ?? imageModelDraft).trim(),
+          videoModel: (override?.videoModel ?? videoModelDraft).trim(),
           timeoutSec: override?.timeoutSec ?? timeoutDraft,
         }),
       });
@@ -153,7 +177,7 @@ export const AlibabaModelStudioSection: React.FC<AlibabaModelStudioSectionProps>
       setStatus(data.status);
       syncDrafts(data.status);
       setNotice(
-        `Đã lưu cấu hình Alibaba Cloud Model Studio (${data.status.selectedModel} · ${data.status.region.toUpperCase()}).`
+        `Đã lưu cấu hình Alibaba Cloud Model Studio (${data.status.selectedModel} · Ảnh: ${data.status.imageModel} · Video: ${data.status.videoModel}).`
       );
       onConfigChanged?.();
     } catch (err: any) {
@@ -456,7 +480,7 @@ export const AlibabaModelStudioSection: React.FC<AlibabaModelStudioSectionProps>
 
       {/* Quick Qwen Presets */}
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] text-slate-500 dark:text-slate-400 mr-1">Model Qwen phổ biến:</span>
+        <span className="text-[11px] text-slate-500 dark:text-slate-400 mr-1">Model Qwen kịch bản:</span>
         {QWEN_PRESETS.map((preset) => (
           <button
             key={preset}
@@ -471,6 +495,73 @@ export const AlibabaModelStudioSection: React.FC<AlibabaModelStudioSectionProps>
             {preset}
           </button>
         ))}
+      </div>
+
+      {/* Qwen Image & Video Models */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1 border-t border-slate-200/80 dark:border-slate-400/15">
+        <div className="space-y-1.5">
+          <label className="block space-y-1">
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+              <ImageIcon className="w-3.5 h-3.5 text-orange-500" />
+              <span>Model AI Qwen tạo ảnh (Nhân vật &amp; Cảnh)</span>
+            </span>
+            <input
+              type="text"
+              value={imageModelDraft}
+              onChange={(e) => setImageModelDraft(e.target.value)}
+              placeholder="qwen-image-plus"
+              className="w-full h-9 px-3 rounded-xl bg-slate-50 dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 text-slate-900 dark:text-white font-mono text-xs focus:outline-none focus:border-orange-400"
+            />
+          </label>
+          <div className="flex flex-wrap gap-1">
+            {QWEN_IMAGE_PRESETS.map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => setImageModelDraft(preset)}
+                className={`px-2 py-0.5 rounded-md font-mono text-[10px] border transition cursor-pointer ${
+                  imageModelDraft === preset
+                    ? 'bg-orange-500/20 border-orange-500/45 text-orange-800 dark:text-orange-200 font-semibold'
+                    : 'bg-slate-50 dark:bg-[#131a35] border-slate-200 dark:border-slate-400/20 text-slate-600 dark:text-slate-300 hover:border-orange-400/50'
+                }`}
+              >
+                {preset}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="block space-y-1">
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+              <Film className="w-3.5 h-3.5 text-orange-500" />
+              <span>Model AI Qwen / Wan tạo Video (I2V &amp; T2V)</span>
+            </span>
+            <input
+              type="text"
+              value={videoModelDraft}
+              onChange={(e) => setVideoModelDraft(e.target.value)}
+              placeholder="wan2.5-i2v-preview"
+              className="w-full h-9 px-3 rounded-xl bg-slate-50 dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 text-slate-900 dark:text-white font-mono text-xs focus:outline-none focus:border-orange-400"
+            />
+          </label>
+          <div className="flex flex-wrap gap-1">
+            {QWEN_VIDEO_PRESETS.map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => setVideoModelDraft(preset)}
+                className={`px-2 py-0.5 rounded-md font-mono text-[10px] border transition cursor-pointer ${
+                  videoModelDraft === preset
+                    ? 'bg-orange-500/20 border-orange-500/45 text-orange-800 dark:text-orange-200 font-semibold'
+                    : 'bg-slate-50 dark:bg-[#131a35] border-slate-200 dark:border-slate-400/20 text-slate-600 dark:text-slate-300 hover:border-orange-400/50'
+                }`}
+              >
+                {preset}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Optional Discovered Models + Quick Prompt Tester */}

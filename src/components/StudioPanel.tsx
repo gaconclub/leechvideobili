@@ -329,11 +329,19 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   };
 
   // Per-scene generation states
-  const [imageEngineMode, setImageEngineMode] = useState<'gemini_standard' | 'gemini_pro' | 'muse2api'>(
-    studioDefaults.visualMode === 'gemini_omni' ? 'gemini_standard' : 'muse2api'
+  const [imageEngineMode, setImageEngineMode] = useState<'gemini_standard' | 'gemini_pro' | 'muse2api' | 'qwen'>(
+    studioDefaults.visualMode === 'qwen_video'
+      ? 'qwen'
+      : studioDefaults.visualMode === 'gemini_omni'
+      ? 'gemini_standard'
+      : 'muse2api'
   );
-  const [sceneVideoEngine, setSceneVideoEngine] = useState<'gemini' | 'muse2api'>(
-    studioDefaults.visualMode === 'gemini_omni' ? 'gemini' : 'muse2api'
+  const [sceneVideoEngine, setSceneVideoEngine] = useState<'gemini' | 'muse2api' | 'qwen'>(
+    studioDefaults.visualMode === 'qwen_video'
+      ? 'qwen'
+      : studioDefaults.visualMode === 'gemini_omni'
+      ? 'gemini'
+      : 'muse2api'
   );
   const [busySceneImageIds, setBusySceneImageIds] = useState<Set<string>>(new Set());
   const [queuedSceneImageIds, setQueuedSceneImageIds] = useState<Set<string>>(new Set());
@@ -1087,7 +1095,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             prompt: desc,
             aspectRatio: '1:1',
             quality: imageEngineMode === 'gemini_pro' ? 'pro' : 'standard',
-            engine: imageEngineMode === 'muse2api' ? 'muse2api' : 'gemini',
+            engine: imageEngineMode === 'muse2api' ? 'muse2api' : imageEngineMode === 'qwen' ? 'qwen' : 'gemini',
             videoStyle: blueprint?.videoStyle || videoStyle,
             customStylePrompt: customStylePrompt.trim(),
             characterBible: blueprint?.characterBible || characterBibleDraft || desc,
@@ -1641,7 +1649,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             prompt: compiledPrompt,
             aspectRatio,
             quality: imageEngineMode === 'gemini_pro' ? 'pro' : 'standard',
-            engine: imageEngineMode === 'muse2api' ? 'muse2api' : 'gemini',
+            engine: imageEngineMode === 'muse2api' ? 'muse2api' : imageEngineMode === 'qwen' ? 'qwen' : 'gemini',
             videoStyle: activeStyle,
             customStylePrompt: customStylePrompt.trim(),
             characterBible: activeCharBible,
@@ -1798,7 +1806,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       totalScenes: blueprint.scenes.length,
       mediaType: 'video',
       hasAttachedRefs: Boolean(sc.sceneImageDataUrl || characters.length > 0),
-      targetEngine: sceneVideoEngine,
+      targetEngine: sceneVideoEngine === 'muse2api' ? 'muse2api' : 'gemini',
       allowFreeCostumeChange: effectiveAllowFree,
     });
 
@@ -1815,7 +1823,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           mediaType: 'video',
           prompt: compiledPrompt,
           aspectRatio,
-          durationSec: Math.min(sceneVideoEngine === 'muse2api' ? 12 : 15, Math.max(4, Math.round(sc.durationSec || 8))),
+          durationSec: Math.min(
+            sceneVideoEngine === 'qwen' ? 10 : sceneVideoEngine === 'muse2api' ? 12 : 15,
+            Math.max(4, Math.round(sc.durationSec || 8))
+          ),
           videoStyle: activeStyle,
           customStylePrompt: customStylePrompt.trim(),
           characterBible: activeCharBible,
@@ -1863,7 +1874,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     } catch (err: any) {
       setSceneMediaError(
         err?.message ||
-          `Không tạo được clip ${sceneVideoEngine === 'muse2api' ? 'Muse2API' : 'Omni Flash'} cho phân cảnh ${sc.sceneIndex}.`
+          `Không tạo được clip ${
+            sceneVideoEngine === 'qwen'
+              ? 'AI Qwen (Alibaba)'
+              : sceneVideoEngine === 'muse2api'
+              ? 'Muse2API'
+              : 'Omni Flash'
+          } cho phân cảnh ${sc.sceneIndex}.`
       );
     } finally {
       setBusySceneVideoIds((prev) => {
@@ -2935,7 +2952,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-slate-500 dark:text-slate-400 hidden sm:inline">
-                    Engine: <strong className="text-cyan-600 dark:text-cyan-300">{imageEngineMode === 'muse2api' ? 'Muse2API' : imageEngineMode === 'gemini_pro' ? 'Nano Pro' : 'Gemini'}</strong>
+                    Engine: <strong className="text-cyan-600 dark:text-cyan-300">{imageEngineMode === 'muse2api' ? 'Muse2API' : imageEngineMode === 'qwen' ? 'AI Qwen' : imageEngineMode === 'gemini_pro' ? 'Nano Pro' : 'Gemini'}</strong>
                   </span>
                   <input
                     ref={charUploadInputRef}
@@ -4147,12 +4164,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       const nextMode = e.target.value as DerivativeVisualMode;
                       setVisualMode(nextMode);
                       if (nextMode === 'muse2api_video') setSceneVideoEngine('muse2api');
+                      else if (nextMode === 'qwen_video') setSceneVideoEngine('qwen');
                       else if (nextMode === 'gemini_omni') setSceneVideoEngine('gemini');
                     }}
                     className={inputCls}
                   >
                     <option value="muse2api_video">
                       Muse2API Video (muse-video · Ưu tiên · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
+                    </option>
+                    <option value="qwen_video">
+                      AI Qwen Video ({capabilities?.aiProviders.alibaba?.videoModel || 'wan2.5-i2v-preview'} · {capabilities?.aiProviders.alibaba?.configured ? 'Sẵn sàng' : 'Chưa đặt key'})
                     </option>
                     <option value="gemini_omni">Gemini Omni Flash (gemini-omni-1.2-flash · Trả phí)</option>
                     <option value="storyboard_motion">Ảnh phân cảnh AI + Chuyển động Ken Burns</option>
@@ -4174,16 +4195,32 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </p>
                 )}
 
+                {(visualMode === 'qwen_video' || imageEngineMode === 'qwen' || sceneVideoEngine === 'qwen') &&
+                  !capabilities?.aiProviders.alibaba?.configured && (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-300 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25">
+                      AI Qwen (Alibaba Cloud Model Studio) chưa có khóa DASHSCOPE_API_KEY hoặc đang tắt. Vào{' '}
+                      <button type="button" onClick={onOpenSettings} className="underline font-semibold cursor-pointer">
+                        Cấu hình &gt; AI Kịch bản (Alibaba Cloud)
+                      </button>{' '}
+                      để kiểm tra trạng thái và chọn model Qwen Ảnh/Video.
+                    </p>
+                  )}
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <label className="space-y-1">
                     <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Engine tạo ảnh (Nhân vật &amp; Cảnh)</span>
                     <select
                       value={imageEngineMode}
-                      onChange={(e) => setImageEngineMode(e.target.value as 'gemini_standard' | 'gemini_pro' | 'muse2api')}
+                      onChange={(e) =>
+                        setImageEngineMode(e.target.value as 'gemini_standard' | 'gemini_pro' | 'muse2api' | 'qwen')
+                      }
                       className={inputCls}
                     >
                       <option value="muse2api">
                         Muse2API ({capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
+                      </option>
+                      <option value="qwen">
+                        AI Qwen ({capabilities?.aiProviders.alibaba?.imageModel || 'qwen-image-plus'} · {capabilities?.aiProviders.alibaba?.configured ? 'Sẵn sàng' : 'Chưa đặt key'})
                       </option>
                       <option value="gemini_standard">Gemini Flash Image</option>
                       <option value="gemini_pro">Nano Banana 2.1 (1K)</option>
@@ -4194,10 +4231,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Engine dựng clip từng cảnh</span>
                     <select
                       value={sceneVideoEngine}
-                      onChange={(e) => setSceneVideoEngine(e.target.value as 'gemini' | 'muse2api')}
+                      onChange={(e) => setSceneVideoEngine(e.target.value as 'gemini' | 'muse2api' | 'qwen')}
                       className={inputCls}
                     >
                       <option value="muse2api">Muse2API (muse-video · Ưu tiên)</option>
+                      <option value="qwen">
+                        AI Qwen Video ({capabilities?.aiProviders.alibaba?.videoModel || 'wan2.5-i2v-preview'} · {capabilities?.aiProviders.alibaba?.configured ? 'Sẵn sàng' : 'Chưa đặt key'})
+                      </option>
                       <option value="gemini">Gemini Omni Flash</option>
                     </select>
                   </label>
@@ -5296,7 +5336,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   blueprint,
                   characterRefs: characters,
                   enableVoiceover: voiceMode !== 'none',
-                  targetEngine: sceneVideoEngine,
+                  targetEngine: sceneVideoEngine === 'muse2api' ? 'muse2api' : 'gemini',
                   allowFreeCostumeChange: effectiveAllowFree,
                 });
                 const fixableIssues = liveQc.issues.filter((is) => is.autoFixable);

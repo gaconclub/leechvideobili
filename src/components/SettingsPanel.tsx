@@ -1378,6 +1378,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                   className="w-full h-9 px-2.5 text-xs font-medium bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-violet-400"
                 >
                   <option value="muse2api_video">Muse2API Video (muse-video · Ưu tiên · Tự host)</option>
+                  <option value="qwen_video">AI Qwen Video (Alibaba Model Studio · Wan I2V/T2V)</option>
                   <option value="gemini_omni">Gemini Omni Flash (gemini-omni-1.2-flash · Cần key trả phí)</option>
                   <option value="remix">Remix cắt ghép video nguồn + AI voice</option>
                   <option value="storyboard_motion">Ảnh chuyển động Ken Burns (Nhanh)</option>

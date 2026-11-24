@@ -413,7 +413,9 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
           }),
         }),
       `Đã khởi động sản xuất với nguồn video: ${
-        videoGenerationEngine === 'gemini'
+        videoGenerationEngine === 'qwen'
+          ? 'AI Qwen (Alibaba Model Studio · Wan)'
+          : videoGenerationEngine === 'gemini'
           ? 'AI Gemini (Omni Flash)'
           : videoGenerationEngine === 'google_flow'
           ? 'Google Flow (Xuất kịch bản & nạp MP4)'
@@ -1217,13 +1219,18 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                     Có thể đổi ngay giữa chừng mà không cần chạy lại từ đầu
                   </span>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                   {(
                     [
                       {
                         id: 'gemini' as VideoGenerationEngine,
                         title: 'AI Gemini (Khuyên dùng)',
                         desc: 'Dựng video trực tiếp qua Gemini Omni Flash, không phụ thuộc cookie Muse.ai.',
+                      },
+                      {
+                        id: 'qwen' as VideoGenerationEngine,
+                        title: 'AI Qwen (Alibaba)',
+                        desc: 'Dựng video trực tiếp qua Alibaba Cloud Model Studio (Wan I2V/T2V) từ ảnh keyframe.',
                       },
                       {
                         id: 'google_flow' as VideoGenerationEngine,
@@ -1330,7 +1337,9 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                         Nguồn tạo video phiên hiện tại
                       </span>
                       <span className="font-mono text-sky-600 dark:text-sky-400">
-                        {activeRun.videoGenerationEngine === 'google_flow'
+                        {activeRun.videoGenerationEngine === 'qwen'
+                          ? 'AI Qwen (Alibaba · Wan)'
+                          : activeRun.videoGenerationEngine === 'google_flow'
                           ? 'Google Flow'
                           : activeRun.videoGenerationEngine === 'muse'
                           ? 'AI Muse (Auto-failover Gemini)'
@@ -1341,6 +1350,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                       {(
                         [
                           { id: 'gemini' as VideoGenerationEngine, label: 'AI Gemini' },
+                          { id: 'qwen' as VideoGenerationEngine, label: 'AI Qwen' },
                           { id: 'google_flow' as VideoGenerationEngine, label: 'Google Flow' },
                           { id: 'muse' as VideoGenerationEngine, label: 'AI Muse' },
                         ] as const
