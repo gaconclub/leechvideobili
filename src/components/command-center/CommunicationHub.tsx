@@ -4,6 +4,7 @@ import {
   ArrowDown,
   ChevronRight,
   Crown,
+  ExternalLink,
   Film,
   Hash,
   Loader2,
@@ -11,11 +12,14 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
+  Play,
+  RefreshCw,
   Search,
   Send,
   ShieldAlert,
   Sparkles,
   Trash2,
+  Video,
   X,
   Zap,
 } from 'lucide-react';
@@ -25,8 +29,10 @@ import type {
   ConversationMessage,
   MuseAgentConfig,
   MuseAgentId,
+  VideoGenerationEngine,
 } from '../../types/commandCenter';
 import { AgentAvatar } from './AgentAvatar';
+import { GoogleFlowModal } from './GoogleFlowModal';
 
 interface CommunicationHubProps {
   state: CommandCenterState;
@@ -42,16 +48,23 @@ interface ChannelMeta {
   name: string;
   shortLabel: string;
   description: string;
-  defaultResponder: MuseAgentId | 'chairman';
+  defaultResponder: MuseAgentId | 'chairman' | 'gemini';
 }
 
 interface QuickCommand {
   label: string;
   prompt: string;
-  target?: MuseAgentId | 'chairman';
+  target?: MuseAgentId | 'chairman' | 'gemini';
 }
 
 const WORK_CHANNELS: ChannelMeta[] = [
+  {
+    id: 'gemini',
+    name: '#ai-gemini-tiến-độ',
+    shortLabel: 'AI Gemini · Tiến độ',
+    description: 'Trao đổi trực tiếp với AI Gemini để báo cáo tiến độ, tạo video Gemini/Google Flow và gỡ treo đội AI',
+    defaultResponder: 'gemini',
+  },
   {
     id: 'commander',
     name: '#tổng-chỉ-huy',
@@ -160,6 +173,30 @@ function formatFullDateTime(ts: number): string {
 }
 
 function getQuickCommandsForChannel(channel: CommunicationChannelId): QuickCommand[] {
+  if (channel === 'gemini') {
+    return [
+      {
+        label: 'Báo cáo tiến độ chi tiết',
+        prompt: 'Báo cáo chi tiết tiến độ hiện tại: bao nhiêu ảnh đã duyệt QA, bao nhiêu video đã xong, cảnh nào đang kẹt?',
+        target: 'gemini',
+      },
+      {
+        label: 'Tạo video Gemini cho ảnh đã duyệt',
+        prompt: 'Hãy tạo video ngay lập tức bằng AI Gemini cho toàn bộ các ảnh phân cảnh đã thông qua QA.',
+        target: 'gemini',
+      },
+      {
+        label: 'Xuất kịch bản sang Google Flow',
+        prompt: 'Hãy chuyển và xuất toàn bộ kịch bản phân cảnh sang Google Flow để tôi render video.',
+        target: 'gemini',
+      },
+      {
+        label: 'Gỡ treo đội AI Muse ngay',
+        prompt: 'Kiểm tra và gỡ treo toàn bộ các tác vụ/AI Muse đang bị kẹt để dây chuyền chạy tiếp ngay.',
+        target: 'gemini',
+      },
+    ];
+  }
   if (channel === 'commander' || channel === 'production' || channel === 'ai_bus') {
     return [
       {
@@ -268,7 +305,7 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
   onJumpToIncident,
 }) => {
   const [activeChannel, setActiveChannel] = useState<CommunicationChannelId>(initialChannel || 'commander');
-  const [targetResponder, setTargetResponder] = useState<MuseAgentId | 'chairman'>('chairman');
+  const [targetResponder, setTargetResponder] = useState<MuseAgentId | 'chairman' | 'gemini'>('chairman');
   const [inputText, setInputText] = useState('');
   const [selectedSceneId, setSelectedSceneId] = useState('');
   const [attachments, setAttachments] = useState<string[]>([]);
@@ -277,6 +314,11 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
   const [lastReplyMs, setLastReplyMs] = useState<number | null>(null);
   const [optimisticMsg, setOptimisticMsg] = useState<OptimisticMessage | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [triggeringSceneKey, setTriggeringSceneKey] = useState<string | null>(null);
+  const [flowModalOpen, setFlowModalOpen] = useState(false);
+  const [flowFocusSceneId, setFlowFocusSceneId] = useState<string | null>(null);
+  const [unsticking, setUnsticking] = useState(false);
 
   // Clean collapsible inspector & search states
   const [rightOpen, setRightOpen] = useState(false);
@@ -452,12 +494,15 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
       });
   };
 
-  const dispatchMessage = async (overrideText?: string, overrideTarget?: MuseAgentId | 'chairman') => {
+  const dispatchMessage = async (
+    overrideText?: string,
+    overrideTarget?: MuseAgentId | 'chairman' | 'gemini'
+  ) => {
     const textToSend = (overrideText !== undefined ? overrideText : inputText).trim();
     const filesToSend = overrideText !== undefined ? [] : attachments;
     if ((!textToSend && filesToSend.length === 0) || sending) return;
 
-    const effectiveTarget: MuseAgentId | 'chairman' = isDmChannel
+    const effectiveTarget: MuseAgentId | 'chairman' | 'gemini' = isDmChannel
       ? (activeChannel as MuseAgentId)
       : overrideTarget || targetResponder;
 
@@ -538,8 +583,70 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
     }
   };
 
+  const handleTriggerSceneVideoNow = async (sceneId: string, engine: VideoGenerationEngine) => {
+    const busyKey = `${sceneId}:${engine}`;
+    setTriggeringSceneKey(busyKey);
+    setErrorBanner(null);
+    setActionNotice(null);
+    try {
+      const res = await fetch(`/api/command-center/scenes/${encodeURIComponent(sceneId)}/generate-video-now`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: activeRun?.id || state.selectedRunId || undefined,
+          engine,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Không thể kích hoạt tạo video ngay.');
+      if (data.state) setState(data.state);
+      if (engine === 'google_flow') {
+        setFlowFocusSceneId(sceneId);
+        setFlowModalOpen(true);
+        setActionNotice('Đã xuất prompt chuẩn Google Flow cho phân cảnh.');
+      } else {
+        setActionNotice(
+          `Đã phát lệnh tạo video NGAY bằng ${engine === 'gemini' ? 'AI Gemini (Omni Flash)' : 'AI Muse'}!`
+        );
+      }
+    } catch (err: any) {
+      setErrorBanner(err?.message || 'Lỗi khi kích hoạt tạo video ngay.');
+    } finally {
+      setTriggeringSceneKey(null);
+    }
+  };
+
+  const handleUnstickTeam = async () => {
+    setUnsticking(true);
+    setErrorBanner(null);
+    setActionNotice(null);
+    try {
+      const targetId = encodeURIComponent(activeRun?.id || state.selectedRunId || 'active');
+      const res = await fetch(`/api/command-center/productions/${targetId}/unstick`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Không thể gỡ treo đội AI.');
+      if (data.state) setState(data.state);
+      setActionNotice(data.summary || 'Đã gỡ treo đội AI Muse và tiếp tục chạy.');
+    } catch (err: any) {
+      setErrorBanner(err?.message || 'Lỗi khi gỡ treo đội AI.');
+    } finally {
+      setUnsticking(false);
+    }
+  };
+
+  const approvedImageScenes = useMemo(
+    () =>
+      activeScenes.filter(
+        (s) => Boolean(s.keyframeImageUrl) && s.imageValidated !== false
+      ),
+    [activeScenes]
+  );
+
   const responderLabel = useMemo(() => {
     if (isDmChannel && activeDmAgent) return activeDmAgent.name;
+    if (targetResponder === 'gemini') return 'AI Gemini · Tiến độ & Video';
     if (targetResponder === 'chairman') return 'Gemini AI – Chủ tịch';
     const found = state.agents.find((a) => a.id === targetResponder);
     return found ? found.name : targetResponder.toUpperCase();
@@ -556,14 +663,21 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
     const isUser = msg.senderType === 'user';
     const isSystem = msg.senderType === 'system';
     const isChairman = msg.senderId === 'chairman';
+    const isGeminiDirect = msg.senderId === 'gemini';
     const senderAgent =
-      !isUser && !isSystem && !isChairman
+      !isUser && !isSystem && !isChairman && !isGeminiDirect
         ? state.agents.find((a) => a.id === msg.senderId) || null
         : null;
     const linkedScene = msg.sceneId ? activeScenes.find((s) => s.sceneId === msg.sceneId) : null;
     const linkedTask = msg.taskId ? state.tasks.find((t) => t.id === msg.taskId) : null;
     const linkedIncident = msg.incidentId ? (state.incidents || []).find((i) => i.id === msg.incidentId) : null;
     const hasLinks = Boolean(linkedScene || linkedTask || linkedIncident);
+    const showQaInstantVideoBar = Boolean(
+      msg.channel === 'qa' &&
+        linkedScene &&
+        linkedScene.keyframeImageUrl &&
+        (linkedScene.imageValidated !== false || /ĐẠT|PASS|thông qua/i.test(msg.content))
+    );
 
     if (isSystem) {
       return (
@@ -639,7 +753,11 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
     return (
       <div key={msg.id} className="flex items-start gap-3">
         <div className="shrink-0 mt-0.5">
-          {isChairman ? (
+          {isGeminiDirect ? (
+            <div className="w-8 h-8 rounded-lg bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-blue-600 dark:text-blue-400">
+              <Sparkles className="w-4 h-4" />
+            </div>
+          ) : isChairman ? (
             <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-600 dark:text-amber-400">
               <Crown className="w-4 h-4" />
             </div>
@@ -656,7 +774,9 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
             <span
               className={`font-semibold ${
-                isChairman
+                isGeminiDirect
+                  ? 'text-blue-700 dark:text-blue-400'
+                  : isChairman
                   ? 'text-amber-700 dark:text-amber-400'
                   : 'text-slate-900 dark:text-slate-100'
               }`}
@@ -668,7 +788,9 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                 <span className="text-slate-300 dark:text-slate-700">·</span>
                 <span
                   className={`text-[11px] font-medium ${
-                    isChairman
+                    isGeminiDirect
+                      ? 'text-blue-600/90 dark:text-blue-300/80'
+                      : isChairman
                       ? 'text-amber-600/90 dark:text-amber-300/80'
                       : 'text-slate-500 dark:text-slate-400'
                   }`}
@@ -685,7 +807,9 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
 
           <div
             className={`rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed border ${
-              isChairman
+              isGeminiDirect
+                ? 'bg-blue-50/60 dark:bg-blue-500/[0.08] border-blue-200/80 dark:border-blue-500/25 text-slate-900 dark:text-slate-100'
+                : isChairman
                 ? 'bg-amber-50/55 dark:bg-amber-500/[0.06] border-amber-200/80 dark:border-amber-500/20 text-slate-900 dark:text-slate-100'
                 : 'bg-slate-50/90 dark:bg-[#141925] border-slate-200/80 dark:border-slate-800/90 text-slate-800 dark:text-slate-100'
             }`}
@@ -713,6 +837,50 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                     </button>
                   )
                 )}
+              </div>
+            )}
+
+            {/* Instant 1-Click Video Task Triggers right on QA-approved scene images in #kiểm-duyệt */}
+            {showQaInstantVideoBar && linkedScene && (
+              <div className="mt-3 p-2.5 rounded-xl bg-emerald-50/90 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-semibold text-emerald-800 dark:text-emerald-300 mr-1">
+                  Ảnh Cảnh {linkedScene.index} đã duyệt — Tác vụ dựng video ngay:
+                </span>
+                <button
+                  type="button"
+                  disabled={triggeringSceneKey !== null}
+                  onClick={() => void handleTriggerSceneVideoNow(linkedScene.sceneId, 'gemini')}
+                  className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold inline-flex items-center gap-1 disabled:opacity-50 transition"
+                >
+                  {triggeringSceneKey === `${linkedScene.sceneId}:gemini` ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3 h-3" />
+                  )}
+                  Tạo video ngay (AI Gemini)
+                </button>
+                <button
+                  type="button"
+                  disabled={triggeringSceneKey !== null}
+                  onClick={() => void handleTriggerSceneVideoNow(linkedScene.sceneId, 'google_flow')}
+                  className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-semibold inline-flex items-center gap-1 disabled:opacity-50 transition"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  Đẩy sang Google Flow
+                </button>
+                <button
+                  type="button"
+                  disabled={triggeringSceneKey !== null}
+                  onClick={() => void handleTriggerSceneVideoNow(linkedScene.sceneId, 'muse')}
+                  className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 text-slate-800 dark:text-slate-200 text-[11px] font-semibold inline-flex items-center gap-1 disabled:opacity-50 transition"
+                >
+                  {triggeringSceneKey === `${linkedScene.sceneId}:muse` ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Play className="w-3 h-3" />
+                  )}
+                  Tạo video (AI Muse)
+                </button>
               </div>
             )}
 
@@ -779,8 +947,34 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
           LEFT SIDEBAR: CLEAN CHANNEL & DIRECT AI NAVIGATION
          ===================================================== */}
       <aside className="w-[244px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-slate-50/75 dark:bg-[#111622] flex flex-col">
-        {/* Top Chairman Fast Entry */}
-        <div className="p-3 border-b border-slate-200/80 dark:border-slate-800/80">
+        {/* Top Chairman & Direct AI Gemini Fast Entries */}
+        <div className="p-3 border-b border-slate-200/80 dark:border-slate-800/80 space-y-2">
+          <button
+            type="button"
+            onClick={() => {
+              setArchiveMode(false);
+              setActiveChannel('gemini');
+              setTargetResponder('gemini');
+            }}
+            className={`w-full text-left rounded-xl p-2.5 transition-colors border ${
+              !archiveMode && activeChannel === 'gemini'
+                ? 'bg-blue-600/12 border-blue-500/45 text-slate-900 dark:text-white'
+                : 'bg-white dark:bg-[#151B29] border-slate-200/80 dark:border-slate-800 hover:border-blue-500/35 text-slate-800 dark:text-slate-200'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-semibold truncate">AI Gemini · Tiến độ</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  Báo cáo & tạo video Gemini/Flow
+                </div>
+              </div>
+            </div>
+          </button>
+
           <button
             type="button"
             onClick={() => {
@@ -1056,6 +1250,10 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
               <div className="flex items-center gap-3 min-w-0">
                 {isDmChannel && activeDmAgent ? (
                   <AgentAvatar agent={activeDmAgent} size="sm" />
+                ) : activeChannel === 'gemini' ? (
+                  <div className="w-8 h-8 rounded-lg bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
                 ) : activeChannel === 'commander' ? (
                   <div className="w-8 h-8 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
                     <Crown className="w-4 h-4" />
@@ -1185,7 +1383,19 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
               </div>
             )}
 
-            {/* Error Toast Banner */}
+            {/* Action Notice / Error Toast Banner */}
+            {actionNotice && (
+              <div className="mx-5 mt-3 rounded-xl border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 px-3.5 py-2 flex items-center justify-between gap-2 text-xs text-emerald-800 dark:text-emerald-300 shrink-0">
+                <span className="truncate">{actionNotice}</span>
+                <button
+                  type="button"
+                  onClick={() => setActionNotice(null)}
+                  className="text-emerald-600 hover:text-emerald-800 shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
             {errorBanner && (
               <div className="mx-5 mt-3 rounded-xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs text-rose-700 dark:text-rose-300 shrink-0">
                 <span className="truncate">{errorBanner}</span>
@@ -1196,6 +1406,100 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
+              </div>
+            )}
+
+            {/* Top Action Strip inside #kiểm-duyệt (QA) for ALL QA-approved images -> Create Video Immediately */}
+            {activeChannel === 'qa' && approvedImageScenes.length > 0 && (
+              <div className="mx-5 mt-3 rounded-xl border border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/70 dark:bg-emerald-950/25 p-3 shrink-0">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-emerald-900 dark:text-emerald-200">
+                    <Video className="w-4 h-4 text-emerald-600" />
+                    <span>Ảnh đã thông qua QA ({approvedImageScenes.length}) — Kích hoạt tạo video ngay lập tức</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFlowFocusSceneId(null);
+                        setFlowModalOpen(true);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-semibold inline-flex items-center gap-1"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      Gói Google Flow
+                    </button>
+                    <button
+                      type="button"
+                      disabled={unsticking}
+                      onClick={() => void handleUnstickTeam()}
+                      className="px-2.5 py-1 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 text-[11px] font-semibold inline-flex items-center gap-1 disabled:opacity-50"
+                    >
+                      {unsticking ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                      Gỡ treo đội AI
+                    </button>
+                  </div>
+                </div>
+                <div className="flex gap-2.5 overflow-x-auto pb-1">
+                  {approvedImageScenes.map((sc) => (
+                    <div
+                      key={sc.sceneId}
+                      className="shrink-0 w-64 rounded-lg border border-emerald-200/80 dark:border-emerald-800/50 bg-white dark:bg-[#141925] p-2 flex gap-2 items-center"
+                    >
+                      {sc.keyframeImageUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setPreviewImageUrl(sc.keyframeImageUrl!)}
+                          className="shrink-0"
+                        >
+                          <img
+                            src={sc.keyframeImageUrl}
+                            alt={`Cảnh ${sc.index}`}
+                            className="w-14 h-14 rounded-md object-cover border border-slate-200"
+                          />
+                        </button>
+                      )}
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[11px] font-bold text-slate-900 dark:text-white truncate">
+                            Cảnh {sc.index}: {sc.title}
+                          </span>
+                          {sc.videoUrl && (
+                            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 shrink-0">
+                              Có video
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          <button
+                            type="button"
+                            disabled={triggeringSceneKey !== null}
+                            onClick={() => void handleTriggerSceneVideoNow(sc.sceneId, 'gemini')}
+                            className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-semibold disabled:opacity-50"
+                          >
+                            {triggeringSceneKey === `${sc.sceneId}:gemini` ? '...' : 'Video Gemini'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={triggeringSceneKey !== null}
+                            onClick={() => void handleTriggerSceneVideoNow(sc.sceneId, 'google_flow')}
+                            className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-white text-[10px] font-semibold disabled:opacity-50"
+                          >
+                            Google Flow
+                          </button>
+                          <button
+                            type="button"
+                            disabled={triggeringSceneKey !== null}
+                            onClick={() => void handleTriggerSceneVideoNow(sc.sceneId, 'muse')}
+                            className="px-2 py-0.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-[10px] font-semibold disabled:opacity-50"
+                          >
+                            {triggeringSceneKey === `${sc.sceneId}:muse` ? '...' : 'Muse'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -1350,6 +1654,17 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
                       <span className="text-[11px] text-slate-400 dark:text-slate-500 mr-1 whitespace-nowrap">
                         Gửi tới:
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => setTargetResponder('gemini')}
+                        className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
+                          targetResponder === 'gemini'
+                            ? 'bg-blue-600/15 text-blue-700 dark:text-blue-300'
+                            : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        AI Gemini
+                      </button>
                       <button
                         type="button"
                         onClick={() => setTargetResponder('chairman')}
@@ -1659,6 +1974,18 @@ export const CommunicationHub: React.FC<CommunicationHubProps> = ({
           </div>
         </div>
       )}
+
+      {/* Google Flow Script & Keyframe Handoff Modal */}
+      <GoogleFlowModal
+        open={flowModalOpen}
+        runId={activeRun?.id || state.selectedRunId || undefined}
+        focusSceneId={flowFocusSceneId}
+        onClose={() => {
+          setFlowModalOpen(false);
+          setFlowFocusSceneId(null);
+        }}
+        onStateUpdated={(next) => setState(next)}
+      />
     </div>
   );
 };

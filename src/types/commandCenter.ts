@@ -29,6 +29,8 @@ export type MuseAgentStatus =
 
 export type MuseAgentEngineMode = 'muse2api' | 'muse2api_with_gemini_fallback';
 
+export type VideoGenerationEngine = 'gemini' | 'google_flow' | 'muse';
+
 export type MuseAgentAvatarPreset =
   | 'director_clapboard'
   | 'script_feather'
@@ -243,6 +245,9 @@ export interface CommandMemoryScene {
   qaReportId?: string;
   retryCount: number;
   lastModifiedBy: string;
+  videoEngineUsed?: VideoGenerationEngine;
+  flowPrompt?: string;
+  flowStatus?: 'pending' | 'ready' | 'imported';
 }
 
 export interface ProjectMemorySnapshot {
@@ -366,6 +371,8 @@ export interface CommandTask {
   outputText?: string;
   outputArtifactUrl?: string;
   error?: string;
+  preferredVideoEngine?: VideoGenerationEngine;
+  flowHandoffPrompt?: string;
 }
 
 export type AiWorkforceMode = 'gemini_only' | 'muse_only' | 'hybrid_gemini_muse';
@@ -495,6 +502,7 @@ export interface ProductionRun {
   pendingScenes?: number;
   failedScenes?: number;
   aiWorkforceMode?: AiWorkforceMode;
+  videoGenerationEngine?: VideoGenerationEngine;
   selectedGeminiAccountIds?: string[];
   chairmanGeminiAccountId?: string;
   pipelineLocked?: boolean;
@@ -504,6 +512,7 @@ export interface ProductionRun {
 }
 
 export type CommunicationChannelId =
+  | 'gemini'
   | 'commander'
   | 'incident'
   | 'production'
@@ -530,7 +539,7 @@ export interface ConversationMessage {
   messageKind?: 'chat' | 'ai_bus' | 'ack' | 'alert' | 'deliverable' | 'incident';
   incidentId?: string;
   roleBadge?: string;
-  targetAgentIds?: (MuseAgentId | 'chairman')[];
+  targetAgentIds?: (MuseAgentId | 'chairman' | 'gemini')[];
   content: string;
   promptDelivered?: string;
   taskId?: string;
@@ -542,7 +551,7 @@ export interface CommandActivityLog {
   id: string;
   timestamp: number;
   level: 'info' | 'success' | 'warn' | 'error';
-  agentId?: MuseAgentId | 'system' | 'chairman';
+  agentId?: MuseAgentId | 'system' | 'chairman' | 'gemini';
   taskId?: string;
   runId?: string;
   action: string;
@@ -592,6 +601,7 @@ export interface CloudOrchestratorConfig {
   maxRetriesPerScene: number;
   maxIncidentRetries?: number;
   autoDirectorIncidentResponse?: boolean;
+  autoApproveAfterMaxRetries?: boolean;
   autoBackupRealtime: boolean;
   workerHeartbeatAt: number;
   workerBootId: string;

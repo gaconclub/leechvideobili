@@ -103,7 +103,9 @@ import {
   executeChairmanPlanOption,
   getBackupExportFilePath,
   getCommandCenterState,
+  getGoogleFlowScriptBundle,
   handoffSessionToCloud,
+  importGoogleFlowSceneVideo,
   initCommandCenter,
   reportCommandCenterIncident,
   resolveArtifactDiskPath,
@@ -113,8 +115,11 @@ import {
   searchCommandCenterArchive,
   selectProductionRun,
   sendCommandCenterChat,
+  setRunVideoEngine,
   startProductionOrchestration,
   subscribeCommandCenterEvents,
+  triggerSceneVideoNow,
+  unstickProductionRun,
   updateChairmanConfig,
   syncStudioDirectiveToCommandCenter,
   testMuseAgentConnection,
@@ -6244,6 +6249,68 @@ async function startServer() {
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Chuyển giao phiên lên Đám mây thất bại.' });
+    }
+  });
+
+  app.post('/api/command-center/productions/:runId/video-engine', async (req, res) => {
+    try {
+      const engine = req.body?.engine;
+      if (engine !== 'gemini' && engine !== 'google_flow' && engine !== 'muse') {
+        return res.status(400).json({ error: 'Nguồn tạo video không hợp lệ (gemini | google_flow | muse).' });
+      }
+      const state = await setRunVideoEngine(req.params.runId, engine);
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể đổi nguồn tạo video.' });
+    }
+  });
+
+  app.post('/api/command-center/productions/:runId/unstick', async (req, res) => {
+    try {
+      const result = await unstickProductionRun(req.params.runId === 'active' ? undefined : req.params.runId);
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể gỡ treo đội AI.' });
+    }
+  });
+
+  app.get('/api/command-center/productions/:runId/flow-bundle', async (req, res) => {
+    try {
+      const bundle = await getGoogleFlowScriptBundle(req.params.runId === 'active' ? undefined : req.params.runId);
+      res.json(bundle);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể xuất gói kịch bản Google Flow.' });
+    }
+  });
+
+  app.post('/api/command-center/scenes/:sceneId/generate-video-now', async (req, res) => {
+    try {
+      const engine = req.body?.engine;
+      if (engine !== 'gemini' && engine !== 'google_flow' && engine !== 'muse') {
+        return res.status(400).json({ error: 'Nguồn tạo video không hợp lệ (gemini | google_flow | muse).' });
+      }
+      const result = await triggerSceneVideoNow({
+        runId: typeof req.body?.runId === 'string' ? req.body.runId : undefined,
+        sceneId: req.params.sceneId,
+        engine,
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tạo video ngay cho phân cảnh này.' });
+    }
+  });
+
+  app.post('/api/command-center/scenes/:sceneId/upload-flow-video', async (req, res) => {
+    try {
+      const result = await importGoogleFlowSceneVideo({
+        runId: typeof req.body?.runId === 'string' ? req.body.runId : undefined,
+        sceneId: req.params.sceneId,
+        videoDataUrl: String(req.body?.videoDataUrl || ''),
+        fileName: typeof req.body?.fileName === 'string' ? req.body.fileName : undefined,
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể nhập video từ Google Flow.' });
     }
   });
 
