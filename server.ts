@@ -83,6 +83,7 @@ import {
   listMuse2ApiTasks,
   patchMuse2ApiAccount,
   quotaMuse2ApiAccount,
+  setMuse2ApiRuntimeOverride,
   startLocalMuse2ApiProcess,
   stopLocalMuse2ApiProcess,
   testMuse2ApiAccount,
@@ -172,6 +173,7 @@ import {
   resolveCoordinationArtifactPath,
   runSingleCoordinationTask,
   selectCoordinationSession,
+  startAllQueuedSessionsSequential,
   startSessionSequentialRun,
   subscribeCoordinationEvents,
   syncSessionToGoogleWorkspace,
@@ -6421,26 +6423,61 @@ async function startServer() {
   // ==========================================
   // MUSE2API PROXY & ACCOUNT POOL ENDPOINTS
   // ==========================================
-  app.get('/api/muse2api/status', async (_req, res) => {
+  app.get('/api/muse2api/status', async (req, res) => {
     try {
-      const status = await getMuse2ApiStatus();
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const status = await getMuse2ApiStatus(force);
+      if (force) {
+        void checkAllAiReadiness(true).catch(() => {});
+      }
       res.json(status);
     } catch (err: any) {
       res.status(500).json({ reachable: false, ready: false, status: 'offline', error: err?.message || 'Lỗi kiểm tra Muse2API.' });
     }
   });
 
+  app.post('/api/muse2api/config', async (req, res) => {
+    try {
+      const rawUrl = String(req.body?.baseUrl || '').trim();
+      let normalizedUrl = '';
+      if (rawUrl) {
+        let parsed: URL;
+        try {
+          parsed = new URL(rawUrl);
+        } catch {
+          return res.status(400).json({ error: 'Địa chỉ Muse2API không đúng định dạng URL (ví dụ: http://127.0.0.1:18610 hoặc https://muse.domain.com).' });
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return res.status(400).json({ error: 'URL Muse2API chỉ chấp nhận giao thức http:// hoặc https://.' });
+        }
+        normalizedUrl = parsed.origin + parsed.pathname.replace(/\/+$/, '');
+      }
+      setMuse2ApiRuntimeOverride({ baseUrl: normalizedUrl });
+      const status = await getMuse2ApiStatus(true);
+      const readiness = await checkAllAiReadiness(true);
+      const state = await getCoordinationCenterState(false);
+      res.json({ ok: true, status, readiness, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể lưu cấu hình Muse2API.' });
+    }
+  });
+
   app.post('/api/muse2api/process/start', async (_req, res) => {
     try {
       const result = await startLocalMuse2ApiProcess();
-      res.status(result.ok ? 200 : 400).json(result);
+      await checkAllAiReadiness(true).catch(() => {});
+      const state = await getCoordinationCenterState(false).catch(() => null);
+      res.status(result.ok ? 200 : 400).json({ ...result, state });
     } catch (err: any) {
       res.status(500).json({ ok: false, message: err?.message || 'Không thể khởi chạy Muse2API.' });
     }
   });
 
-  app.post('/api/muse2api/process/stop', (_req, res) => {
-    res.json(stopLocalMuse2ApiProcess());
+  app.post('/api/muse2api/process/stop', async (_req, res) => {
+    const result = stopLocalMuse2ApiProcess();
+    await checkAllAiReadiness(true).catch(() => {});
+    const state = await getCoordinationCenterState(false).catch(() => null);
+    res.json({ ...result, state });
   });
 
   app.get('/api/muse2api/accounts', async (_req, res) => {
@@ -6460,6 +6497,7 @@ async function startServer() {
         batch?: string;
       };
       const data = await addMuse2ApiAccount({ label, cookieHeader, batch });
+      void checkAllAiReadiness(true).catch(() => {});
       res.json(data);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không thêm được tài khoản Muse2API.' });
@@ -6469,6 +6507,7 @@ async function startServer() {
   app.post('/api/muse2api/accounts/keepalive', async (_req, res) => {
     try {
       const data = await keepaliveAllMuse2ApiAccounts();
+      void checkAllAiReadiness(true).catch(() => {});
       res.json(data);
     } catch (err: any) {
       res.status(502).json({ error: err?.message || 'Không thể gia hạn đồng loạt tài khoản Muse2API.' });
@@ -6478,6 +6517,7 @@ async function startServer() {
   app.post('/api/muse2api/accounts/:id/test', async (req, res) => {
     try {
       const data = await testMuse2ApiAccount(req.params.id);
+      void checkAllAiReadiness(true).catch(() => {});
       res.json(data);
     } catch (err: any) {
       res.status(502).json({ ok: false, error: err?.message || 'Kiểm tra tài khoản thất bại.' });
@@ -6506,6 +6546,7 @@ async function startServer() {
     try {
       const { label, enabled } = (req.body || {}) as { label?: string; enabled?: boolean };
       const data = await patchMuse2ApiAccount(req.params.id, { label, enabled });
+      void checkAllAiReadiness(true).catch(() => {});
       res.json(data);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Cập nhật tài khoản thất bại.' });
@@ -6515,6 +6556,7 @@ async function startServer() {
   app.delete('/api/muse2api/accounts/:id', async (req, res) => {
     try {
       const data = await deleteMuse2ApiAccount(req.params.id);
+      void checkAllAiReadiness(true).catch(() => {});
       res.json(data);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Xóa tài khoản thất bại.' });
@@ -7561,6 +7603,35 @@ async function startServer() {
       res.json({ ok: true, state });
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không thể xóa phiên làm việc.' });
+    }
+  });
+
+  app.post('/api/coordination/queue/run-all', async (req, res) => {
+    try {
+      const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+      const result = await startAllQueuedSessionsSequential({
+        googleToken,
+        retryErrors: req.body?.retryErrors === true,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ ...result, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể chạy tuần tự hàng đợi kịch bản.' });
+    }
+  });
+
+  app.post('/api/coordination/meeting', async (req, res) => {
+    try {
+      const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+      const result = await postMeetingRoomMessage({
+        sessionId: typeof req.body?.sessionId === 'string' ? req.body.sessionId : 'GLOBAL',
+        content: String(req.body?.content || ''),
+        googleToken,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ ...result, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể gửi tin nhắn trong Phòng họp.' });
     }
   });
 

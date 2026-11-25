@@ -5030,7 +5030,7 @@ export function saveStudioCharacterLibraryItem(
     ...(input.voiceStyle || existing?.voiceStyle ? { voiceStyle: input.voiceStyle ?? existing?.voiceStyle } : {}),
     accentLock: 'vn_north',
     ...(cleanSyncProfile ? { syncProfile: cleanSyncProfile } : {}),
-    createdAt: existing?.createdAt || now,
+    createdAt: existing?.createdAt || (typeof input.createdAt === 'number' && input.createdAt > 0 ? input.createdAt : now),
     updatedAt: now,
   };
 
@@ -5040,7 +5040,9 @@ export function saveStudioCharacterLibraryItem(
     list.unshift(record);
   }
   ensureStudioCharacterLibraryFile();
-  fs.writeFileSync(STUDIO_CHARACTER_LIBRARY_FILE, JSON.stringify(list.slice(0, 120), null, 2), 'utf8');
+  const tmpFile = `${STUDIO_CHARACTER_LIBRARY_FILE}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify(list.slice(0, 120), null, 2), 'utf8');
+  fs.renameSync(tmpFile, STUDIO_CHARACTER_LIBRARY_FILE);
   return record;
 }
 
@@ -5051,7 +5053,9 @@ export function deleteStudioCharacterLibraryItem(id: string): boolean {
   const next = list.filter((item) => item.id !== targetId);
   if (next.length === list.length) return false;
   ensureStudioCharacterLibraryFile();
-  fs.writeFileSync(STUDIO_CHARACTER_LIBRARY_FILE, JSON.stringify(next, null, 2), 'utf8');
+  const tmpFile = `${STUDIO_CHARACTER_LIBRARY_FILE}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify(next, null, 2), 'utf8');
+  fs.renameSync(tmpFile, STUDIO_CHARACTER_LIBRARY_FILE);
   return true;
 }
 

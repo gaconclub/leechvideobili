@@ -97,6 +97,13 @@ import {
 import { StudioSceneCard } from './studio/StudioSceneCard';
 import { StudioStylePicker } from './studio/StudioStylePicker';
 import { LearnStyleModal } from './studio/LearnStyleModal';
+import {
+  deleteLocalCharacter,
+  loadLocalCharacterLibrary,
+  mergeCharacterLibraries,
+  replaceLocalCharacterLibrary,
+  upsertLocalCharacter,
+} from '../lib/characterLibraryDb';
 
 export interface StudioUploadedSourceItem {
   videoItem: TrendingVideoItem & {
@@ -232,6 +239,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [replaceImageTarget, setReplaceImageTarget] = useState<{ scope: 'active' | 'library'; id: string } | null>(
     null
   );
+  const [selectedCoordSceneIdsByBp, setSelectedCoordSceneIdsByBp] = useState<Record<string, string[]>>({});
   const charLibrarySyncTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
@@ -497,16 +505,42 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     } catch {
       // ignore
     }
+    let localChars: StudioSavedCharacter[] = [];
+    try {
+      localChars = await loadLocalCharacterLibrary();
+      if (localChars.length > 0) {
+        setCharacterLibrary(localChars);
+      }
+    } catch {
+      // ignore IndexedDB error
+    }
     try {
       const cr = await fetch('/api/studio/character-library');
       if (cr.ok) {
         const cData = await parseJsonSafe<{ characters?: StudioSavedCharacter[] }>(cr);
-        if (Array.isArray(cData.characters)) {
-          setCharacterLibrary(cData.characters);
+        const serverChars = Array.isArray(cData.characters) ? cData.characters : [];
+        const { merged, missingOnServer } = mergeCharacterLibraries(serverChars, localChars);
+        setCharacterLibrary(merged);
+        void replaceLocalCharacterLibrary(merged).catch(() => {});
+        // Push any characters restored from browser IndexedDB back to server disk
+        if (missingOnServer.length > 0) {
+          void (async () => {
+            for (const item of missingOnServer) {
+              try {
+                await fetch('/api/studio/character-library', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(item),
+                });
+              } catch {
+                // keep safely in IndexedDB
+              }
+            }
+          })();
         }
       }
     } catch {
-      // ignore
+      // keep localChars loaded from IndexedDB
     }
   };
 
@@ -917,28 +951,79 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     opts?: { silent?: boolean; explicitId?: string }
   ): Promise<StudioSavedCharacter | null> => {
     if (!char.dataUrl) return null;
-    const targetLibId = opts?.explicitId || char.libraryId || undefined;
+    const now = Date.now();
+    const existingLocal = characterLibrary.find(
+      (c) => c.id === (opts?.explicitId || char.libraryId)
+    );
+    const stableLibId =
+      opts?.explicitId ||
+      char.libraryId ||
+      `charlib_${now}_${Math.random().toString(36).slice(2, 8)}`;
+
+    const localRecord: StudioSavedCharacter = {
+      id: stableLibId,
+      name: (char.name || existingLocal?.name || 'Nhân vật chưa đặt tên').trim().slice(0, 80),
+      dataUrl: char.dataUrl,
+      ...(char.description !== undefined
+        ? char.description.trim()
+          ? { description: char.description.trim().slice(0, 600) }
+          : {}
+        : existingLocal?.description
+          ? { description: existingLocal.description }
+          : {}),
+      source: char.source || existingLocal?.source || 'uploaded',
+      ageGroup: char.ageGroup ?? existingLocal?.ageGroup,
+      gender: char.gender ?? existingLocal?.gender,
+      voiceMode: char.voiceMode ?? existingLocal?.voiceMode,
+      voiceId: char.voiceId ?? existingLocal?.voiceId,
+      offlineVoice: char.offlineVoice ?? existingLocal?.offlineVoice,
+      voiceStyle: char.voiceStyle ?? existingLocal?.voiceStyle,
+      accentLock: char.accentLock || 'vn_north',
+      syncProfile: char.syncProfile ?? existingLocal?.syncProfile,
+      createdAt: existingLocal?.createdAt || now,
+      updatedAt: now,
+    };
+
     if (!opts?.silent) {
       setSavingLibraryCharId(char.id);
     }
+
+    // 1) Immediately persist to browser IndexedDB so characters survive app/server restarts
+    try {
+      await upsertLocalCharacter(localRecord);
+    } catch {
+      // fallback to memory state
+    }
+    setCharacterLibrary((prev) => [
+      localRecord,
+      ...prev.filter((item) => item.id !== localRecord.id),
+    ]);
+    if (!char.libraryId || char.libraryId !== stableLibId) {
+      setCharacters((prev) =>
+        prev.map((c) => (c.id === char.id ? { ...c, libraryId: stableLibId } : c))
+      );
+    }
+
+    // 2) Sync to server disk as secondary persistent backup
     try {
       const res = await fetch('/api/studio/character-library', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: targetLibId,
-          name: char.name,
-          dataUrl: char.dataUrl,
-          description: char.description ?? '',
-          source: char.source,
-          ageGroup: char.ageGroup,
-          gender: char.gender,
-          voiceMode: char.voiceMode,
-          voiceId: char.voiceId,
-          offlineVoice: char.offlineVoice,
-          voiceStyle: char.voiceStyle,
-          accentLock: char.accentLock || 'vn_north',
-          syncProfile: char.syncProfile,
+          id: stableLibId,
+          name: localRecord.name,
+          dataUrl: localRecord.dataUrl,
+          description: localRecord.description ?? '',
+          source: localRecord.source,
+          ageGroup: localRecord.ageGroup,
+          gender: localRecord.gender,
+          voiceMode: localRecord.voiceMode,
+          voiceId: localRecord.voiceId,
+          offlineVoice: localRecord.offlineVoice,
+          voiceStyle: localRecord.voiceStyle,
+          accentLock: localRecord.accentLock || 'vn_north',
+          syncProfile: localRecord.syncProfile,
+          createdAt: localRecord.createdAt,
         }),
       });
       const data = await parseJsonSafe<{
@@ -946,27 +1031,29 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         characters?: StudioSavedCharacter[];
         error?: string;
       }>(res);
-      if (!res.ok || !data.character) {
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
-      if (Array.isArray(data.characters)) {
-        setCharacterLibrary(data.characters);
-      }
-      const savedId = data.character.id;
-      if (!char.libraryId || char.libraryId !== savedId) {
-        setCharacters((prev) =>
-          prev.map((c) => (c.id === char.id ? { ...c, libraryId: savedId } : c))
+      if (res.ok && data.character) {
+        const syncedItem = data.character;
+        const currentLocal = await loadLocalCharacterLibrary().catch(() => []);
+        const { merged } = mergeCharacterLibraries(
+          Array.isArray(data.characters) ? data.characters : [syncedItem],
+          [syncedItem, ...currentLocal]
         );
+        setCharacterLibrary(merged);
+        void replaceLocalCharacterLibrary(merged).catch(() => {});
+        if (!opts?.silent) {
+          setCharLibraryStatus(`Đã lưu vĩnh viễn "${syncedItem.name}" vào Thư viện nhân vật.`);
+        }
+        return syncedItem;
       }
       if (!opts?.silent) {
-        setCharLibraryStatus(`Đã lưu "${data.character.name}" vào Thư viện nhân vật.`);
+        setCharLibraryStatus(`Đã lưu "${localRecord.name}" vào Thư viện trình duyệt (dùng lại sau khi tắt mở lại).`);
       }
-      return data.character;
-    } catch (err: any) {
+      return localRecord;
+    } catch {
       if (!opts?.silent) {
-        setCharError(err?.message || 'Không thể lưu nhân vật vào thư viện.');
+        setCharLibraryStatus(`Đã lưu "${localRecord.name}" vào Thư viện trình duyệt (dùng lại sau khi tắt mở lại).`);
       }
-      return null;
+      return localRecord;
     } finally {
       if (!opts?.silent) {
         setSavingLibraryCharId((prev) => (prev === char.id ? '' : prev));
@@ -1080,19 +1167,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setCharError('');
     setCharLibraryStatus('');
     try {
-      const res = await fetch(`/api/studio/character-library/${encodeURIComponent(libId)}`, {
-        method: 'DELETE',
-      });
-      const data = await parseJsonSafe<{ ok?: boolean; characters?: StudioSavedCharacter[]; error?: string }>(res);
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      if (Array.isArray(data.characters)) {
-        setCharacterLibrary(data.characters);
-      }
+      await deleteLocalCharacter(libId).catch(() => {});
+      setCharacterLibrary((prev) => prev.filter((c) => c.id !== libId));
       setCharacters((prev) =>
         prev.map((c) => (c.libraryId === libId ? { ...c, libraryId: undefined } : c))
       );
       if (confirmDeleteLibCharId === libId) setConfirmDeleteLibCharId('');
       if (editingLibCharId === libId) setEditingLibCharId('');
+      await fetch(`/api/studio/character-library/${encodeURIComponent(libId)}`, {
+        method: 'DELETE',
+      }).catch(() => {});
       setCharLibraryStatus('Đã xóa nhân vật khỏi Thư viện app.');
     } catch (err: any) {
       setCharError(err?.message || 'Không thể xóa nhân vật khỏi thư viện.');
@@ -1864,8 +1948,45 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // Send Studio idea / script / blueprint directly to Trung Tâm Điều Phối AI
-  const handleDispatchToCommandCenter = async () => {
+  const getBlueprintSelectionKey = (bp: DerivativeBlueprint | null, idx = activeBatchIndex): string => {
+    if (!bp) return 'none';
+    return `${idx}::${bp.derivativeTitle || 'untitled'}::${bp.scenes.length}`;
+  };
+
+  const getSelectedCoordSceneIds = (bp: DerivativeBlueprint | null, idx = activeBatchIndex): string[] => {
+    if (!bp) return [];
+    const key = getBlueprintSelectionKey(bp, idx);
+    const saved = selectedCoordSceneIdsByBp[key];
+    const validIds = new Set(bp.scenes.map((s) => s.id));
+    if (!saved) {
+      return bp.scenes.map((s) => s.id);
+    }
+    return saved.filter((id) => validIds.has(id));
+  };
+
+  const toggleCoordSceneSelection = (sceneId: string) => {
+    if (!blueprint) return;
+    const key = getBlueprintSelectionKey(blueprint, activeBatchIndex);
+    const current = getSelectedCoordSceneIds(blueprint, activeBatchIndex);
+    const exists = current.includes(sceneId);
+    const next = exists ? current.filter((id) => id !== sceneId) : [...current, sceneId];
+    setSelectedCoordSceneIdsByBp((prev) => ({ ...prev, [key]: next }));
+  };
+
+  const selectAllCoordScenes = (selectAll: boolean) => {
+    if (!blueprint) return;
+    const key = getBlueprintSelectionKey(blueprint, activeBatchIndex);
+    setSelectedCoordSceneIdsByBp((prev) => ({
+      ...prev,
+      [key]: selectAll ? blueprint.scenes.map((s) => s.id) : [],
+    }));
+  };
+
+  // Send Studio idea / script / blueprint (selected scenes, full script, or all batch scripts) directly to Trung Tâm Điều Phối AI
+  const handleDispatchToCommandCenter = async (opts?: {
+    onlySelectedScenes?: boolean;
+    dispatchAllBatch?: boolean;
+  }) => {
     const activeIdea = [expandedIdeaPrompt.trim(), ideaPrompt.trim(), customInstruction.trim()]
       .filter(Boolean)
       .join('\n\n');
@@ -1873,16 +1994,111 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       studioMode === 'derivative' && sources.length > 0
         ? `Video tham chiếu (${sources.length}): ${sources.map((s) => s.title || s.sourceUrl).join('; ')}`
         : '';
+
+    if (opts?.dispatchAllBatch && blueprints.length > 0) {
+      setIsDispatchingToCommandCenter(true);
+      setCommandCenterError('');
+      setLearnError('');
+      try {
+        const { syncedChars, changed } = synthesizeSyncedCharacters(characters, costumeBibleDraft.trim());
+        if (changed) setCharacters(syncedChars);
+
+        const resolvedVideoSource =
+          visualMode === 'qwen_video'
+            ? 'qwen'
+            : visualMode === 'muse2api_video'
+              ? 'muse'
+              : 'gemini';
+        const googleToken = getGoogleWorkspaceAccessToken();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (googleToken) headers.Authorization = `Bearer ${googleToken}`;
+
+        const createdIds: string[] = [];
+        for (let i = 0; i < blueprints.length; i += 1) {
+          const bp = blueprints[i];
+          const resolvedTitle = bp.derivativeTitle?.trim() || `${projectNameInput.trim() || 'Kịch bản'} #${i + 1}`;
+          const fullDirective = [
+            activeIdea,
+            sourceTitles,
+            bp.learnedSummary ? `Tóm tắt kịch bản:\n${bp.learnedSummary}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n\n')
+            .trim();
+
+          const res = await fetch('/api/command-center/studio-sync', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              sourceAction: 'manual_dispatch',
+              createCoordinationSession: true,
+              videoSource: resolvedVideoSource,
+              mode: studioMode,
+              title: resolvedTitle,
+              ideaOrCommand: fullDirective || resolvedTitle,
+              productionFormat: bp.productionFormat || productionFormat,
+              aspectRatio,
+              videoStyle: bp.videoStyle || videoStyle,
+              allowFreeCostumeChange: bp.allowFreeCostumeChange ?? allowFreeCostumeChange,
+              blueprint: bp,
+              characterRefs: syncedChars.slice(0, 8),
+              visualBible: bp.visualStyleBible ?? visualStyleBibleDraft.trim(),
+              settingBible: bp.settingBible ?? settingBibleDraft.trim(),
+              costumeBible: bp.costumeBible ?? costumeBibleDraft.trim(),
+              continuityBible: bp.continuityBible ?? continuityBibleDraft.trim(),
+            }),
+          });
+          const data = await parseJsonSafe<{ error?: string; coordinationSession?: { sessionId?: string } }>(res);
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          if (data.coordinationSession?.sessionId) {
+            createdIds.push(data.coordinationSession.sessionId);
+          }
+        }
+
+        setProjectStatusMsg(
+          `Đã đẩy toàn bộ ${createdIds.length} kịch bản vào hàng đợi tuần tự Trung Tâm Điều Phối AI (${createdIds.join(', ')}).`
+        );
+        onOpenCommandCenter?.();
+      } catch (err: any) {
+        const msg = err?.message || 'Không thể đẩy toàn bộ kịch bản sang Trung Tâm Điều Phối AI.';
+        setCommandCenterError(msg);
+        setLearnError(msg);
+      } finally {
+        setIsDispatchingToCommandCenter(false);
+      }
+      return;
+    }
+
+    let effectiveBlueprint: DerivativeBlueprint | null = blueprint;
+    let selectedLabelSuffix = '';
+    if (opts?.onlySelectedScenes && blueprint) {
+      const selectedIds = new Set(getSelectedCoordSceneIds(blueprint, activeBatchIndex));
+      const filteredScenes = blueprint.scenes.filter((sc) => selectedIds.has(sc.id));
+      if (filteredScenes.length === 0) {
+        const msg = 'Bạn chưa chọn phân cảnh nào. Hãy tích chọn ít nhất 1 phân cảnh hoặc bấm "Chọn tất cả" trước khi đẩy sang Trung Tâm Điều Phối AI.';
+        setCommandCenterError(msg);
+        setLearnError(msg);
+        return;
+      }
+      if (filteredScenes.length < blueprint.scenes.length) {
+        selectedLabelSuffix = ` (${filteredScenes.length}/${blueprint.scenes.length} phân cảnh đã chọn)`;
+      }
+      effectiveBlueprint = {
+        ...blueprint,
+        scenes: filteredScenes,
+      };
+    }
+
     const fullDirective = [
       activeIdea,
       sourceTitles,
-      blueprint?.learnedSummary ? `Tóm tắt kịch bản:\n${blueprint.learnedSummary}` : '',
+      effectiveBlueprint?.learnedSummary ? `Tóm tắt kịch bản:\n${effectiveBlueprint.learnedSummary}` : '',
     ]
       .filter(Boolean)
       .join('\n\n')
       .trim();
 
-    if (!fullDirective && !blueprint?.scenes?.length) {
+    if (!fullDirective && !effectiveBlueprint?.scenes?.length) {
       setCommandCenterError(
         'Vui lòng nhập ý tưởng, hướng dẫn hoặc tạo kịch bản phân cảnh trước khi đẩy sang Trung Tâm Điều Phối AI.'
       );
@@ -1893,16 +2109,17 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setCommandCenterError('');
     setLearnError('');
     try {
-      const resolvedTitle =
-        blueprint?.derivativeTitle?.trim() ||
+      const baseTitle =
+        effectiveBlueprint?.derivativeTitle?.trim() ||
         projectNameInput.trim() ||
         (ideaPrompt.trim() ? ideaPrompt.trim().slice(0, 60) : 'Dự án từ Studio');
+      const resolvedTitle = `${baseTitle}${selectedLabelSuffix}`;
 
       const { syncedChars, changed } = synthesizeSyncedCharacters(characters, costumeBibleDraft.trim());
       if (changed) {
         setCharacters(syncedChars);
       }
-      const effectiveAllowFree = blueprint?.allowFreeCostumeChange ?? allowFreeCostumeChange;
+      const effectiveAllowFree = effectiveBlueprint?.allowFreeCostumeChange ?? allowFreeCostumeChange;
 
       const resolvedVideoSource =
         visualMode === 'qwen_video'
@@ -1927,16 +2144,16 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           mode: studioMode,
           title: resolvedTitle,
           ideaOrCommand: fullDirective || resolvedTitle,
-          productionFormat: blueprint?.productionFormat || productionFormat,
+          productionFormat: effectiveBlueprint?.productionFormat || productionFormat,
           aspectRatio,
-          videoStyle: blueprint?.videoStyle || videoStyle,
+          videoStyle: effectiveBlueprint?.videoStyle || videoStyle,
           allowFreeCostumeChange: effectiveAllowFree,
-          blueprint: blueprint || undefined,
+          blueprint: effectiveBlueprint || undefined,
           characterRefs: syncedChars.slice(0, 8),
-          visualBible: blueprint?.visualStyleBible ?? visualStyleBibleDraft.trim(),
-          settingBible: blueprint?.settingBible ?? settingBibleDraft.trim(),
-          costumeBible: blueprint?.costumeBible ?? costumeBibleDraft.trim(),
-          continuityBible: blueprint?.continuityBible ?? continuityBibleDraft.trim(),
+          visualBible: effectiveBlueprint?.visualStyleBible ?? visualStyleBibleDraft.trim(),
+          settingBible: effectiveBlueprint?.settingBible ?? settingBibleDraft.trim(),
+          costumeBible: effectiveBlueprint?.costumeBible ?? costumeBibleDraft.trim(),
+          continuityBible: effectiveBlueprint?.continuityBible ?? continuityBibleDraft.trim(),
         }),
       });
       const data = await parseJsonSafe<{ error?: string; coordinationSession?: { sessionId?: string } }>(res);
@@ -1944,7 +2161,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       const sid = data.coordinationSession?.sessionId;
       setProjectStatusMsg(
         sid
-          ? `Đã tạo phiên điều phối ${sid} kèm dữ liệu tham chiếu. Chọn nguồn tạo video độc lập rồi chạy tuần tự tại Trung Tâm Điều Phối AI.`
+          ? `Đã tạo phiên điều phối ${sid} (${effectiveBlueprint?.scenes?.length || 0} phân cảnh) kèm dữ liệu tham chiếu tại Trung Tâm Điều Phối AI.`
           : 'Đã đẩy kịch bản & dữ liệu tham chiếu sang Trung Tâm Điều Phối AI.'
       );
       onOpenCommandCenter?.();
@@ -3994,6 +4211,26 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5">
+                      {characters.some((c) => !c.libraryId || !characterLibrary.some((l) => l.id === c.libraryId)) && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            let count = 0;
+                            for (const c of characters) {
+                              if (!c.libraryId || !characterLibrary.some((l) => l.id === c.libraryId)) {
+                                const res = await persistCharacterToLibrary(c, { silent: true });
+                                if (res) count += 1;
+                              }
+                            }
+                            if (count > 0) {
+                              setCharLibraryStatus(`Đã lưu ${count} nhân vật đang dùng vào Thư viện vĩnh viễn.`);
+                            }
+                          }}
+                          className="h-7 px-2.5 text-[11px] font-bold bg-violet-600 text-white hover:brightness-110 rounded-lg cursor-pointer whitespace-nowrap"
+                        >
+                          Lưu nhân vật hiện tại vào thư viện
+                        </button>
+                      )}
                       {characterLibrary.length > 3 && (
                         <input
                           type="text"
@@ -4017,7 +4254,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   {characterLibrary.length === 0 ? (
                     <div className="py-4 text-center text-[11px] text-slate-500 dark:text-slate-400">
                       Chưa có nhân vật nào trong thư viện. Khi bạn bấm <strong>Tải ảnh mẫu</strong> hoặc{' '}
-                      <strong>AI vẽ</strong>, tên, ảnh và mô tả nhân vật sẽ tự động được lưu tại đây.
+                      <strong>AI vẽ</strong>, tên, ảnh và mô tả nhân vật sẽ tự động được lưu vĩnh viễn (cả máy chủ &amp; trình duyệt) để tắt đi bật lại vẫn còn nguyên.
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
@@ -6477,46 +6714,149 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 );
               })()}
 
-              <div className="divide-y divide-slate-200 dark:divide-slate-400/15 border border-slate-200 dark:border-slate-400/20 rounded-2xl overflow-hidden">
-                {blueprint.scenes.map((sc, idx) => (
-                  <StudioSceneCard
-                    key={sc.id}
-                    scene={sc}
-                    index={idx}
-                    totalScenes={blueprint.scenes.length}
-                    mode={studioMode}
-                    productionFormat={blueprint.productionFormat || productionFormat}
-                    videoStyle={blueprint.videoStyle || videoStyle}
-                    learnedStyles={learnedStyles}
-                    customStylePrompt={customStylePrompt}
-                    characterBible={blueprint.characterBible ?? characterBibleDraft}
-                    settingBible={blueprint.settingBible ?? settingBibleDraft}
-                    visualStyleBible={blueprint.visualStyleBible ?? visualStyleBibleDraft}
-                    costumeBible={blueprint.costumeBible ?? costumeBibleDraft}
-                    continuityBible={blueprint.continuityBible ?? continuityBibleDraft}
-                    hasCharacterRefs={characters.length > 0}
-                    characterRefs={characters}
-                    allowFreeCostumeChange={blueprint.allowFreeCostumeChange ?? allowFreeCostumeChange}
-                    sources={sources}
-                    busyImg={busySceneImageIds.has(sc.id)}
-                    queuedImg={queuedSceneImageIds.has(sc.id)}
-                    busyVid={busySceneVideoIds.has(sc.id)}
-                    sceneErr={sceneImageErrors[sc.id]}
-                    sceneVideoEngine={sceneVideoEngine}
-                    voiceMode={voiceMode}
-                    previewingSceneId={previewingSceneId}
-                    capabilities={capabilities}
-                    onUpdateScene={updateScene}
-                    onDeleteScene={handleDeleteScene}
-                    onMoveScene={handleMoveScene}
-                    onGenerateImage={(s) => void generateSingleSceneImage(s)}
-                    onUploadSceneImage={(sceneId, f) => void handleUploadSceneImage(sceneId, f)}
-                    onDeleteSceneImage={handleDeleteSceneImage}
-                    onGenerateOmniClip={(s) => void handleGenerateSceneOmniClip(s)}
-                    onSpeakPreview={(txt, id) => void handleSpeakOfflineBrowserPreview(txt, id)}
-                  />
-                ))}
-              </div>
+              {/* Scene selection & dispatch bar for Trung Tâm Điều Phối AI */}
+              {(() => {
+                const selectedIds = getSelectedCoordSceneIds(blueprint, activeBatchIndex);
+                const selectedSet = new Set(selectedIds);
+                const allSelected = blueprint.scenes.length > 0 && selectedIds.length === blueprint.scenes.length;
+                return (
+                  <>
+                    <div className="p-3 rounded-xl bg-violet-500/8 dark:bg-violet-500/12 border border-violet-500/30 flex flex-wrap items-center justify-between gap-2.5">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <label className="inline-flex items-center gap-2 font-bold text-slate-900 dark:text-white cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={allSelected}
+                            onChange={(e) => selectAllCoordScenes(e.target.checked)}
+                            className="w-4 h-4 rounded accent-violet-600 cursor-pointer"
+                          />
+                          <span>
+                            Chọn phân cảnh đẩy sang Trung Tâm Điều Phối AI ({selectedIds.length}/{blueprint.scenes.length})
+                          </span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => selectAllCoordScenes(true)}
+                          className="px-2 py-1 rounded-lg text-[11px] font-semibold bg-white/80 dark:bg-white/10 border border-slate-200 dark:border-white/15 text-slate-700 dark:text-slate-200 hover:border-violet-400 cursor-pointer"
+                        >
+                          Chọn tất cả
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => selectAllCoordScenes(false)}
+                          className="px-2 py-1 rounded-lg text-[11px] font-semibold bg-white/80 dark:bg-white/10 border border-slate-200 dark:border-white/15 text-slate-700 dark:text-slate-200 hover:border-rose-400 cursor-pointer"
+                        >
+                          Bỏ chọn
+                        </button>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={isDispatchingToCommandCenter || selectedIds.length === 0}
+                          onClick={() => void handleDispatchToCommandCenter({ onlySelectedScenes: true })}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-45 text-white text-xs font-bold cursor-pointer whitespace-nowrap shadow-sm"
+                        >
+                          {isDispatchingToCommandCenter ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Clapperboard className="w-3.5 h-3.5" />
+                          )}
+                          <span>
+                            {allSelected
+                              ? `Đẩy tất cả ${blueprint.scenes.length} phân cảnh sang Điều phối AI`
+                              : `Đẩy ${selectedIds.length} phân cảnh đã chọn sang Điều phối AI`}
+                          </span>
+                        </button>
+
+                        {blueprints.length > 1 && (
+                          <button
+                            type="button"
+                            disabled={isDispatchingToCommandCenter}
+                            onClick={() => void handleDispatchToCommandCenter({ dispatchAllBatch: true })}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-45 text-white text-xs font-bold cursor-pointer whitespace-nowrap shadow-sm"
+                          >
+                            <ListVideo className="w-3.5 h-3.5" />
+                            <span>Đẩy toàn bộ {blueprints.length} kịch bản vào hàng đợi Điều phối AI</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="divide-y divide-slate-200 dark:divide-slate-400/15 border border-slate-200 dark:border-slate-400/20 rounded-2xl overflow-hidden">
+                      {blueprint.scenes.map((sc, idx) => {
+                        const isChecked = selectedSet.has(sc.id);
+                        return (
+                          <div
+                            key={sc.id}
+                            className={`transition ${
+                              isChecked ? '' : 'opacity-65 bg-slate-100/40 dark:bg-black/15'
+                            }`}
+                          >
+                            <div className="px-3.5 py-2 bg-slate-50/90 dark:bg-[#0e1429]/90 border-b border-slate-200/70 dark:border-slate-400/10 flex flex-wrap items-center justify-between gap-2">
+                              <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-slate-100 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => toggleCoordSceneSelection(sc.id)}
+                                  className="w-4 h-4 rounded accent-violet-600 cursor-pointer"
+                                />
+                                <span>
+                                  Chọn Phân cảnh #{idx + 1} đưa sang Trung Tâm Điều Phối AI
+                                </span>
+                              </label>
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                                  isChecked
+                                    ? 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/35'
+                                    : 'bg-slate-500/10 text-slate-500 dark:text-slate-400 border-slate-400/25'
+                                }`}
+                              >
+                                {isChecked ? 'Đã chọn điều phối' : 'Bỏ qua khi đẩy'}
+                              </span>
+                            </div>
+                            <StudioSceneCard
+                              scene={sc}
+                              index={idx}
+                              totalScenes={blueprint.scenes.length}
+                              mode={studioMode}
+                              productionFormat={blueprint.productionFormat || productionFormat}
+                              videoStyle={blueprint.videoStyle || videoStyle}
+                              learnedStyles={learnedStyles}
+                              customStylePrompt={customStylePrompt}
+                              characterBible={blueprint.characterBible ?? characterBibleDraft}
+                              settingBible={blueprint.settingBible ?? settingBibleDraft}
+                              visualStyleBible={blueprint.visualStyleBible ?? visualStyleBibleDraft}
+                              costumeBible={blueprint.costumeBible ?? costumeBibleDraft}
+                              continuityBible={blueprint.continuityBible ?? continuityBibleDraft}
+                              hasCharacterRefs={characters.length > 0}
+                              characterRefs={characters}
+                              allowFreeCostumeChange={blueprint.allowFreeCostumeChange ?? allowFreeCostumeChange}
+                              sources={sources}
+                              busyImg={busySceneImageIds.has(sc.id)}
+                              queuedImg={queuedSceneImageIds.has(sc.id)}
+                              busyVid={busySceneVideoIds.has(sc.id)}
+                              sceneErr={sceneImageErrors[sc.id]}
+                              sceneVideoEngine={sceneVideoEngine}
+                              voiceMode={voiceMode}
+                              previewingSceneId={previewingSceneId}
+                              capabilities={capabilities}
+                              onUpdateScene={updateScene}
+                              onDeleteScene={handleDeleteScene}
+                              onMoveScene={handleMoveScene}
+                              onGenerateImage={(s) => void generateSingleSceneImage(s)}
+                              onUploadSceneImage={(sceneId, f) => void handleUploadSceneImage(sceneId, f)}
+                              onDeleteSceneImage={handleDeleteSceneImage}
+                              onGenerateOmniClip={(s) => void handleGenerateSceneOmniClip(s)}
+                              onSpeakPreview={(txt, id) => void handleSpeakOfflineBrowserPreview(txt, id)}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
         )}

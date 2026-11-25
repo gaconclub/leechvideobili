@@ -1,303 +1,377 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Activity,
-  AlertTriangle,
+  AlertCircle,
   CheckCircle2,
   Clock,
-  CloudUpload,
   Cpu,
   Download,
   ExternalLink,
+  FileSpreadsheet,
   Film,
+  FolderOpen,
   History,
+  Image as ImageIcon,
   Loader2,
+  Lock,
+  MessageSquare,
   Pause,
   Play,
-  Plus,
   RefreshCw,
-  Sparkles,
-  Square,
-  Wrench,
+  RotateCcw,
   X,
 } from 'lucide-react';
+import type { CommandCenterState } from '../types/commandCenter';
 import type {
-  CommandCenterState,
-  ProductionRun,
-  SceneProductionStage,
-  VideoGenerationEngine,
-} from '../types/commandCenter';
-import { AgentAvatar } from './command-center/AgentAvatar';
-import { GoogleFlowModal } from './command-center/GoogleFlowModal';
-import { WorkspaceSyncSection } from './WorkspaceSyncSection';
-import { commandCenterApiJson } from '../hooks/useCommandCenterLive';
+  CoordinationCenterState,
+  CoordinationSession,
+  CoordinationTaskRow,
+  CoordinationTaskStatus,
+  IndependentVideoSource,
+} from '../types/coordinationCenter';
+import { useCoordinationCenterLive } from '../hooks/useCoordinationCenterLive';
+import { getGoogleWorkspaceAccessToken } from '../lib/googleWorkspaceAuth';
 
 interface ProductionMonitorPanelProps {
-  state: CommandCenterState | null;
-  setState: React.Dispatch<React.SetStateAction<CommandCenterState | null>>;
-  loading: boolean;
-  sseConnected: boolean;
-  onRefresh: (forceHealth?: boolean) => Promise<CommandCenterState | null>;
+  state?: CommandCenterState | null;
+  setState?: React.Dispatch<React.SetStateAction<CommandCenterState | null>>;
+  loading?: boolean;
+  sseConnected?: boolean;
+  onRefresh?: (forceHealth?: boolean) => Promise<CommandCenterState | null>;
   onOpenCommandCenter?: (
     subTab?: 'overview' | 'progress' | 'chairman' | 'chat' | 'tasks' | 'pipeline' | 'qa' | 'incidents' | 'perf'
   ) => void;
 }
 
-const RUN_STATUS_META: Record<
-  ProductionRun['status'],
-  { label: string; textClass: string; borderClass: string }
-> = {
-  idle: {
-    label: 'Sẵn sàng',
-    textClass: 'text-slate-600 dark:text-slate-300',
-    borderClass: 'border-slate-300 dark:border-slate-700',
-  },
-  planning: {
-    label: 'Đang lập kế hoạch',
-    textClass: 'text-violet-600 dark:text-violet-300',
-    borderClass: 'border-violet-400/50',
-  },
-  producing: {
-    label: 'Đang sản xuất',
-    textClass: 'text-cyan-600 dark:text-cyan-300',
-    borderClass: 'border-cyan-400/50',
-  },
-  inspecting: {
-    label: 'Đang kiểm duyệt QA',
-    textClass: 'text-indigo-600 dark:text-indigo-300',
-    borderClass: 'border-indigo-400/50',
-  },
-  assembling: {
-    label: 'Đang ghép xuất phim',
-    textClass: 'text-emerald-600 dark:text-emerald-300',
-    borderClass: 'border-emerald-400/50',
-  },
-  completed: {
-    label: 'Hoàn thành',
-    textClass: 'text-emerald-600 dark:text-emerald-400',
-    borderClass: 'border-emerald-400/50',
-  },
-  paused: {
-    label: 'Đã tạm dừng',
-    textClass: 'text-amber-600 dark:text-amber-300',
-    borderClass: 'border-amber-400/50',
-  },
-  cancelled: {
-    label: 'Đã hủy phiên',
-    textClass: 'text-rose-600 dark:text-rose-400',
-    borderClass: 'border-rose-400/50',
-  },
-  failed: {
-    label: 'Thất bại',
-    textClass: 'text-rose-600 dark:text-rose-400',
-    borderClass: 'border-rose-400/50',
-  },
-  needs_attention: {
-    label: 'Cần kiểm tra',
-    textClass: 'text-orange-600 dark:text-orange-300',
-    borderClass: 'border-orange-400/50',
-  },
+const SOURCE_META: Record<IndependentVideoSource, { label: string; short: string }> = {
+  gemini: { label: 'Gemini AI (Độc lập)', short: 'Gemini AI' },
+  qwen: { label: 'AI Qwen · Alibaba (Độc lập)', short: 'AI Qwen' },
+  muse: { label: 'Muse AI · Muse2API (Độc lập)', short: 'Muse AI' },
+  google_flow: { label: 'Google Flow · Veo (Độc lập)', short: 'Google Flow' },
 };
-
-function isActiveRunningStatus(status?: ProductionRun['status']): boolean {
-  return status === 'planning' || status === 'producing' || status === 'inspecting' || status === 'assembling';
-}
-
-const SCENE_STAGE_LABELS: Record<SceneProductionStage, string> = {
-  waiting_data: 'Chờ dữ liệu',
-  creating_image: 'Đang tạo ảnh',
-  image_ready: 'Ảnh sẵn sàng',
-  waiting_video: 'Chờ dựng video',
-  creating_video: 'Đang dựng video',
-  inspecting_qa: 'Đang kiểm duyệt QA',
-  completed: 'Hoàn thành',
-  failed: 'Lỗi',
-  needs_regen: 'Cần tạo lại',
-};
-
-function formatDurationMs(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return '00:00';
-  const totalSec = Math.floor(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
-}
 
 function fmtDateTime(ts?: number): string {
   if (!ts) return '—';
-  return new Date(ts).toLocaleString('vi-VN', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  try {
+    return new Date(ts).toLocaleString('vi-VN', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return '—';
+  }
+}
+
+function fmtTime(ts?: number): string {
+  if (!ts) return '—';
+  try {
+    return new Date(ts).toLocaleTimeString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return '—';
+  }
+}
+
+function sessionStatusMeta(status: CoordinationSession['status']): {
+  label: string;
+  badge: string;
+} {
+  switch (status) {
+    case 'DANG_CHAY':
+      return {
+        label: 'Đang sản xuất',
+        badge: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/35',
+      };
+    case 'HOAN_THANH':
+      return {
+        label: 'Hoàn thành',
+        badge: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35',
+      };
+    case 'CO_LOI':
+      return {
+        label: 'Có lỗi',
+        badge: 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/35',
+      };
+    case 'CHO_FLOW':
+      return {
+        label: 'Chờ nạp Google Flow',
+        badge: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35',
+      };
+    case 'TAM_DUNG':
+      return {
+        label: 'Đã tạm dừng',
+        badge: 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30',
+      };
+    default:
+      return {
+        label: 'Đang chờ đến phiên',
+        badge: 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/35',
+      };
+  }
+}
+
+function taskStatusMeta(status: CoordinationTaskStatus): {
+  label: string;
+  cls: string;
+} {
+  switch (status) {
+    case 'HOAN_THANH':
+      return {
+        label: 'Hoàn thành',
+        cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35',
+      };
+    case 'DANG_LAM':
+      return {
+        label: 'Đang làm',
+        cls: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/35',
+      };
+    case 'LOI':
+      return {
+        label: 'Lỗi',
+        cls: 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/35',
+      };
+    case 'CHO_NHAP_FLOW':
+      return {
+        label: 'Chờ nạp Flow',
+        cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35',
+      };
+    default:
+      return {
+        label: 'Chờ nhận',
+        cls: 'bg-slate-500/10 text-slate-600 dark:text-slate-300 border-slate-400/30',
+      };
+  }
 }
 
 export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
-  state,
-  setState,
-  loading,
-  sseConnected,
-  onRefresh,
   onOpenCommandCenter,
 }) => {
+  const { state, setState, loading, sseConnected, refreshState } = useCoordinationCenterLive(true);
+  const [selectedIdOverride, setSelectedIdOverride] = useState<string>('');
+  const [detailTab, setDetailTab] = useState<'scenes' | 'reports'>('scenes');
   const [busyKey, setBusyKey] = useState('');
   const [notice, setNotice] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
-  const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
-  const [newSessionTitle, setNewSessionTitle] = useState('');
-  const [confirmCancelRun, setConfirmCancelRun] = useState<ProductionRun | null>(null);
-  const [detailTab, setDetailTab] = useState<'scenes' | 'tasks' | 'logs' | 'workspace'>('scenes');
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const [flowModalOpen, setFlowModalOpen] = useState(false);
-  const [flowFocusSceneId, setFlowFocusSceneId] = useState<string | null>(null);
 
-  const selectedRun: ProductionRun | null = useMemo(() => {
-    if (!state) return null;
-    if (state.selectedRunId) {
-      const hit = state.runs.find((r) => r.id === state.selectedRunId);
+  const sessions = state?.sessions || [];
+
+  const selectedSession: CoordinationSession | null = useMemo(() => {
+    if (sessions.length === 0) return null;
+    if (selectedIdOverride) {
+      const hit = sessions.find((s) => s.sessionId === selectedIdOverride);
       if (hit) return hit;
     }
-    return state.activeRun || state.runs[0] || null;
-  }, [state]);
+    if (state?.activeSessionId) {
+      const active = sessions.find((s) => s.sessionId === state.activeSessionId);
+      if (active) return active;
+    }
+    return sessions[0] || null;
+  }, [sessions, selectedIdOverride, state?.activeSessionId]);
 
-  const isRunning = isActiveRunningStatus(selectedRun?.status);
+  const callCoordApi = async <T,>(url: string, init?: RequestInit): Promise<T> => {
+    const tok = getGoogleWorkspaceAccessToken();
+    const headers: Record<string, string> = {
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
+      ...(init?.headers as Record<string, string> | undefined),
+    };
+    const res = await fetch(url, { ...init, headers });
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.error || `Thao tác thất bại (HTTP ${res.status})`);
+    }
+    if (data?.state) {
+      setState(data.state as CoordinationCenterState);
+    }
+    return data as T;
+  };
 
-  useEffect(() => {
-    if (!isRunning) return;
-    const t = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [isRunning]);
+  const handleSelectSession = async (sessionId: string) => {
+    setSelectedIdOverride(sessionId);
+    setErrorMsg('');
+    try {
+      const next = await callCoordApi<CoordinationCenterState>(
+        `/api/coordination/sessions/${encodeURIComponent(sessionId)}/select`,
+        { method: 'POST' }
+      );
+      setState(next);
+    } catch {
+      // keep local selection even if select endpoint fails
+    }
+  };
 
-  const runAction = async (key: string, fn: () => Promise<CommandCenterState>, okMsg?: string) => {
-    setBusyKey(key);
+  const handleRunSession = async (sessionId: string, retryErrors = false) => {
+    setBusyKey(retryErrors ? `retry_${sessionId}` : `run_${sessionId}`);
     setErrorMsg('');
     setNotice('');
     try {
-      const next = await fn();
-      setState(next);
-      if (okMsg) setNotice(okMsg);
+      await callCoordApi(`/api/coordination/sessions/${encodeURIComponent(sessionId)}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ retryErrors }),
+      });
+      setNotice(
+        retryErrors
+          ? `Đang chạy lại các tác vụ lỗi của phiên ${sessionId}.`
+          : `Đã khởi động sản xuất tuần tự cho phiên ${sessionId}.`
+      );
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Thao tác phiên sản xuất thất bại.');
+      setErrorMsg(err?.message || 'Không thể chạy phiên sản xuất.');
     } finally {
       setBusyKey('');
     }
   };
 
-  const handleCreateSession = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const title = newSessionTitle.trim();
-    await runAction(
-      'create_session',
-      () =>
-        commandCenterApiJson<CommandCenterState>('/api/command-center/productions/create', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title }),
-        }),
-      'Đã tạo phiên sản xuất mới và đặt làm phiên hiện hành.'
-    );
-    setNewSessionTitle('');
-    setIsNewSessionOpen(false);
-  };
-
-  const handleSelectSession = async (runId: string) => {
-    await runAction(
-      `select_${runId}`,
-      () =>
-        commandCenterApiJson<CommandCenterState>(
-          `/api/command-center/productions/${encodeURIComponent(runId)}/select`,
-          { method: 'POST' }
-        )
-    );
-  };
-
-  const handleControlSession = async (runId: string, action: 'pause' | 'resume' | 'cancel') => {
-    const okMsg =
-      action === 'pause'
-        ? 'Đã tạm dừng phiên ở điểm an toàn — trạng thái và các cảnh hoàn thành được giữ nguyên.'
-        : action === 'resume'
-        ? 'Đã kích hoạt tiếp tục các tác vụ chưa hoàn thành của phiên.'
-        : 'Đã hủy các tác vụ đang chờ/đang chạy của phiên và bảo toàn kết quả đã hoàn thành.';
-    await runAction(
-      `${action}_${runId}`,
-      () =>
-        commandCenterApiJson<CommandCenterState>(
-          `/api/command-center/productions/${encodeURIComponent(runId)}/${action}`,
-          { method: 'POST' }
-        ),
-      okMsg
-    );
-    if (action === 'cancel') {
-      setConfirmCancelRun(null);
+  const handlePauseSession = async (sessionId: string) => {
+    setBusyKey(`pause_${sessionId}`);
+    setErrorMsg('');
+    try {
+      await callCoordApi(`/api/coordination/sessions/${encodeURIComponent(sessionId)}/pause`, {
+        method: 'POST',
+      });
+      setNotice(`Đã tạm dừng an toàn phiên ${sessionId}.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể tạm dừng phiên.');
+    } finally {
+      setBusyKey('');
     }
   };
 
-  const sessionTasks = useMemo(() => {
-    if (!state || !selectedRun) return [];
-    return state.tasks.filter((t) => t.runId === selectedRun.id);
-  }, [state, selectedRun]);
+  const handleRunAllQueued = async () => {
+    setBusyKey('run_all');
+    setErrorMsg('');
+    setNotice('');
+    try {
+      const res = await callCoordApi<{ queuedSessionIds?: string[] }>('/api/coordination/queue/run-all', {
+        method: 'POST',
+        body: JSON.stringify({ retryErrors: false }),
+      });
+      const count = res.queuedSessionIds?.length || 0;
+      setNotice(
+        count > 0
+          ? `Đã khởi động chạy tuần tự ${count} kịch bản đang chờ trong Trung Tâm Điều Phối AI.`
+          : 'Không có kịch bản nào đang chờ chạy.'
+      );
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể chạy tuần tự hàng đợi.');
+    } finally {
+      setBusyKey('');
+    }
+  };
 
-  const sessionLogs = useMemo(() => {
-    if (!state || !selectedRun) return [];
-    return state.logs.filter((l) => !l.runId || l.runId === selectedRun.id).slice(0, 80);
-  }, [state, selectedRun]);
+  const handleChangeSource = async (sessionId: string, videoSource: IndependentVideoSource) => {
+    setBusyKey(`src_${sessionId}`);
+    setErrorMsg('');
+    try {
+      await callCoordApi(`/api/coordination/sessions/${encodeURIComponent(sessionId)}/source`, {
+        method: 'POST',
+        body: JSON.stringify({ videoSource }),
+      });
+      setNotice(`Đã khóa nguồn video độc lập ${SOURCE_META[videoSource].short} cho phiên ${sessionId}.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể đổi nguồn video.');
+    } finally {
+      setBusyKey('');
+    }
+  };
 
-  const sessionOpenIncidents = useMemo(() => {
-    if (!state || !selectedRun) return [];
-    const list = Array.isArray(state.incidents) ? state.incidents : [];
-    return list.filter((inc) => inc.runId === selectedRun.id && inc.status !== 'resolved');
-  }, [state, selectedRun]);
+  const handleRunTask = async (sessionId: string, taskCode: string) => {
+    setBusyKey(`task_${sessionId}_${taskCode}`);
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await callCoordApi(
+        `/api/coordination/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskCode)}/run`,
+        { method: 'POST' }
+      );
+      setNotice(`Đã thực thi xong tác vụ ${taskCode}.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || `Không thể chạy tác vụ ${taskCode}.`);
+    } finally {
+      setBusyKey('');
+    }
+  };
+
+  const sessionStats = useMemo(() => {
+    if (!selectedSession) {
+      return { totalTasks: 0, doneTasks: 0, runningTasks: 0, failedTasks: 0, completedScenes: 0, pct: 0 };
+    }
+    const totalTasks = selectedSession.tasks.length;
+    const doneTasks = selectedSession.tasks.filter((t) => t.status === 'HOAN_THANH').length;
+    const runningTasks = selectedSession.tasks.filter((t) => t.status === 'DANG_LAM').length;
+    const failedTasks = selectedSession.tasks.filter((t) => t.status === 'LOI').length;
+    const completedScenes = selectedSession.scenes.filter((sc) => {
+      const vid = selectedSession.tasks.find(
+        (t) => t.taskCode.includes('-VID-') && (t.sceneId === sc.sceneId || t.sceneIndex === sc.sceneIndex)
+      );
+      return vid?.status === 'HOAN_THANH';
+    }).length;
+    const pct = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
+    return { totalTasks, doneTasks, runningTasks, failedTasks, completedScenes, pct };
+  }, [selectedSession]);
+
+  const queueWaitingCount = sessions.filter((s) => s.status !== 'HOAN_THANH').length;
+  const readyEnginesCount = (state?.readiness || []).filter((r) => r.status === 'ready').length;
+  const totalEnginesCount = (state?.readiness || []).length;
+
+  const sessionReports = useMemo(() => {
+    const all = state?.meetingMessages || [];
+    if (!selectedSession) return all.slice(-50).reverse();
+    return all
+      .filter((m) => m.sessionId === selectedSession.sessionId || m.sessionId === 'GLOBAL')
+      .slice(-60)
+      .reverse();
+  }, [state?.meetingMessages, selectedSession]);
+
+  const canRunTask = (sess: CoordinationSession, task: CoordinationTaskRow): boolean => {
+    if (task.status === 'DANG_LAM') return false;
+    return task.dependsOnTaskCodes.every((depCode) => {
+      const dep = sess.tasks.find((t) => t.taskCode === depCode);
+      return dep?.status === 'HOAN_THANH';
+    });
+  };
 
   if (loading && !state) {
     return (
       <div className="glass-card rounded-2xl p-8 flex items-center justify-center gap-3 text-sm text-slate-600 dark:text-slate-300">
-        <Loader2 className="w-4 h-4 animate-spin text-violet-500" />
-        <span>Đang tải Trạm Theo Dõi Phiên Sản Xuất...</span>
+        <Loader2 className="w-4 h-4 animate-spin text-cyan-500" />
+        <span>Đang đồng bộ dữ liệu từ Trung Tâm Điều Phối AI...</span>
       </div>
     );
   }
 
-  const runs = state?.runs || [];
-  const agents = state?.agents || [];
-  const memory = state?.projectMemory;
-
-  const perMuse = selectedRun?.perMuseProgress || [];
-  const workingMuseCount = perMuse.filter((p) => p.runningTasks > 0).length;
-  const selectedEngine: VideoGenerationEngine =
-    selectedRun?.videoGenerationEngine || (selectedRun?.aiWorkforceMode === 'gemini_only' ? 'gemini' : 'muse');
-  const isGoogleFlowRun = selectedEngine === 'google_flow';
-  const isQwenRun = selectedEngine === 'qwen';
-  const isGeminiDirectRun = selectedEngine === 'gemini' || isGoogleFlowRun || isQwenRun;
-  const chairmanTasks = sessionTasks.filter((t) => t.assignedAgentId === 'chairman');
-  const chairmanCompletedCount = chairmanTasks.filter((t) => t.status === 'completed').length;
-  const chairmanRunningCount = chairmanTasks.filter((t) => t.status === 'running').length;
-  const chairmanProgressPct =
-    chairmanTasks.length > 0 ? Math.round((chairmanCompletedCount / chairmanTasks.length) * 100) : 0;
-  const flowReadyScenesCount = (memory?.scenes || []).filter(
-    (s) => s.flowStatus === 'ready' || Boolean(s.flowPrompt) || Boolean(s.keyframeImageUrl)
-  ).length;
-  const flowImportedScenesCount = (memory?.scenes || []).filter((s) => Boolean(s.videoUrl)).length;
-
-  const elapsedMs = selectedRun
-    ? (selectedRun.completedAt || selectedRun.cancelledAt || selectedRun.pausedAt || (isRunning ? nowMs : selectedRun.updatedAt)) -
-      (selectedRun.startedAt || selectedRun.createdAt)
-    : 0;
-
   return (
     <div className="space-y-5">
-      {/* Header & Top Metrics */}
+      {/* Header & Top Metrics (100% live-synced with Trung Tâm Điều Phối AI) */}
       <section className="glass-card rounded-2xl p-5 space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200/80 dark:border-slate-700/40 pb-4">
           <div className="space-y-1">
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-500 dark:text-slate-400">
-              <span>PRODUCTION MONITOR</span>
+            <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500 dark:text-slate-400">
+              <span>ĐỒNG BỘ TRUNG TÂM ĐIỀU PHỐI AI</span>
               <span aria-hidden="true">·</span>
-              <span className={sseConnected ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
-                {sseConnected ? 'Đẩy dữ liệu thời gian thực (SSE)' : 'Đang đồng bộ định kỳ'}
+              <span className={sseConnected ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-amber-600 dark:text-amber-400'}>
+                {sseConnected ? 'Trực tiếp thời gian thực (SSE)' : 'Đang kết nối lại'}
               </span>
+              {state?.workspace?.spreadsheetUrl && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <a
+                    href={state.workspace.spreadsheetUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-300 hover:underline font-semibold"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    <span>Sổ Google Sheets</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </>
+              )}
             </div>
             <h1 className="text-xl sm:text-2xl font-display font-bold text-slate-900 dark:text-white tracking-tight">
               Theo dõi Phiên Sản Xuất
@@ -305,24 +379,37 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setIsNewSessionOpen(true)}
-              className="px-3.5 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Tạo phiên mới</span>
-            </button>
-
-            {onOpenCommandCenter && (
+            {queueWaitingCount > 0 && (
               <button
                 type="button"
-                onClick={() => onOpenCommandCenter('overview')}
-                className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] hover:bg-slate-50 dark:hover:bg-slate-800/70 text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                disabled={busyKey === 'run_all'}
+                onClick={() => void handleRunAllQueued()}
+                className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-indigo-600 hover:brightness-110 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-50"
               >
-                <Cpu className="w-3.5 h-3.5" />
-                <span>Giao kịch bản tại Phòng Điều Hành</span>
+                {busyKey === 'run_all' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                <span>Chạy tuần tự {queueWaitingCount} kịch bản chờ</span>
               </button>
+            )}
+
+            {onOpenCommandCenter && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onOpenCommandCenter('overview')}
+                  className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] hover:bg-slate-50 dark:hover:bg-slate-800/70 text-xs font-semibold text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <Cpu className="w-3.5 h-3.5 text-cyan-500" />
+                  <span>Trung Tâm Điều Phối</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onOpenCommandCenter('chat')}
+                  className="px-3 py-2 rounded-xl border border-cyan-500/35 bg-cyan-500/10 hover:bg-cyan-500/20 text-xs font-semibold text-cyan-700 dark:text-cyan-300 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Phòng họp AI</span>
+                </button>
+              </>
             )}
 
             <button
@@ -330,100 +417,62 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
               disabled={busyKey === 'refresh_mon'}
               onClick={async () => {
                 setBusyKey('refresh_mon');
-                await onRefresh(true);
+                await refreshState(true);
                 setBusyKey('');
               }}
-              className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] hover:bg-slate-50 dark:hover:bg-slate-800/70 text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] hover:bg-slate-50 dark:hover:bg-slate-800/70 text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${busyKey === 'refresh_mon' ? 'animate-spin' : ''}`} />
               <span>Làm mới</span>
             </button>
-            {onOpenCommandCenter && (
-              <button
-                type="button"
-                onClick={() => onOpenCommandCenter('progress')}
-                className="px-3 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
-              >
-                <CloudUpload className="w-3.5 h-3.5" />
-                <span>
-                  {selectedRun?.cloudHandoff?.safeToShutdownLocalPc
-                    ? 'Cloud đang chạy · Tiến độ AI'
-                    : 'Tiến độ AI & Chuyển giao Cloud'}
-                </span>
-              </button>
-            )}
           </div>
         </div>
 
-        {/* 4 Summary Cards */}
+        {/* 4 Live KPI Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
-            <div className="text-xs text-slate-500 dark:text-slate-400">Tiến độ chung</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Tiến độ phiên đang chọn</div>
             <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-              {selectedRun?.overallProgressPct ?? 0}%
+              {sessionStats.pct}%
             </div>
             <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
               <div
-                className="h-full rounded-full bg-violet-500 transition-all duration-300"
-                style={{ width: `${selectedRun?.overallProgressPct ?? 0}%` }}
+                className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-500 transition-all duration-300"
+                style={{ width: `${sessionStats.pct}%` }}
               />
             </div>
           </div>
 
           <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
-            {isGoogleFlowRun ? (
-              <>
-                <div className="text-xs text-slate-500 dark:text-slate-400">Nguồn video: Google Flow</div>
-                <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
-                  {flowReadyScenesCount}/{memory?.scenes.length || selectedRun?.sceneCount || 0}
-                </div>
-                <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-                  {flowImportedScenesCount} cảnh đã nạp MP4 · Không dùng Muse AI
-                </div>
-              </>
-            ) : isGeminiDirectRun ? (
-              <>
-                <div className="text-xs text-slate-500 dark:text-slate-400">Nguồn video: AI Gemini</div>
-                <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-sky-600 dark:text-sky-400">
-                  {chairmanRunningCount} luồng
-                </div>
-                <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-                  {chairmanCompletedCount}/{chairmanTasks.length} tác vụ Gemini · Không dùng Muse AI
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="text-xs text-slate-500 dark:text-slate-400">Muse đang chạy (phiên này)</div>
-                <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-cyan-600 dark:text-cyan-400">
-                  {workingMuseCount}/5
-                </div>
-                <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-                  Toàn hệ thống: {state?.metrics.workingAgents ?? 0} đang xử lý
-                </div>
-              </>
-            )}
-          </div>
-
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
-            <div className="text-xs text-slate-500 dark:text-slate-400">Cảnh hoàn thành</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Phân cảnh hoàn thành</div>
             <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
-              {selectedRun?.completedScenes ?? 0}/{selectedRun?.sceneCount ?? 0}
+              {sessionStats.completedScenes}/{selectedSession?.scenes.length ?? 0}
             </div>
             <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-              {selectedRun?.passedQaScenes ?? 0} cảnh đạt kiểm duyệt QA
+              {sessionStats.doneTasks}/{sessionStats.totalTasks} tác vụ (Ảnh + Video + Ghép)
             </div>
           </div>
 
           <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
-            <div className="text-xs text-slate-500 dark:text-slate-400">Trạng thái cảnh (Chạy / Chờ / Lỗi)</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Hàng đợi kịch bản</div>
+            <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-violet-600 dark:text-violet-400">
+              {sessions.length} phiên
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
+              {queueWaitingCount} đang chờ/chạy · {sessions.filter((s) => s.status === 'HOAN_THANH').length} hoàn thành
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
+            <div className="text-xs text-slate-500 dark:text-slate-400">AI sẵn sàng &amp; Lỗi phiên</div>
             <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-              {selectedRun?.runningScenes ?? 0} / {selectedRun?.pendingScenes ?? 0} /{' '}
-              <span className={(selectedRun?.failedScenes ?? 0) > 0 ? 'text-rose-500' : ''}>
-                {selectedRun?.failedScenes ?? 0}
+              {readyEnginesCount}/{totalEnginesCount}{' '}
+              <span className={sessionStats.failedTasks > 0 ? 'text-rose-500 text-lg' : 'text-emerald-500 text-lg'}>
+                ({sessionStats.failedTasks} lỗi)
               </span>
             </div>
-            <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-              {selectedRun?.escalatedScenes ?? 0} cảnh cần xem xét thủ công
+            <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
+              {selectedSession ? `Nguồn khóa: ${SOURCE_META[selectedSession.videoSource].short}` : 'Chưa chọn phiên'}
             </div>
           </div>
         </div>
@@ -431,94 +480,81 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
 
       {errorMsg && (
         <div className="rounded-xl border border-rose-300 dark:border-rose-700/60 bg-rose-50 dark:bg-rose-950/35 px-4 py-3 text-xs text-rose-800 dark:text-rose-200 flex items-center justify-between gap-2">
-          <span>{errorMsg}</span>
-          <button type="button" onClick={() => setErrorMsg('')} className="underline cursor-pointer">
-            Đóng
+          <span className="inline-flex items-center gap-1.5">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{errorMsg}</span>
+          </span>
+          <button type="button" onClick={() => setErrorMsg('')} className="p-0.5 cursor-pointer">
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
 
       {notice && (
         <div className="rounded-xl border border-emerald-300 dark:border-emerald-700/60 bg-emerald-50 dark:bg-emerald-950/35 px-4 py-3 text-xs text-emerald-800 dark:text-emerald-200 flex items-center justify-between gap-2">
-          <span>{notice}</span>
-          <button type="button" onClick={() => setNotice('')} className="underline cursor-pointer">
-            Đóng
+          <span className="inline-flex items-center gap-1.5">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>{notice}</span>
+          </span>
+          <button type="button" onClick={() => setNotice('')} className="p-0.5 cursor-pointer">
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
 
-      {sessionOpenIncidents.length > 0 && onOpenCommandCenter && (
-        <div className="rounded-xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-xs text-amber-900 dark:text-amber-100 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-            <span>
-              Phiên này đang có <strong>{sessionOpenIncidents.length} sự cố</strong> cần Tổng đạo diễn và đội Muse phối hợp xử lý.
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => onOpenCommandCenter('chairman')}
-              className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold cursor-pointer whitespace-nowrap"
-            >
-              Gọi Chủ tịch chỉ đạo
-            </button>
-            <button
-              type="button"
-              onClick={() => onOpenCommandCenter('incidents')}
-              className="px-3 py-1.5 rounded-lg border border-amber-400/60 text-amber-900 dark:text-amber-100 hover:bg-amber-100/70 dark:hover:bg-amber-900/40 font-medium cursor-pointer whitespace-nowrap"
-            >
-              Xem Trung tâm Sự cố
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Main Layout: Left Sessions List + Right Active/Selected Session Inspector */}
+      {/* Main Split: Left All Queued Sessions + Right Live Scene Progress */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
-        {/* Sessions History Column */}
         <aside className="xl:col-span-4 glass-card rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between gap-2 border-b border-slate-200/80 dark:border-slate-700/40 pb-2.5">
             <div className="flex items-center gap-2 text-sm font-display font-semibold text-slate-900 dark:text-white">
-              <History className="w-4 h-4 text-violet-500" />
-              <span>Danh sách phiên sản xuất</span>
+              <History className="w-4 h-4 text-cyan-500" />
+              <span>Tất cả phiên từ Trung Tâm Điều Phối</span>
             </div>
             <span className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
-              {runs.length} phiên
+              {sessions.length}
             </span>
           </div>
 
-          {runs.length === 0 ? (
-            <div className="py-8 text-center text-xs text-slate-500 dark:text-slate-400 space-y-2">
+          {sessions.length === 0 ? (
+            <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400 space-y-2">
               <Film className="w-6 h-6 mx-auto opacity-60" />
-              <div>Chưa có phiên sản xuất nào. Nhấn "Tạo phiên mới" hoặc gửi kịch bản từ Phòng Điều Hành.</div>
+              <div className="font-semibold text-slate-700 dark:text-slate-200">
+                Chưa có phiên sản xuất nào.
+              </div>
+              <div>
+                Hãy chọn phân cảnh hoặc kịch bản ở <strong>Studio AI</strong> rồi bấm{' '}
+                <strong>Đẩy sang Trung Tâm Điều Phối AI</strong> — tiến độ sẽ tự động hiện tại đây theo thời gian thực.
+              </div>
             </div>
           ) : (
-            <div className="space-y-2 max-h-[640px] overflow-y-auto pr-1">
-              {runs.map((r) => {
-                const isSelected = selectedRun?.id === r.id;
-                const meta = RUN_STATUS_META[r.status] || RUN_STATUS_META.idle;
+            <div className="space-y-2 max-h-[680px] overflow-y-auto pr-1">
+              {sessions.map((s, idx) => {
+                const isSelected = selectedSession?.sessionId === s.sessionId;
+                const done = s.tasks.filter((t) => t.status === 'HOAN_THANH').length;
+                const err = s.tasks.filter((t) => t.status === 'LOI').length;
+                const pct = s.tasks.length > 0 ? Math.round((done / s.tasks.length) * 100) : 0;
+                const meta = sessionStatusMeta(s.status);
                 return (
                   <button
-                    key={r.id}
+                    key={s.sessionId}
                     type="button"
-                    onClick={() => handleSelectSession(r.id)}
+                    onClick={() => void handleSelectSession(s.sessionId)}
                     className={`w-full text-left rounded-xl p-3 border transition cursor-pointer space-y-2 ${
                       isSelected
-                        ? 'border-violet-500/70 bg-violet-50/70 dark:bg-violet-950/25'
+                        ? 'border-cyan-500/70 bg-cyan-50/70 dark:bg-cyan-950/25'
                         : 'border-slate-200 dark:border-slate-700/45 bg-white/75 dark:bg-[#0c1021]/75 hover:border-slate-300 dark:hover:border-slate-600'
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                          {r.title}
+                        <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                          #{idx + 1} · {s.title}
                         </div>
                         <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate">
-                          {r.id} · {fmtDateTime(r.startedAt || r.createdAt)}
+                          {s.sessionId} · {fmtDateTime(s.createdAt)}
                         </div>
                       </div>
-                      <span className={`text-[11px] font-semibold shrink-0 ${meta.textClass}`}>
+                      <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded border shrink-0 ${meta.badge}`}>
                         {meta.label}
                       </span>
                     </div>
@@ -526,27 +562,20 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                     <div className="flex items-center gap-2">
                       <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
                         <div
-                          className="h-full rounded-full bg-violet-500 transition-all"
-                          style={{ width: `${r.overallProgressPct ?? 0}%` }}
+                          className={`h-full rounded-full transition-all ${
+                            err > 0 ? 'bg-rose-500' : 'bg-gradient-to-r from-cyan-500 to-emerald-500'
+                          }`}
+                          style={{ width: `${pct}%` }}
                         />
                       </div>
                       <span className="text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300 shrink-0">
-                        {r.overallProgressPct ?? 0}%
+                        {pct}%
                       </span>
                     </div>
 
                     <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                      <span>{r.completedScenes}/{r.sceneCount} cảnh</span>
-                      <span>
-                        {r.videoGenerationEngine === 'qwen'
-                          ? 'AI Qwen'
-                          : r.videoGenerationEngine === 'google_flow'
-                          ? 'Google Flow'
-                          : r.videoGenerationEngine === 'gemini'
-                          ? 'AI Gemini'
-                          : 'AI Muse'}
-                      </span>
-                      <span>{r.passedQaScenes} đạt QA</span>
+                      <span>{s.scenes.length} cảnh · {done}/{s.tasks.length} bước</span>
+                      <span>{SOURCE_META[s.videoSource].short}</span>
                     </div>
                   </button>
                 );
@@ -555,599 +584,421 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
           )}
         </aside>
 
-        {/* Selected Session Live View */}
+        {/* Right Live Scene Inspector */}
         <div className="xl:col-span-8 space-y-5">
-          {!selectedRun ? (
-            <div className="space-y-5">
-              <section className="glass-card rounded-2xl p-8 text-center space-y-3">
-                <Film className="w-8 h-8 text-slate-400 mx-auto" />
-                <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                  Chọn hoặc tạo một phiên sản xuất để theo dõi trực tiếp
-                </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-                  Mọi phiên sản xuất đều lưu độc lập kịch bản, nhân vật, ảnh phân cảnh, video và nhật ký để có thể mở lại bất cứ lúc nào.
-                </p>
-              </section>
-              <section className="glass-card rounded-2xl p-5">
-                <WorkspaceSyncSection
-                  selectedRun={null}
-                  onAfterCommandDispatch={() => onRefresh(true)}
-                />
-              </section>
-            </div>
+          {!selectedSession ? (
+            <section className="glass-card rounded-2xl p-10 text-center space-y-3">
+              <Activity className="w-8 h-8 text-cyan-500 mx-auto opacity-80" />
+              <div className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                Chưa có phiên sản xuất nào được chọn
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                Khi bạn đẩy kịch bản hoặc các phân cảnh từ Studio AI sang Trung Tâm Điều Phối AI, toàn bộ thông tin phiên và tiến độ từng phân cảnh sẽ hiển thị trực tiếp tại đây.
+              </p>
+            </section>
           ) : (
             <>
-              {/* Session Header + Timing + Pause/Resume/Cancel */}
               <section className="glass-card rounded-2xl p-5 space-y-4">
                 <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200/80 dark:border-slate-700/40 pb-4">
                   <div className="space-y-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <span className="font-mono text-slate-500 dark:text-slate-400">{selectedRun.id}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className={`font-semibold ${(RUN_STATUS_META[selectedRun.status] || RUN_STATUS_META.idle).textClass}`}>
-                        {(RUN_STATUS_META[selectedRun.status] || RUN_STATUS_META.idle).label}
+                      <span className="font-mono font-bold text-slate-500 dark:text-slate-400">
+                        {selectedSession.sessionId}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 text-[10px] font-bold rounded border ${
+                          sessionStatusMeta(selectedSession.status).badge
+                        }`}
+                      >
+                        {selectedSession.status === 'DANG_CHAY' && (
+                          <Loader2 className="w-2.5 h-2.5 inline mr-1 animate-spin" />
+                        )}
+                        {sessionStatusMeta(selectedSession.status).label}
+                      </span>
+                      <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                        {selectedSession.aspectRatio} · {selectedSession.scenes.length} phân cảnh
                       </span>
                     </div>
-                    <h2 className="text-lg font-display font-bold text-slate-900 dark:text-white truncate">
-                      {selectedRun.title}
+                    <h2 className="text-lg font-display font-bold text-slate-900 dark:text-white">
+                      {selectedSession.title}
                     </h2>
-                    <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400 font-mono">
                       <span className="inline-flex items-center gap-1">
                         <Clock className="w-3.5 h-3.5" />
-                        Bắt đầu: {fmtDateTime(selectedRun.startedAt || selectedRun.createdAt)}
+                        Tạo: {fmtDateTime(selectedSession.createdAt)}
                       </span>
-                      <span>Thời gian chạy: {formatDurationMs(elapsedMs)}</span>
-                      {isRunning && typeof selectedRun.estimatedRemainingSec === 'number' && selectedRun.estimatedRemainingSec > 0 && (
-                        <span className="text-cyan-600 dark:text-cyan-400">
-                          Dự kiến còn: ~{formatDurationMs(selectedRun.estimatedRemainingSec * 1000)}
-                        </span>
+                      <span>Cập nhật: {fmtTime(selectedSession.updatedAt)}</span>
+                      {selectedSession.driveFolderUrl && (
+                        <a
+                          href={selectedSession.driveFolderUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-300 hover:underline font-sans font-semibold"
+                        >
+                          <FolderOpen className="w-3.5 h-3.5" />
+                          <span>Thư mục Drive</span>
+                        </a>
                       )}
                     </div>
                   </div>
 
-                  {/* Session Control Buttons */}
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFlowFocusSceneId(null);
-                        setFlowModalOpen(true);
-                      }}
-                      className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Gói Google Flow</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={busyKey === `unstick_${selectedRun.id}`}
-                      onClick={() =>
-                        runAction(
-                          `unstick_${selectedRun.id}`,
-                          async () => {
-                            const res = await commandCenterApiJson<{ state: CommandCenterState; summary: string }>(
-                              `/api/command-center/productions/${encodeURIComponent(selectedRun.id)}/unstick`,
-                              { method: 'POST' }
-                            );
-                            if (res.summary) setNotice(res.summary);
-                            return res.state;
-                          }
-                        )
-                      }
-                      className="px-3 py-2 rounded-lg border border-amber-400/60 bg-amber-50/70 dark:bg-amber-950/25 hover:bg-amber-100 dark:hover:bg-amber-950/40 text-xs font-semibold text-amber-800 dark:text-amber-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                    >
-                      <Wrench className="w-3.5 h-3.5" />
-                      <span>Gỡ treo</span>
-                    </button>
-
-                    {isRunning && (
+                    {selectedSession.status !== 'DANG_CHAY' ? (
                       <button
                         type="button"
-                        disabled={busyKey === `pause_${selectedRun.id}`}
-                        onClick={() => handleControlSession(selectedRun.id, 'pause')}
-                        className="px-3.5 py-2 rounded-lg border border-amber-400/60 bg-amber-50/70 dark:bg-amber-950/25 hover:bg-amber-100 dark:hover:bg-amber-950/40 text-xs font-semibold text-amber-800 dark:text-amber-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        disabled={busyKey === `run_${selectedSession.sessionId}`}
+                        onClick={() => void handleRunSession(selectedSession.sessionId, false)}
+                        className="px-3.5 py-2 rounded-xl bg-cyan-600 hover:brightness-110 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        {busyKey === `run_${selectedSession.sessionId}` ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Play className="w-3.5 h-3.5" />
+                        )}
+                        <span>Chạy phiên này</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busyKey === `pause_${selectedSession.sessionId}`}
+                        onClick={() => void handlePauseSession(selectedSession.sessionId)}
+                        className="px-3.5 py-2 rounded-xl bg-amber-600 hover:brightness-110 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
                       >
                         <Pause className="w-3.5 h-3.5" />
-                        <span>Tạm dừng phiên</span>
+                        <span>Tạm dừng</span>
                       </button>
                     )}
 
-                    {(selectedRun.status === 'paused' || selectedRun.status === 'needs_attention' || selectedRun.status === 'failed') && (
+                    {sessionStats.failedTasks > 0 && selectedSession.status !== 'DANG_CHAY' && (
                       <button
                         type="button"
-                        disabled={busyKey === `resume_${selectedRun.id}`}
-                        onClick={() => handleControlSession(selectedRun.id, 'resume')}
-                        className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        disabled={busyKey === `retry_${selectedSession.sessionId}`}
+                        onClick={() => void handleRunSession(selectedSession.sessionId, true)}
+                        className="px-3 py-2 rounded-xl bg-rose-500/15 border border-rose-500/35 text-rose-700 dark:text-rose-200 hover:bg-rose-500/25 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
                       >
-                        <Play className="w-3.5 h-3.5" />
-                        <span>Tiếp tục</span>
-                      </button>
-                    )}
-
-                    {selectedRun.status !== 'completed' && selectedRun.status !== 'cancelled' && (
-                      <button
-                        type="button"
-                        disabled={busyKey === `cancel_${selectedRun.id}`}
-                        onClick={() => setConfirmCancelRun(selectedRun)}
-                        className="px-3.5 py-2 rounded-lg border border-rose-400/60 bg-rose-50/70 dark:bg-rose-950/25 hover:bg-rose-100 dark:hover:bg-rose-950/45 text-xs font-semibold text-rose-700 dark:text-rose-300 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                      >
-                        <Square className="w-3 h-3" />
-                        <span>Hủy phiên</span>
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Chạy lại {sessionStats.failedTasks} lỗi</span>
                       </button>
                     )}
                   </div>
                 </div>
 
-                {/* Live Video Engine Selector */}
+                {/* Locked Independent Video Source Bar */}
                 <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-slate-50/75 dark:bg-[#0c1021]/65 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-xs">
-                    <Sparkles className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-                    <span className="font-semibold text-slate-700 dark:text-slate-200">Nguồn tạo video phiên này:</span>
-                    <span className="font-mono font-semibold text-sky-600 dark:text-sky-400">
-                      {isGoogleFlowRun
-                        ? 'Google Flow (AI Gemini chuẩn bị keyframe & prompt · Không dùng Muse AI)'
-                        : isQwenRun
-                        ? 'AI Qwen (Alibaba Model Studio · Wan · Không dùng Muse AI)'
-                        : isGeminiDirectRun
-                        ? 'AI Gemini (Omni Flash · Không dùng Muse AI)'
-                        : 'AI Muse (Tự dự phòng AI Gemini)'}
+                    <Lock className="w-3.5 h-3.5 text-cyan-500 shrink-0" />
+                    <span className="font-semibold text-slate-700 dark:text-slate-200">
+                      Nguồn sáng tạo video khóa độc lập:
+                    </span>
+                    <span className="font-bold text-cyan-600 dark:text-cyan-300">
+                      {SOURCE_META[selectedSession.videoSource].label}
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {(
-                      [
-                        { id: 'gemini' as VideoGenerationEngine, label: 'AI Gemini' },
-                        { id: 'qwen' as VideoGenerationEngine, label: 'AI Qwen' },
-                        { id: 'google_flow' as VideoGenerationEngine, label: 'Google Flow' },
-                        { id: 'muse' as VideoGenerationEngine, label: 'AI Muse' },
-                      ] as const
-                    ).map((eng) => {
-                      const active = selectedEngine === eng.id;
+                    {(['gemini', 'qwen', 'muse', 'google_flow'] as IndependentVideoSource[]).map((srcId) => {
+                      const active = selectedSession.videoSource === srcId;
                       return (
                         <button
-                          key={eng.id}
+                          key={srcId}
                           type="button"
-                          disabled={busyKey === `engine_${selectedRun.id}`}
-                          onClick={() =>
-                            runAction(
-                              `engine_${selectedRun.id}`,
-                              () =>
-                                commandCenterApiJson<CommandCenterState>(
-                                  `/api/command-center/productions/${encodeURIComponent(selectedRun.id)}/video-engine`,
-                                  {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ engine: eng.id }),
-                                  }
-                                ),
-                              `Đã chuyển phiên sang nguồn tạo video: ${eng.label}.`
-                            )
-                          }
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition cursor-pointer ${
+                          disabled={selectedSession.status === 'DANG_CHAY' || busyKey === `src_${selectedSession.sessionId}`}
+                          onClick={() => void handleChangeSource(selectedSession.sessionId, srcId)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition cursor-pointer disabled:opacity-50 ${
                             active
-                              ? 'bg-sky-600 text-white border-sky-600'
-                              : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-sky-500'
+                              ? 'bg-cyan-600 text-white border-cyan-600'
+                              : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-cyan-500'
                           }`}
                         >
-                          {eng.label}
+                          {SOURCE_META[srcId].short}
                         </button>
                       );
                     })}
                   </div>
                 </div>
 
-                {selectedRun.error && (
+                {selectedSession.lastError && (
                   <div className="rounded-xl border border-rose-300 dark:border-rose-700/60 bg-rose-50 dark:bg-rose-950/35 px-3.5 py-2.5 text-xs text-rose-800 dark:text-rose-200">
-                    {selectedRun.error}
+                    <strong>Lỗi gần nhất:</strong> {selectedSession.lastError}
                   </div>
                 )}
 
-                {/* Worker Matrix: Google Flow / AI Gemini OR 5 Muse AI */}
-                {isGoogleFlowRun ? (
-                  <div className="rounded-xl border border-emerald-500/35 bg-emerald-500/8 p-4 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <div className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
-                          Chế độ Google Flow đang hoạt động (Không gửi lệnh sang Muse AI)
-                        </div>
-                        <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
-                          AI Gemini tự động vẽ ảnh keyframe &amp; đóng gói prompt chuẩn từng phân cảnh. Bạn chỉ cần copy prompt + tải keyframe sang Google Flow rồi nạp tệp MP4 về để ghép phim.
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <a
-                          href="https://labs.google/fx/tools/flow"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-white/80 dark:bg-[#0c1021]/80 text-emerald-700 dark:text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          <span>Mở Google Flow</span>
-                        </a>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setFlowFocusSceneId(null);
-                            setFlowModalOpen(true);
-                          }}
-                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer"
-                        >
-                          Mở Gói Kịch Bản &amp; Nạp MP4 ({flowReadyScenesCount}/{memory?.scenes.length || selectedRun.sceneCount})
-                        </button>
-                      </div>
-                    </div>
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300">
-                        <span>
-                          AI Gemini chuẩn bị keyframe &amp; prompt Google Flow ({chairmanCompletedCount}/{chairmanTasks.length} tác vụ)
-                        </span>
-                        <span className="font-bold text-emerald-700 dark:text-emerald-300">{chairmanProgressPct}%</span>
-                      </div>
-                      <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-emerald-500 transition-all duration-300"
-                          style={{ width: `${chairmanProgressPct}%` }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ) : isGeminiDirectRun ? (
-                  <div className="rounded-xl border border-sky-500/35 bg-sky-500/8 p-4 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <div className="text-xs font-bold text-sky-800 dark:text-sky-300">
-                          AI Gemini Cloud đang trực tiếp sản xuất (Không dùng Muse AI)
-                        </div>
-                        <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
-                          Toàn bộ ảnh keyframe &amp; video Omni Flash đang được điều phối song song qua các tài khoản Gemini API.
-                        </p>
-                      </div>
-                      <span className="text-xs font-mono font-bold text-sky-700 dark:text-sky-300 tabular-nums">
-                        {chairmanCompletedCount}/{chairmanTasks.length} tác vụ ({chairmanProgressPct}%)
-                      </span>
-                    </div>
-                    <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-sky-500 transition-all duration-300"
-                        style={{ width: `${chairmanProgressPct}%` }}
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200">
-                      <span>Tiến độ từng Muse AI trong phiên</span>
-                      <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                        {sessionTasks.length} tác vụ tổng cộng
-                      </span>
-                    </div>
-
-                    <div className="space-y-2.5">
-                      {agents.map((ag) => {
-                        const mp = perMuse.find((p) => p.agentId === ag.id) || {
-                          agentId: ag.id,
-                          progressPct: 0,
-                          completedTasks: 0,
-                          totalTasks: 0,
-                          runningTasks: 0,
-                          failedTasks: 0,
-                        };
-                        const barColor = ag.accentColor || '#7C3AED';
-                        return (
-                          <div
-                            key={ag.id}
-                            className="rounded-xl border border-slate-200 dark:border-slate-700/45 bg-white/80 dark:bg-[#0c1021]/80 p-3 space-y-2"
-                          >
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="flex items-center gap-2.5 min-w-0">
-                                <AgentAvatar agent={ag} size="sm" showStatusDot />
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                                      {ag.name}
-                                    </span>
-                                    <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                                      {ag.roleTitle}
-                                    </span>
-                                  </div>
-                                  <div className="text-[11px] text-slate-600 dark:text-slate-300 truncate">
-                                    {mp.runningTasks > 1
-                                      ? `Đang chạy ${mp.runningTasks} tác vụ song song · ${mp.currentTaskTitle || ''}`
-                                      : mp.currentTaskTitle
-                                      ? `Đang làm: ${mp.currentTaskTitle}`
-                                      : mp.totalTasks === 0
-                                      ? 'Chưa có tác vụ trong phiên này'
-                                      : mp.completedTasks === mp.totalTasks
-                                      ? 'Đã hoàn thành phần việc trong phiên'
-                                      : 'Đang chờ điều phối phụ thuộc'}
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-3 text-xs font-mono tabular-nums shrink-0">
-                                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                                  {mp.runningTasks > 0 ? `${mp.runningTasks} đang chạy · ` : ''}
-                                  {mp.completedTasks}/{mp.totalTasks} tác vụ
-                                  {mp.failedTasks > 0 ? ` · ${mp.failedTasks} lỗi` : ''}
-                                </span>
-                                <span className="font-bold text-slate-900 dark:text-white w-10 text-right">
-                                  {mp.progressPct}%
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                              <div
-                                className="h-full rounded-full transition-all duration-300"
-                                style={{ width: `${mp.progressPct}%`, backgroundColor: barColor }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Final Delivered Video Preview */}
-                {selectedRun.finalVideoUrl && (
-                  <div className="pt-3 border-t border-slate-200 dark:border-slate-700/45 space-y-2.5">
-                    <div className="flex items-center justify-between text-xs font-semibold text-emerald-700 dark:text-emerald-300">
-                      <span className="inline-flex items-center gap-1.5">
-                        <CheckCircle2 className="w-4 h-4" />
-                        Video hoàn chỉnh đã bàn giao ({selectedRun.finalDurationSec || 0}s)
-                      </span>
-                      <a
-                        href={selectedRun.finalVideoUrl}
-                        download={selectedRun.finalVideoArtifactName || 'muse_final_film.mp4'}
-                        className="inline-flex items-center gap-1 underline"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>Tải MP4</span>
-                      </a>
-                    </div>
-                    <video
-                      src={selectedRun.finalVideoUrl}
-                      controls
-                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700/60 bg-black max-h-72"
-                    />
-                  </div>
-                )}
-              </section>
-
-              {/* Session Scenes / Tasks / Logs Inspector */}
-              <section className="glass-card rounded-2xl p-5 space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 dark:border-slate-700/40 pb-3">
-                  <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0c1021] border border-slate-200/80 dark:border-slate-700/40">
-                    {(
-                      [
-                        { id: 'scenes', label: `Phân cảnh (${memory?.scenes.length || 0})` },
-                        { id: 'tasks', label: `Tác vụ phiên (${sessionTasks.length})` },
-                        { id: 'workspace', label: 'Google Sheets & Drive' },
-                        { id: 'logs', label: `Nhật ký (${sessionLogs.length})` },
-                      ] as const
-                    ).map((tb) => (
-                      <button
-                        key={tb.id}
-                        type="button"
-                        onClick={() => setDetailTab(tb.id)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition ${
-                          detailTab === tb.id
-                            ? 'bg-white dark:bg-[#1a2244] text-slate-900 dark:text-white shadow-sm'
-                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                        }`}
-                      >
-                        {tb.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  {onOpenCommandCenter && (
-                    <button
-                      type="button"
-                      onClick={() => onOpenCommandCenter('qa')}
-                      className="text-xs font-medium text-violet-600 dark:text-violet-300 hover:underline cursor-pointer"
-                    >
-                      Mở bảng kiểm duyệt QA chi tiết →
-                    </button>
-                  )}
+                {/* Detail Tabs */}
+                <div className="flex items-center gap-2 border-b border-slate-200/80 dark:border-slate-700/40 pb-2">
+                  <button
+                    type="button"
+                    onClick={() => setDetailTab('scenes')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition ${
+                      detailTab === 'scenes'
+                        ? 'bg-cyan-600 text-white'
+                        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5'
+                    }`}
+                  >
+                    Tiến độ từng phân cảnh ({selectedSession.scenes.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDetailTab('reports')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition ${
+                      detailTab === 'reports'
+                        ? 'bg-cyan-600 text-white'
+                        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5'
+                    }`}
+                  >
+                    Nhật ký &amp; Báo cáo AI ({sessionReports.length})
+                  </button>
                 </div>
 
-                {detailTab === 'scenes' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {!memory?.scenes.length ? (
-                      <div className="md:col-span-2 py-8 text-center text-xs text-slate-500 dark:text-slate-400">
-                        Chưa có phân cảnh nào được lưu trong phiên này.
-                      </div>
-                    ) : (
-                      memory.scenes.map((sc) => {
-                        const producerLabel = isGoogleFlowRun
-                          ? 'Google Flow · AI Gemini'
-                          : isGeminiDirectRun
-                          ? 'AI Gemini'
-                          : sc.assignedProducerAgentId
-                          ? sc.assignedProducerAgentId.replace('muse-', 'Muse ')
-                          : 'AI Gemini';
-                        const stageLabel = sc.productionStage
-                          ? SCENE_STAGE_LABELS[sc.productionStage] || sc.productionStage
-                          : null;
-                        return (
+                {detailTab === 'scenes' ? (
+                  <div className="space-y-3">
+                    {selectedSession.scenes.map((sc) => {
+                      const imgTask = selectedSession.tasks.find(
+                        (t) => t.taskCode.includes('-IMG-') && (t.sceneId === sc.sceneId || t.sceneIndex === sc.sceneIndex)
+                      );
+                      const vidTask = selectedSession.tasks.find(
+                        (t) => t.taskCode.includes('-VID-') && (t.sceneId === sc.sceneId || t.sceneIndex === sc.sceneIndex)
+                      );
+                      const imgMeta = imgTask ? taskStatusMeta(imgTask.status) : null;
+                      const vidMeta = vidTask ? taskStatusMeta(vidTask.status) : null;
+
+                      return (
                         <div
-                          key={sc.sceneId}
-                          className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white/80 dark:bg-[#0c1021]/85 p-3.5 space-y-2.5"
+                          key={`${selectedSession.sessionId}_${sc.sceneId}_${sc.sceneIndex}`}
+                          className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-slate-50/70 dark:bg-[#0c1124]/80 p-3.5 space-y-3"
                         >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                                Cảnh {sc.index}: {sc.title}
-                              </div>
-                              <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
-                                {sc.sceneId} · {sc.durationSec}s · {producerLabel}
-                                {stageLabel ? ` · ${stageLabel}` : ''} · QA: {sc.qaStatus}
-                                {typeof sc.qaScore === 'number' ? ` (${sc.qaScore}/100)` : ''}
-                              </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2 min-w-0">
+                              <span className="px-2 py-0.5 text-[11px] font-bold rounded-md bg-violet-600/15 text-violet-700 dark:text-violet-300 border border-violet-500/30">
+                                Phân cảnh #{sc.sceneIndex}
+                              </span>
+                              <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                {sc.title}
+                              </span>
+                              <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                                ({sc.durationSec}s)
+                              </span>
                             </div>
                           </div>
 
-                          {sc.videoUrl ? (
-                            <video
-                              src={sc.videoUrl}
-                              controls
-                              className="w-full h-36 rounded-lg border border-slate-200 dark:border-slate-700 bg-black"
-                            />
-                          ) : sc.keyframeImageUrl ? (
-                            <img
-                              src={sc.keyframeImageUrl}
-                              alt={sc.title}
-                              className="w-full h-36 object-cover rounded-lg border border-slate-200 dark:border-slate-700"
-                            />
-                          ) : (
-                            <div className="h-24 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center text-[11px] text-slate-400">
-                              Chờ tạo hình ảnh / video
-                            </div>
+                          {(sc.actionDetail || sc.dialogue) && (
+                            <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                              {sc.actionDetail}
+                              {sc.dialogue ? ` · Thoại: "${sc.dialogue}"` : ''}
+                            </p>
                           )}
 
-                          <p className="text-[11px] text-slate-600 dark:text-slate-300 line-clamp-2">
-                            {sc.dialogue || sc.narration || sc.actionDetail}
-                          </p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                            {/* Step 1: Scene Image */}
+                            {imgTask && imgMeta && (
+                              <div className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-600/35 bg-white/85 dark:bg-[#101730]/85 space-y-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-800 dark:text-slate-100">
+                                    <ImageIcon className="w-3.5 h-3.5 text-violet-500" />
+                                    <span>Ảnh phân cảnh · {imgTask.taskCode}</span>
+                                  </span>
+                                  <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded border ${imgMeta.cls}`}>
+                                    {imgTask.status === 'DANG_LAM' && (
+                                      <Loader2 className="w-2.5 h-2.5 inline mr-1 animate-spin" />
+                                    )}
+                                    {imgMeta.label}
+                                  </span>
+                                </div>
 
-                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setFlowFocusSceneId(sc.sceneId);
-                                setFlowModalOpen(true);
-                              }}
-                              className="px-2.5 py-1 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                              <span>{sc.videoUrl ? 'Đổi MP4 Google Flow' : 'Prompt Google Flow / Nạp MP4'}</span>
-                            </button>
-                            {sc.keyframeImageUrl && !sc.videoUrl && (
-                              <>
-                                <button
-                                  type="button"
-                                  disabled={busyKey === `vid_${sc.sceneId}`}
-                                  onClick={() =>
-                                    runAction(
-                                      `vid_${sc.sceneId}`,
-                                      async () => {
-                                        const res = await commandCenterApiJson<{ state: CommandCenterState; message?: string }>(
-                                          `/api/command-center/scenes/${encodeURIComponent(sc.sceneId)}/generate-video-now`,
-                                          {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ runId: selectedRun.id, engine: 'gemini' }),
-                                          }
-                                        );
-                                        if (res.message) setNotice(res.message);
-                                        return res.state;
-                                      }
-                                    )
-                                  }
-                                  className="px-2.5 py-1 rounded-lg bg-sky-600/15 hover:bg-sky-600/25 border border-sky-500/35 text-sky-700 dark:text-sky-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
-                                >
-                                  <Sparkles className="w-3 h-3" />
-                                  <span>Tạo video ngay (AI Gemini)</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={busyKey === `vid_qwen_${sc.sceneId}`}
-                                  onClick={() =>
-                                    runAction(
-                                      `vid_qwen_${sc.sceneId}`,
-                                      async () => {
-                                        const res = await commandCenterApiJson<{ state: CommandCenterState; message?: string }>(
-                                          `/api/command-center/scenes/${encodeURIComponent(sc.sceneId)}/generate-video-now`,
-                                          {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ runId: selectedRun.id, engine: 'qwen' }),
-                                          }
-                                        );
-                                        if (res.message) setNotice(res.message);
-                                        return res.state;
-                                      }
-                                    )
-                                  }
-                                  className="px-2.5 py-1 rounded-lg bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/35 text-orange-700 dark:text-orange-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
-                                >
-                                  <Sparkles className="w-3 h-3" />
-                                  <span>Tạo video ngay (AI Qwen)</span>
-                                </button>
-                              </>
+                                {imgTask.localOutputUrl && /\.(png|jpe?g|webp)$/i.test(imgTask.localOutputUrl) && (
+                                  <a
+                                    href={imgTask.localOutputUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="block rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-black/20"
+                                  >
+                                    <img
+                                      src={imgTask.localOutputUrl}
+                                      alt={imgTask.taskCode}
+                                      className="w-full h-36 object-cover"
+                                    />
+                                  </a>
+                                )}
+
+                                {imgTask.resultSummary && (
+                                  <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                                    {imgTask.resultSummary}
+                                  </p>
+                                )}
+                                {imgTask.errorReason && (
+                                  <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-700 dark:text-rose-200">
+                                    {imgTask.errorReason}
+                                  </div>
+                                )}
+
+                                <div className="flex items-center justify-between gap-2 pt-1">
+                                  <span className="text-[10px] text-slate-400 truncate">
+                                    {imgTask.assignedAiLabel}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      selectedSession.status === 'DANG_CHAY' ||
+                                      !canRunTask(selectedSession, imgTask) ||
+                                      busyKey === `task_${selectedSession.sessionId}_${imgTask.taskCode}`
+                                    }
+                                    onClick={() => void handleRunTask(selectedSession.sessionId, imgTask.taskCode)}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-900 dark:bg-white/10 text-white hover:bg-cyan-600 cursor-pointer disabled:opacity-40"
+                                  >
+                                    <Play className="w-2.5 h-2.5" />
+                                    <span>{imgTask.status === 'HOAN_THANH' ? 'Tạo lại' : 'Chạy ảnh'}</span>
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Step 2: Scene Video */}
+                            {vidTask && vidMeta && (
+                              <div className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-600/35 bg-white/85 dark:bg-[#101730]/85 space-y-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-800 dark:text-slate-100">
+                                    <Film className="w-3.5 h-3.5 text-cyan-500" />
+                                    <span>Video phân cảnh · {vidTask.taskCode}</span>
+                                  </span>
+                                  <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded border ${vidMeta.cls}`}>
+                                    {vidTask.status === 'DANG_LAM' && (
+                                      <Loader2 className="w-2.5 h-2.5 inline mr-1 animate-spin" />
+                                    )}
+                                    {vidMeta.label}
+                                  </span>
+                                </div>
+
+                                {vidTask.localOutputUrl && /\.(mp4|webm|mov)$/i.test(vidTask.localOutputUrl) && (
+                                  <video
+                                    src={vidTask.localOutputUrl}
+                                    controls
+                                    className="w-full h-36 rounded-lg bg-black object-contain"
+                                  />
+                                )}
+
+                                {vidTask.resultSummary && (
+                                  <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                                    {vidTask.resultSummary}
+                                  </p>
+                                )}
+                                {vidTask.errorReason && (
+                                  <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-700 dark:text-rose-200">
+                                    {vidTask.errorReason}
+                                  </div>
+                                )}
+
+                                <div className="flex items-center justify-between gap-2 pt-1">
+                                  <span className="text-[10px] text-slate-400 truncate">
+                                    {vidTask.assignedAiLabel}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      selectedSession.status === 'DANG_CHAY' ||
+                                      !canRunTask(selectedSession, vidTask) ||
+                                      busyKey === `task_${selectedSession.sessionId}_${vidTask.taskCode}`
+                                    }
+                                    onClick={() => void handleRunTask(selectedSession.sessionId, vidTask.taskCode)}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-900 dark:bg-white/10 text-white hover:bg-cyan-600 cursor-pointer disabled:opacity-40"
+                                  >
+                                    <Play className="w-2.5 h-2.5" />
+                                    <span>{vidTask.status === 'HOAN_THANH' ? 'Tạo lại' : 'Chạy video'}</span>
+                                  </button>
+                                </div>
+                              </div>
                             )}
                           </div>
                         </div>
-                        );
-                      })
-                    )}
-                  </div>
-                )}
+                      );
+                    })}
 
-                {detailTab === 'tasks' && (
-                  <div className="divide-y divide-slate-200/70 dark:divide-slate-700/40 max-h-96 overflow-y-auto text-xs">
-                    {sessionTasks.length === 0 ? (
-                      <div className="py-8 text-center text-slate-500 dark:text-slate-400">
-                        Chưa có tác vụ trong phiên này.
-                      </div>
-                    ) : (
-                      sessionTasks.map((t) => {
-                        const isChairmanTask = t.assignedAgentId === 'chairman';
-                        const ag = agents.find((a) => a.id === t.assignedAgentId);
-                        const ownerLabel = isChairmanTask
-                          ? state?.chairmanConfig?.name || 'Gemini AI – Chủ tịch'
-                          : ag?.name || t.assignedAgentId;
-                        return (
-                          <div key={t.id} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <AgentAvatar agent={ag} fallbackId={t.assignedAgentId} size="xs" />
-                              <div className="min-w-0">
-                                <div className="font-semibold text-slate-900 dark:text-white truncate">
-                                  <span className="font-mono text-slate-500 mr-1.5">{t.code}</span>
-                                  {t.title}
-                                </div>
-                                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                                  {ownerLabel} · {t.error || t.outputText?.slice(0, 80) || t.status}
-                                </div>
-                              </div>
+                    {/* Step 3: Final Film */}
+                    {(() => {
+                      const finalTask = selectedSession.tasks.find((t) => t.taskCode.endsWith('-FINAL'));
+                      if (!finalTask) return null;
+                      const fm = taskStatusMeta(finalTask.status);
+                      return (
+                        <div className="rounded-xl border border-emerald-500/35 bg-emerald-500/5 p-3.5 space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <Film className="w-4 h-4 text-emerald-500" />
+                              <span className="text-xs font-bold text-slate-900 dark:text-white">
+                                Bước 3 · {finalTask.title} ({finalTask.taskCode})
+                              </span>
+                              <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded border ${fm.cls}`}>
+                                {fm.label}
+                              </span>
                             </div>
-                            <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 shrink-0 tabular-nums">
-                              {t.status}
-                              {t.durationMs ? ` (${(t.durationMs / 1000).toFixed(1)}s)` : ''}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              {selectedSession.finalVideoLocalUrl && (
+                                <a
+                                  href={selectedSession.finalVideoLocalUrl}
+                                  download={`${selectedSession.sessionId}.mp4`}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-600 text-white hover:brightness-110"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                  <span>Tải MP4</span>
+                                </a>
+                              )}
+                              <button
+                                type="button"
+                                disabled={
+                                  selectedSession.status === 'DANG_CHAY' ||
+                                  !canRunTask(selectedSession, finalTask) ||
+                                  busyKey === `task_${selectedSession.sessionId}_${finalTask.taskCode}`
+                                }
+                                onClick={() => void handleRunTask(selectedSession.sessionId, finalTask.taskCode)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-900 dark:bg-white/10 text-white hover:bg-emerald-600 cursor-pointer disabled:opacity-40"
+                              >
+                                <Play className="w-3 h-3" />
+                                <span>Ghép phim</span>
+                              </button>
+                            </div>
                           </div>
-                        );
-                      })
-                    )}
+                          {finalTask.errorReason && (
+                            <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-200">
+                              {finalTask.errorReason}
+                            </div>
+                          )}
+                          {selectedSession.finalVideoLocalUrl && (
+                            <video
+                              src={selectedSession.finalVideoLocalUrl}
+                              controls
+                              className="w-full max-h-[380px] rounded-xl bg-black"
+                            />
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
-                )}
-
-                {detailTab === 'workspace' && (
-                  <WorkspaceSyncSection
-                    selectedRun={selectedRun}
-                    onAfterCommandDispatch={() => onRefresh(true)}
-                  />
-                )}
-
-                {detailTab === 'logs' && (
-                  <div className="divide-y divide-slate-200/70 dark:divide-slate-700/40 max-h-96 overflow-y-auto text-xs">
-                    {sessionLogs.length === 0 ? (
-                      <div className="py-8 text-center text-slate-500 dark:text-slate-400">
-                        Chưa có nhật ký hoạt động cho phiên này.
+                ) : (
+                  <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
+                    {sessionReports.length === 0 ? (
+                      <div className="py-8 text-center text-xs text-slate-500 dark:text-slate-400">
+                        Chưa có báo cáo tiến độ nào cho phiên này.
                       </div>
                     ) : (
-                      sessionLogs.map((l) => (
-                        <div key={l.id} className="py-2 flex flex-wrap items-baseline justify-between gap-2">
-                          <div className="space-x-2">
-                            <span className="font-mono text-[11px] text-slate-500 tabular-nums">
-                              {fmtDateTime(l.timestamp)}
-                            </span>
-                            <span className="font-semibold text-slate-800 dark:text-slate-200">{l.action}</span>
-                            <span className="text-slate-600 dark:text-slate-300">{l.detail}</span>
+                      sessionReports.map((msg) => (
+                        <div
+                          key={msg.id}
+                          className={`p-3 rounded-xl border text-xs space-y-1 ${
+                            msg.kind === 'error'
+                              ? 'border-rose-500/35 bg-rose-500/5'
+                              : msg.kind === 'completed'
+                              ? 'border-emerald-500/30 bg-emerald-500/5'
+                              : 'border-slate-200 dark:border-slate-700/45 bg-white/80 dark:bg-[#0c1124]/80'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 text-[11px]">
+                            <div className="flex items-center gap-1.5">
+                              <strong className="text-slate-900 dark:text-white">{msg.senderName}</strong>
+                              <span className="px-1.5 py-0.5 text-[10px] rounded bg-slate-200/70 dark:bg-white/10 text-slate-600 dark:text-slate-300">
+                                {msg.senderRole}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-slate-400">{fmtTime(msg.createdAt)}</span>
                           </div>
-                          <span className="font-mono text-[11px] text-slate-400">{l.agentId || 'system'}</span>
+                          <p className="whitespace-pre-wrap text-slate-700 dark:text-slate-200 leading-relaxed">
+                            {msg.content}
+                          </p>
                         </div>
                       ))
                     )}
@@ -1158,111 +1009,6 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
           )}
         </div>
       </div>
-
-      {/* Create Empty Session Modal */}
-      {isNewSessionOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <form
-            onSubmit={handleCreateSession}
-            className="w-full max-w-md glass-card rounded-2xl p-5 border border-slate-200 dark:border-slate-700/60 space-y-4"
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-display font-bold text-slate-900 dark:text-white">
-                Tạo phiên sản xuất mới
-              </h3>
-              <button
-                type="button"
-                onClick={() => setIsNewSessionOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                Tên phiên / Dự án phim
-              </label>
-              <input
-                type="text"
-                autoFocus
-                value={newSessionTitle}
-                onChange={(e) => setNewSessionTitle(e.target.value)}
-                placeholder="Ví dụ: Phim AI - Tập 02"
-                className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setIsNewSessionOpen(false)}
-                className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-              >
-                Hủy bỏ
-              </button>
-              <button
-                type="submit"
-                disabled={busyKey === 'create_session'}
-                className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold cursor-pointer"
-              >
-                Tạo phiên
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Cancel Session Confirmation Modal (No window.confirm!) */}
-      {confirmCancelRun && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md glass-card rounded-2xl p-5 border border-rose-400/50 space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-xl bg-rose-500/15 text-rose-500 flex items-center justify-center shrink-0">
-                <AlertTriangle className="w-5 h-5" />
-              </div>
-              <div className="space-y-1">
-                <h3 className="text-base font-display font-bold text-slate-900 dark:text-white">
-                  Xác nhận hủy phiên sản xuất?
-                </h3>
-                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                  Phiên <strong>{confirmCancelRun.title}</strong> ({confirmCancelRun.id}) sẽ dừng toàn bộ tác vụ đang chờ và đang chạy, đồng thời ghi nhận lịch sử hủy phiên.
-                </p>
-                <p className="text-xs text-emerald-700 dark:text-emerald-300 font-medium">
-                  Dữ liệu cảnh đã hoàn thành, hình ảnh, video và bản backup vẫn được giữ nguyên.
-                </p>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setConfirmCancelRun(null)}
-                className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-              >
-                Giữ lại phiên
-              </button>
-              <button
-                type="button"
-                disabled={busyKey === `cancel_${confirmCancelRun.id}`}
-                onClick={() => handleControlSession(confirmCancelRun.id, 'cancel')}
-                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer inline-flex items-center gap-1.5"
-              >
-                {busyKey === `cancel_${confirmCancelRun.id}` && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                <span>Xác nhận hủy phiên</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <GoogleFlowModal
-        open={flowModalOpen}
-        onClose={() => {
-          setFlowModalOpen(false);
-          setFlowFocusSceneId(null);
-        }}
-        runId={selectedRun?.id}
-        focusSceneId={flowFocusSceneId}
-        onStateUpdated={(nextState) => setState(nextState)}
-      />
     </div>
   );
 };

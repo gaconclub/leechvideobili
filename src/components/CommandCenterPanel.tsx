@@ -5,6 +5,8 @@ import {
   AlertCircle,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   CloudUpload,
   Copy,
   Download,
@@ -14,6 +16,7 @@ import {
   FolderOpen,
   Image as ImageIcon,
   Layers,
+  Link2,
   Loader2,
   Lock,
   LogOut,
@@ -21,11 +24,13 @@ import {
   Pause,
   Play,
   Plus,
+  Power,
   RefreshCw,
   RotateCcw,
   Send,
   Settings,
   ShieldCheck,
+  Sparkles,
   Trash2,
   Upload,
   X,
@@ -237,13 +242,21 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   const [confirmDeleteSessionId, setConfirmDeleteSessionId] = useState('');
 
   // Meeting room state
-  const [meetingScope, setMeetingScope] = useState<'active' | 'all'>('active');
+  const [meetingScope, setMeetingScope] = useState<'active' | 'all'>('all');
   const [meetingInput, setMeetingInput] = useState('');
   const meetingEndRef = useRef<HTMLDivElement>(null);
 
-  // Flow clip upload state
+  // Muse2API inline config state
+  const [showMuseUrlEditor, setShowMuseUrlEditor] = useState(false);
+  const [museUrlDraft, setMuseUrlDraft] = useState('');
+
+  // Multi-script queue board filter & collapse state
+  const [queueFilter, setQueueFilter] = useState<'all' | 'waiting' | 'done' | 'error'>('all');
+  const [collapsedSessions, setCollapsedSessions] = useState<Record<string, boolean>>({});
+
+  // Flow clip upload state (supports any session card directly)
   const flowUploadInputRef = useRef<HTMLInputElement>(null);
-  const [flowUploadTaskCode, setFlowUploadTaskCode] = useState('');
+  const [flowUploadTarget, setFlowUploadTarget] = useState<{ sessionId: string; taskCode: string } | null>(null);
   const [copiedPromptCode, setCopiedPromptCode] = useState('');
 
   useEffect(() => {
@@ -326,7 +339,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   const visibleMessages = useMemo(() => {
     const all = state?.meetingMessages || [];
     if (meetingScope === 'all' || !activeSession) return all;
-    return all.filter((m) => m.sessionId === activeSession.sessionId);
+    return all.filter((m) => m.sessionId === activeSession.sessionId || m.sessionId === 'GLOBAL');
   }, [state?.meetingMessages, meetingScope, activeSession]);
 
   useEffect(() => {
@@ -421,22 +434,69 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     }
   };
 
-  const handleChangeVideoSource = async (videoSource: IndependentVideoSource) => {
-    if (!activeSession) return;
-    setBusyAction(`source_${videoSource}`);
+  const handleSaveMuseUrl = async () => {
+    setBusyAction('muse_config');
     setErrorMsg('');
     setNotice('');
     try {
-      await apiCall(`/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/source`, {
+      const res = await apiCall<{ status?: { ready?: boolean; reachable?: boolean; baseUrl?: string; error?: string } }>(
+        '/api/muse2api/config',
+        {
+          method: 'POST',
+          body: JSON.stringify({ baseUrl: museUrlDraft.trim() }),
+        }
+      );
+      setShowMuseUrlEditor(false);
+      if (res.status?.ready) {
+        setNotice(`Đã kết nối thành công Muse AI (Muse2API) tại ${res.status.baseUrl}.`);
+      } else if (res.status?.reachable) {
+        setNotice(`Đã kết nối tới ${res.status.baseUrl} — cần thêm tài khoản Muse.ai trong Cài đặt AI.`);
+      } else {
+        setNotice(`Đã lưu địa chỉ Muse2API (${res.status?.baseUrl || museUrlDraft.trim()}) và kiểm tra lại kết nối.`);
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể lưu cấu hình Muse2API.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const handleStartLocalMuse2Api = async () => {
+    setBusyAction('muse_start');
+    setErrorMsg('');
+    setNotice('');
+    try {
+      const res = await apiCall<{ ok?: boolean; message?: string }>('/api/muse2api/process/start', {
+        method: 'POST',
+      });
+      setNotice(res.message || 'Đã kích hoạt dịch vụ Muse2API cục bộ và cập nhật trạng thái sẵn sàng.');
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể tự khởi chạy Muse2API cục bộ.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const handleChangeSessionVideoSource = async (sessionId: string, videoSource: IndependentVideoSource) => {
+    setBusyAction(`source_${sessionId}_${videoSource}`);
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await apiCall(`/api/coordination/sessions/${encodeURIComponent(sessionId)}/source`, {
         method: 'POST',
         body: JSON.stringify({ videoSource }),
       });
-      setNotice(`Đã khóa nguồn sáng tạo video độc lập cho phiên ${activeSession.sessionId}.`);
+      setNotice(`Đã khóa nguồn sáng tạo video độc lập cho phiên ${sessionId}.`);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Không thể đổi nguồn video.');
     } finally {
       setBusyAction('');
     }
+  };
+
+  const handleChangeVideoSource = async (videoSource: IndependentVideoSource) => {
+    if (!activeSession) return;
+    await handleChangeSessionVideoSource(activeSession.sessionId, videoSource);
   };
 
   const handleQuickCreateSession = async () => {
@@ -487,20 +547,19 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     }
   };
 
-  const handleStartSequentialRun = async (retryErrors = false) => {
-    if (!activeSession) return;
-    setBusyAction(retryErrors ? 'retry_run' : 'start_run');
+  const handleStartSessionRun = async (sessionId: string, retryErrors = false) => {
+    setBusyAction(retryErrors ? `retry_${sessionId}` : `run_${sessionId}`);
     setErrorMsg('');
     setNotice('');
     try {
-      await apiCall(`/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/run`, {
+      await apiCall(`/api/coordination/sessions/${encodeURIComponent(sessionId)}/run`, {
         method: 'POST',
         body: JSON.stringify({ retryErrors }),
       });
       setNotice(
         retryErrors
-          ? `Đang chạy lại các tác vụ lỗi của phiên ${activeSession.sessionId} theo đúng thứ tự phụ thuộc.`
-          : `Đã khởi động dây chuyền tuần tự cho phiên ${activeSession.sessionId}.`
+          ? `Đang chạy lại các tác vụ lỗi của phiên ${sessionId} theo đúng thứ tự phụ thuộc.`
+          : `Đã khởi động dây chuyền tuần tự cho phiên ${sessionId}.`
       );
     } catch (err: any) {
       setErrorMsg(err?.message || 'Không thể chạy phiên.');
@@ -509,15 +568,41 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     }
   };
 
-  const handlePauseRun = async () => {
+  const handleStartSequentialRun = async (retryErrors = false) => {
     if (!activeSession) return;
-    setBusyAction('pause_run');
+    await handleStartSessionRun(activeSession.sessionId, retryErrors);
+  };
+
+  const handleRunAllQueuedSessions = async () => {
+    setBusyAction('run_all_queue');
+    setErrorMsg('');
+    setNotice('');
+    try {
+      const res = await apiCall<{ queuedSessionIds?: string[] }>('/api/coordination/queue/run-all', {
+        method: 'POST',
+        body: JSON.stringify({ retryErrors: false }),
+      });
+      const count = res.queuedSessionIds?.length || 0;
+      setNotice(
+        count > 0
+          ? `Đã khởi động chạy tuần tự ${count} kịch bản đang chờ trong hàng đợi.`
+          : 'Hiện không có kịch bản nào đang chờ chạy.'
+      );
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể chạy hàng đợi kịch bản.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const handlePauseSession = async (sessionId: string) => {
+    setBusyAction(`pause_${sessionId}`);
     setErrorMsg('');
     try {
-      await apiCall(`/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/pause`, {
+      await apiCall(`/api/coordination/sessions/${encodeURIComponent(sessionId)}/pause`, {
         method: 'POST',
       });
-      setNotice(`Đã gửi lệnh tạm dừng phiên ${activeSession.sessionId}.`);
+      setNotice(`Đã gửi lệnh tạm dừng phiên ${sessionId}.`);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Không thể tạm dừng.');
     } finally {
@@ -525,17 +610,21 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     }
   };
 
-  const handleRunSingleTask = async (taskCode: string) => {
+  const handlePauseRun = async () => {
     if (!activeSession) return;
-    setBusyAction(`task_${taskCode}`);
+    await handlePauseSession(activeSession.sessionId);
+  };
+
+  const handleRunSingleTaskForSession = async (sessionId: string, taskCode: string) => {
+    setBusyAction(`task_${sessionId}_${taskCode}`);
     setErrorMsg('');
     setNotice('');
     try {
       await apiCall(
-        `/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/tasks/${encodeURIComponent(taskCode)}/run`,
+        `/api/coordination/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskCode)}/run`,
         { method: 'POST' }
       );
-      setNotice(`Đã thực thi xong tác vụ ${taskCode}.`);
+      setNotice(`Đã thực thi xong tác vụ ${taskCode} (${sessionId}).`);
     } catch (err: any) {
       setErrorMsg(err?.message || `Không thể chạy tác vụ ${taskCode}.`);
     } finally {
@@ -543,22 +632,23 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     }
   };
 
-  const handleTriggerFlowUpload = (taskCode: string) => {
-    setFlowUploadTaskCode(taskCode);
+  const handleTriggerFlowUpload = (sessionId: string, taskCode: string) => {
+    setFlowUploadTarget({ sessionId, taskCode });
     flowUploadInputRef.current?.click();
   };
 
   const handleFlowFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (!file || !activeSession || !flowUploadTaskCode) return;
-    setBusyAction(`flow_${flowUploadTaskCode}`);
+    if (!file || !flowUploadTarget) return;
+    const { sessionId, taskCode } = flowUploadTarget;
+    setBusyAction(`flow_${sessionId}_${taskCode}`);
     setErrorMsg('');
     setNotice('');
     try {
       const buf = await file.arrayBuffer();
       await apiCall(
-        `/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/tasks/${encodeURIComponent(flowUploadTaskCode)}/upload-flow`,
+        `/api/coordination/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskCode)}/upload-flow`,
         {
           method: 'POST',
           headers: {
@@ -568,12 +658,12 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
           body: buf,
         }
       );
-      setNotice(`Đã nạp video Google Flow cho tác vụ ${flowUploadTaskCode}.`);
+      setNotice(`Đã nạp video Google Flow cho tác vụ ${taskCode} (${sessionId}).`);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Không thể tải video Google Flow lên.');
     } finally {
       setBusyAction('');
-      setFlowUploadTaskCode('');
+      setFlowUploadTarget(null);
     }
   };
 
@@ -612,8 +702,8 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     });
   };
 
-  const requestSyncSessionConfirm = () => {
-    if (!activeSession) return;
+  const requestSyncSessionConfirmFor = (targetSession: CoordinationSession | null) => {
+    if (!targetSession) return;
     if (!googleToken) {
       setTab('workspace');
       setErrorMsg('Hãy bấm "Sign in with Google" trong tab Google Sheets & Drive để đồng bộ phiên này.');
@@ -621,15 +711,19 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     }
     setConfirmModal({
       kind: 'sync_session',
-      title: `Xác nhận đồng bộ phiên ${activeSession.sessionId} lên Google Sheets & Drive?`,
-      description: `Toàn bộ dữ liệu tham chiếu (${activeSession.references.length} mục), ${activeSession.tasks.length} tác vụ và tệp ảnh/video của phiên "${activeSession.title}" sẽ được tải lên Google Drive và cập nhật vào Sổ Google Sheets.`,
+      title: `Xác nhận đồng bộ phiên ${targetSession.sessionId} lên Google Sheets & Drive?`,
+      description: `Toàn bộ dữ liệu tham chiếu (${targetSession.references.length} mục), ${targetSession.tasks.length} tác vụ và tệp ảnh/video của phiên "${targetSession.title}" sẽ được tải lên Google Drive và cập nhật vào Sổ Google Sheets.`,
       details: [
-        `Tạo/cập nhật thư mục phiên trên Drive: ${activeSession.sessionId} - ${activeSession.title}`,
-        `Ghi đúng dòng theo khóa phiên ${activeSession.sessionId} — không ghi đè dữ liệu của các phiên khác`,
+        `Tạo/cập nhật thư mục phiên trên Drive: ${targetSession.sessionId} - ${targetSession.title}`,
+        `Ghi đúng dòng theo khóa phiên ${targetSession.sessionId} — không ghi đè dữ liệu của các phiên khác`,
         'Cập nhật đầy đủ link Drive đầu vào/đầu ra và lý do lỗi (nếu có) để các AI đọc lại chính xác',
       ],
-      sessionId: activeSession.sessionId,
+      sessionId: targetSession.sessionId,
     });
+  };
+
+  const requestSyncSessionConfirm = () => {
+    requestSyncSessionConfirmFor(activeSession);
   };
 
   const executeConfirmedWorkspaceAction = async () => {
@@ -703,13 +797,13 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   const handleSendMeetingMessage = async (presetText?: string) => {
     const text = (presetText ?? meetingInput).trim();
     if (!text) return;
-    const targetSessionId = activeSession?.sessionId || 'GLOBAL';
+    const targetSessionId = meetingScope === 'active' && activeSession ? activeSession.sessionId : 'GLOBAL';
     setBusyAction('send_meeting');
     setErrorMsg('');
     try {
-      await apiCall(`/api/coordination/sessions/${encodeURIComponent(targetSessionId)}/meeting`, {
+      await apiCall('/api/coordination/meeting', {
         method: 'POST',
-        body: JSON.stringify({ content: text }),
+        body: JSON.stringify({ sessionId: targetSessionId, content: text }),
       });
       if (!presetText) setMeetingInput('');
     } catch (err: any) {
@@ -730,14 +824,31 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     totalTasksCount > 0 ? Math.round((completedTasksCount / totalTasksCount) * 100) : 0;
   const isRunning = activeSession?.status === 'DANG_CHAY';
 
-  const canTaskRun = (task: CoordinationTaskRow): boolean => {
-    if (!activeSession) return false;
+  const canTaskRunInSession = (session: CoordinationSession, task: CoordinationTaskRow): boolean => {
     if (task.status === 'DANG_LAM') return false;
     return task.dependsOnTaskCodes.every((depCode) => {
-      const dep = activeSession.tasks.find((t) => t.taskCode === depCode);
+      const dep = session.tasks.find((t) => t.taskCode === depCode);
       return dep?.status === 'HOAN_THANH';
     });
   };
+
+  const queuedSessionsCount = useMemo(() => {
+    return (state?.sessions || []).filter((s) => s.status !== 'HOAN_THANH').length;
+  }, [state?.sessions]);
+
+  const filteredSessions = useMemo(() => {
+    const all = state?.sessions || [];
+    if (queueFilter === 'waiting') {
+      return all.filter((s) => s.status === 'CHO_CHAY' || s.status === 'DANG_CHAY' || s.status === 'TAM_DUNG' || s.status === 'CHO_FLOW');
+    }
+    if (queueFilter === 'done') {
+      return all.filter((s) => s.status === 'HOAN_THANH');
+    }
+    if (queueFilter === 'error') {
+      return all.filter((s) => s.status === 'CO_LOI' || s.tasks.some((t) => t.status === 'LOI'));
+    }
+    return all;
+  }, [state?.sessions, queueFilter]);
 
   return (
     <div className="space-y-4">
@@ -964,6 +1075,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                 const rm = readinessMeta(item.status);
                 const isSelectedSource =
                   activeSession && item.independentSource && activeSession.videoSource === item.independentSource;
+                const isMuseCard = item.id === 'muse';
                 return (
                   <div
                     key={item.id}
@@ -984,13 +1096,84 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                     </div>
                     <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{item.role}</div>
                     {item.accountSummary && (
-                      <div className="text-[10px] font-mono text-slate-600 dark:text-slate-300 truncate">
+                      <div className="text-[10px] font-mono text-slate-600 dark:text-slate-300 truncate" title={item.accountSummary}>
                         {item.accountSummary}
                       </div>
                     )}
                     <p className="text-[10px] text-slate-600 dark:text-slate-400 line-clamp-2 leading-relaxed">
                       {item.detail}
                     </p>
+
+                    {isMuseCard && (
+                      <div className="pt-1 border-t border-slate-200/70 dark:border-slate-400/15 space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={busyAction === 'muse_start'}
+                            onClick={() => void handleStartLocalMuse2Api()}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/25 cursor-pointer disabled:opacity-50"
+                          >
+                            {busyAction === 'muse_start' ? (
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                            ) : (
+                              <Power className="w-2.5 h-2.5" />
+                            )}
+                            <span>Bật cục bộ</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const urlMatch = (item.accountSummary || '').match(/https?:\/\/[^\s]+/);
+                              if (!showMuseUrlEditor && urlMatch?.[0]) {
+                                setMuseUrlDraft(urlMatch[0]);
+                              }
+                              setShowMuseUrlEditor((v) => !v);
+                            }}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-200/70 dark:bg-white/10 text-slate-700 dark:text-slate-200 hover:bg-slate-300/70 dark:hover:bg-white/15 cursor-pointer"
+                          >
+                            <Link2 className="w-2.5 h-2.5" />
+                            <span>Đổi URL</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busyAction === 'check_readiness'}
+                            onClick={() => void handleCheckAllReadiness()}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-200/70 dark:bg-white/10 text-slate-700 dark:text-slate-200 hover:bg-slate-300/70 dark:hover:bg-white/15 cursor-pointer"
+                          >
+                            <RefreshCw className={`w-2.5 h-2.5 ${busyAction === 'check_readiness' ? 'animate-spin' : ''}`} />
+                            <span>Kiểm tra</span>
+                          </button>
+                        </div>
+                        {showMuseUrlEditor && (
+                          <div className="space-y-1">
+                            <input
+                              type="url"
+                              value={museUrlDraft}
+                              onChange={(e) => setMuseUrlDraft(e.target.value)}
+                              placeholder="http://127.0.0.1:18610"
+                              className="w-full h-7 px-2 text-[10px] font-mono bg-white dark:bg-[#131a35] border border-slate-300 dark:border-slate-500/40 rounded text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
+                            />
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                disabled={busyAction === 'muse_config'}
+                                onClick={() => void handleSaveMuseUrl()}
+                                className="flex-1 h-6 rounded text-[10px] font-bold bg-cyan-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-50"
+                              >
+                                {busyAction === 'muse_config' ? 'Đang kết nối...' : 'Lưu & kết nối'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowMuseUrlEditor(false)}
+                                className="h-6 px-2 rounded text-[10px] bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-200 cursor-pointer"
+                              >
+                                Hủy
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1268,246 +1451,525 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
             )}
           </div>
 
-          {/* 3. SEQUENTIAL TASK LEDGER TABLE (Bang_Nhiem_Vu_AI) */}
-          {activeSession && (
-            <div className="glass-card rounded-2xl p-4 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                  <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">
-                    Bảng nhiệm vụ tuần tự · Phiên {activeSession.sessionId}
-                  </h2>
+          {/* 3. MULTI-SCRIPT SEQUENTIAL TASK BOARD (ALL WAITING/ACTIVE/DONE SCRIPTS · GROUPED BY SCRIPT -> SCENE) */}
+          {state.sessions.length > 0 && (
+            <div className="glass-card rounded-2xl p-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200/80 dark:border-slate-400/15">
+                <div className="space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    <h2 className="font-display text-sm sm:text-base font-bold text-slate-900 dark:text-white">
+                      Bảng nhiệm vụ tuần tự · Tất cả kịch bản ({state.sessions.length})
+                    </h2>
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30">
+                      {queuedSessionsCount} đang chờ / chạy
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Hiển thị toàn bộ kịch bản trong hàng đợi và chia rõ từng phân cảnh (Ảnh → Video → Ghép MP4) để dễ quan sát và điều phối tuần tự.
+                  </p>
                 </div>
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Mỗi tác vụ chỉ chạy khi tiền đề đã hoàn thành và đọc đúng dữ liệu tham chiếu của phiên này.
-                </span>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex items-center p-0.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px]">
+                    {(
+                      [
+                        { id: 'all' as const, label: `Tất cả (${state.sessions.length})` },
+                        { id: 'waiting' as const, label: `Chờ & Chạy (${queuedSessionsCount})` },
+                        {
+                          id: 'done' as const,
+                          label: `Xong (${state.sessions.filter((s) => s.status === 'HOAN_THANH').length})`,
+                        },
+                        {
+                          id: 'error' as const,
+                          label: `Lỗi (${state.sessions.filter((s) => s.status === 'CO_LOI' || s.tasks.some((t) => t.status === 'LOI')).length})`,
+                        },
+                      ] as const
+                    ).map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setQueueFilter(f.id)}
+                        className={`px-2.5 py-1 rounded-lg font-semibold transition cursor-pointer ${
+                          queueFilter === f.id
+                            ? 'bg-cyan-600 text-white'
+                            : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                        }`}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {queuedSessionsCount > 0 && (
+                    <button
+                      type="button"
+                      disabled={busyAction === 'run_all_queue'}
+                      onClick={() => void handleRunAllQueuedSessions()}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-600 to-indigo-600 text-white hover:brightness-110 transition cursor-pointer disabled:opacity-50"
+                    >
+                      {busyAction === 'run_all_queue' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Play className="w-3.5 h-3.5" />
+                      )}
+                      <span>Chạy tuần tự tất cả kịch bản chờ ({queuedSessionsCount})</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
-              <div className="space-y-2">
-                {activeSession.tasks.map((task) => {
-                  const sm = taskStatusMeta(task.status);
-                  const runnable = canTaskRun(task);
-                  const isBusyThis = busyAction === `task_${task.taskCode}` || busyAction === `flow_${task.taskCode}`;
-                  const isImageOut =
-                    task.localOutputUrl && /\.(png|jpe?g|webp)$/i.test(task.localOutputUrl);
-                  const isVideoOut =
-                    task.localOutputUrl && /\.(mp4|webm|mov)$/i.test(task.localOutputUrl);
+              {filteredSessions.length === 0 ? (
+                <div className="py-8 text-center text-xs text-slate-500 dark:text-slate-400">
+                  Không có kịch bản nào thuộc bộ lọc này.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {filteredSessions.map((sess, sessIdx) => {
+                    const isSelectedCard = activeSession?.sessionId === sess.sessionId;
+                    const sessDone = sess.tasks.filter((t) => t.status === 'HOAN_THANH').length;
+                    const sessErr = sess.tasks.filter((t) => t.status === 'LOI').length;
+                    const sessRunning = sess.status === 'DANG_CHAY';
+                    const sessPct =
+                      sess.tasks.length > 0 ? Math.round((sessDone / sess.tasks.length) * 100) : 0;
+                    const isCollapsed = Boolean(collapsedSessions[sess.sessionId]);
+                    const statusBadge =
+                      sess.status === 'HOAN_THANH'
+                        ? { label: 'Hoàn thành', cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35' }
+                        : sess.status === 'DANG_CHAY'
+                        ? { label: 'Đang chạy phiên', cls: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/35' }
+                        : sess.status === 'CO_LOI'
+                        ? { label: `Có ${sessErr} lỗi`, cls: 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/35' }
+                        : sess.status === 'CHO_FLOW'
+                        ? { label: 'Chờ nạp Google Flow', cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35' }
+                        : sess.status === 'TAM_DUNG'
+                        ? { label: 'Tạm dừng', cls: 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30' }
+                        : { label: 'Đang chờ đến phiên', cls: 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/35' };
 
-                  return (
-                    <div
-                      key={task.taskCode}
-                      className={`p-3 rounded-xl border transition space-y-2 ${
-                        task.status === 'LOI'
-                          ? 'border-rose-500/45 bg-rose-500/5'
-                          : task.status === 'DANG_LAM'
-                          ? 'border-cyan-500/55 bg-cyan-500/5'
-                          : task.status === 'HOAN_THANH'
-                          ? 'border-emerald-500/30 bg-emerald-500/5'
-                          : 'border-slate-200 dark:border-slate-400/20 bg-slate-50/70 dark:bg-[#0c1124]/80'
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-slate-900 dark:bg-white/10 text-white rounded">
-                              {task.taskCode}
-                            </span>
-                            <span className={`px-2 py-0.5 text-[10px] font-bold rounded border ${sm.cls}`}>
-                              {task.status === 'DANG_LAM' && (
-                                <Loader2 className="w-2.5 h-2.5 inline mr-1 animate-spin" />
-                              )}
-                              {sm.label}
-                            </span>
-                            <span className="text-xs font-bold text-slate-900 dark:text-white">
-                              {task.title}
-                            </span>
-                          </div>
+                    const finalTask = sess.tasks.find((t) => t.taskCode.endsWith('-FINAL'));
+                    const sceneGroups = sess.scenes.map((sc) => {
+                      const imgTask = sess.tasks.find(
+                        (t) => t.taskCode.includes('-IMG-') && (t.sceneId === sc.sceneId || t.sceneIndex === sc.sceneIndex)
+                      );
+                      const vidTask = sess.tasks.find(
+                        (t) => t.taskCode.includes('-VID-') && (t.sceneId === sc.sceneId || t.sceneIndex === sc.sceneIndex)
+                      );
+                      return { scene: sc, tasks: [imgTask, vidTask].filter(Boolean) as CoordinationTaskRow[] };
+                    });
+                    const mappedCodes = new Set(
+                      [
+                        ...sceneGroups.flatMap((g) => g.tasks.map((t) => t.taskCode)),
+                        ...(finalTask ? [finalTask.taskCode] : []),
+                      ]
+                    );
+                    const otherTasks = sess.tasks.filter((t) => !mappedCodes.has(t.taskCode));
 
-                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
-                            <span>
-                              AI đảm nhận: <strong className="text-slate-700 dark:text-slate-200">{task.assignedAiLabel}</strong>
-                            </span>
-                            <span>
-                              Phụ thuộc:{' '}
-                              <strong className="font-mono text-slate-700 dark:text-slate-200">
-                                {task.dependsOnTaskCodes.length > 0 ? task.dependsOnTaskCodes.join(', ') : 'Không'}
-                              </strong>
-                            </span>
-                            <span>
-                              Tham chiếu: <strong className="font-mono">{task.inputRefIds.length} mục</strong>
-                            </span>
-                            {task.completedAt && <span>Xong lúc {fmtTime(task.completedAt)}</span>}
-                          </div>
+                    const renderTaskTile = (task: CoordinationTaskRow) => {
+                      const sm = taskStatusMeta(task.status);
+                      const runnable = canTaskRunInSession(sess, task);
+                      const isBusyThis =
+                        busyAction === `task_${sess.sessionId}_${task.taskCode}` ||
+                        busyAction === `flow_${sess.sessionId}_${task.taskCode}`;
+                      const isImageOut =
+                        task.localOutputUrl && /\.(png|jpe?g|webp)$/i.test(task.localOutputUrl);
+                      const isVideoOut =
+                        task.localOutputUrl && /\.(mp4|webm|mov)$/i.test(task.localOutputUrl);
 
-                          {task.resultSummary && (
-                            <p className="text-xs text-slate-700 dark:text-slate-200">
-                              {task.resultSummary}
-                            </p>
-                          )}
-
-                          {task.errorReason && (
-                            <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-200">
-                              <strong>Lý do lỗi (đã ghi Sổ Sheets):</strong> {task.errorReason}
-                            </div>
-                          )}
-
-                          {/* Google Flow prompt & clip upload */}
-                          {task.status === 'CHO_NHAP_FLOW' && task.flowPrompt && (
-                            <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 space-y-2">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <span className="text-[11px] font-bold text-amber-800 dark:text-amber-200">
-                                  Prompt chuẩn Google Flow cho {task.taskCode}
+                      return (
+                        <div
+                          key={task.taskCode}
+                          className={`p-2.5 rounded-xl border transition space-y-2 ${
+                            task.status === 'LOI'
+                              ? 'border-rose-500/45 bg-rose-500/5'
+                              : task.status === 'DANG_LAM'
+                              ? 'border-cyan-500/55 bg-cyan-500/5'
+                              : task.status === 'HOAN_THANH'
+                              ? 'border-emerald-500/30 bg-emerald-500/5'
+                              : 'border-slate-200 dark:border-slate-400/20 bg-white/80 dark:bg-[#0c1124]/90'
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-slate-900 dark:bg-white/10 text-white rounded">
+                                  {task.taskCode}
                                 </span>
-                                <div className="flex items-center gap-1.5">
+                                <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded border ${sm.cls}`}>
+                                  {task.status === 'DANG_LAM' && (
+                                    <Loader2 className="w-2.5 h-2.5 inline mr-1 animate-spin" />
+                                  )}
+                                  {sm.label}
+                                </span>
+                                <span className="text-[11px] font-bold text-slate-900 dark:text-white">
+                                  Bước {task.step}: {task.stepLabel}
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400 flex flex-wrap gap-x-2.5 gap-y-0.5">
+                                <span>
+                                  AI: <strong className="text-slate-700 dark:text-slate-200">{task.assignedAiLabel}</strong>
+                                </span>
+                                {task.completedAt && <span>Xong {fmtTime(task.completedAt)}</span>}
+                              </div>
+                              {task.resultSummary && (
+                                <p className="text-[11px] text-slate-700 dark:text-slate-200 leading-snug">
+                                  {task.resultSummary}
+                                </p>
+                              )}
+                              {task.errorReason && (
+                                <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-700 dark:text-rose-200">
+                                  <strong>Lý do lỗi:</strong> {task.errorReason}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {isImageOut && task.localOutputUrl && (
+                                <a
+                                  href={task.localOutputUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title="Xem ảnh kết quả"
+                                  className="w-12 h-9 rounded-lg overflow-hidden border border-slate-300 dark:border-slate-500/30 bg-black/20 shrink-0 block"
+                                >
+                                  <img src={task.localOutputUrl} alt={task.taskCode} className="w-full h-full object-cover" />
+                                </a>
+                              )}
+                              {isVideoOut && task.localOutputUrl && (
+                                <a
+                                  href={task.localOutputUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-semibold bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30"
+                                >
+                                  <Film className="w-3 h-3" />
+                                  <span>Clip</span>
+                                </a>
+                              )}
+                              {task.driveOutputUrl && (
+                                <a
+                                  href={task.driveOutputUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg text-[10px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
+                                >
+                                  <ExternalLink className="w-3 h-3" />
+                                  <span>Drive</span>
+                                </a>
+                              )}
+                              <button
+                                type="button"
+                                disabled={!runnable || isBusyThis || sessRunning}
+                                onClick={() => void handleRunSingleTaskForSession(sess.sessionId, task.taskCode)}
+                                title={
+                                  runnable
+                                    ? `Thực thi riêng ${task.taskCode}`
+                                    : `Cần hoàn thành tiền đề: ${task.dependsOnTaskCodes.join(', ')}`
+                                }
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-900 dark:bg-white/10 text-white hover:bg-cyan-600 transition cursor-pointer disabled:opacity-40"
+                              >
+                                {isBusyThis ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : task.status === 'LOI' || task.status === 'HOAN_THANH' ? (
+                                  <RotateCcw className="w-3 h-3" />
+                                ) : (
+                                  <Play className="w-3 h-3" />
+                                )}
+                                <span>
+                                  {task.status === 'LOI' ? 'Thử lại' : task.status === 'HOAN_THANH' ? 'Chạy lại' : 'Chạy'}
+                                </span>
+                              </button>
+                            </div>
+                          </div>
+
+                          {task.status === 'CHO_NHAP_FLOW' && task.flowPrompt && (
+                            <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 space-y-1.5">
+                              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                                <span className="text-[10px] font-bold text-amber-800 dark:text-amber-200">
+                                  Prompt Google Flow · {task.taskCode}
+                                </span>
+                                <div className="flex items-center gap-1">
                                   <button
                                     type="button"
-                                    onClick={() => void handleCopyPrompt(task.taskCode, task.flowPrompt || '')}
-                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-white dark:bg-[#131a35] border border-amber-500/40 text-amber-800 dark:text-amber-200 cursor-pointer"
+                                    onClick={() => void handleCopyPrompt(`${sess.sessionId}:${task.taskCode}`, task.flowPrompt || '')}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-white dark:bg-[#131a35] border border-amber-500/40 text-amber-800 dark:text-amber-200 cursor-pointer"
                                   >
-                                    {copiedPromptCode === task.taskCode ? (
+                                    {copiedPromptCode === `${sess.sessionId}:${task.taskCode}` ? (
                                       <>
                                         <Check className="w-3 h-3 text-emerald-500" />
-                                        <span>Đã sao chép</span>
+                                        <span>Đã chép</span>
                                       </>
                                     ) : (
                                       <>
                                         <Copy className="w-3 h-3" />
-                                        <span>Sao chép prompt</span>
+                                        <span>Chép prompt</span>
                                       </>
                                     )}
                                   </button>
                                   <button
                                     type="button"
                                     disabled={isBusyThis}
-                                    onClick={() => handleTriggerFlowUpload(task.taskCode)}
-                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-amber-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-50"
+                                    onClick={() => handleTriggerFlowUpload(sess.sessionId, task.taskCode)}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-50"
                                   >
-                                    {isBusyThis ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-                                    <span>Tải clip MP4 Flow lên</span>
+                                    <Upload className="w-3 h-3" />
+                                    <span>Tải MP4 Flow</span>
                                   </button>
                                 </div>
                               </div>
-                              <pre className="text-[11px] whitespace-pre-wrap font-sans text-slate-700 dark:text-slate-200 max-h-36 overflow-y-auto bg-white/70 dark:bg-black/20 p-2 rounded-md">
+                              <pre className="text-[10px] whitespace-pre-wrap font-sans text-slate-700 dark:text-slate-200 max-h-28 overflow-y-auto bg-white/70 dark:bg-black/20 p-1.5 rounded">
                                 {task.flowPrompt}
                               </pre>
                             </div>
                           )}
                         </div>
+                      );
+                    };
 
-                        {/* Output preview + Row action buttons */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          {isImageOut && task.localOutputUrl && (
-                            <a
-                              href={task.localOutputUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              title="Xem ảnh kết quả"
-                              className="w-16 h-11 rounded-lg overflow-hidden border border-slate-300 dark:border-slate-500/30 bg-black/20 shrink-0 block"
-                            >
-                              <img
-                                src={task.localOutputUrl}
-                                alt={task.taskCode}
-                                className="w-full h-full object-cover"
-                              />
-                            </a>
-                          )}
+                    return (
+                      <div
+                        key={sess.sessionId}
+                        className={`rounded-2xl border overflow-hidden transition ${
+                          isSelectedCard
+                            ? 'border-cyan-500/60 bg-cyan-500/[0.03] dark:bg-cyan-500/[0.06]'
+                            : 'border-slate-200 dark:border-slate-400/20 bg-slate-50/50 dark:bg-[#0b1022]/75'
+                        }`}
+                      >
+                        {/* Script Header */}
+                        <div className="p-3.5 bg-white/80 dark:bg-[#101731]/90 border-b border-slate-200/80 dark:border-slate-400/15 space-y-2.5">
+                          <div className="flex flex-wrap items-start justify-between gap-2.5">
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setCollapsedSessions((prev) => ({
+                                      ...prev,
+                                      [sess.sessionId]: !prev[sess.sessionId],
+                                    }))
+                                  }
+                                  className="p-1 rounded-lg hover:bg-slate-200/70 dark:hover:bg-white/10 text-slate-600 dark:text-slate-300 cursor-pointer"
+                                  aria-label="Thu gọn / mở rộng kịch bản"
+                                >
+                                  {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                </button>
+                                <span className="px-2 py-0.5 text-[10px] font-mono font-extrabold bg-slate-900 dark:bg-cyan-500/20 text-white dark:text-cyan-200 rounded">
+                                  Kịch bản #{sessIdx + 1} · {sess.sessionId}
+                                </span>
+                                <span className={`px-2 py-0.5 text-[10px] font-bold rounded border ${statusBadge.cls}`}>
+                                  {sessRunning && <Loader2 className="w-2.5 h-2.5 inline mr-1 animate-spin" />}
+                                  {statusBadge.label}
+                                </span>
+                                <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                                  {sess.scenes.length} phân cảnh · {sess.aspectRatio} · {sessDone}/{sess.tasks.length} tác vụ ({sessPct}%)
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2 pl-7">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSelectSession(sess.sessionId)}
+                                  className="text-left text-sm font-display font-bold text-slate-900 dark:text-white hover:text-cyan-600 dark:hover:text-cyan-300 cursor-pointer"
+                                >
+                                  {sess.title}
+                                </button>
+                                <span className="text-[11px] text-slate-400">· Tạo lúc {fmtDateTime(sess.createdAt)}</span>
+                              </div>
+                            </div>
 
-                          {isVideoOut && task.localOutputUrl && (
-                            <a
-                              href={task.localOutputUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30"
-                            >
-                              <Film className="w-3.5 h-3.5" />
-                              <span>Xem clip</span>
-                            </a>
-                          )}
+                            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                              <select
+                                value={sess.videoSource}
+                                disabled={sessRunning}
+                                onChange={(e) =>
+                                  void handleChangeSessionVideoSource(
+                                    sess.sessionId,
+                                    e.target.value as IndependentVideoSource
+                                  )
+                                }
+                                aria-label={`Nguồn video cho ${sess.sessionId}`}
+                                className="h-8 px-2 text-[11px] font-semibold bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/25 rounded-lg text-slate-800 dark:text-slate-100 disabled:opacity-50"
+                              >
+                                {INDEPENDENT_SOURCES.map((src) => (
+                                  <option key={src.id} value={src.id}>
+                                    Nguồn: {src.name}
+                                  </option>
+                                ))}
+                              </select>
 
-                          {task.driveOutputUrl && (
-                            <a
-                              href={task.driveOutputUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                              <span>Drive</span>
-                            </a>
-                          )}
+                              {!sessRunning ? (
+                                <button
+                                  type="button"
+                                  disabled={busyAction === `run_${sess.sessionId}`}
+                                  onClick={() => void handleStartSessionRun(sess.sessionId, false)}
+                                  className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-bold bg-cyan-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-50"
+                                >
+                                  {busyAction === `run_${sess.sessionId}` ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <Play className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>Chạy kịch bản</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={busyAction === `pause_${sess.sessionId}`}
+                                  onClick={() => void handlePauseSession(sess.sessionId)}
+                                  className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-bold bg-amber-600 text-white hover:brightness-110 cursor-pointer"
+                                >
+                                  <Pause className="w-3.5 h-3.5" />
+                                  <span>Tạm dừng</span>
+                                </button>
+                              )}
 
-                          <button
-                            type="button"
-                            disabled={!runnable || isBusyThis || isRunning}
-                            onClick={() => void handleRunSingleTask(task.taskCode)}
-                            title={
-                              runnable
-                                ? `Thực thi riêng ${task.taskCode}`
-                                : `Cần hoàn thành tiền đề: ${task.dependsOnTaskCodes.join(', ')}`
-                            }
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-slate-900 dark:bg-white/10 text-white hover:bg-cyan-600 transition cursor-pointer disabled:opacity-40"
-                          >
-                            {isBusyThis ? (
-                              <Loader2 className="w-3 h-3 animate-spin" />
-                            ) : task.status === 'LOI' || task.status === 'HOAN_THANH' ? (
-                              <RotateCcw className="w-3 h-3" />
-                            ) : (
-                              <Play className="w-3 h-3" />
-                            )}
-                            <span>
-                              {task.status === 'LOI'
-                                ? 'Thử lại'
-                                : task.status === 'HOAN_THANH'
-                                ? 'Chạy lại'
-                                : 'Chạy bước'}
-                            </span>
-                          </button>
+                              {sessErr > 0 && !sessRunning && (
+                                <button
+                                  type="button"
+                                  disabled={busyAction === `retry_${sess.sessionId}`}
+                                  onClick={() => void handleStartSessionRun(sess.sessionId, true)}
+                                  className="inline-flex items-center gap-1 h-8 px-2 rounded-lg text-xs font-bold bg-rose-500/15 text-rose-700 dark:text-rose-200 border border-rose-500/35 hover:bg-rose-500/25 cursor-pointer"
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  <span>Thử lại ({sessErr})</span>
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => requestSyncSessionConfirmFor(sess)}
+                                title="Đồng bộ kịch bản này lên Google Sheets & Drive"
+                                className="inline-flex items-center gap-1 h-8 px-2 rounded-lg text-xs font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/20 cursor-pointer"
+                              >
+                                <CloudUpload className="w-3.5 h-3.5" />
+                                <span className="hidden sm:inline">Sheets</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Script progress bar */}
+                          <div className="h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                            <div
+                              className={`h-full transition-all ${
+                                sessErr > 0
+                                  ? 'bg-gradient-to-r from-cyan-500 to-rose-500'
+                                  : 'bg-gradient-to-r from-cyan-500 to-emerald-500'
+                              }`}
+                              style={{ width: `${sessPct}%` }}
+                            />
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
-          {/* 4. FINAL ASSEMBLED FILM PLAYER */}
-          {activeSession?.finalVideoLocalUrl && (
-            <div className="glass-card rounded-2xl p-4 space-y-3 border border-emerald-500/35">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Film className="w-4 h-4 text-emerald-500" />
-                  <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
-                    Phim hoàn chỉnh · {activeSession.title} ({activeSession.sessionId})
-                  </h3>
+                        {/* Grouped Scenes & Final Assembly */}
+                        {!isCollapsed && (
+                          <div className="p-3.5 space-y-3">
+                            {otherTasks.length > 0 && (
+                              <div className="space-y-1.5">
+                                {otherTasks.map((t) => renderTaskTile(t))}
+                              </div>
+                            )}
+
+                            {sceneGroups.map(({ scene, tasks }) => {
+                              const sceneAllDone = tasks.length > 0 && tasks.every((t) => t.status === 'HOAN_THANH');
+                              const sceneHasErr = tasks.some((t) => t.status === 'LOI');
+                              const sceneRunning = tasks.some((t) => t.status === 'DANG_LAM');
+                              return (
+                                <div
+                                  key={`${sess.sessionId}_${scene.sceneId}_${scene.sceneIndex}`}
+                                  className={`rounded-xl border p-3 space-y-2.5 ${
+                                    sceneHasErr
+                                      ? 'border-rose-500/40 bg-rose-500/[0.04]'
+                                      : sceneRunning
+                                      ? 'border-cyan-500/45 bg-cyan-500/[0.04]'
+                                      : sceneAllDone
+                                      ? 'border-emerald-500/30 bg-emerald-500/[0.03]'
+                                      : 'border-slate-200/90 dark:border-slate-400/20 bg-white/60 dark:bg-[#0d1328]/70'
+                                  }`}
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="flex flex-wrap items-center gap-2 min-w-0">
+                                      <span className="px-2 py-0.5 text-[11px] font-bold rounded-md bg-violet-600/15 text-violet-700 dark:text-violet-300 border border-violet-500/30">
+                                        Phân cảnh #{scene.sceneIndex}
+                                      </span>
+                                      <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                        {scene.title}
+                                      </span>
+                                      <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                                        ({scene.durationSec}s)
+                                      </span>
+                                    </div>
+                                    <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                                      {sceneAllDone
+                                        ? '✓ Hoàn thành phân cảnh'
+                                        : sceneRunning
+                                        ? 'Đang sản xuất phân cảnh...'
+                                        : sceneHasErr
+                                        ? 'Có lỗi trong phân cảnh'
+                                        : 'Chờ đến lượt'}
+                                    </span>
+                                  </div>
+
+                                  {(scene.actionDetail || scene.dialogue) && (
+                                    <p className="text-[11px] text-slate-600 dark:text-slate-300 line-clamp-2">
+                                      {scene.actionDetail}
+                                      {scene.dialogue ? ` · Thoại: "${scene.dialogue}"` : ''}
+                                    </p>
+                                  )}
+
+                                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+                                    {tasks.map((t) => renderTaskTile(t))}
+                                  </div>
+                                </div>
+                              );
+                            })}
+
+                            {/* Final MP4 Assembly Row */}
+                            {finalTask && (
+                              <div className="pt-1 border-t border-dashed border-slate-300/70 dark:border-slate-600/40 space-y-2.5">
+                                {renderTaskTile(finalTask)}
+                                {sess.finalVideoLocalUrl && (
+                                  <div className="p-3 rounded-xl bg-emerald-500/8 border border-emerald-500/30 space-y-2">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <span className="text-xs font-bold text-emerald-800 dark:text-emerald-200 inline-flex items-center gap-1.5">
+                                        <Film className="w-4 h-4" />
+                                        <span>Phim MP4 hoàn chỉnh · {sess.title}</span>
+                                      </span>
+                                      <div className="flex items-center gap-2">
+                                        <a
+                                          href={sess.finalVideoLocalUrl}
+                                          download={`${sess.sessionId}.mp4`}
+                                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-600 text-white hover:brightness-110"
+                                        >
+                                          <Download className="w-3.5 h-3.5" />
+                                          <span>Tải MP4</span>
+                                        </a>
+                                        {sess.finalVideoDriveUrl && (
+                                          <a
+                                            href={sess.finalVideoDriveUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30"
+                                          >
+                                            <ExternalLink className="w-3 h-3" />
+                                            <span>Google Drive</span>
+                                          </a>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <video
+                                      src={sess.finalVideoLocalUrl}
+                                      controls
+                                      className="w-full max-h-[340px] rounded-lg bg-black"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="flex items-center gap-2">
-                  <a
-                    href={activeSession.finalVideoLocalUrl}
-                    download={`${activeSession.sessionId}.mp4`}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 text-white hover:brightness-110"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Tải MP4 về máy</span>
-                  </a>
-                  {activeSession.finalVideoDriveUrl && (
-                    <a
-                      href={activeSession.finalVideoDriveUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Mở trên Google Drive</span>
-                    </a>
-                  )}
-                </div>
-              </div>
-              <video
-                src={activeSession.finalVideoLocalUrl}
-                controls
-                className="w-full max-h-[420px] rounded-xl bg-black"
-              />
+              )}
             </div>
           )}
         </div>
@@ -1554,15 +2016,32 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
             </div>
           </div>
 
-          {/* Quick report buttons */}
+          {/* Quick conversation starters with AI */}
           <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               disabled={busyAction === 'send_meeting'}
-              onClick={() => void handleSendMeetingMessage('Báo cáo tiến độ hiện tại và các tác vụ còn lại của phiên này.')}
-              className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 dark:bg-white/5 hover:bg-cyan-500/15 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 cursor-pointer"
+              onClick={() =>
+                void handleSendMeetingMessage(
+                  'Báo cáo tổng quan tất cả kịch bản đang chờ/đang chạy và tiến độ từng phân cảnh hiện tại.'
+                )
+              }
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 dark:bg-white/5 hover:bg-cyan-500/15 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 cursor-pointer disabled:opacity-50"
             >
-              Yêu cầu báo cáo tiến độ
+              <Sparkles className="w-3 h-3 text-cyan-500" />
+              <span>Báo cáo toàn bộ tiến độ</span>
+            </button>
+            <button
+              type="button"
+              disabled={busyAction === 'send_meeting'}
+              onClick={() =>
+                void handleSendMeetingMessage(
+                  'Kiểm tra tình trạng sẵn sàng của Gemini, Qwen, Muse AI và tư vấn cách xử lý nếu AI nào đang ngoại tuyến hoặc lỗi.'
+                )
+              }
+              className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 dark:bg-white/5 hover:bg-cyan-500/15 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 cursor-pointer disabled:opacity-50"
+            >
+              Hỏi tình trạng kết nối các AI
             </button>
             {activeSession && !isRunning && (
               <button
@@ -1587,8 +2066,14 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
           {/* Messages feed */}
           <div className="h-[420px] overflow-y-auto space-y-2.5 p-3 rounded-xl bg-slate-50/90 dark:bg-[#090d1c] border border-slate-200 dark:border-slate-400/15">
             {visibleMessages.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-xs text-slate-500 dark:text-slate-400">
-                Chưa có báo cáo nào trong phiên này. Hãy bấm &quot;Yêu cầu báo cáo tiến độ&quot; hoặc bắt đầu chạy phiên.
+              <div className="h-full flex flex-col items-center justify-center gap-2 text-center text-xs text-slate-500 dark:text-slate-400 px-4">
+                <Sparkles className="w-6 h-6 text-cyan-500 opacity-80" />
+                <p className="font-semibold text-slate-700 dark:text-slate-200">
+                  Điều phối viên AI đã sẵn sàng trao đổi trực tiếp!
+                </p>
+                <p className="max-w-md">
+                  Bạn có thể nhắn tin hỏi tiến độ từng kịch bản/phân cảnh, phân tích nguyên nhân lỗi, hoặc thảo luận phương án điều phối ngay bên dưới.
+                </p>
               </div>
             ) : (
               visibleMessages.map((msg) => {
@@ -1642,6 +2127,12 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                 );
               })
             )}
+            {busyAction === 'send_meeting' && (
+              <div className="mr-4 p-3 rounded-xl border border-cyan-500/30 bg-cyan-500/5 text-xs flex items-center gap-2 text-cyan-700 dark:text-cyan-300">
+                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                <span>Điều phối viên AI đang đọc sổ tiến độ và trả lời bạn...</span>
+              </div>
+            )}
             <div ref={meetingEndRef} />
           </div>
 
@@ -1657,7 +2148,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
               type="text"
               value={meetingInput}
               onChange={(e) => setMeetingInput(e.target.value)}
-              placeholder="Trao đổi trực tiếp hoặc yêu cầu báo cáo tiến độ phiên..."
+              placeholder="Nhắn tin trao đổi trực tiếp với Điều phối viên AI (hỏi tiến độ, phân cảnh, lỗi AI, kịch bản...)..."
               className="flex-1 h-10 px-3 text-xs bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/25 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
             />
             <button
@@ -1670,7 +2161,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
               ) : (
                 <Send className="w-4 h-4" />
               )}
-              <span>Gửi</span>
+              <span>Gửi AI</span>
             </button>
           </form>
         </div>

@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { GoogleGenAI } from '@google/genai';
 import type {
   AiEngineReadinessItem,
   CoordinationCenterState,
@@ -410,7 +411,7 @@ export async function checkAllAiReadiness(force = false): Promise<AiEngineReadin
   // 3) Muse AI (Muse2API)
   try {
     const t0 = Date.now();
-    const muse = await getMuse2ApiStatus();
+    const muse = await getMuse2ApiStatus(force);
     const latencyMs = Math.max(1, Date.now() - t0);
     results.push({
       id: 'muse',
@@ -2102,11 +2103,113 @@ export async function startSessionSequentialRun(params: {
   return session;
 }
 
+let queueBatchRunnerActive = false;
+let queueBatchPauseRequested = false;
+
+export function isSequentialQueueBatchRunning(): boolean {
+  return queueBatchRunnerActive;
+}
+
+export async function startAllQueuedSessionsSequential(params?: {
+  googleToken?: string;
+  retryErrors?: boolean;
+}): Promise<{ queuedSessionIds: string[]; alreadyRunning: boolean }> {
+  const st = loadState();
+  const candidates = [...st.sessions]
+    .reverse()
+    .filter((s) => {
+      if (s.status === 'HOAN_THANH') return false;
+      if (params?.retryErrors) {
+        return s.tasks.some((t) => t.status === 'CHO_NHAN' || t.status === 'LOI');
+      }
+      return s.tasks.some((t) => t.status === 'CHO_NHAN');
+    });
+
+  const queuedSessionIds = candidates.map((s) => s.sessionId);
+  if (queuedSessionIds.length === 0) {
+    return { queuedSessionIds: [], alreadyRunning: queueBatchRunnerActive };
+  }
+  if (queueBatchRunnerActive) {
+    return { queuedSessionIds, alreadyRunning: true };
+  }
+
+  queueBatchRunnerActive = true;
+  queueBatchPauseRequested = false;
+
+  pushMeetingMessage({
+    sessionId: 'GLOBAL',
+    senderId: 'coordinator',
+    senderName: 'Trung Tâm Điều Phối AI',
+    senderRole: 'Chạy tuần tự hàng đợi kịch bản',
+    kind: 'report',
+    content: `Khởi động chạy tuần tự ${queuedSessionIds.length} kịch bản đang chờ theo đúng thứ tự: ${queuedSessionIds.join(' → ')}. Mỗi kịch bản chạy xong mới chuyển sang kịch bản kế tiếp, không chồng lấn.`,
+  });
+
+  void (async () => {
+    try {
+      for (const sid of queuedSessionIds) {
+        if (queueBatchPauseRequested) break;
+        const curState = loadState();
+        const session = curState.sessions.find((s) => s.sessionId === sid);
+        if (!session) continue;
+
+        curState.activeSessionId = session.sessionId;
+        pauseRequestedSessions.delete(session.sessionId);
+        if (params?.retryErrors) {
+          for (const t of session.tasks) {
+            if (t.status === 'LOI') {
+              t.status = 'CHO_NHAN';
+              t.errorReason = undefined;
+              t.updatedAt = Date.now();
+            }
+          }
+        }
+        activeSessionRunners.add(session.sessionId);
+        session.status = 'DANG_CHAY';
+        session.lastError = undefined;
+        session.updatedAt = Date.now();
+        saveState(true);
+
+        try {
+          while (!pauseRequestedSessions.has(session.sessionId) && !queueBatchPauseRequested) {
+            const nextTask = session.tasks.find((t) => {
+              if (t.status !== 'CHO_NHAN') return false;
+              return t.dependsOnTaskCodes.every((depCode) => {
+                const dep = session.tasks.find((x) => x.taskCode === depCode);
+                return dep?.status === 'HOAN_THANH';
+              });
+            });
+            if (!nextTask) break;
+
+            await runSingleCoordinationTask({
+              sessionId: session.sessionId,
+              taskCode: nextTask.taskCode,
+              googleToken: params?.googleToken,
+            });
+          }
+        } finally {
+          activeSessionRunners.delete(session.sessionId);
+          recomputeSessionStatus(session);
+          session.updatedAt = Date.now();
+          saveState(true);
+        }
+      }
+    } finally {
+      queueBatchRunnerActive = false;
+      queueBatchPauseRequested = false;
+      saveState(true);
+    }
+  })();
+
+  return { queuedSessionIds, alreadyRunning: false };
+}
+
 export function pauseSessionRun(sessionId: string): CoordinationSession {
   const st = loadState();
   const session = st.sessions.find((s) => s.sessionId === sessionId);
   if (!session) throw new Error('Không tìm thấy phiên làm việc.');
   pauseRequestedSessions.add(sessionId);
+  queueBatchPauseRequested = true;
   if (!activeSessionRunners.has(sessionId)) {
     session.status = 'TAM_DUNG';
   }
@@ -2164,7 +2267,7 @@ export async function uploadFlowClipForTask(params: {
     sessionId: session.sessionId,
     senderId: 'google_flow',
     senderName: 'Google Flow · Veo (Độc lập)',
-    senderRole: 'Bước 3 · Nạp clip hoàn tất',
+    senderRole: 'Bước 2 · Nạp clip hoàn tất',
     kind: 'completed',
     taskCode: task.taskCode,
     content: `[${task.taskCode}] ${task.resultSummary}`,
@@ -2175,11 +2278,123 @@ export async function uploadFlowClipForTask(params: {
 }
 
 // ==========================================
-// 5. LIVE MEETING ROOM (PHÒNG HỌP TRỰC TIẾP)
+// 5. LIVE MEETING ROOM (PHÒNG HỌP TRỰC TIẾP · AI CONVERSATION)
 // ==========================================
 
+function buildFactualLedgerReport(st: CoordinationCenterState, session?: CoordinationSession): string {
+  const readinessLines = st.readiness.map(
+    (r) => `  - ${r.name}: ${r.status}${r.accountSummary ? ` (${r.accountSummary})` : ''} — ${r.detail}`
+  );
+
+  if (!session) {
+    return [
+      `Hiện tại Trung Tâm Điều Phối AI đang có ${st.sessions.length} phiên làm việc.`,
+      readinessLines.length > 0 ? `Tình trạng sẵn sàng của các AI:\n${readinessLines.join('\n')}` : '',
+      'Hãy đẩy kịch bản từ phòng Studio AI hoặc bấm "Tạo phiên nhanh" để lập bảng nhiệm vụ tuần tự.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  const done = session.tasks.filter((t) => t.status === 'HOAN_THANH');
+  const running = session.tasks.filter((t) => t.status === 'DANG_LAM');
+  const failed = session.tasks.filter((t) => t.status === 'LOI');
+  const waitingFlow = session.tasks.filter((t) => t.status === 'CHO_NHAP_FLOW');
+  const queued = session.tasks.filter((t) => t.status === 'CHO_NHAN');
+  const pct = session.tasks.length > 0 ? Math.round((done.length / session.tasks.length) * 100) : 0;
+
+  const lines = [
+    `Báo cáo thực tế phiên ${session.sessionId} ("${session.title}"):`,
+    `• Nguồn video khóa độc lập: ${SOURCE_LABELS[session.videoSource]}`,
+    `• Tiến độ bảng nhiệm vụ: ${done.length}/${session.tasks.length} hoàn thành (${pct}%) | Đang làm: ${running.length} | Chờ nhận: ${queued.length} | Chờ nhập Flow: ${waitingFlow.length} | Lỗi: ${failed.length}`,
+    `• Hồ sơ tham chiếu: ${session.references.length} mục (${session.references.filter((r) => r.kind === 'character').length} nhân vật)${session.driveFolderUrl ? ' · Đã liên kết Google Drive' : ' · Đang lưu cục bộ'}.`,
+  ];
+
+  if (failed.length > 0) {
+    lines.push(
+      `• Chi tiết lỗi: ${failed.map((f) => `${f.taskCode} (${f.errorReason || 'không rõ lý do'})`).join('; ')}`
+    );
+  } else if (waitingFlow.length > 0) {
+    lines.push(`• Đang chờ tải video Google Flow lên cho: ${waitingFlow.map((w) => w.taskCode).join(', ')}.`);
+  } else if (queued.length > 0) {
+    const nextRunnable = queued.find((q) =>
+      q.dependsOnTaskCodes.every((d) => session.tasks.find((x) => x.taskCode === d)?.status === 'HOAN_THANH')
+    );
+    if (nextRunnable) {
+      lines.push(`• Tác vụ kế tiếp sẵn sàng chạy: ${nextRunnable.taskCode} (${nextRunnable.title}).`);
+    }
+  } else if (done.length === session.tasks.length && session.tasks.length > 0) {
+    lines.push('• Toàn bộ các bước đã hoàn tất và đã ghép xong phim hoàn chỉnh.');
+  }
+  return lines.join('\n');
+}
+
+function buildMeetingContextSnapshot(st: CoordinationCenterState, focusSession?: CoordinationSession): string {
+  const readinessBlock = st.readiness
+    .map(
+      (r) =>
+        `- ${r.name} [${r.status}]${r.accountSummary ? ` | ${r.accountSummary}` : ''} | ${r.detail}`
+    )
+    .join('\n');
+
+  const workspaceBlock = st.workspace.spreadsheetId
+    ? `Google Sheets đã kết nối: "${st.workspace.spreadsheetTitle || st.workspace.spreadsheetId}" (${st.workspace.spreadsheetUrl || ''}) · Drive gốc: ${st.workspace.rootFolderName || 'Trung_Tam_Dieu_Phoi_AI'}`
+    : 'Chưa kết nối Google Sheets & Google Drive (đang lưu sổ cục bộ an toàn).';
+
+  const sessionsOverview =
+    st.sessions.length === 0
+      ? 'Chưa có kịch bản/phiên nào trong hàng đợi.'
+      : st.sessions
+          .slice(0, 15)
+          .map((s, idx) => {
+            const done = s.tasks.filter((t) => t.status === 'HOAN_THANH').length;
+            const err = s.tasks.filter((t) => t.status === 'LOI').length;
+            const running = s.tasks.filter((t) => t.status === 'DANG_LAM').length;
+            return `${idx + 1}. [${s.sessionId}] "${s.title}" | Trạng thái: ${s.status} | Nguồn: ${SOURCE_LABELS[s.videoSource]} | ${s.scenes.length} phân cảnh | Tiến độ: ${done}/${s.tasks.length} xong, ${running} đang chạy, ${err} lỗi${s.lastError ? ` | Lỗi gần nhất: ${s.lastError}` : ''}`;
+          })
+          .join('\n');
+
+  let focusBlock = 'Không có phiên cụ thể nào đang chọn.';
+  if (focusSession) {
+    const sceneLines = focusSession.scenes.map((sc) => {
+      const imgTask = focusSession.tasks.find((t) => t.taskCode.includes('-IMG-') && t.sceneIndex === sc.sceneIndex);
+      const vidTask = focusSession.tasks.find((t) => t.taskCode.includes('-VID-') && t.sceneIndex === sc.sceneIndex);
+      return `  • Phân cảnh #${sc.sceneIndex} "${sc.title}" (${sc.durationSec}s): Ảnh [${imgTask?.status || 'N/A'}${imgTask?.errorReason ? ` - Lỗi: ${imgTask.errorReason}` : ''}] → Video [${vidTask?.status || 'N/A'}${vidTask?.errorReason ? ` - Lỗi: ${vidTask.errorReason}` : ''}]`;
+    });
+    const finalTask = focusSession.tasks.find((t) => t.taskCode.endsWith('-FINAL'));
+    const chars = focusSession.references
+      .filter((r) => r.kind === 'character')
+      .map((r) => `${r.name}${r.detail ? ` (${r.detail.slice(0, 100)})` : ''}`);
+    focusBlock = [
+      `Phiên đang tập trung: ${focusSession.sessionId} — "${focusSession.title}"`,
+      `Nguồn video khóa độc lập: ${SOURCE_LABELS[focusSession.videoSource]} | Trạng thái: ${focusSession.status} | Tỷ lệ: ${focusSession.aspectRatio}`,
+      `Nhân vật tham chiếu (${chars.length}): ${chars.join('; ') || 'Không có'}`,
+      `Chi tiết từng phân cảnh:\n${sceneLines.join('\n')}`,
+      finalTask
+        ? `Bước ghép phim cuối [${finalTask.taskCode}]: ${finalTask.status}${finalTask.errorReason ? ` (Lỗi: ${finalTask.errorReason})` : ''}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return [
+    '=== TÌNH TRẠNG SẴN SÀNG CÁC AI ===',
+    readinessBlock || 'Chưa có dữ liệu kiểm tra.',
+    '',
+    '=== GOOGLE SHEETS & DRIVE ===',
+    workspaceBlock,
+    '',
+    `=== DANH SÁCH TẤT CẢ KỊCH BẢN TRONG TRUNG TÂM ĐIỀU PHỐI (${st.sessions.length} phiên) ===`,
+    sessionsOverview,
+    '',
+    '=== CHI TIẾT PHIÊN ĐANG CHỌN ===',
+    focusBlock,
+  ].join('\n');
+}
+
 export async function postMeetingRoomMessage(params: {
-  sessionId: string;
+  sessionId?: string;
   content: string;
   googleToken?: string;
 }): Promise<{ userMessage: MeetingRoomMessage; replyMessage: MeetingRoomMessage }> {
@@ -2187,8 +2402,19 @@ export async function postMeetingRoomMessage(params: {
   const cleanText = String(params.content || '').trim().slice(0, 2000);
   if (!cleanText) throw new Error('Vui lòng nhập nội dung trao đổi.');
 
-  const session = st.sessions.find((s) => s.sessionId === params.sessionId) || st.sessions[0];
-  const targetSessionId = session?.sessionId || 'GLOBAL';
+  const requestedId = String(params.sessionId || '').trim();
+  const isExplicitGlobal = !requestedId || requestedId.toUpperCase() === 'GLOBAL';
+  const session = isExplicitGlobal
+    ? st.sessions.find((s) => s.sessionId === st.activeSessionId) || st.sessions[0]
+    : st.sessions.find((s) => s.sessionId === requestedId) ||
+      st.sessions.find((s) => s.sessionId === st.activeSessionId) ||
+      st.sessions[0];
+  const targetSessionId = !isExplicitGlobal && session ? session.sessionId : session?.sessionId || 'GLOBAL';
+
+  // Ensure readiness snapshot exists for accurate answers
+  if (st.readiness.length === 0) {
+    await checkAllAiReadiness(false).catch(() => {});
+  }
 
   const userMessage = pushMeetingMessage({
     sessionId: targetSessionId,
@@ -2199,52 +2425,99 @@ export async function postMeetingRoomMessage(params: {
     content: cleanText,
   });
 
-  // Deterministic, factual status reply grounded strictly in this session's ledger (zero hallucination!)
+  // Gather recent conversation history for natural multi-turn chat
+  const recentHistory = st.meetingMessages
+    .filter((m) => m.id !== userMessage.id && (isExplicitGlobal || m.sessionId === targetSessionId || m.sessionId === 'GLOBAL'))
+    .slice(-12)
+    .map((m) => `[${m.senderName} · ${m.senderRole}]: ${m.content}`)
+    .join('\n');
+
+  const snapshot = buildMeetingContextSnapshot(loadState(), session);
+  const workerAccount = pickWorkerGeminiAccount();
+  const apiKey = workerAccount?.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
+
   let replyContent = '';
-  if (!session) {
-    replyContent =
-      'Hiện chưa có phiên làm việc nào. Hãy đẩy kịch bản từ phòng Studio hoặc bấm "Tạo phiên mới" để lập bảng nhiệm vụ Google Sheets.';
-  } else {
-    const done = session.tasks.filter((t) => t.status === 'HOAN_THANH');
-    const running = session.tasks.filter((t) => t.status === 'DANG_LAM');
-    const failed = session.tasks.filter((t) => t.status === 'LOI');
-    const waitingFlow = session.tasks.filter((t) => t.status === 'CHO_NHAP_FLOW');
-    const queued = session.tasks.filter((t) => t.status === 'CHO_NHAN');
-    const pct = session.tasks.length > 0 ? Math.round((done.length / session.tasks.length) * 100) : 0;
+  let replyRole = 'Điều phối viên AI (Gemini Trực tiếp)';
 
-    const lines = [
-      `Báo cáo thực tế phiên ${session.sessionId} ("${session.title}"):`,
-      `• Nguồn video khóa độc lập: ${SOURCE_LABELS[session.videoSource]}`,
-      `• Tiến độ bảng nhiệm vụ: ${done.length}/${session.tasks.length} hoàn thành (${pct}%) | Đang làm: ${running.length} | Chờ nhận: ${queued.length} | Chờ nhập Flow: ${waitingFlow.length} | Lỗi: ${failed.length}`,
-      `• Hồ sơ tham chiếu đã khóa: ${session.references.length} mục (${session.references.filter((r) => r.kind === 'character').length} nhân vật)${session.driveFolderUrl ? ` · Google Drive đã liên kết` : ' · Đang lưu cục bộ (chưa đồng bộ Drive)'}.`,
-    ];
+  if (apiKey) {
+    try {
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { apiVersion: 'v1beta', headers: { 'User-Agent': 'aistudio-build' } },
+      });
 
-    if (failed.length > 0) {
-      lines.push(
-        `• Chi tiết tác vụ lỗi: ${failed.map((f) => `${f.taskCode} (${f.errorReason || 'không rõ lý do'})`).join('; ')}`
-      );
-    } else if (waitingFlow.length > 0) {
-      lines.push(
-        `• Đang chờ tải video Google Flow lên cho: ${waitingFlow.map((w) => w.taskCode).join(', ')}.`
-      );
-    } else if (queued.length > 0) {
-      const nextRunnable = queued.find((q) =>
-        q.dependsOnTaskCodes.every((d) => session.tasks.find((x) => x.taskCode === d)?.status === 'HOAN_THANH')
-      );
-      if (nextRunnable) {
-        lines.push(`• Tác vụ kế tiếp đủ điều kiện nhận việc: ${nextRunnable.taskCode} (${nextRunnable.title}).`);
+      const systemInstruction = [
+        'Bạn là Trợ lý Điều phối AI trực tiếp trong "Phòng họp trực tiếp — Trung Tâm Điều Phối AI" của ứng dụng sản xuất video.',
+        'Nhiệm vụ: Giao tiếp, trao đổi tự nhiên bằng tiếng Việt, báo cáo trung thực tiến độ công việc, phân tích lỗi từng phân cảnh, tư vấn chọn nguồn AI độc lập (Gemini AI / AI Qwen / Muse AI / Google Flow), hướng dẫn khắc phục khi Muse AI ngoại tuyến hoặc tác vụ lỗi, và hỗ trợ thảo luận kịch bản/phân cảnh.',
+        'Nguyên tắc tuyệt đối:',
+        '1. Mọi số liệu về phiên làm việc, mã phiên, trạng thái phân cảnh, trạng thái kết nối AI, lý do lỗi PHẢI căn cứ 100% vào dữ liệu thực tế trong DỮ LIỆU HỆ THỐNG HIỆN TẠI bên dưới. Tuyệt đối KHÔNG bịa đặt cảnh đã xong hay link Drive không có thật.',
+        '2. Trả lời thẳng trọng tâm, rõ ràng, có cấu trúc ngắn gọn dễ đọc (gạch đầu dòng khi liệt kê). Xưng hô tự nhiên, chuyên nghiệp như cộng sự điều hành phòng sản xuất.',
+        '3. Hệ thống đã bỏ hoàn toàn bước đối chiếu QA gây vòng lặp; mỗi kịch bản chạy thẳng 3 bước: Ảnh phân cảnh → Video phân cảnh → Ghép phim MP4, và nguồn video hoạt động độc lập 100%.',
+      ].join('\n');
+
+      const userPrompt = [
+        'DỮ LIỆU HỆ THỐNG HIỆN TẠI (trực tiếp từ Trung Tâm Điều Phối AI):',
+        snapshot,
+        recentHistory ? `\nLỊCH SỬ TRAO ĐỔI GẦN ĐÂY TRONG PHÒNG HỌP:\n${recentHistory}` : '',
+        `\nQUẢN TRỊ VIÊN VỪA NÓI:\n${cleanText}`,
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      const candidateModels = ['gemini-4-hydrogen', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
+      let lastModelErr: any = null;
+      for (const modelName of candidateModels) {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: userPrompt,
+            config: {
+              systemInstruction,
+            },
+          });
+          const aiText = String(response.text || '').trim();
+          if (aiText) {
+            replyContent = aiText;
+            replyRole = `Điều phối viên AI (${modelName})`;
+            break;
+          }
+        } catch (modelErr: any) {
+          lastModelErr = modelErr;
+          const msg = String(modelErr?.message || '');
+          const isRetryable =
+            msg.includes('503') ||
+            msg.includes('UNAVAILABLE') ||
+            msg.includes('429') ||
+            msg.includes('404') ||
+            msg.includes('NOT_FOUND') ||
+            msg.includes('high demand') ||
+            msg.includes('overloaded');
+          if (!isRetryable) throw modelErr;
+        }
       }
-    } else if (done.length === session.tasks.length) {
-      lines.push('• Toàn bộ các bước đã hoàn tất và đã ghép xong phim hoàn chỉnh.');
+      if (!replyContent && lastModelErr) {
+        throw lastModelErr;
+      }
+    } catch (err: any) {
+      const errNote = String(err?.message || 'Lỗi kết nối Gemini').slice(0, 180);
+      replyRole = 'Báo cáo trực tiếp từ Sổ Điều Phối';
+      replyContent = `${buildFactualLedgerReport(loadState(), session)}\n\n(Ghi chú: AI hội thoại Gemini tạm thời gặp lỗi: ${errNote})`;
     }
-    replyContent = lines.join('\n');
+  } else {
+    replyRole = 'Báo cáo trực tiếp từ Sổ Điều Phối';
+    replyContent = `${buildFactualLedgerReport(loadState(), session)}\n\n(Lưu ý: Chưa cấu hình GEMINI_API_KEY hoặc tài khoản Gemini trong Cài đặt nên phòng họp đang trả lời bằng báo cáo số liệu trực tiếp.)`;
+  }
+
+  if (!replyContent) {
+    replyRole = 'Báo cáo trực tiếp từ Sổ Điều Phối';
+    replyContent = buildFactualLedgerReport(loadState(), session);
   }
 
   const replyMessage = pushMeetingMessage({
     sessionId: targetSessionId,
     senderId: 'coordinator',
-    senderName: 'Trung Tâm Điều Phối AI',
-    senderRole: 'Báo cáo trực tiếp từ Sổ Sheets',
+    senderName: 'Điều phối viên AI',
+    senderRole: replyRole,
     kind: 'coordinator',
     content: replyContent,
     referenceLink: st.workspace.spreadsheetUrl,
