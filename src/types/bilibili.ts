@@ -308,6 +308,19 @@ export type GeminiTtsVoiceId =
 export type DerivativeVoiceId = 'none' | GeminiTtsVoiceId;
 export type DerivativeVoiceMode = 'ai_online' | 'offline_system' | 'none';
 export type DerivativeMusicMode = 'none' | 'auto_adaptive' | 'ai_lyria' | 'public_free' | 'uploaded';
+export type AiMusicStyleId =
+  | 'auto_context'
+  | 'country'
+  | 'remix'
+  | 'chamber'
+  | 'kids_fun'
+  | 'cinematic'
+  | 'lofi_chill'
+  | 'viet_folk'
+  | 'bolero_romantic'
+  | 'pop_upbeat'
+  | 'suspense_mystery'
+  | 'custom';
 export type DerivativeAspectRatio = '9:16' | '16:9' | '1:1';
 export type DerivativeOutputLanguage = 'vi' | 'en' | 'zh' | 'vi_en';
 

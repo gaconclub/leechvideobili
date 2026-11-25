@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.29",
+    "version": "1.0.30",
     "date": "25/11/2026",
-    "title": "feat: enhance character library and API config",
+    "title": "feat(studio): add AI music generation support",
     "changes": [
-      "feat: enhance character library and API config"
+      "feat(studio): add AI music generation support"
     ]
   },
   {

@@ -160,20 +160,27 @@ import {
   verifyAppsScriptSecret,
 } from './server/googleWorkspaceSync';
 import {
+  autoDistributeAndRunSessions,
+  bulkUpdateSessionVideoSource,
   checkAllAiReadiness,
   createSessionFromStudio,
   deleteCoordinationSession,
   extractGoogleBearerToken,
   extractOptionalGoogleBearerToken,
+  getActiveWorkerTelemetry,
   getCoordinationCenterState,
   initCoordinationWorkspace,
+  pauseMultipleSessions,
   pauseSessionRun,
   postMeetingRoomMessage,
   readLiveSessionFromGoogleSheets,
+  regenerateSceneImageAndContinue,
   resolveCoordinationArtifactPath,
+  retryCoordinationTask,
   runSingleCoordinationTask,
   selectCoordinationSession,
   startAllQueuedSessionsSequential,
+  startParallelSessionsRun,
   startSessionSequentialRun,
   subscribeCoordinationEvents,
   syncSessionToGoogleWorkspace,
@@ -5726,6 +5733,12 @@ async function startServer() {
         sceneImageDataUrl,
         characterRefs = [],
         allowFreeCostumeChange = false,
+        musicMode,
+        musicStyle,
+        musicPrompt = '',
+        musicVolume,
+        musicInstrumentalOnly = true,
+        musicDirective = '',
       } = (req.body || {}) as {
         prompt?: string;
         aspectRatio?: DerivativeAspectRatio;
@@ -5757,6 +5770,12 @@ async function startServer() {
         selectedCharacterIds?: string[];
         sceneImageDataUrl?: string;
         allowFreeCostumeChange?: boolean;
+        musicMode?: DerivativeMusicMode;
+        musicStyle?: string;
+        musicPrompt?: string;
+        musicVolume?: number;
+        musicInstrumentalOnly?: boolean;
+        musicDirective?: string;
         characterRefs?: {
           id?: string;
           dataUrl: string;
@@ -5800,6 +5819,12 @@ async function startServer() {
         sceneImageDataUrl,
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
         allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
+        musicMode,
+        musicStyle: typeof musicStyle === 'string' ? musicStyle : undefined,
+        musicPrompt: String(musicPrompt || ''),
+        musicVolume: typeof musicVolume === 'number' ? Math.max(0, Math.min(0.9, musicVolume)) : undefined,
+        musicInstrumentalOnly: musicInstrumentalOnly !== false,
+        musicDirective: String(musicDirective || ''),
       });
       res.json(result);
     } catch (err: any) {
@@ -5810,10 +5835,22 @@ async function startServer() {
 
   app.post('/api/studio/generate-music', async (req, res) => {
     try {
-      const { prompt = '', mode = 'clip' } = (req.body || {}) as { prompt?: string; mode?: 'clip' | 'pro' };
+      const {
+        prompt = '',
+        mode = 'clip',
+        styleId = 'auto_context',
+        instrumentalOnly = true,
+      } = (req.body || {}) as {
+        prompt?: string;
+        mode?: 'clip' | 'pro';
+        styleId?: string;
+        instrumentalOnly?: boolean;
+      };
       const result = await generateStudioMusicWithLyria({
         prompt: String(prompt || ''),
         mode: mode === 'pro' ? 'pro' : 'clip',
+        styleId: String(styleId || 'auto_context'),
+        instrumentalOnly: instrumentalOnly !== false,
       });
       res.json(result);
     } catch (err: any) {
@@ -6310,10 +6347,12 @@ async function startServer() {
         keepSourceAudio = false,
         brollSource = 'wikimedia',
         musicMode = 'none',
+        musicStyle = 'auto_context',
+        musicInstrumentalOnly = true,
         musicAssetId,
         publicMusicUrl,
         musicPrompt = '',
-        musicVolume = 0.18,
+        musicVolume = 0.22,
         characterRefs = [],
         sessdata,
         ytCookies,
@@ -6328,6 +6367,8 @@ async function startServer() {
         keepSourceAudio?: boolean;
         brollSource?: BrollSourceId;
         musicMode?: DerivativeMusicMode;
+        musicStyle?: string;
+        musicInstrumentalOnly?: boolean;
         musicAssetId?: string;
         publicMusicUrl?: string;
         musicPrompt?: string;
@@ -6381,10 +6422,12 @@ async function startServer() {
         keepSourceAudio: Boolean(keepSourceAudio),
         brollSource,
         musicMode,
+        musicStyle,
+        musicInstrumentalOnly: musicInstrumentalOnly !== false,
         musicAssetId,
         publicMusicUrl,
         musicPrompt,
-        musicVolume,
+        musicVolume: Math.max(0, Math.min(0.9, Number(musicVolume ?? 0.22))),
         characterRefs: Array.isArray(characterRefs) ? characterRefs : [],
         downloadSourceVideo: (src, outPath) =>
           downloadSourceVideoForDerivative(src, outPath, sessdata, ytCookies),
@@ -6704,6 +6747,7 @@ async function startServer() {
             characterRefs: body.characterRefs,
             blueprint: body.blueprint,
             sourceAction: 'studio_dispatch',
+            musicConfig: body.musicConfig,
           },
           googleToken
         );
@@ -7606,6 +7650,79 @@ async function startServer() {
     }
   });
 
+  app.post('/api/coordination/sessions/bulk-source', async (req, res) => {
+    try {
+      const raw = String(req.body?.videoSource || '').trim();
+      if (raw !== 'gemini' && raw !== 'qwen' && raw !== 'muse' && raw !== 'google_flow') {
+        return res.status(400).json({ error: 'Nguồn sáng tạo video không hợp lệ.' });
+      }
+      const sessionIds = Array.isArray(req.body?.sessionIds)
+        ? req.body.sessionIds.map((x: any) => String(x || '').trim()).filter(Boolean)
+        : [];
+      if (sessionIds.length === 0) {
+        return res.status(400).json({ error: 'Chưa chọn phiên nào để đổi nguồn.' });
+      }
+      const result = bulkUpdateSessionVideoSource({
+        sessionIds,
+        videoSource: raw,
+        resetFailedTasks: req.body?.resetFailedTasks === true,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ ...result, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể đổi nguồn hàng loạt.' });
+    }
+  });
+
+  app.post('/api/coordination/sessions/:sessionId/tasks/:taskCode/retry', async (req, res) => {
+    try {
+      const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+      const rawSource = typeof req.body?.overrideVideoSource === 'string' ? req.body.overrideVideoSource.trim() : '';
+      const validSource =
+        rawSource === 'gemini' || rawSource === 'qwen' || rawSource === 'muse' || rawSource === 'google_flow'
+          ? rawSource
+          : undefined;
+      const result = await retryCoordinationTask({
+        sessionId: req.params.sessionId,
+        taskCode: req.params.taskCode,
+        overrideVideoSource: validSource,
+        autoContinueSession: req.body?.autoContinueSession !== false,
+        googleToken,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ ...result, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể chạy lại tác vụ này.' });
+    }
+  });
+
+  app.post('/api/coordination/sessions/:sessionId/scenes/:sceneIndex/regenerate-image', async (req, res) => {
+    try {
+      const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+      const sceneIndex = Number(req.params.sceneIndex);
+      if (!Number.isFinite(sceneIndex) || sceneIndex < 1) {
+        return res.status(400).json({ error: 'Số thứ tự phân cảnh không hợp lệ.' });
+      }
+      const rawSource = typeof req.body?.overrideVideoSource === 'string' ? req.body.overrideVideoSource.trim() : '';
+      const validSource =
+        rawSource === 'gemini' || rawSource === 'qwen' || rawSource === 'muse' || rawSource === 'google_flow'
+          ? rawSource
+          : undefined;
+      const result = await regenerateSceneImageAndContinue({
+        sessionId: req.params.sessionId,
+        sceneIndex,
+        customPromptNote: typeof req.body?.customPromptNote === 'string' ? req.body.customPromptNote : undefined,
+        overrideVideoSource: validSource,
+        autoResumeVideo: req.body?.autoResumeVideo !== false,
+        googleToken,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ ...result, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tạo lại ảnh phân cảnh.' });
+    }
+  });
+
   app.post('/api/coordination/queue/run-all', async (req, res) => {
     try {
       const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
@@ -7616,8 +7733,67 @@ async function startServer() {
       const state = await getCoordinationCenterState(false);
       res.json({ ...result, state });
     } catch (err: any) {
-      res.status(400).json({ error: err?.message || 'Không thể chạy tuần tự hàng đợi kịch bản.' });
+      res.status(400).json({ error: err?.message || 'Không thể chạy song song hàng đợi kịch bản.' });
     }
+  });
+
+  app.post('/api/coordination/queue/run-parallel', async (req, res) => {
+    try {
+      const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+      const sessionIds = Array.isArray(req.body?.sessionIds)
+        ? req.body.sessionIds.map((x: any) => String(x || '').trim()).filter(Boolean)
+        : undefined;
+      const result = await startParallelSessionsRun({
+        sessionIds,
+        googleToken,
+        retryErrors: req.body?.retryErrors === true,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ ...result, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể kích hoạt chạy song song các phiên.' });
+    }
+  });
+
+  app.post('/api/coordination/queue/distribute-run', async (req, res) => {
+    try {
+      const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+      const sessionIds = Array.isArray(req.body?.sessionIds)
+        ? req.body.sessionIds.map((x: any) => String(x || '').trim()).filter(Boolean)
+        : undefined;
+      const providers = Array.isArray(req.body?.providers)
+        ? req.body.providers
+            .map((x: any) => String(x || '').trim())
+            .filter((x: string) => x === 'gemini' || x === 'qwen' || x === 'muse' || x === 'google_flow')
+        : undefined;
+      const result = await autoDistributeAndRunSessions({
+        sessionIds,
+        providers,
+        includeErrorSessions: req.body?.includeErrorSessions === true,
+        googleToken,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ ...result, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể chia tải tự động và chạy song song.' });
+    }
+  });
+
+  app.post('/api/coordination/queue/pause-all', async (req, res) => {
+    try {
+      const sessionIds = Array.isArray(req.body?.sessionIds)
+        ? req.body.sessionIds.map((x: any) => String(x || '').trim()).filter(Boolean)
+        : undefined;
+      const result = pauseMultipleSessions(sessionIds);
+      const state = await getCoordinationCenterState(false);
+      res.json({ ...result, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tạm dừng các phiên đang chạy.' });
+    }
+  });
+
+  app.get('/api/coordination/workers', (_req, res) => {
+    res.json(getActiveWorkerTelemetry());
   });
 
   app.post('/api/coordination/meeting', async (req, res) => {

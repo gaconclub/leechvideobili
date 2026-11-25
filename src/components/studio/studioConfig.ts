@@ -1,4 +1,5 @@
 import {
+  AiMusicStyleId,
   CharacterAgeGroup,
   DerivativeBlueprint,
   DerivativeOutputLanguage,
@@ -99,6 +100,151 @@ export const STYLE_OPTIONS: { value: DerivativeStylePreset; label: string }[] = 
   { value: 'top_list', label: 'Top điểm nổi bật / So sánh' },
   { value: 'tips_tutorial', label: 'Mẹo hay & Hướng dẫn ngắn' },
 ];
+
+export interface AiMusicStyleOption {
+  value: AiMusicStyleId;
+  label: string;
+  shortLabel: string;
+  desc: string;
+  promptEn: string;
+  defaultPromptVi: string;
+}
+
+export const AI_MUSIC_STYLE_OPTIONS: AiMusicStyleOption[] = [
+  {
+    value: 'auto_context',
+    label: 'AI tự chọn phong cách theo kịch bản',
+    shortLabel: 'Tự động theo kịch bản',
+    desc: 'AI tự phân tích bối cảnh và cảm xúc câu chuyện để sáng tác giai điệu phù hợp nhất',
+    promptEn: 'Adaptive modern background score matching the video story mood, smooth cinematic arrangement',
+    defaultPromptVi: 'Nhạc nền hiện đại, linh động theo bối cảnh & cảm xúc câu chuyện',
+  },
+  {
+    value: 'country',
+    label: 'Nhạc đồng quê (Country / Acoustic)',
+    shortLabel: 'Nhạc đồng quê',
+    desc: 'Guitar thùng mộc mạc, banjo nhẹ nhàng, harmonica ấm áp, không khí đồng quê thư thái',
+    promptEn: 'Warm acoustic country background music with fingerpicked steel-string guitar, gentle banjo, subtle harmonica, brushed snare drums, sunlit countryside atmosphere, uplifting pastoral groove',
+    defaultPromptVi: 'Nhạc đồng quê mộc mạc với guitar acoustic, banjo nhẹ nhàng và không khí ấm áp',
+  },
+  {
+    value: 'remix',
+    label: 'Nhạc Remix / EDM sôi động',
+    shortLabel: 'Nhạc Remix',
+    desc: 'Nhịp bass chắc khỏe, drop bắt tai, synth hiện đại bùng nổ năng lượng cho video cuốn hút',
+    promptEn: 'High-energy modern EDM remix background track with punchy bassline, bright electronic synth leads, rhythmic house percussion, dynamic build-ups and catchy club groove',
+    defaultPromptVi: 'Nhạc Remix sôi động, bass mạnh mẽ, nhịp điện tử cuốn hút và tràn đầy năng lượng',
+  },
+  {
+    value: 'chamber',
+    label: 'Nhạc thính phòng (Chamber / Cổ điển)',
+    shortLabel: 'Nhạc thính phòng',
+    desc: 'Hòa tấu violin, cello, viola và piano sang trọng trong không gian phòng hòa nhạc tinh tế',
+    promptEn: 'Elegant classical chamber music ensemble with expressive violin, warm cello, viola harmonies and grand piano arpeggios, refined concert hall acoustic resonance',
+    defaultPromptVi: 'Nhạc thính phòng cổ điển tinh tế với hòa tấu violin, cello và đại dương cầm sang trọng',
+  },
+  {
+    value: 'kids_fun',
+    label: 'Nhạc thiếu nhi vui nhộn',
+    shortLabel: 'Thiếu nhi vui nhộn',
+    desc: 'Giai điệu trong sáng, nhí nhảnh với ukulele, marimba, chuông gỗ và tiết tấu hoạt hình vui tươi',
+    promptEn: 'Playful cheerful kids cartoon background music with bouncy ukulele, bright marimba, xylophone melody, glockenspiel bells, hand claps, joyful innocent upbeat tempo',
+    defaultPromptVi: 'Nhạc thiếu nhi vui nhộn, nhí nhảnh với ukulele, marimba và tiết tấu hoạt hình tươi sáng',
+  },
+  {
+    value: 'cinematic',
+    label: 'Điện ảnh hùng tráng (Cinematic)',
+    shortLabel: 'Điện ảnh',
+    desc: 'Dàn dây giao hưởng giàu cảm xúc, kèn đồng và trống cao trào chuẩn phim chiếu rạp',
+    promptEn: 'Epic emotional cinematic film score with sweeping orchestral strings, warm French horns, soft piano motif building to inspiring dramatic percussion',
+    defaultPromptVi: 'Nhạc nền điện ảnh giao hưởng giàu cảm xúc, cao trào hùng tráng chuẩn phim rạp',
+  },
+  {
+    value: 'lofi_chill',
+    label: 'Lo-fi Chill / Thư giãn',
+    shortLabel: 'Lo-fi Chill',
+    desc: 'Nhịp hip-hop nhẹ nhàng, piano điện Rhodes êm dịu, hợp vlog đời sống & kể chuyện đêm',
+    promptEn: 'Cozy lo-fi chillhop background beat with warm Rhodes electric piano chords, mellow jazz guitar licks, soft dusty drums and relaxing nostalgic groove',
+    defaultPromptVi: 'Nhạc Lo-fi Chill nhẹ nhàng, piano điện êm ái thư giãn cho vlog và kể chuyện',
+  },
+  {
+    value: 'viet_folk',
+    label: 'Dân ca / Nhạc cụ dân tộc Việt',
+    shortLabel: 'Dân ca Việt',
+    desc: 'Sáo trúc, đàn tranh, đàn bầu hòa quyện tinh tế, đậm chất thơ và bản sắc Việt Nam',
+    promptEn: 'Traditional Vietnamese folk instrumental soundtrack featuring expressive bamboo flute sao truc, delicate dan tranh zither, warm dan bau resonance and gentle wooden percussion, poetic serene melody',
+    defaultPromptVi: 'Nhạc dân ca Việt Nam sâu lắng với sáo trúc, đàn tranh và giai điệu quê hương',
+  },
+  {
+    value: 'bolero_romantic',
+    label: 'Trữ tình / Acoustic lãng mạn',
+    shortLabel: 'Trữ tình lãng mạn',
+    desc: 'Guitar dây nylon êm ái, piano dịu dàng, chuỗi dây mềm mại cho câu chuyện tình cảm',
+    promptEn: 'Tender romantic acoustic ballad background music with warm nylon-string guitar, gentle piano arpeggios, soft sustained strings and heartfelt nostalgic melody',
+    defaultPromptVi: 'Nhạc trữ tình lãng mạn, sâu lắng với guitar dây nylon và piano dịu nhẹ',
+  },
+  {
+    value: 'pop_upbeat',
+    label: 'Pop trẻ trung / Năng động',
+    shortLabel: 'Pop trẻ trung',
+    desc: 'Tiết tấu tươi mới, guitar funk nhẹ, trống gọn sắc phù hợp review, mẹo hay & quảng cáo',
+    promptEn: 'Bright upbeat modern pop instrumental background music with funky clean electric guitar, catchy synth pluck melody, tight energetic drums and positive commercial feel',
+    defaultPromptVi: 'Nhạc Pop trẻ trung, nhịp nhanh tích cực, hiện đại cho video review và chia sẻ',
+  },
+  {
+    value: 'suspense_mystery',
+    label: 'Kịch tính / Trinh thám hồi hộp',
+    shortLabel: 'Kịch tính hồi hộp',
+    desc: 'Âm trầm cello dồn dập, nhịp đồng hồ tích tắc và hòa âm bí ẩn tạo độ căng thẳng',
+    promptEn: 'Suspenseful cinematic mystery thriller underscore with low pulsing cello ostinato, subtle ticking percussion, dark atmospheric pads and intriguing tension',
+    defaultPromptVi: 'Nhạc nền kịch tính, bí ẩn, dồn dập tăng cao trào cho phim trinh thám hoặc phá án',
+  },
+  {
+    value: 'custom',
+    label: 'Tự mô tả phong cách riêng...',
+    shortLabel: 'Tự mô tả riêng',
+    desc: 'Tự viết thể loại, nhạc cụ, tiết tấu BPM hoặc tâm trạng bạn muốn AI sáng tạo',
+    promptEn: '',
+    defaultPromptVi: '',
+  },
+];
+
+export function buildVideoMusicPromptDirectiveClient(params: {
+  musicMode?: string;
+  musicStyle?: AiMusicStyleId;
+  musicPrompt?: string;
+  musicVolume?: number; // 0..90 percentage
+  instrumentalOnly?: boolean;
+}): string {
+  if (params.musicMode !== 'ai_lyria' && params.musicMode !== 'auto_adaptive') {
+    return '';
+  }
+  const volPct = Math.max(0, Math.min(90, Math.round(Number(params.musicVolume ?? 25))));
+  if (volPct <= 0) return '';
+
+  const styleOpt = AI_MUSIC_STYLE_OPTIONS.find((o) => o.value === (params.musicStyle || 'auto_context'));
+  const customNote = String(params.musicPrompt || '').trim();
+  const parts: string[] = [];
+
+  if (styleOpt && styleOpt.value !== 'custom') {
+    parts.push(`${styleOpt.label} (${styleOpt.promptEn})`);
+  }
+  if (customNote && customNote !== styleOpt?.defaultPromptVi) {
+    parts.push(customNote);
+  } else if ((!styleOpt || styleOpt.value === 'custom') && customNote) {
+    parts.push(customNote);
+  }
+  if (parts.length === 0) {
+    parts.push('Nhạc nền phù hợp tự nhiên với bối cảnh và cảm xúc phân cảnh');
+  }
+
+  const vocalRule =
+    params.instrumentalOnly !== false
+      ? 'Chỉ nhạc không lời (Strictly instrumental only, NO vocals, NO singing, NO lyrics)'
+      : 'Có thể hòa phối linh hoạt theo phong cách đã chọn';
+
+  return `Nhạc nền tích hợp trực tiếp trong video: ${parts.join(' · ')}. ${vocalRule}. Mức âm lượng nhạc nền: ${volPct}% cân bằng hài hòa với bối cảnh & thoại.`;
+}
 
 export const VIDEO_STYLE_OPTIONS: {
   value: StudioVideoStyle;
@@ -430,6 +576,7 @@ export function compileScenePromptClient(params: {
   hasAttachedRefs?: boolean;
   targetEngine?: 'muse2api' | 'gemini';
   allowFreeCostumeChange?: boolean;
+  musicPromptDirective?: string;
 }): string {
   const sc = params.scene;
   const mediaType = params.mediaType || 'image';
@@ -458,7 +605,7 @@ export function compileScenePromptClient(params: {
     segments.push(`Tên phân cảnh: ${sc.sceneTitle.trim()}`);
   }
 
-  // 2. For VIDEO prompts: Per-second Timeline + Lip-Sync Character Dialogue come IMMEDIATELY before trailing bibles
+  // 2. For VIDEO prompts: Per-second Timeline + Lip-Sync Character Dialogue + Native Video Background Music come IMMEDIATELY before trailing bibles
   const dur = Math.max(3, Math.round(Number(sc.durationSec || 8)));
   if (mediaType === 'video') {
     const timelineText = (sc.videoTimeline || '').trim() || buildSceneTimelineFallbackClient(sc);
@@ -475,6 +622,12 @@ export function compileScenePromptClient(params: {
         segments.push(`Bối cảnh dẫn chuyện nền (tách biệt hoàn toàn với lời thoại nhân vật): ${narr}`);
       }
     }
+    if (params.musicPromptDirective?.trim()) {
+      segments.push(params.musicPromptDirective.trim());
+    }
+    segments.push('Không chèn chữ hiển thị trên màn hình (No on-screen text, no titles, no captions, no watermarks)');
+  } else {
+    segments.push('Không chèn chữ hiển thị trên khung hình (No on-screen text, no captions, no watermarks)');
   }
 
   if (sc.actionDetail?.trim()) {

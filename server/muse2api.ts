@@ -178,7 +178,7 @@ export function resolveMuse2ApiConfig(): Muse2ApiConfig {
     maskedKey: maskKey(apiKey),
     source,
     imageTimeoutSec: Math.max(30, Number(process.env.MUSE2API_IMAGE_TIMEOUT || localEnv.MUSE2API_IMAGE_TIMEOUT || 240)),
-    videoTimeoutSec: Math.max(60, Number(process.env.MUSE2API_VIDEO_TIMEOUT || localEnv.MUSE2API_VIDEO_TIMEOUT || 600)),
+    videoTimeoutSec: Math.max(60, Number(process.env.MUSE2API_VIDEO_TIMEOUT || localEnv.MUSE2API_VIDEO_TIMEOUT || 720)),
     chatTimeoutSec: Math.max(30, Number(process.env.MUSE2API_CHAT_TIMEOUT || localEnv.MUSE2API_CHAT_TIMEOUT || 300)),
   };
 }
@@ -812,6 +812,9 @@ function formatMuseTaskError(rawErr: string, fallback: string): string {
   }
   if (msg.includes('页面加载超时')) {
     return `${msg} (Trang muse.ai tải quá thời gian chờ khung nhập — kiểm tra mạng/proxy rồi thử lại)`;
+  }
+  if (msg.includes('任务总等待时限已到') || msg.includes('等待超时')) {
+    return `${msg} (Hàng đợi máy chủ Muse.ai quá thời gian chờ — bạn có thể bấm đổi nguồn Video sang Gemini / Qwen / Google Flow ngay trên bước Video mà vẫn giữ nguyên Ảnh Bước 1)`;
   }
   return msg;
 }

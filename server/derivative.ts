@@ -2466,8 +2466,6 @@ export function compileConsistentScenePrompt(params: {
 
   if (primaryPrompt) {
     parts.push(`${mediaType === 'video' ? 'Detailed Real-Time Video Prompt' : 'Detailed Image Prompt'}: ${primaryPrompt}.`);
-  } else if (!sc.sceneSummary?.trim() && sc.onScreenText?.trim()) {
-    parts.push(`Core Subject: ${sc.onScreenText.trim()}.`);
   }
 
   if (sc.cameraAngle?.trim()) {
@@ -3666,7 +3664,7 @@ TIÊU CHUẨN CHẤT LƯỢNG BẮT BUỘC (KHÔNG ĐƯỢC VIẾT SƠ SÀI):
    - \`dialogue\`: Lời thoại nhân vật trực tiếp nói trên hình theo mẫu "Tên nhân vật: Câu thoại" (để "" nếu cảnh không thoại). TUYỆT ĐỐI KHÔNG tự ý chuyển lời thoại trực tiếp của nhân vật thành giọng đọc thuyết minh người dẫn chuyện.
    - \`narration\`: ${enableVoiceover ? `Nội dung thuyết minh / dẫn chuyện tách biệt khỏi lời thoại nhân vật (${wordsMin}-${wordsMax} chữ, để "" nếu cảnh chỉ có nhân vật tự thoại)` : 'BẮT BUỘC để chuỗi rỗng "" vì đã tắt lồng tiếng'}.
    - \`videoTimeline\`: BẮT BUỘC tạo Timeline chi tiết theo từng khoảng giây trong suốt thời lượng phân cảnh (~${avgSceneDur}s). Chia thành 2-4 mốc giây liên tiếp (VD: "1s - 3s: [Góc quay | Chuyển động camera] Mô tả không gian & hành động...\\n4s - 6s: [Cận cảnh nhân vật] Nhân vật X nói lời thoại '...' (đồng bộ khẩu hình lip-sync)...\\n7s - ${avgSceneDur}s: [Tracking shot] Diễn biến & chuyển động kết cảnh..."). Mỗi khoảng thời gian PHẢI ghi rõ hành động, lời thoại (nếu có), góc quay và chuyển động camera.
-   - \`onScreenText\`: Chữ phụ đề hiển thị ngắn gọn (<= 12 chữ).
+   - \`onScreenText\`: BẮT BUỘC để chuỗi rỗng "" (KHÔNG tạo chữ hiển thị trên màn hình).
    - \`continuityNote\`: Nối tiếp trực tiếp từ trạng thái cuối của phân cảnh trước (\`sceneEndState\` của Scene trước).
    - \`sceneEndState\`: Trạng thái cuối cùng khi kết thúc cảnh này (vị trí nhân vật, biểu cảm, đạo cụ, thời điểm) để Scene tiếp theo nối vào hợp lý.
    - \`imagePrompt\`: Prompt hình ảnh CỰC KỲ CHI TIẾT (tối thiểu 3 câu giàu dữ liệu thị giác: nêu rõ tên + ngoại hình + trang phục cố định của TỪNG nhân vật trong cảnh, bối cảnh, góc quay, phong cách quay, ánh sáng, thiết bị quay & ống kính, tư thế hành động mở đầu cảnh) để AI tạo ảnh đồng bộ đa nhân vật chuẩn xác.
@@ -3754,7 +3752,7 @@ TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU
       "dialogue": "Lời thoại nhân vật nói trực tiếp trên hình (Tên: Câu nói)",
       "narration": "${enableVoiceover ? `Thuyết minh giọng dẫn tách biệt với lời thoại (${wordsMin}-${wordsMax} chữ)` : ''}",
       "videoTimeline": "Timeline từng khoảng giây (VD: 1s - 3s: [Toàn cảnh | Slow dolly-in]...\\n4s - 6s: [Cận cảnh] Nhân vật nói thoại lip-sync...\\n7s - ${avgSceneDur}s: [Tracking shot]...)",
-      "onScreenText": "Chữ phụ đề ngắn <= 12 chữ",
+      "onScreenText": "",
       "continuityNote": "Liên kết từ trạng thái cuối cảnh trước",
       "sceneEndState": "Trạng thái cuối cảnh này",
       "imagePrompt": "Prompt hình ảnh cực chi tiết: nhân vật, trang phục, bối cảnh, góc quay, phong cách quay, ánh sáng, thiết bị quay",
@@ -4161,7 +4159,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         durationSec: dur,
         sourceVideoIndex: idx,
         sourceStartPercent: startPct,
-        onScreenText: String(sc?.onScreenText || sceneTitle || `Scene ${String(i + 1).padStart(2, '0')}`).trim(),
+        onScreenText: '',
         charactersInScene,
         settingDetail,
         actionDetail,
@@ -4268,7 +4266,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
               durationSec: Math.max(3, avgSceneDur),
               sourceVideoIndex: 0,
               sourceStartPercent: 10,
-              onScreenText: 'Scene 01',
+              onScreenText: '',
               charactersInScene: 'Nhân vật chính',
               narration: enableVoiceover
                 ? 'Khởi đầu câu chuyện với góc nhìn sắc nét và cuốn hút ngay từ những giây đầu tiên.'
@@ -5923,6 +5921,12 @@ export async function generateSceneVideoWithOmniFlash(params: {
   geminiApiKey?: string;
   allowFreeCostumeChange?: boolean;
   strictSingleFrameLock?: boolean;
+  musicMode?: DerivativeMusicMode;
+  musicStyle?: string;
+  musicPrompt?: string;
+  musicVolume?: number; // 0..0.9 (max 90%) or 0..90
+  musicInstrumentalOnly?: boolean;
+  musicDirective?: string;
 }): Promise<{ assetId: string; previewUrl: string; durationSec: number; hasAudio: boolean; model: string }> {
   const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
   const clampedDur = Math.max(3, Math.min(15, Math.round(params.durationSec || 8)));
@@ -5973,6 +5977,16 @@ export async function generateSceneVideoWithOmniFlash(params: {
       : `FIRST-FRAME LOCK (CRITICAL): Image #1 is the EXACT starting frame (t=0.0s). Animate DIRECTLY from Image #1 with seamless continuous motion, ${lockPhrase}. Preserve the exact subject face, hair, outfit, lighting, and setting from Image #1 — NEVER replace the character with a stranger, NEVER redesign face/clothes, NEVER cut to a studio portrait. ${mappingDirective}`
     : `CHARACTER IDENTITY LOCK (CRITICAL): ${lockPhrase}. ${mappingDirective}`;
 
+  const resolvedMusicDirective =
+    String(params.musicDirective || '').trim() ||
+    buildVideoMusicPromptDirective({
+      musicMode: params.musicMode,
+      musicStyle: params.musicStyle,
+      musicPrompt: params.musicPrompt,
+      musicVolume: params.musicVolume,
+      instrumentalOnly: params.musicInstrumentalOnly,
+    });
+
   const priorityLeadLines = [
     firstFrameLockLead,
     params.sceneIndex
@@ -5983,6 +5997,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
     params.dialogue?.trim()
       ? `Direct Spoken Dialogue & Lip-Sync (the visible character from Image #1 opens mouth and speaks aloud with synchronized lips and natural voice): ${params.dialogue.trim()}.`
       : '',
+    resolvedMusicDirective,
     [params.cameraAngle?.trim(), params.cameraMovement?.trim(), params.cameraEquipment?.trim()]
       .filter(Boolean)
       .join(' · ')
@@ -6016,8 +6031,8 @@ export async function generateSceneVideoWithOmniFlash(params: {
     .join(' ');
 
   const baseVideoPrompt = hasSceneKeyframe
-    ? `${priorityLeadLines} Motion details: ${params.prompt}. ${trailingBibles} Smooth real-time physics, consistent face from start to end, no overlaid text or watermarks.`
-    : `${priorityLeadLines} High-definition cohesive video scene with continuous real-time action: ${params.prompt}. ${trailingBibles} Cohesive lighting, no overlaid text or watermarks.`;
+    ? `${priorityLeadLines} Motion details: ${params.prompt}. ${trailingBibles} Smooth real-time physics, consistent face from start to end, strictly NO on-screen text, NO subtitles, NO captions, NO overlaid titles or watermarks.`
+    : `${priorityLeadLines} High-definition cohesive video scene with continuous real-time action: ${params.prompt}. ${trailingBibles} Cohesive lighting, strictly NO on-screen text, NO subtitles, NO captions, NO overlaid titles or watermarks.`;
 
   const styledVideoPrompt =
     params.videoStyle === 'cinematic_filmmaking'
@@ -6252,16 +6267,162 @@ export async function generateSceneVideoWithOmniFlash(params: {
   }
 }
 
+export const AI_MUSIC_STYLE_DIRECTIVES: Record<
+  string,
+  { labelVi: string; promptEn: string; wikimediaQueries: string[] }
+> = {
+  auto_context: {
+    labelVi: 'AI tự chọn theo kịch bản',
+    promptEn: 'Adaptive modern background soundtrack tailored smoothly to the story mood and pacing',
+    wikimediaQueries: ['cinematic instrumental piano', 'ambient acoustic guitar'],
+  },
+  country: {
+    labelVi: 'Nhạc đồng quê (Country / Acoustic)',
+    promptEn:
+      'Warm acoustic country folk background music with fingerpicked steel-string guitar, gentle banjo, subtle harmonica, light brushed drums, warm sunlit countryside atmosphere',
+    wikimediaQueries: ['country acoustic guitar instrumental', 'folk banjo guitar'],
+  },
+  remix: {
+    labelVi: 'Nhạc Remix / EDM sôi động',
+    promptEn:
+      'High-energy modern EDM remix background track with punchy bassline, bright synth leads, rhythmic house beat, crisp drops and energetic club groove',
+    wikimediaQueries: ['electronic dance house instrumental', 'upbeat synth beat'],
+  },
+  chamber: {
+    labelVi: 'Nhạc thính phòng (Chamber / Cổ điển)',
+    promptEn:
+      'Elegant classical chamber music ensemble with expressive violin, warm cello, viola harmonies and grand piano in refined concert hall acoustics',
+    wikimediaQueries: ['chamber music string quartet', 'classical violin cello piano'],
+  },
+  kids_fun: {
+    labelVi: 'Nhạc thiếu nhi vui nhộn',
+    promptEn:
+      'Playful cheerful kids cartoon background music with bouncy ukulele, bright marimba, xylophone melody, glockenspiel bells, happy claps, joyful upbeat tempo',
+    wikimediaQueries: ['cheerful playful ukulele marimba', 'happy upbeat cartoon music'],
+  },
+  cinematic: {
+    labelVi: 'Điện ảnh hùng tráng (Cinematic)',
+    promptEn:
+      'Epic emotional cinematic orchestral film score with sweeping strings, warm brass swells, piano motif and inspiring dramatic percussion',
+    wikimediaQueries: ['cinematic orchestral soundtrack', 'epic symphony strings'],
+  },
+  lofi_chill: {
+    labelVi: 'Lo-fi Chill / Thư giãn',
+    promptEn:
+      'Cozy lo-fi chillhop background beat with warm Rhodes electric piano chords, mellow jazz guitar, soft dusty drums and relaxing groove',
+    wikimediaQueries: ['chill jazz piano instrumental', 'ambient lo-fi mellow'],
+  },
+  viet_folk: {
+    labelVi: 'Dân ca / Nhạc cụ dân tộc Việt',
+    promptEn:
+      'Traditional Vietnamese folk instrumental music featuring bamboo flute sao truc, delicate dan tranh zither, warm dan bau and gentle wooden percussion, poetic serene melody',
+    wikimediaQueries: ['asian bamboo flute instrumental', 'traditional zither folk'],
+  },
+  bolero_romantic: {
+    labelVi: 'Trữ tình / Acoustic lãng mạn',
+    promptEn:
+      'Tender romantic acoustic ballad background music with warm nylon-string guitar, gentle piano arpeggios, soft sustained strings and nostalgic emotional flow',
+    wikimediaQueries: ['romantic acoustic guitar ballad', 'emotional solo piano'],
+  },
+  pop_upbeat: {
+    labelVi: 'Pop trẻ trung / Năng động',
+    promptEn:
+      'Bright upbeat modern pop instrumental background music with clean funky electric guitar, catchy synth pluck melody and tight energetic drums',
+    wikimediaQueries: ['upbeat pop instrumental guitar', 'modern bright background'],
+  },
+  suspense_mystery: {
+    labelVi: 'Kịch tính / Trinh thám hồi hộp',
+    promptEn:
+      'Suspenseful cinematic mystery thriller underscore with low pulsing cello ostinato, subtle ticking percussion and dark atmospheric tension pads',
+    wikimediaQueries: ['suspense dark cello mystery', 'dramatic thriller underscore'],
+  },
+};
+
+export function buildAiMusicPrompt(params: {
+  styleId?: string;
+  prompt?: string;
+  instrumentalOnly?: boolean;
+  contextTitle?: string;
+}): { finalPrompt: string; styleLabelVi: string } {
+  const styleKey = String(params.styleId || '').trim();
+  const preset = styleKey && styleKey !== 'custom' ? AI_MUSIC_STYLE_DIRECTIVES[styleKey] : undefined;
+  const userPrompt = String(params.prompt || '').trim();
+  const parts: string[] = [];
+
+  if (preset) {
+    parts.push(`Music Style & Arrangement: ${preset.promptEn}.`);
+  }
+  if (userPrompt) {
+    parts.push(`Additional Creative Direction: ${userPrompt}.`);
+  }
+  if (!preset && !userPrompt) {
+    parts.push(
+      `Generate an uplifting modern cinematic background music track suitable for video storytelling${
+        params.contextTitle ? ` titled "${params.contextTitle}"` : ''
+      }.`
+    );
+  }
+  if (params.instrumentalOnly !== false) {
+    parts.push('Strictly instrumental background music only, NO vocals, NO singing, NO spoken words, clean smooth mix suitable under video narration.');
+  }
+
+  return {
+    finalPrompt: parts.join(' '),
+    styleLabelVi: preset?.labelVi || (userPrompt ? 'Phong cách tùy chỉnh' : 'AI sáng tạo'),
+  };
+}
+
+export function buildVideoMusicPromptDirective(params: {
+  musicMode?: string;
+  musicStyle?: string;
+  musicPrompt?: string;
+  musicVolume?: number; // accepts 0..0.9 or 0..90
+  instrumentalOnly?: boolean;
+}): string {
+  if (params.musicMode !== 'ai_lyria' && params.musicMode !== 'auto_adaptive') {
+    return '';
+  }
+  const rawVol = Number(params.musicVolume ?? 0.25);
+  const volPct = Math.max(0, Math.min(90, Math.round(rawVol <= 1 ? rawVol * 100 : rawVol)));
+  if (volPct <= 0) return '';
+
+  const styleKey = String(params.musicStyle || '').trim();
+  const preset = styleKey && styleKey !== 'custom' ? AI_MUSIC_STYLE_DIRECTIVES[styleKey] : undefined;
+  const userNote = String(params.musicPrompt || '').trim();
+  const parts: string[] = [];
+
+  if (preset) {
+    parts.push(`${preset.labelVi} (${preset.promptEn})`);
+  }
+  if (userNote) {
+    parts.push(userNote);
+  }
+  if (parts.length === 0) {
+    parts.push('Natural background music matching the scene mood and pacing');
+  }
+
+  const vocalRule =
+    params.instrumentalOnly !== false
+      ? 'Strictly instrumental background music only (NO vocals, NO singing, NO lyrics).'
+      : 'Musical arrangement may blend freely with the chosen style.';
+
+  return `Background Music (Generate directly in native video audio): ${parts.join(' · ')}. ${vocalRule} Background music volume level: ${volPct}% balanced smoothly with scene dialogue and ambient audio.`;
+}
+
 export async function generateStudioMusicWithLyria(params: {
   prompt: string;
   mode?: 'clip' | 'pro';
-}): Promise<{ assetId: string; previewUrl: string; mimeType: string; lyrics: string; durationSec: number; model: string }> {
+  styleId?: string;
+  instrumentalOnly?: boolean;
+}): Promise<{ assetId: string; previewUrl: string; mimeType: string; lyrics: string; durationSec: number; model: string; styleLabel?: string }> {
   const ai = getGeminiBetaClient();
   const musicModels =
     params.mode === 'pro' ? ['lyria-3-pro-preview', 'lyria-3-clip-preview'] : ['lyria-3-clip-preview'];
-  const musicPrompt =
-    params.prompt.trim() ||
-    'Generate an instrumental uplifting modern cinematic background music track suitable for storytelling video narration.';
+  const { finalPrompt: musicPrompt, styleLabelVi } = buildAiMusicPrompt({
+    styleId: params.styleId,
+    prompt: params.prompt,
+    instrumentalOnly: params.instrumentalOnly,
+  });
 
   let lastErr: any;
   for (const model of musicModels) {
@@ -6321,6 +6482,7 @@ export async function generateStudioMusicWithLyria(params: {
         lyrics: lyrics.trim(),
         durationSec: Math.round(durationSec * 10) / 10,
         model,
+        styleLabel: styleLabelVi,
       };
     } catch (err: any) {
       lastErr = err;
@@ -7597,6 +7759,8 @@ export interface StartDerivativeJobParams {
   keepSourceAudio: boolean;
   brollSource?: BrollSourceId;
   musicMode?: DerivativeMusicMode;
+  musicStyle?: string;
+  musicInstrumentalOnly?: boolean;
   musicAssetId?: string;
   publicMusicUrl?: string;
   musicPrompt?: string;
@@ -8285,6 +8449,11 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
             sceneImageDataUrl: sc.sceneImageDataUrl,
             characterRefs: params.characterRefs,
             allowFreeCostumeChange,
+            musicMode: params.musicMode,
+            musicStyle: params.musicStyle,
+            musicPrompt: params.musicPrompt,
+            musicVolume: params.musicVolume,
+            musicInstrumentalOnly: params.musicInstrumentalOnly,
           });
           const asset = getStudioAsset(clipRes.assetId);
           if (asset) {
@@ -8601,17 +8770,25 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       const rec = getStudioAsset(params.musicAssetId);
       if (rec) bgmLocalPath = rec.filePath;
     } else if (musicMode === 'auto_adaptive') {
-      job.stepLabel = 'AI đang tự động chọn nhạc nền phù hợp bối cảnh & cảm xúc phim...';
-      const adaptiveQueries = buildAdaptiveMusicSearchQueries(blueprint);
+      job.stepLabel = 'AI đang tự sáng tạo & chọn nhạc nền phù hợp phong cách...';
+      const styleMeta =
+        params.musicStyle && params.musicStyle !== 'custom' && params.musicStyle !== 'auto_context'
+          ? AI_MUSIC_STYLE_DIRECTIVES[params.musicStyle]
+          : undefined;
+      const adaptiveQueries = Array.from(
+        new Set([...(styleMeta?.wikimediaQueries || []), ...buildAdaptiveMusicSearchQueries(blueprint)])
+      ).slice(0, 6);
       const adaptivePrompt =
         params.musicPrompt?.trim() ||
         blueprint.adaptiveMusicPrompt?.trim() ||
-        `Natural cinematic instrumental soundtrack fitting mood: ${adaptiveQueries[0] || blueprint.derivativeTitle}`;
+        `Natural instrumental soundtrack fitting mood: ${adaptiveQueries[0] || blueprint.derivativeTitle}`;
 
       if (process.env.GEMINI_API_KEY?.trim()) {
         try {
           const track = await generateStudioMusicWithLyria({
             prompt: adaptivePrompt,
+            styleId: params.musicStyle,
+            instrumentalOnly: params.musicInstrumentalOnly !== false,
             mode: totalPlannedSec > 45 ? 'pro' : 'clip',
           });
           const rec = getStudioAsset(track.assetId);
@@ -8649,13 +8826,9 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         job.warnings.push('Không tải được nhạc nền tự động phù hợp — giữ nguyên giọng kể chuyện tự nhiên.');
       }
     } else if (musicMode === 'ai_lyria') {
-      job.stepLabel = 'Đang sáng tác nhạc nền AI bằng Lyria...';
-      const track = await generateStudioMusicWithLyria({
-        prompt: params.musicPrompt || `Cinematic instrumental soundtrack for: ${blueprint.derivativeTitle}`,
-        mode: totalPlannedSec > 45 ? 'pro' : 'clip',
-      });
-      const rec = getStudioAsset(track.assetId);
-      if (rec) bgmLocalPath = rec.filePath;
+      // Prompt-embedded AI background music: the video-generating AI server natively generates BGM from the scene prompt.
+      // Only attach an external audio file if the user explicitly passed a pre-generated musicAssetId (handled above).
+      bgmLocalPath = null;
     } else if (musicMode === 'public_free' && params.publicMusicUrl) {
       job.stepLabel = 'Đang tải nhạc nền công cộng từ Wikimedia Commons...';
       try {
@@ -9071,7 +9244,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     subtitleTimeline.push({
       start: cursorSec,
       end: cursorSec + actualDur,
-      caption: sc.onScreenText || '',
+      caption: '',
     });
     cursorSec += actualDur;
     sceneVideoFiles.push(path.basename(outScenePath));
@@ -9094,9 +9267,10 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   fs.writeFileSync(path.join(job.workDir, 'subtitles.ass'), assContent, 'utf8');
 
   const finalOutPath = path.join(job.workDir, 'final_derivative.mp4');
-  const musicVol = Math.max(0.05, Math.min(0.6, Number(params.musicVolume ?? 0.18)));
+  const musicVol = Math.max(0, Math.min(0.9, Number(params.musicVolume ?? 0.22)));
 
-  const hasBgm = Boolean(bgmLocalPath && fs.existsSync(bgmLocalPath));
+  const hasBgm = Boolean(bgmLocalPath && fs.existsSync(bgmLocalPath) && musicVol > 0);
+  const duckRatio = musicVol >= 0.55 ? 2 : 3.5;
   const buildBgmAssArgs = (useSidechainDucking: boolean): string[] => [
     '-y',
     '-f',
@@ -9111,8 +9285,8 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     bgmLocalPath || '',
     '-filter_complex',
     useSidechainDucking
-      ? `[0:a]aresample=44100,asplit=2[avoice][asc];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[abgm][asc]sidechaincompress=threshold=0.04:ratio=4:attack=35:release=350[aduck];[avoice][aduck]amix=inputs=2:duration=first:dropout_transition=0.3[aout]`
-      : `[0:a]aresample=44100[avoice];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[avoice][abgm]amix=inputs=2:duration=first:dropout_transition=0.3[aout]`,
+      ? `[0:a]aresample=44100,asplit=2[avoice][asc];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[abgm][asc]sidechaincompress=threshold=0.04:ratio=${duckRatio}:attack=35:release=350[aduck];[avoice][aduck]amix=inputs=2:duration=first:dropout_transition=0.3:normalize=0[aout]`
+      : `[0:a]aresample=44100[avoice];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[avoice][abgm]amix=inputs=2:duration=first:dropout_transition=0.3:normalize=0[aout]`,
     '-map',
     '0:v',
     '-map',
@@ -9177,7 +9351,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   // Fallback without libass if libass fails
   if (finalRes.code !== 0 || !fs.existsSync(finalOutPath)) {
     job.warnings.push('FFmpeg không áp dụng được phụ đề libass, đã xuất video kèm đầy đủ âm thanh/nhạc nền.');
-    const noAssArgs = bgmLocalPath && fs.existsSync(bgmLocalPath)
+    const noAssArgs = hasBgm && bgmLocalPath
       ? [
           '-y',
           '-f',
@@ -9191,7 +9365,7 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
           '-i',
           bgmLocalPath,
           '-filter_complex',
-          `[0:a]aresample=44100[avoice];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[avoice][abgm]amix=inputs=2:duration=first:dropout_transition=0.3[aout]`,
+          `[0:a]aresample=44100[avoice];[1:a]aresample=44100,volume=${musicVol.toFixed(2)}[abgm];[avoice][abgm]amix=inputs=2:duration=first:dropout_transition=0.3:normalize=0[aout]`,
           '-map',
           '0:v',
           '-map',

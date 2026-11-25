@@ -21,6 +21,7 @@ import {
   Lock,
   LogOut,
   MessageSquare,
+  Music,
   Pause,
   Play,
   Plus,
@@ -53,6 +54,7 @@ import {
   signInGoogleWorkspace,
   type GoogleAuthErrorInfo,
 } from '../lib/googleWorkspaceAuth';
+import { AI_MUSIC_STYLE_OPTIONS } from './studio/studioConfig';
 
 type CoordinationTab = 'hub' | 'meeting' | 'workspace';
 
@@ -578,18 +580,100 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
     setErrorMsg('');
     setNotice('');
     try {
-      const res = await apiCall<{ queuedSessionIds?: string[] }>('/api/coordination/queue/run-all', {
-        method: 'POST',
-        body: JSON.stringify({ retryErrors: false }),
-      });
-      const count = res.queuedSessionIds?.length || 0;
+      const res = await apiCall<{ startedSessionIds?: string[]; queuedSessionIds?: string[] }>(
+        '/api/coordination/queue/run-parallel',
+        {
+          method: 'POST',
+          body: JSON.stringify({ retryErrors: false }),
+        }
+      );
+      const count = res.startedSessionIds?.length || res.queuedSessionIds?.length || 0;
       setNotice(
         count > 0
-          ? `Đã khởi động chạy tuần tự ${count} kịch bản đang chờ trong hàng đợi.`
+          ? `Đã mở ${count} luồng chạy SONG SONG độc lập. Một phiên lỗi sẽ không làm dừng các phiên khác.`
           : 'Hiện không có kịch bản nào đang chờ chạy.'
       );
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Không thể chạy hàng đợi kịch bản.');
+      setErrorMsg(err?.message || 'Không thể chạy song song hàng đợi kịch bản.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const handleAutoDistributeAndRun = async (includeErrorSessions = true) => {
+    setBusyAction('distribute_run');
+    setErrorMsg('');
+    setNotice('');
+    try {
+      const res = await apiCall<{
+        assignments?: Array<{ sessionId: string; videoSource: IndependentVideoSource }>;
+        startedSessionIds?: string[];
+        activeProviders?: IndependentVideoSource[];
+      }>('/api/coordination/queue/distribute-run', {
+        method: 'POST',
+        body: JSON.stringify({ includeErrorSessions }),
+      });
+      const count = res.startedSessionIds?.length || res.assignments?.length || 0;
+      const providersText = (res.activeProviders || []).join(', ');
+      setNotice(
+        count > 0
+          ? `Đã tự động chia tải ${count} phiên sang các AI sẵn sàng (${providersText}) — giữ nguyên các Ảnh Bước 1 đã xong và kích hoạt chạy song song.`
+          : 'Không có phiên chờ/lỗi nào cần chia tải lúc này.'
+      );
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể chia tải đa luồng tự động.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const handleRegenerateSceneImage = async (sessionId: string, sceneIndex: number) => {
+    setBusyAction(`regen_${sessionId}_${sceneIndex}`);
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await apiCall(
+        `/api/coordination/sessions/${encodeURIComponent(sessionId)}/scenes/${sceneIndex}/regenerate-image`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ autoResumeVideo: true }),
+        }
+      );
+      setNotice(
+        `Đang tạo lại Ảnh Phân cảnh #${sceneIndex} (${sessionId}) và sẽ tự động tiếp tục bước Video → Ghép phim.`
+      );
+    } catch (err: any) {
+      setErrorMsg(err?.message || `Không thể tạo lại ảnh Phân cảnh #${sceneIndex}.`);
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const handleRetryTaskWithSource = async (
+    sessionId: string,
+    taskCode: string,
+    overrideVideoSource: IndependentVideoSource
+  ) => {
+    setBusyAction(`retry_src_${sessionId}_${taskCode}_${overrideVideoSource}`);
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await apiCall(
+        `/api/coordination/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskCode)}/retry`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            overrideVideoSource,
+            autoContinueSession: true,
+          }),
+        }
+      );
+      const srcName = INDEPENDENT_SOURCES.find((s) => s.id === overrideVideoSource)?.name || overrideVideoSource;
+      setNotice(
+        `Đã giữ nguyên Ảnh Bước 1, chuyển ${taskCode} (${sessionId}) sang ${srcName} và kích hoạt chạy lại ngay.`
+      );
+    } catch (err: any) {
+      setErrorMsg(err?.message || `Không thể đổi nguồn & chạy lại ${taskCode}.`);
     } finally {
       setBusyAction('');
     }
@@ -1466,7 +1550,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Hiển thị toàn bộ kịch bản trong hàng đợi và chia rõ từng phân cảnh (Ảnh → Video → Ghép MP4) để dễ quan sát và điều phối tuần tự.
+                    Chạy đa luồng SONG SONG giữa các phiên theo từng nguồn AI (Gemini / Qwen / Google Flow / Muse). Một phiên gặp sự cố không chặn các phiên khác.
                   </p>
                 </div>
 
@@ -1502,19 +1586,35 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                   </div>
 
                   {queuedSessionsCount > 0 && (
-                    <button
-                      type="button"
-                      disabled={busyAction === 'run_all_queue'}
-                      onClick={() => void handleRunAllQueuedSessions()}
-                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-600 to-indigo-600 text-white hover:brightness-110 transition cursor-pointer disabled:opacity-50"
-                    >
-                      {busyAction === 'run_all_queue' ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Play className="w-3.5 h-3.5" />
-                      )}
-                      <span>Chạy tuần tự tất cả kịch bản chờ ({queuedSessionsCount})</span>
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        disabled={busyAction === 'distribute_run'}
+                        onClick={() => void handleAutoDistributeAndRun(true)}
+                        title="Tự động phân bổ các phiên chờ/lỗi sang những nguồn AI đang sẵn sàng (giữ nguyên Ảnh Bước 1 đã hoàn thành) và chạy song song ngay"
+                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-600 to-cyan-600 text-white hover:brightness-110 transition cursor-pointer disabled:opacity-50"
+                      >
+                        {busyAction === 'distribute_run' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Layers className="w-3.5 h-3.5" />
+                        )}
+                        <span>Chia tải AI &amp; Chạy song song</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busyAction === 'run_all_queue'}
+                        onClick={() => void handleRunAllQueuedSessions()}
+                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-600 to-indigo-600 text-white hover:brightness-110 transition cursor-pointer disabled:opacity-50"
+                      >
+                        {busyAction === 'run_all_queue' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Play className="w-3.5 h-3.5" />
+                        )}
+                        <span>Chạy song song ({queuedSessionsCount})</span>
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
@@ -1616,8 +1716,47 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                                 </p>
                               )}
                               {task.errorReason && (
-                                <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-700 dark:text-rose-200">
-                                  <strong>Lý do lỗi:</strong> {task.errorReason}
+                                <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-700 dark:text-rose-200 space-y-2">
+                                  <div>
+                                    <strong>Lý do lỗi:</strong> {task.errorReason}
+                                  </div>
+                                  {task.taskCode.includes('-VID-') && !sessRunning && (
+                                    <div className="pt-1.5 border-t border-rose-500/20 flex flex-wrap items-center gap-1.5">
+                                      <span className="text-[10px] font-semibold text-rose-800 dark:text-rose-200">
+                                        Đổi nguồn chạy lại Video (giữ ảnh B1):
+                                      </span>
+                                      {INDEPENDENT_SOURCES.map((src) => {
+                                        const isSwitchBusy =
+                                          busyAction === `retry_src_${sess.sessionId}_${task.taskCode}_${src.id}`;
+                                        return (
+                                          <button
+                                            key={src.id}
+                                            type="button"
+                                            disabled={Boolean(busyAction)}
+                                            onClick={() =>
+                                              void handleRetryTaskWithSource(sess.sessionId, task.taskCode, src.id)
+                                            }
+                                            className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-white dark:bg-[#131a35] border border-rose-400/45 text-slate-800 dark:text-slate-100 hover:border-cyan-500 hover:text-cyan-600 dark:hover:text-cyan-300 cursor-pointer disabled:opacity-50"
+                                          >
+                                            {isSwitchBusy ? '...' : src.name}
+                                          </button>
+                                        );
+                                      })}
+                                      {typeof task.sceneIndex === 'number' && task.sceneIndex >= 1 && (
+                                        <button
+                                          type="button"
+                                          disabled={Boolean(busyAction)}
+                                          onClick={() =>
+                                            void handleRegenerateSceneImage(sess.sessionId, task.sceneIndex!)
+                                          }
+                                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-50"
+                                        >
+                                          <ImageIcon className="w-3 h-3" />
+                                          <span>Tạo lại ảnh phân cảnh</span>
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -1762,6 +1901,12 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                                 <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
                                   {sess.scenes.length} phân cảnh · {sess.aspectRatio} · {sessDone}/{sess.tasks.length} tác vụ ({sessPct}%)
                                 </span>
+                                {sess.musicConfig && sess.musicConfig.musicMode !== 'none' && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded border border-violet-400/35 bg-violet-500/10 text-violet-700 dark:text-violet-300">
+                                    <Music className="w-2.5 h-2.5" />
+                                    {AI_MUSIC_STYLE_OPTIONS.find((o) => o.value === sess.musicConfig?.musicStyle)?.shortLabel || 'Nhạc nền AI'} · {Math.round((sess.musicConfig.musicVolume ?? 0.25) * 100)}%
+                                  </span>
+                                )}
                               </div>
                               <div className="flex flex-wrap items-center gap-2 pl-7">
                                 <button
@@ -1896,15 +2041,37 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                                         ({scene.durationSec}s)
                                       </span>
                                     </div>
-                                    <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                                      {sceneAllDone
-                                        ? '✓ Hoàn thành phân cảnh'
-                                        : sceneRunning
-                                        ? 'Đang sản xuất phân cảnh...'
-                                        : sceneHasErr
-                                        ? 'Có lỗi trong phân cảnh'
-                                        : 'Chờ đến lượt'}
-                                    </span>
+                                    <div className="flex items-center gap-2">
+                                      {!sessRunning && tasks.some((t) => t.taskCode.includes('-IMG-')) && (
+                                        <button
+                                          type="button"
+                                          disabled={busyAction === `regen_${sess.sessionId}_${scene.sceneIndex}`}
+                                          onClick={() => void handleRegenerateSceneImage(sess.sessionId, scene.sceneIndex)}
+                                          title="Tạo lại Ảnh phân cảnh Bước 1 (khi gặp mâu thuẫn khóa nhân vật / logic hành động) và tự động chạy tiếp Video → Ghép phim"
+                                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer disabled:opacity-50 ${
+                                            sceneHasErr
+                                              ? 'bg-amber-600 text-white border-amber-500 hover:brightness-110'
+                                              : 'bg-white dark:bg-[#131a35] text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-600 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-300'
+                                          }`}
+                                        >
+                                          {busyAction === `regen_${sess.sessionId}_${scene.sceneIndex}` ? (
+                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                          ) : (
+                                            <RefreshCw className="w-3 h-3" />
+                                          )}
+                                          <span>Tạo lại ảnh &amp; Chạy tiếp</span>
+                                        </button>
+                                      )}
+                                      <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                                        {sceneAllDone
+                                          ? '✓ Hoàn thành phân cảnh'
+                                          : sceneRunning
+                                          ? 'Đang sản xuất phân cảnh...'
+                                          : sceneHasErr
+                                          ? 'Có lỗi trong phân cảnh'
+                                          : 'Chờ đến lượt'}
+                                      </span>
+                                    </div>
                                   </div>
 
                                   {(scene.actionDetail || scene.dialogue) && (
@@ -1982,12 +2149,15 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
         <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200/80 dark:border-slate-400/15">
             <div>
-              <h2 className="font-display text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <h2 className="font-display text-sm sm:text-base font-bold text-slate-900 dark:text-white flex flex-wrap items-center gap-2">
                 <MessageSquare className="w-4 h-4 text-cyan-500" />
-                <span>Phòng họp trực tiếp — Trao đổi &amp; Báo cáo tiến độ</span>
+                <span>Phòng họp trực tiếp — Trao đổi &amp; Điều phối thực thi</span>
+                <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/35">
+                  AI có quyền thực thi trực tiếp
+                </span>
               </h2>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                Mọi báo cáo nhận việc, kết quả Drive và lý do lỗi từ các AI đều tập trung tại đây và đồng bộ sang tab Phong_Hop_Tien_Do trên Google Sheets.
+                Điều phối viên AI có toàn quyền thực thi trực tiếp trên Sổ Điều Phối: đổi nguồn AI, chia tải chạy đa luồng song song, chạy lại Video giữ Ảnh Bước 1, tạo lại ảnh phân cảnh và tạm dừng phiên.
               </p>
             </div>
             <div className="flex items-center gap-1.5 text-xs">
@@ -2016,42 +2186,47 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
             </div>
           </div>
 
-          {/* Quick conversation starters with AI */}
+          {/* Quick executive commands for AI Coordinator */}
           <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               disabled={busyAction === 'send_meeting'}
               onClick={() =>
                 void handleSendMeetingMessage(
-                  'Báo cáo tổng quan tất cả kịch bản đang chờ/đang chạy và tiến độ từng phân cảnh hiện tại.'
+                  'Hãy tự động chia tải toàn bộ các phiên đang chờ và đang lỗi sang các nguồn AI đang sẵn sàng (Gemini, Qwen, Google Flow — giữ nguyên các Ảnh Bước 1 đã hoàn thành) rồi kích hoạt chạy SONG SONG đa luồng ngay lập tức.'
                 )
               }
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 dark:bg-white/5 hover:bg-cyan-500/15 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 cursor-pointer disabled:opacity-50"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-700 dark:text-emerald-300 border border-emerald-500/35 cursor-pointer disabled:opacity-50"
             >
-              <Sparkles className="w-3 h-3 text-cyan-500" />
-              <span>Báo cáo toàn bộ tiến độ</span>
+              <Layers className="w-3 h-3" />
+              <span>Lệnh AI: Chia tải &amp; Chạy song song ngay</span>
             </button>
             <button
               type="button"
               disabled={busyAction === 'send_meeting'}
               onClick={() =>
                 void handleSendMeetingMessage(
-                  'Kiểm tra tình trạng sẵn sàng của Gemini, Qwen, Muse AI và tư vấn cách xử lý nếu AI nào đang ngoại tuyến hoặc lỗi.'
+                  'Kiểm tra tất cả phiên đang lỗi ở Bước 2 Video, giữ nguyên Ảnh Bước 1 đã hoàn thành, chuyển bước Video lỗi sang nguồn khỏe hơn (Gemini hoặc Google Flow) và chạy lại ngay.'
                 )
               }
-              className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 dark:bg-white/5 hover:bg-cyan-500/15 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 cursor-pointer disabled:opacity-50"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-800 dark:text-amber-200 border border-amber-500/35 cursor-pointer disabled:opacity-50"
             >
-              Hỏi tình trạng kết nối các AI
+              <RotateCcw className="w-3 h-3" />
+              <span>Lệnh AI: Cứu phiên lỗi Video (giữ ảnh B1)</span>
             </button>
-            {activeSession && !isRunning && (
-              <button
-                type="button"
-                onClick={() => void handleStartSequentialRun(false)}
-                className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30 cursor-pointer"
-              >
-                Chạy tiếp tác vụ chờ
-              </button>
-            )}
+            <button
+              type="button"
+              disabled={busyAction === 'send_meeting'}
+              onClick={() =>
+                void handleSendMeetingMessage(
+                  'Báo cáo tổng quan tất cả kịch bản đang chờ/đang chạy, các luồng song song hiện tại và tình trạng kết nối Gemini, Qwen, Muse AI.'
+                )
+              }
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 dark:bg-white/5 hover:bg-cyan-500/15 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 cursor-pointer disabled:opacity-50"
+            >
+              <Sparkles className="w-3 h-3 text-cyan-500" />
+              <span>Báo cáo tiến độ &amp; luồng AI</span>
+            </button>
             {activeSession && failedTasksCount > 0 && !isRunning && (
               <button
                 type="button"
