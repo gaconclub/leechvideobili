@@ -1167,7 +1167,9 @@ async function ensureYtDlpPath(): Promise<string> {
 
       fs.mkdirSync(binDir, { recursive: true });
       const assetName = isWin ? 'yt-dlp.exe' : isMac ? 'yt-dlp_macos' : 'yt-dlp_linux';
-      const res = await fetch(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${assetName}`);
+      const res = await fetch(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${assetName}`, {
+        signal: AbortSignal.timeout(25_000),
+      });
       if (!res.ok || !res.body) {
         throw new Error(`Không thể tải công cụ yt-dlp (HTTP ${res.status})`);
       }
@@ -1282,7 +1284,7 @@ function runYtDlpJson(ytDlpBin: string, args: string[], timeoutMs = 45_000): Pro
     let stderr = '';
     const timer = setTimeout(() => {
       proc.kill('SIGKILL');
-      reject(new Error('Hết thời gian chờ phản hồi từ YouTube'));
+      reject(new Error('Hết thời gian chờ phản hồi từ nền tảng video'));
     }, timeoutMs);
 
     proc.stdout.on('data', (c) => {
@@ -2728,7 +2730,12 @@ function buildQualitiesFromYtdlpFormats(formats: any[] | undefined): { qn: numbe
 }
 
 async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<any[]> {
-  const ytDlpBin = await ensureYtDlpPath();
+  let ytDlpBin: string | null = null;
+  try {
+    ytDlpBin = await ensureYtDlpPath();
+  } catch {
+    ytDlpBin = null;
+  }
   const tempCookiePath = writeYtCookiesFile(`fb_${crypto.randomBytes(4).toString('hex')}`, rawCookies);
   const cookieArgs = tempCookiePath ? ['--cookies', tempCookiePath] : [];
   const defaultFbQualities = [
@@ -2783,12 +2790,13 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
         }
       }
 
-      try {
-        const listJson = await runYtDlpJson(
-          ytDlpBin,
-          ['--flat-playlist', '--playlist-end', '100', '-J', '--no-warnings', ...cookieArgs, resolvedUrl],
-          45_000
-        );
+      if (ytDlpBin) {
+        try {
+          const listJson = await runYtDlpJson(
+            ytDlpBin,
+            ['--flat-playlist', '--playlist-end', '100', '-J', '--no-warnings', ...cookieArgs, resolvedUrl],
+            45_000
+          );
         const entries: any[] = Array.isArray(listJson?.entries) ? listJson.entries : [];
         const fallbackAuthor = listJson?.uploader || listJson?.channel || listJson?.title || 'Facebook';
         const results: any[] = [];
@@ -2821,9 +2829,10 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
             availableQualities: defaultFbQualities,
           });
         }
-        if (results.length > 0) return results;
-      } catch {
-        // fall through to clear list error below
+          if (results.length > 0) return results;
+        } catch {
+          // fall through to clear list error below
+        }
       }
 
       if (htmlList.isGlobalReelsFeed && !buildFacebookCookieHeader(rawCookies)) {
@@ -2842,11 +2851,13 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
     }
 
     try {
-      const info = await runYtDlpJson(
-        ytDlpBin,
-        ['-J', '--no-warnings', '--playlist-end', '30', ...cookieArgs, resolvedUrl],
-        35_000
-      );
+      if (!ytDlpBin) {
+        throw new Error('yt-dlp tạm chưa sẵn sàng');
+      }
+      const ytArgs = isSingleVideoId
+        ? ['-J', '--no-warnings', '--no-playlist', ...cookieArgs, resolvedUrl]
+        : ['-J', '--no-warnings', '--playlist-end', '30', ...cookieArgs, resolvedUrl];
+      const info = await runYtDlpJson(ytDlpBin, ytArgs, isSingleVideoId ? 22_000 : 35_000);
 
       if (Array.isArray(info?.entries) && info.entries.length > 0) {
         const fallbackAuthor = info?.uploader || info?.channel || info?.title || 'Facebook';
@@ -2854,10 +2865,11 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
         for (let idx = 0; idx < info.entries.length; idx += 1) {
           const entry = info.entries[idx];
           if (!entry) continue;
-          const entryUrl =
+          const entryUrl = normalizeFacebookUrl(
             (typeof entry.webpage_url === 'string' && entry.webpage_url.startsWith('http') && entry.webpage_url) ||
-            (typeof entry.url === 'string' && entry.url.startsWith('http') && entry.url) ||
-            resolvedUrl;
+              (typeof entry.url === 'string' && entry.url.startsWith('http') && entry.url) ||
+              resolvedUrl
+          );
           const vid = String(entry.id || `${extractFacebookIdFromUrl(resolvedUrl)}_${idx + 1}`);
           const thumbs: any[] = Array.isArray(entry.thumbnails) ? entry.thumbnails : [];
           const pic = entry.thumbnail || thumbs[thumbs.length - 1]?.url || '';
@@ -2902,7 +2914,7 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
           views: Number(info?.view_count || 0),
           pubdate: parseUploadDateToUnix(info?.upload_date) || Number(info?.timestamp || 0),
           pic,
-          sourceUrl: info?.webpage_url || resolvedUrl,
+          sourceUrl: normalizeFacebookUrl(info?.webpage_url || resolvedUrl),
           availableQualities: buildQualitiesFromYtdlpFormats(info?.formats),
         },
       ];
@@ -8372,6 +8384,10 @@ async function startServer() {
   });
 
   const httpServer = http.createServer(app);
+  // Prevent intermittent browser NetworkError / ECONNRESET behind reverse proxies (Cloud Run LB keeps idle sockets 60s)
+  httpServer.keepAliveTimeout = 65_000;
+  httpServer.headersTimeout = 66_000;
+  httpServer.requestTimeout = 300_000;
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -8391,6 +8407,8 @@ async function startServer() {
     console.log(`BiliBatch server running at http://localhost:${PORT}`);
     initCommandCenter();
     void autoStartLocalMuse2ApiOnServerBoot();
+    // Pre-warm yt-dlp asynchronously so first Facebook/YouTube/TikTok link parses immediately without cold-download delay
+    void ensureYtDlpPath().catch(() => {});
   });
 
   const handleShutdown = () => {

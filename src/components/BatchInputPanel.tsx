@@ -6,7 +6,7 @@ import { parseUrlsFromText } from '../utils/formatters';
 interface BatchInputPanelProps {
   isInspecting: boolean;
   inspectErrors: InspectError[];
-  onInspect: (urls: string[]) => Promise<void>;
+  onInspect: (urls: string[]) => Promise<boolean | void>;
   onClearErrors: () => void;
 }
 
@@ -29,8 +29,10 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (detectedUrls.length === 0 || isInspecting) return;
-    await onInspect(detectedUrls);
-    setRawText('');
+    const allOk = await onInspect(detectedUrls);
+    if (allOk !== false) {
+      setRawText('');
+    }
   };
 
   return (
@@ -130,13 +132,13 @@ export const BatchInputPanel: React.FC<BatchInputPanelProps> = ({
               Ẩn thông báo
             </button>
           </div>
-          <ul className="space-y-1 text-xs text-rose-700 dark:text-rose-200 font-mono">
+          <ul className="space-y-1.5 text-xs text-rose-700 dark:text-rose-200 font-mono">
             {inspectErrors.map((err, i) => (
-              <li key={i} className="flex items-center gap-2 truncate">
-                <Link2 className="w-3 h-3 shrink-0" />
-                <span className="truncate">{err.url}</span>
-                <span aria-hidden="true">—</span>
-                <span className="font-sans">{err.message}</span>
+              <li key={i} className="flex items-start gap-2 break-words">
+                <Link2 className="w-3 h-3 shrink-0 mt-0.5" />
+                <span className="break-all">{err.url}</span>
+                <span aria-hidden="true" className="shrink-0">—</span>
+                <span className="font-sans leading-relaxed">{err.message}</span>
               </li>
             ))}
           </ul>

@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.24",
-    "date": "24/11/2026",
-    "title": "feat: add configurable API version to Gemini client",
+    "version": "1.0.25",
+    "date": "25/11/2026",
+    "title": "feat: implement chunked inspection with retry logic",
     "changes": [
-      "feat: add configurable API version to Gemini client"
+      "feat: implement chunked inspection with retry logic"
     ]
   },
   {
