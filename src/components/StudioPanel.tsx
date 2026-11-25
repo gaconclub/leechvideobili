@@ -36,6 +36,8 @@ import {
   ShieldCheck,
   Wrench,
   Eye,
+  Camera,
+  Pencil,
 } from 'lucide-react';
 import {
   AiProviderId,
@@ -63,6 +65,7 @@ import {
   StudioMusicTrack,
   StudioProductionFormat,
   StudioProjectProfile,
+  StudioSavedCharacter,
   StudioScriptMode,
   StudioUploadedAsset,
   StudioVideoStyle,
@@ -215,6 +218,28 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [isGeneratingChar, setIsGeneratingChar] = useState(false);
   const [charError, setCharError] = useState('');
   const charUploadInputRef = useRef<HTMLInputElement>(null);
+  const charReplaceInputRef = useRef<HTMLInputElement>(null);
+  const [characterLibrary, setCharacterLibrary] = useState<StudioSavedCharacter[]>([]);
+  const [showCharacterLibrary, setShowCharacterLibrary] = useState(false);
+  const [charLibraryQuery, setCharLibraryQuery] = useState('');
+  const [charLibraryStatus, setCharLibraryStatus] = useState('');
+  const [savingLibraryCharId, setSavingLibraryCharId] = useState('');
+  const [confirmDeleteLibCharId, setConfirmDeleteLibCharId] = useState('');
+  const [editingLibCharId, setEditingLibCharId] = useState('');
+  const [editingLibName, setEditingLibName] = useState('');
+  const [editingLibDesc, setEditingLibDesc] = useState('');
+  const [replaceImageTarget, setReplaceImageTarget] = useState<{ scope: 'active' | 'library'; id: string } | null>(
+    null
+  );
+  const charLibrarySyncTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    return () => {
+      for (const timer of Object.values(charLibrarySyncTimersRef.current)) {
+        clearTimeout(timer);
+      }
+    };
+  }, []);
 
   const selectedChar = characters.find((c) => c.id === selectedCharacterId) || characters[0] || null;
 
@@ -466,6 +491,17 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         const sData = await parseJsonSafe<{ styles?: LearnedVideoStyle[] }>(sr);
         if (Array.isArray(sData.styles)) {
           setLearnedStyles(sData.styles);
+        }
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const cr = await fetch('/api/studio/character-library');
+      if (cr.ok) {
+        const cData = await parseJsonSafe<{ characters?: StudioSavedCharacter[] }>(cr);
+        if (Array.isArray(cData.characters)) {
+          setCharacterLibrary(cData.characters);
         }
       }
     } catch {
@@ -875,8 +911,234 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     };
   };
 
+  const persistCharacterToLibrary = async (
+    char: StudioCharacterRef,
+    opts?: { silent?: boolean; explicitId?: string }
+  ): Promise<StudioSavedCharacter | null> => {
+    if (!char.dataUrl) return null;
+    const targetLibId = opts?.explicitId || char.libraryId || undefined;
+    if (!opts?.silent) {
+      setSavingLibraryCharId(char.id);
+    }
+    try {
+      const res = await fetch('/api/studio/character-library', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: targetLibId,
+          name: char.name,
+          dataUrl: char.dataUrl,
+          description: char.description ?? '',
+          source: char.source,
+          ageGroup: char.ageGroup,
+          gender: char.gender,
+          voiceMode: char.voiceMode,
+          voiceId: char.voiceId,
+          offlineVoice: char.offlineVoice,
+          voiceStyle: char.voiceStyle,
+          accentLock: char.accentLock || 'vn_north',
+          syncProfile: char.syncProfile,
+        }),
+      });
+      const data = await parseJsonSafe<{
+        character?: StudioSavedCharacter;
+        characters?: StudioSavedCharacter[];
+        error?: string;
+      }>(res);
+      if (!res.ok || !data.character) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      if (Array.isArray(data.characters)) {
+        setCharacterLibrary(data.characters);
+      }
+      const savedId = data.character.id;
+      if (!char.libraryId || char.libraryId !== savedId) {
+        setCharacters((prev) =>
+          prev.map((c) => (c.id === char.id ? { ...c, libraryId: savedId } : c))
+        );
+      }
+      if (!opts?.silent) {
+        setCharLibraryStatus(`Đã lưu "${data.character.name}" vào Thư viện nhân vật.`);
+      }
+      return data.character;
+    } catch (err: any) {
+      if (!opts?.silent) {
+        setCharError(err?.message || 'Không thể lưu nhân vật vào thư viện.');
+      }
+      return null;
+    } finally {
+      if (!opts?.silent) {
+        setSavingLibraryCharId((prev) => (prev === char.id ? '' : prev));
+      }
+    }
+  };
+
+  const scheduleLibraryAutoSync = (updatedChar: StudioCharacterRef) => {
+    const libId = updatedChar.libraryId;
+    if (!libId) return;
+    const existingTimer = charLibrarySyncTimersRef.current[libId];
+    if (existingTimer) clearTimeout(existingTimer);
+    charLibrarySyncTimersRef.current[libId] = setTimeout(() => {
+      delete charLibrarySyncTimersRef.current[libId];
+      void persistCharacterToLibrary(updatedChar, { silent: true, explicitId: libId });
+    }, 650);
+  };
+
+  const handleTriggerReplaceCharacterImage = (scope: 'active' | 'library', id: string) => {
+    setReplaceImageTarget({ scope, id });
+    charReplaceInputRef.current?.click();
+  };
+
+  const handleReplaceCharacterImageFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    const target = replaceImageTarget;
+    setReplaceImageTarget(null);
+    if (!file || !target) return;
+    setCharError('');
+    setCharLibraryStatus('');
+    try {
+      const nextDataUrl = await compressImageFileToDataUrl(file, 960);
+      if (target.scope === 'active') {
+        const current = characters.find((c) => c.id === target.id);
+        if (!current) return;
+        const updatedChar: StudioCharacterRef = { ...current, dataUrl: nextDataUrl };
+        setCharacters((prev) => prev.map((c) => (c.id === target.id ? updatedChar : c)));
+        if (updatedChar.libraryId) {
+          await persistCharacterToLibrary(updatedChar, { explicitId: updatedChar.libraryId });
+        } else {
+          setCharLibraryStatus(`Đã thay ảnh nhân vật "${updatedChar.name}".`);
+        }
+      } else {
+        const saved = characterLibrary.find((c) => c.id === target.id);
+        if (!saved) return;
+        const updatedSaved = await persistCharacterToLibrary(
+          { ...saved, libraryId: saved.id, dataUrl: nextDataUrl },
+          { explicitId: saved.id }
+        );
+        if (updatedSaved) {
+          setCharacters((prev) =>
+            prev.map((c) =>
+              c.libraryId === saved.id || c.id === `char_${saved.id}`
+                ? { ...c, dataUrl: updatedSaved.dataUrl }
+                : c
+            )
+          );
+          setCharLibraryStatus(`Đã thay ảnh nhân vật "${updatedSaved.name}" trong Thư viện.`);
+        }
+      }
+    } catch (err: any) {
+      setCharError(err?.message || 'Không thể thay ảnh nhân vật.');
+    }
+  };
+
+  const handleToggleLibraryCharacter = (saved: StudioSavedCharacter) => {
+    setCharError('');
+    setCharLibraryStatus('');
+    const alreadyIdx = characters.findIndex(
+      (c) => c.libraryId === saved.id || c.id === saved.id || c.id === `char_${saved.id}`
+    );
+    if (alreadyIdx >= 0) {
+      const removedId = characters[alreadyIdx].id;
+      setCharacters((prev) => {
+        const next = prev.filter((c) => c.id !== removedId);
+        if (selectedCharacterId === removedId) {
+          setSelectedCharacterId(next[0]?.id || '');
+        }
+        return next;
+      });
+      return;
+    }
+    if (characters.length >= 8) {
+      setCharError('Đã đạt tối đa 8 nhân vật đồng bộ trong phiên này. Hãy bỏ bớt nhân vật đang chọn trước.');
+      return;
+    }
+    const activeId = `char_${saved.id}`;
+    const importedChar: StudioCharacterRef = {
+      id: activeId,
+      libraryId: saved.id,
+      name: saved.name,
+      dataUrl: saved.dataUrl,
+      description: saved.description,
+      source: saved.source || 'uploaded',
+      ageGroup: saved.ageGroup,
+      gender: saved.gender,
+      voiceMode: saved.voiceMode,
+      voiceId: saved.voiceId,
+      offlineVoice: saved.offlineVoice,
+      voiceStyle: saved.voiceStyle,
+      accentLock: saved.accentLock || 'vn_north',
+      syncProfile: saved.syncProfile ? { ...saved.syncProfile } : undefined,
+    };
+    setCharacters((prev) => [...prev, importedChar]);
+    setSelectedCharacterId(activeId);
+    setCharLibraryStatus(`Đã nạp nhân vật "${saved.name}" từ Thư viện.`);
+  };
+
+  const handleDeleteLibraryCharacter = async (libId: string) => {
+    setCharError('');
+    setCharLibraryStatus('');
+    try {
+      const res = await fetch(`/api/studio/character-library/${encodeURIComponent(libId)}`, {
+        method: 'DELETE',
+      });
+      const data = await parseJsonSafe<{ ok?: boolean; characters?: StudioSavedCharacter[]; error?: string }>(res);
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (Array.isArray(data.characters)) {
+        setCharacterLibrary(data.characters);
+      }
+      setCharacters((prev) =>
+        prev.map((c) => (c.libraryId === libId ? { ...c, libraryId: undefined } : c))
+      );
+      if (confirmDeleteLibCharId === libId) setConfirmDeleteLibCharId('');
+      if (editingLibCharId === libId) setEditingLibCharId('');
+      setCharLibraryStatus('Đã xóa nhân vật khỏi Thư viện app.');
+    } catch (err: any) {
+      setCharError(err?.message || 'Không thể xóa nhân vật khỏi thư viện.');
+    }
+  };
+
+  const handleStartEditLibraryCharacter = (saved: StudioSavedCharacter) => {
+    setEditingLibCharId(saved.id);
+    setEditingLibName(saved.name || '');
+    setEditingLibDesc(saved.description || '');
+    setConfirmDeleteLibCharId('');
+  };
+
+  const handleSaveLibraryCharacterEdit = async (saved: StudioSavedCharacter) => {
+    const nextName = editingLibName.trim() || saved.name;
+    const nextDesc = editingLibDesc.trim();
+    const updated = await persistCharacterToLibrary(
+      {
+        ...saved,
+        libraryId: saved.id,
+        name: nextName,
+        description: nextDesc || undefined,
+      },
+      { explicitId: saved.id }
+    );
+    if (updated) {
+      setCharacters((prev) =>
+        prev.map((c) =>
+          c.libraryId === saved.id || c.id === `char_${saved.id}`
+            ? { ...c, name: updated.name, description: updated.description }
+            : c
+        )
+      );
+      setEditingLibCharId('');
+      setCharLibraryStatus(`Đã cập nhật thông tin nhân vật "${updated.name}" trong Thư viện.`);
+    }
+  };
+
   const updateCharacterRef = (charId: string, patch: Partial<StudioCharacterRef>) => {
-    setCharacters((prev) => prev.map((c) => (c.id === charId ? { ...c, ...patch } : c)));
+    setCharacters((prev) =>
+      prev.map((c) => {
+        if (c.id !== charId) return c;
+        const updated = { ...c, ...patch };
+        scheduleLibraryAutoSync(updated);
+        return updated;
+      })
+    );
   };
 
   const updateSelectedCharacterSyncProfile = (
@@ -894,13 +1156,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           voice: '',
           distinguishingMarks: '',
         };
-        return {
+        const updated: StudioCharacterRef = {
           ...c,
           syncProfile: {
             ...currentProfile,
             [field]: value,
           },
         };
+        scheduleLibraryAutoSync(updated);
+        return updated;
       })
     );
   };
@@ -996,6 +1260,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       const profileById = new Map(data.profiles.map((p) => [p.id, p]));
+      const updatedForLibrary: StudioCharacterRef[] = [];
       setCharacters((prev) =>
         prev.map((c) => {
           const found = profileById.get(c.id);
@@ -1003,7 +1268,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           const ageMeta = found.suggestedAgeGroup
             ? CHARACTER_AGE_GROUP_OPTIONS.find((a) => a.value === found.suggestedAgeGroup)
             : undefined;
-          return {
+          const nextChar: StudioCharacterRef = {
             ...c,
             syncProfile: found.syncProfile,
             description: c.description?.trim() ? c.description : found.suggestedDescription,
@@ -1019,8 +1284,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               ? { voiceId: ageMeta.defaultVoiceId, voiceStyle: ageMeta.pitchDirective }
               : {}),
           };
+          if (nextChar.libraryId) {
+            updatedForLibrary.push(nextChar);
+          }
+          return nextChar;
         })
       );
+      for (const chToSync of updatedForLibrary) {
+        void persistCharacterToLibrary(chToSync, { silent: true, explicitId: chToSync.libraryId });
+      }
       if (!selectedCharacterId && characters[0]) {
         setSelectedCharacterId(characters[0].id);
       }
@@ -1036,39 +1308,55 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     e.target.value = '';
     if (files.length === 0) return;
     setCharError('');
+    setCharLibraryStatus('');
     try {
       const voiceCfg = buildNewCharacterVoiceConfig();
-      let lastCreatedId = '';
-      for (const file of files.slice(0, 8)) {
+      const baseName = charNameInput.trim();
+      const baseDesc = charPromptInput.trim() || undefined;
+      const availableSlots = Math.max(0, 8 - characters.length);
+      const selectedFiles = files.slice(0, Math.min(8, Math.max(1, availableSlots || files.length)));
+      const createdChars: StudioCharacterRef[] = [];
+
+      for (let i = 0; i < selectedFiles.length; i += 1) {
+        const file = selectedFiles[i];
         const dataUrl = await compressImageFileToDataUrl(file, 960);
-        const newId = `char_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        lastCreatedId = newId;
-        setCharacters((prev) => {
-          if (prev.length >= 8) return prev;
-          const fallbackName = file.name.replace(/\.[^.]+$/, '');
-          const baseName = charNameInput.trim();
-          const finalName = baseName
-            ? files.length > 1
-              ? `${baseName} ${prev.length + 1}`
-              : baseName
-            : fallbackName;
-          return [
-            ...prev,
-            {
-              id: newId,
-              name: finalName,
-              dataUrl,
-              description: charPromptInput.trim() || undefined,
-              source: 'uploaded',
-              ...voiceCfg,
-            },
-          ];
+        const newId = `char_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`;
+        const fallbackName = file.name.replace(/\.[^.]+$/, '');
+        const finalName = baseName
+          ? selectedFiles.length > 1
+            ? `${baseName} ${i + 1}`
+            : baseName
+          : fallbackName;
+        createdChars.push({
+          id: newId,
+          name: finalName,
+          dataUrl,
+          description: baseDesc,
+          source: 'uploaded',
+          ...voiceCfg,
         });
       }
-      if (lastCreatedId) {
-        setSelectedCharacterId(lastCreatedId);
+
+      if (createdChars.length > 0) {
+        setCharacters((prev) => [...prev, ...createdChars].slice(0, 8));
+        setSelectedCharacterId(createdChars[createdChars.length - 1].id);
+        setCharNameInput('');
+        setCharPromptInput('');
+
+        // Automatically persist every uploaded character into the app's Character Library
+        let savedCount = 0;
+        for (const newChar of createdChars) {
+          const saved = await persistCharacterToLibrary(newChar, { silent: true });
+          if (saved) savedCount += 1;
+        }
+        if (savedCount > 0) {
+          setCharLibraryStatus(
+            savedCount === 1
+              ? `Đã tự động lưu "${createdChars[0].name}" vào Thư viện nhân vật để tái sử dụng các phiên sau.`
+              : `Đã tự động lưu ${savedCount} nhân vật vào Thư viện app để tái sử dụng các phiên sau.`
+          );
+        }
       }
-      setCharNameInput('');
     } catch (err: any) {
       setCharError(err?.message || 'Không thể đọc ảnh nhân vật.');
     }
@@ -1082,6 +1370,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
     setIsGeneratingChar(true);
     setCharError('');
+    setCharLibraryStatus('');
     try {
       const { res, data } = await fetchStudioJsonWithAutoRetry<{ dataUrl?: string; error?: string }>(
         '/api/studio/generate-image',
@@ -1109,19 +1398,21 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       const generatedUrl = data.dataUrl;
       const voiceCfg = buildNewCharacterVoiceConfig();
       const newCharId = `char_ai_${Date.now()}`;
-      setCharacters((prev) => [
-        ...prev.slice(0, 7),
-        {
-          id: newCharId,
-          name: (overrideName ?? charNameInput).trim() || `Nhân vật ${prev.length + 1}`,
-          description: desc,
-          dataUrl: generatedUrl,
-          source: 'ai_generated',
-          ...voiceCfg,
-        },
-      ]);
+      const newChar: StudioCharacterRef = {
+        id: newCharId,
+        name: (overrideName ?? charNameInput).trim() || `Nhân vật ${characters.length + 1}`,
+        description: desc,
+        dataUrl: generatedUrl,
+        source: 'ai_generated',
+        ...voiceCfg,
+      };
+      setCharacters((prev) => [...prev.slice(0, 7), newChar]);
       setSelectedCharacterId(newCharId);
       if (!overrideName) setCharNameInput('');
+      const saved = await persistCharacterToLibrary(newChar, { silent: true });
+      if (saved) {
+        setCharLibraryStatus(`Đã tự động lưu "${saved.name}" vào Thư viện nhân vật.`);
+      }
     } catch (err: any) {
       setCharError(err?.message || 'Không thể tạo ảnh nhân vật AI.');
     } finally {
@@ -3589,7 +3880,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     <span>{NORTHERN_VN_ACCENT_BADGE}</span>
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[10px] text-slate-500 dark:text-slate-400 hidden sm:inline">
                     Engine: <strong className="text-cyan-600 dark:text-cyan-300">{imageEngineMode === 'muse2api' ? 'Muse2API' : imageEngineMode === 'qwen' ? 'AI Qwen' : imageEngineMode === 'gemini_pro' ? 'Nano Pro' : 'Gemini'}</strong>
                   </span>
@@ -3601,6 +3892,25 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     onChange={handleUploadCharacters}
                     className="hidden"
                   />
+                  <input
+                    ref={charReplaceInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleReplaceCharacterImageFile}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCharacterLibrary((v) => !v)}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold border rounded-xl transition whitespace-nowrap cursor-pointer ${
+                      showCharacterLibrary
+                        ? 'text-violet-700 dark:text-violet-200 bg-violet-500/15 border-violet-500/40'
+                        : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-white/5 border-slate-200 dark:border-white/10 hover:bg-slate-200/70 dark:hover:bg-white/10'
+                    }`}
+                  >
+                    <Library className="w-3.5 h-3.5 text-violet-600 dark:text-violet-300" />
+                    <span>Thư viện ({characterLibrary.length})</span>
+                  </button>
                   <button
                     type="button"
                     disabled={characters.length >= 8}
@@ -3612,6 +3922,263 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   </button>
                 </div>
               </div>
+
+              {/* Quick-pick strip when library has saved characters and current session has none selected yet */}
+              {!showCharacterLibrary && characterLibrary.length > 0 && characters.length === 0 && (
+                <div className="p-2.5 rounded-xl bg-violet-500/5 dark:bg-violet-500/10 border border-violet-500/20 space-y-2">
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="font-semibold text-violet-700 dark:text-violet-300 inline-flex items-center gap-1.5">
+                      <Library className="w-3.5 h-3.5" />
+                      <span>Chọn nhanh nhân vật đã lưu ({characterLibrary.length})</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowCharacterLibrary(true)}
+                      className="text-[11px] font-semibold text-cyan-700 dark:text-cyan-300 hover:underline cursor-pointer"
+                    >
+                      Quản lý thư viện
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {characterLibrary.slice(0, 8).map((saved) => (
+                      <button
+                        key={saved.id}
+                        type="button"
+                        onClick={() => handleToggleLibraryCharacter(saved)}
+                        title={saved.description ? `${saved.name} — ${saved.description}` : saved.name}
+                        className="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-lg bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/25 hover:border-violet-400 text-[11px] font-semibold text-slate-800 dark:text-slate-100 transition cursor-pointer"
+                      >
+                        <img
+                          src={saved.dataUrl}
+                          alt={saved.name}
+                          className="w-6 h-6 rounded object-cover bg-slate-200 dark:bg-slate-800 shrink-0"
+                        />
+                        <span className="max-w-[120px] truncate">{saved.name}</span>
+                        <Plus className="w-3 h-3 text-violet-500 shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Persistent Character Library Drawer */}
+              {showCharacterLibrary && (
+                <div className="p-3 rounded-xl bg-slate-50/95 dark:bg-[#0b1024]/95 border border-violet-500/30 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <Library className="w-4 h-4 text-violet-600 dark:text-violet-300" />
+                      <span className="text-xs font-bold text-slate-900 dark:text-white">
+                        Thư viện nhân vật đã lưu ({characterLibrary.length})
+                      </span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 hidden sm:inline">
+                        · Tự động lưu khi tải ảnh lên, dùng lại mọi phiên
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {characterLibrary.length > 3 && (
+                        <input
+                          type="text"
+                          value={charLibraryQuery}
+                          onChange={(e) => setCharLibraryQuery(e.target.value)}
+                          placeholder="Tìm tên / mô tả..."
+                          className="h-7 w-36 sm:w-44 px-2 text-[11px] bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/20 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-none focus:border-violet-400"
+                        />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setShowCharacterLibrary(false)}
+                        aria-label="Đóng thư viện nhân vật"
+                        className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {characterLibrary.length === 0 ? (
+                    <div className="py-4 text-center text-[11px] text-slate-500 dark:text-slate-400">
+                      Chưa có nhân vật nào trong thư viện. Khi bạn bấm <strong>Tải ảnh mẫu</strong> hoặc{' '}
+                      <strong>AI vẽ</strong>, tên, ảnh và mô tả nhân vật sẽ tự động được lưu tại đây.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
+                      {characterLibrary
+                        .filter((item) => {
+                          const q = charLibraryQuery.trim().toLowerCase();
+                          if (!q) return true;
+                          return (
+                            item.name.toLowerCase().includes(q) ||
+                            String(item.description || '').toLowerCase().includes(q)
+                          );
+                        })
+                        .map((saved) => {
+                          const isSelectedInSession = characters.some(
+                            (c) => c.libraryId === saved.id || c.id === saved.id || c.id === `char_${saved.id}`
+                          );
+                          const isEditing = editingLibCharId === saved.id;
+                          const isConfirmingDelete = confirmDeleteLibCharId === saved.id;
+                          const hasFivePart = Boolean(
+                            saved.syncProfile &&
+                              (saved.syncProfile.face || saved.syncProfile.costume || saved.syncProfile.physique)
+                          );
+                          return (
+                            <div
+                              key={saved.id}
+                              className={`flex gap-2.5 p-2 rounded-xl border transition ${
+                                isSelectedInSession
+                                  ? 'border-emerald-500/60 bg-emerald-500/5 dark:bg-emerald-500/10'
+                                  : 'border-slate-200 dark:border-slate-400/20 bg-white dark:bg-[#111830]'
+                              }`}
+                            >
+                              <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-200 dark:bg-slate-800 shrink-0 group">
+                                <img src={saved.dataUrl} alt={saved.name} className="w-full h-full object-cover" />
+                                <button
+                                  type="button"
+                                  onClick={() => handleTriggerReplaceCharacterImage('library', saved.id)}
+                                  title="Thay ảnh nhân vật này"
+                                  className="absolute inset-x-0 bottom-0 py-0.5 flex items-center justify-center gap-0.5 bg-black/70 hover:bg-violet-600/90 text-white text-[9px] font-semibold transition cursor-pointer"
+                                >
+                                  <Camera className="w-2.5 h-2.5" />
+                                  <span>Đổi ảnh</span>
+                                </button>
+                              </div>
+
+                              <div className="min-w-0 flex-1 flex flex-col justify-between gap-1.5 text-[11px]">
+                                {isEditing ? (
+                                  <div className="space-y-1">
+                                    <input
+                                      type="text"
+                                      value={editingLibName}
+                                      onChange={(e) => setEditingLibName(e.target.value)}
+                                      placeholder="Tên nhân vật..."
+                                      className="w-full h-6 px-1.5 text-[11px] font-semibold bg-white dark:bg-[#0c1228] border border-violet-400/50 rounded-md text-slate-900 dark:text-white focus:outline-none"
+                                    />
+                                    <input
+                                      type="text"
+                                      value={editingLibDesc}
+                                      onChange={(e) => setEditingLibDesc(e.target.value)}
+                                      placeholder="Mô tả ngoại hình / trang phục..."
+                                      className="w-full h-6 px-1.5 text-[10px] bg-white dark:bg-[#0c1228] border border-slate-300 dark:border-slate-500/30 rounded-md text-slate-700 dark:text-slate-200 focus:outline-none"
+                                    />
+                                    <div className="flex items-center gap-1 pt-0.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleSaveLibraryCharacterEdit(saved)}
+                                        className="px-2 py-0.5 text-[10px] font-bold bg-violet-600 text-white rounded-md cursor-pointer"
+                                      >
+                                        Lưu
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setEditingLibCharId('')}
+                                        className="px-2 py-0.5 text-[10px] font-medium bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-200 rounded-md cursor-pointer"
+                                      >
+                                        Hủy
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div>
+                                      <div className="flex items-center justify-between gap-1">
+                                        <span className="font-bold text-slate-900 dark:text-white truncate">
+                                          {saved.name}
+                                        </span>
+                                        {hasFivePart && (
+                                          <span className="px-1 py-0.5 text-[9px] font-semibold bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border border-cyan-500/25 rounded shrink-0">
+                                            5 phần
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-2 mt-0.5">
+                                        {saved.description || 'Chưa có mô tả chi tiết.'}
+                                      </p>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleLibraryCharacter(saved)}
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md border transition cursor-pointer ${
+                                          isSelectedInSession
+                                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
+                                            : 'bg-violet-600 text-white border-violet-600 hover:brightness-110'
+                                        }`}
+                                      >
+                                        {isSelectedInSession ? (
+                                          <>
+                                            <CheckCircle2 className="w-3 h-3" />
+                                            <span>Đang dùng</span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Plus className="w-3 h-3" />
+                                            <span>Chọn dùng</span>
+                                          </>
+                                        )}
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => handleTriggerReplaceCharacterImage('library', saved.id)}
+                                        title="Thay ảnh nhân vật"
+                                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-medium bg-slate-100 dark:bg-white/5 hover:bg-slate-200/80 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 rounded-md cursor-pointer"
+                                      >
+                                        <Camera className="w-3 h-3" />
+                                        <span>Thay ảnh</span>
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => handleStartEditLibraryCharacter(saved)}
+                                        title="Sửa tên & mô tả nhân vật"
+                                        className="p-1 text-slate-500 hover:text-violet-600 dark:hover:text-violet-300 cursor-pointer"
+                                      >
+                                        <Pencil className="w-3 h-3" />
+                                      </button>
+
+                                      {isConfirmingDelete ? (
+                                        <div className="inline-flex items-center gap-1 ml-auto">
+                                          <button
+                                            type="button"
+                                            onClick={() => void handleDeleteLibraryCharacter(saved.id)}
+                                            className="px-1.5 py-0.5 text-[10px] font-bold bg-rose-600 text-white rounded-md cursor-pointer"
+                                          >
+                                            Xác nhận xóa
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setConfirmDeleteLibCharId('')}
+                                            className="px-1.5 py-0.5 text-[10px] bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-200 rounded-md cursor-pointer"
+                                          >
+                                            Hủy
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setConfirmDeleteLibCharId(saved.id);
+                                            setEditingLibCharId('');
+                                          }}
+                                          title="Xóa nhân vật khỏi thư viện"
+                                          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 rounded-md cursor-pointer ml-auto"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                          <span>Xóa</span>
+                                        </button>
+                                      )}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 text-xs">
                 <input
@@ -3742,10 +4309,30 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 </div>
               )}
 
+              {charLibraryStatus && (
+                <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-[11px] text-emerald-700 dark:text-emerald-300">
+                  <span className="inline-flex items-center gap-1.5 min-w-0">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{charLibraryStatus}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCharLibraryStatus('')}
+                    aria-label="Ẩn thông báo"
+                    className="p-0.5 text-emerald-600/70 hover:text-emerald-700 dark:hover:text-emerald-200 cursor-pointer shrink-0"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+
               {characters.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-80 overflow-y-auto pr-1">
                   {characters.map((ch, idx) => {
                     const isActiveChar = selectedChar?.id === ch.id;
+                    const isSavedInLib = Boolean(
+                      ch.libraryId && characterLibrary.some((item) => item.id === ch.libraryId)
+                    );
                     return (
                     <div
                       key={ch.id}
@@ -3758,9 +4345,21 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     >
                       <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-200 dark:bg-slate-800 shrink-0">
                         <img src={ch.dataUrl} alt={ch.name} className="w-full h-full object-cover" />
-                        <span className="absolute bottom-0.5 left-0.5 px-1 py-0.5 text-[9px] font-mono font-bold bg-black/70 text-white rounded">
+                        <span className="absolute top-0.5 left-0.5 px-1 py-0.5 text-[9px] font-mono font-bold bg-black/70 text-white rounded">
                           #{idx + 1}
                         </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleTriggerReplaceCharacterImage('active', ch.id);
+                          }}
+                          title="Thay ảnh nhân vật này"
+                          className="absolute inset-x-0 bottom-0 py-0.5 flex items-center justify-center gap-0.5 bg-black/70 hover:bg-violet-600/90 text-white text-[9px] font-semibold transition cursor-pointer"
+                        >
+                          <Camera className="w-2.5 h-2.5" />
+                          <span>Đổi ảnh</span>
+                        </button>
                       </div>
 
                       <div className="min-w-0 flex-1 space-y-1.5 text-[11px]">
@@ -3775,6 +4374,32 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                           />
                           <button
                             type="button"
+                            disabled={savingLibraryCharId === ch.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void persistCharacterToLibrary(ch);
+                            }}
+                            title={
+                              isSavedInLib
+                                ? 'Đã lưu trong Thư viện nhân vật (bấm để đồng bộ ngay)'
+                                : 'Lưu nhân vật này vào Thư viện app'
+                            }
+                            className={`p-1 rounded-md cursor-pointer shrink-0 transition ${
+                              isSavedInLib
+                                ? 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10'
+                                : 'text-slate-400 hover:text-violet-600 dark:hover:text-violet-300 hover:bg-violet-500/10'
+                            }`}
+                          >
+                            {savingLibraryCharId === ch.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : isSavedInLib ? (
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                            ) : (
+                              <Save className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               setCharacters((prev) => {
@@ -3785,8 +4410,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                                 return next;
                               });
                             }}
-                            aria-label="Xóa nhân vật"
-                            title="Xóa nhân vật"
+                            aria-label="Bỏ nhân vật khỏi phiên này"
+                            title="Bỏ nhân vật khỏi phiên này (vẫn giữ trong Thư viện)"
                             className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer shrink-0"
                           >
                             <X className="w-3.5 h-3.5" />
