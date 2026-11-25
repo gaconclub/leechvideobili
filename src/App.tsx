@@ -815,42 +815,97 @@ export default function App() {
     }
   }, [items, concurrency, runJobForItem]);
 
-  const handleInspect = async (urls: string[]) => {
+  const handleInspect = async (urls: string[]): Promise<boolean> => {
     setIsInspecting(true);
     setInspectErrors([]);
+
+    const collectedItems: QueueVideoItem[] = [];
+    const collectedErrors: InspectError[] = [];
+    let firstSuggestedFolder = '';
+
+    const fetchInspectChunkWithRetry = async (chunk: string[]) => {
+      const retryDelays = [1200, 2500];
+      let lastErr: any = null;
+      for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+        try {
+          const res = await fetch('/api/bilibili/inspect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ urls: chunk, expandPages: false, sessdata, ytCookies }),
+          });
+          if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < retryDelays.length) {
+            await new Promise((r) => setTimeout(r, retryDelays[attempt]));
+            continue;
+          }
+          const data = await parseJsonSafe(res);
+          return { res, data };
+        } catch (err: any) {
+          lastErr = err;
+          const msg = String(err?.message || err || '');
+          const isTransientNetwork =
+            /NetworkError|Failed to fetch|Load failed|fetch|network|reset|aborted/i.test(msg);
+          if (isTransientNetwork && attempt < retryDelays.length) {
+            await new Promise((r) => setTimeout(r, retryDelays[attempt]));
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw lastErr || new Error('Không thể kết nối tới máy chủ');
+    };
+
     try {
-      const res = await fetch('/api/bilibili/inspect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls, expandPages: false, sessdata, ytCookies }),
-      });
-      const data = await parseJsonSafe(res);
-      if (!res.ok) {
-        setInspectErrors([{ url: urls[0], message: data.error || 'Lỗi phân tích liên kết' }]);
-        return;
+      // Chunk large link lists (max 3 URLs per request) so reverse proxies never drop a long single POST
+      const chunkSize = 3;
+      for (let i = 0; i < urls.length; i += chunkSize) {
+        const chunk = urls.slice(i, i + chunkSize);
+        try {
+          const { res, data } = await fetchInspectChunkWithRetry(chunk);
+          if (!res.ok) {
+            for (const u of chunk) {
+              collectedErrors.push({ url: u, message: data.error || `Lỗi phân tích liên kết (HTTP ${res.status})` });
+            }
+            continue;
+          }
+
+          const newItems: QueueVideoItem[] = (data.items || []).map((raw: any) => ({
+            ...raw,
+            selectedQn: globalQn,
+            selectedFormat: globalFormat,
+            selectedWatermark: raw.platform === 'youtube' ? 'none' : globalWatermark,
+            selected: true,
+            status: 'idle',
+            progress: 0,
+          }));
+          collectedItems.push(...newItems);
+
+          if (!firstSuggestedFolder && typeof data.suggestedFolder === 'string' && data.suggestedFolder.trim()) {
+            firstSuggestedFolder = data.suggestedFolder.trim();
+          }
+          if (Array.isArray(data.errors) && data.errors.length > 0) {
+            collectedErrors.push(...data.errors);
+          }
+        } catch (err: any) {
+          const rawMsg = String(err?.message || '');
+          const friendlyMsg = /NetworkError|Failed to fetch|Load failed/i.test(rawMsg)
+            ? 'Mất kết nối tạm thời tới máy chủ khi phân tích (hệ thống đã tự thử lại). Vui lòng bấm Phân tích lại sau vài giây.'
+            : rawMsg || 'Không thể kết nối máy chủ';
+          for (const u of chunk) {
+            collectedErrors.push({ url: u, message: friendlyMsg });
+          }
+        }
       }
 
-      const newItems: QueueVideoItem[] = (data.items || []).map((raw: any) => ({
-        ...raw,
-        selectedQn: globalQn,
-        selectedFormat: globalFormat,
-        selectedWatermark: raw.platform === 'youtube' ? 'none' : globalWatermark,
-        selected: true,
-        status: 'idle',
-        progress: 0,
-      }));
-
-      setItems((prev) => [...prev, ...newItems]);
-      if (typeof data.suggestedFolder === 'string' && data.suggestedFolder.trim()) {
-        handleChangeSubfolderName(data.suggestedFolder.trim());
+      if (collectedItems.length > 0) {
+        setItems((prev) => [...prev, ...collectedItems]);
       }
-      if (Array.isArray(data.errors) && data.errors.length > 0) {
-        setInspectErrors(data.errors);
+      if (firstSuggestedFolder) {
+        handleChangeSubfolderName(firstSuggestedFolder);
       }
-    } catch (err: any) {
-      setInspectErrors([
-        { url: urls[0], message: err?.message || 'Không thể kết nối máy chủ' },
-      ]);
+      if (collectedErrors.length > 0) {
+        setInspectErrors(collectedErrors);
+      }
+      return collectedErrors.length === 0 && collectedItems.length > 0;
     } finally {
       setIsInspecting(false);
     }
