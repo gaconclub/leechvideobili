@@ -367,6 +367,7 @@ export interface CharacterFivePartProfile {
 
 export interface StudioCharacterRef {
   id: string;
+  libraryId?: string;
   name: string;
   dataUrl: string;
   description?: string;
@@ -379,6 +380,11 @@ export interface StudioCharacterRef {
   voiceStyle?: string;
   accentLock?: 'vn_north';
   syncProfile?: CharacterFivePartProfile;
+}
+
+export interface StudioSavedCharacter extends StudioCharacterRef {
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface CharacterVoiceProfile {

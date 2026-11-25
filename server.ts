@@ -28,6 +28,7 @@ import {
   CharacterFivePartProfile,
   completeStudioChunkedUpload,
   deleteLearnedVideoStyle,
+  deleteStudioCharacterLibraryItem,
   deleteStudioProjectProfile,
   DerivativeAspectRatio,
   DerivativeBlueprint,
@@ -52,9 +53,11 @@ import {
   learnAndCreateIndependentBatch,
   learnVideosAndCreateBlueprint,
   listLearnedVideoStyles,
+  listStudioCharacterLibrary,
   listStudioLibraryVideos,
   listStudioProjectProfiles,
   listVieNeuVoices,
+  saveStudioCharacterLibraryItem,
   saveStudioProjectProfile,
   saveUploadedStudioAudio,
   saveUploadedStudioVideo,
@@ -2074,28 +2077,117 @@ function findChromiumBrowserBinary(): string | null {
   return null;
 }
 
-async function resolveReelsPaginationDocId(html: string): Promise<string> {
-  const fallbackDocId = '41127736506813457';
-  const preloadUrls = Array.from(
-    html.matchAll(/<link[^>]+href="(https:\/\/static\.xx\.fbcdn\.net\/rsrc\.php\/[^"]+\.js[^"]*)"/g)
-  )
-    .map((m) => m[1].replace(/&amp;/g, '&'))
-    .slice(0, 18);
+interface FbPaginationDocIds {
+  reelsDocId: string;
+  allVideosDocId: string;
+  latestVideosDocId: string;
+  fetchedAt: number;
+}
 
-  for (const jsUrl of preloadUrls) {
+let cachedFbDocIds: FbPaginationDocIds | null = null;
+
+async function resolveFacebookPaginationDocIds(html: string): Promise<{
+  reelsDocId: string;
+  allVideosDocId: string;
+  latestVideosDocId: string;
+}> {
+  const now = Date.now();
+  if (cachedFbDocIds && now - cachedFbDocIds.fetchedAt < 30 * 60 * 1000) {
+    return {
+      reelsDocId: cachedFbDocIds.reelsDocId,
+      allVideosDocId: cachedFbDocIds.allVideosDocId,
+      latestVideosDocId: cachedFbDocIds.latestVideosDocId,
+    };
+  }
+
+  let reelsDocId = '29259931620295125';
+  let allVideosDocId = '29643863005208862';
+  let latestVideosDocId = '28893630133641002';
+
+  const targetUrls = new Set<string>();
+  for (const pm of html.matchAll(
+    /<(?:link|script)[^>]+(?:href|src)="(https:\/\/static\.xx\.fbcdn\.net\/rsrc\.php\/[^"]+\.js[^"]*)"/g
+  )) {
+    targetUrls.add(pm[1].replace(/&amp;/g, '&'));
+  }
+
+  // Also resolve JS bundles mapped to Reels/Videos root components via rsrcMap/compMap
+  const rsrcMap: Record<string, any> = {};
+  const compMap: Record<string, any> = {};
+  const scriptRe = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+  let sm: RegExpExecArray | null;
+  while ((sm = scriptRe.exec(html)) !== null) {
+    const b = sm[1]?.trim();
+    if (!b || !b.startsWith('{') || (!b.includes('rsrcMap') && !b.includes('compMap'))) continue;
     try {
-      const r = await fetch(jsUrl, { signal: AbortSignal.timeout(6000) });
-      if (!r.ok) continue;
-      const js = await r.text();
-      const match = js.match(
-        /ProfileCometAppCollectionReelsRendererPaginationQuery_facebookRelayOperation"[^a-zA-Z0-9]+(\d{12,22})/
-      );
-      if (match?.[1]) return match[1];
+      const stack: any[] = [JSON.parse(b)];
+      while (stack.length > 0) {
+        const cur = stack.pop();
+        if (!cur || typeof cur !== 'object') continue;
+        if (cur.rsrcMap && typeof cur.rsrcMap === 'object') Object.assign(rsrcMap, cur.rsrcMap);
+        if (cur.compMap && typeof cur.compMap === 'object') Object.assign(compMap, cur.compMap);
+        for (const v of Array.isArray(cur) ? cur : Object.values(cur)) {
+          if (v && typeof v === 'object') stack.push(v);
+        }
+      }
     } catch {
-      // ignore single preload fetch failure
+      // ignore malformed script JSON
     }
   }
-  return fallbackDocId;
+
+  for (const compName of [
+    'ProfileCometCollectionRoot.react',
+    'CometProfilePlusVideosRoot.react',
+    'ProfileCometRoot.react',
+  ]) {
+    const rList: string[] = Array.isArray(compMap[compName]?.r) ? compMap[compName].r : [];
+    for (const rk of rList) {
+      const entry = rsrcMap[rk];
+      if (entry?.type === 'js' && typeof entry.src === 'string') {
+        targetUrls.add(entry.src);
+      }
+    }
+  }
+
+  const urlsToFetch = Array.from(targetUrls).slice(0, 28);
+  let foundAny = false;
+  await Promise.all(
+    urlsToFetch.map(async (jsUrl) => {
+      try {
+        const r = await fetch(jsUrl, { signal: AbortSignal.timeout(5000) });
+        if (!r.ok) return;
+        const js = await r.text();
+        const reelsM = js.match(
+          /"ProfileCometAppCollectionReelsRendererPaginationQuery_facebookRelayOperation",\s*\[\],\s*\(function\([^)]*\)\{[^}]{0,60}="(\d{10,25})"/
+        );
+        if (reelsM?.[1]) {
+          reelsDocId = reelsM[1];
+          foundAny = true;
+        }
+        const allVidM = js.match(
+          /"PagesCometChannelTabAllVideosCardImplPaginationQuery_facebookRelayOperation",\s*\[\],\s*\(function\([^)]*\)\{[^}]{0,60}="(\d{10,25})"/
+        );
+        if (allVidM?.[1]) {
+          allVideosDocId = allVidM[1];
+          foundAny = true;
+        }
+        const latestVidM = js.match(
+          /"CometChannelTabLatestVideosCardPaginationQuery_facebookRelayOperation",\s*\[\],\s*\(function\([^)]*\)\{[^}]{0,60}="(\d{10,25})"/
+        );
+        if (latestVidM?.[1]) {
+          latestVideosDocId = latestVidM[1];
+          foundAny = true;
+        }
+      } catch {
+        // ignore single bundle fetch failure
+      }
+    })
+  );
+
+  if (foundAny) {
+    cachedFbDocIds = { reelsDocId, allVideosDocId, latestVideosDocId, fetchedAt: now };
+  }
+  return { reelsDocId, allVideosDocId, latestVideosDocId };
 }
 
 async function extractFacebookListViaBrowserCdp(
@@ -2539,6 +2631,12 @@ async function extractFacebookListFromHtml(
       let reelsEndCursor = '';
       let reelsHasNextPage = false;
 
+      let videosPageId = '';
+      let allVideosEndCursor = '';
+      let allVideosHasNextPage = false;
+      let latestVideosEndCursor = '';
+      let latestVideosHasNextPage = false;
+
       const scriptRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi;
       let scriptMatch: RegExpExecArray | null;
       while ((scriptMatch = scriptRegex.exec(html)) !== null) {
@@ -2547,6 +2645,8 @@ async function extractFacebookListFromHtml(
         if (
           !body.includes('short_form_video_context') &&
           !body.includes('aggregated_fb_shorts') &&
+          !body.includes('all_videos') &&
+          !body.includes('latest_videos') &&
           !body.includes('playable_duration_in_ms') &&
           !body.includes('videoDeliveryLegacyFields') &&
           !body.includes('videoDeliveryResponseFragment')
@@ -2557,16 +2657,29 @@ async function extractFacebookListFromHtml(
           const parsed = JSON.parse(body);
           collectFacebookVideosFromJsonObject(parsed, upsertVideo, pageAuthor);
 
-          if (!reelsCollectionId && body.includes('aggregated_fb_shorts')) {
+          if (
+            (!reelsCollectionId && body.includes('aggregated_fb_shorts')) ||
+            (!allVideosEndCursor && body.includes('all_videos')) ||
+            (!latestVideosEndCursor && body.includes('latest_videos'))
+          ) {
             const stack: any[] = [parsed];
             while (stack.length > 0) {
               const cur = stack.pop();
               if (!cur || typeof cur !== 'object') continue;
-              if (cur.id && cur.aggregated_fb_shorts?.page_info) {
+              if (!reelsCollectionId && cur.id && cur.aggregated_fb_shorts?.page_info) {
                 reelsCollectionId = String(cur.id);
                 reelsEndCursor = String(cur.aggregated_fb_shorts.page_info.end_cursor || '');
                 reelsHasNextPage = Boolean(cur.aggregated_fb_shorts.page_info.has_next_page);
-                break;
+              }
+              if (!allVideosEndCursor && cur.id && cur.all_videos?.page_info?.end_cursor) {
+                videosPageId = String(cur.id);
+                allVideosEndCursor = String(cur.all_videos.page_info.end_cursor || '');
+                allVideosHasNextPage = Boolean(cur.all_videos.page_info.has_next_page);
+              }
+              if (!latestVideosEndCursor && cur.id && cur.latest_videos?.page_info?.end_cursor) {
+                if (!videosPageId) videosPageId = String(cur.id);
+                latestVideosEndCursor = String(cur.latest_videos.page_info.end_cursor || '');
+                latestVideosHasNextPage = Boolean(cur.latest_videos.page_info.has_next_page);
               }
               for (const v of Array.isArray(cur) ? cur : Object.values(cur)) {
                 if (v && typeof v === 'object') stack.push(v);
@@ -2578,18 +2691,24 @@ async function extractFacebookListFromHtml(
         }
       }
 
-      // If user supplied authenticated Facebook cookies (fb_dtsg present), try GraphQL pagination for up to 100 Reels
+      // GraphQL pagination works BOTH logged-out (using lsd) and logged-in (using fb_dtsg + lsd + c_user) for up to 100 Reels/Videos
       const fbDtsg =
         html.match(/"DTSGInitialData",\[\],\{"token":"([^"]+)"/)?.[1] ||
         html.match(/"DTSGInitData",\[\],\{"token":"([^"]+)"/)?.[1] ||
         '';
       const lsd = html.match(/"LSD",\[\],\{"token":"([^"]+)"/)?.[1] || '';
       const cUser = combinedCookieHeader.match(/(?:^|;\s*)c_user=(\d+)/)?.[1] || '0';
+      const hasAuthOrLsd = Boolean(lsd || fbDtsg);
+      const canPaginateReels = Boolean(hasAuthOrLsd && reelsCollectionId && reelsHasNextPage && reelsEndCursor);
+      const canPaginateVideos = Boolean(
+        hasAuthOrLsd &&
+          videosPageId &&
+          ((allVideosHasNextPage && allVideosEndCursor) || (latestVideosHasNextPage && latestVideosEndCursor))
+      );
 
-      if (fbDtsg && reelsCollectionId && reelsHasNextPage && reelsEndCursor && videoMap.size < 100) {
+      if ((canPaginateReels || canPaginateVideos) && videoMap.size < 100) {
         try {
-          const docId = await resolveReelsPaginationDocId(html);
-          const jazoest = '2' + Array.from(lsd).reduce((s, ch) => s + ch.charCodeAt(0), 0);
+          const { reelsDocId, allVideosDocId, latestVideosDocId } = await resolveFacebookPaginationDocIds(html);
           const pvVars: Record<string, boolean> = {};
           for (const m of html.matchAll(/"(__relay_internal__pv__[^"]+)"\s*:\s*(true|false)/g)) {
             pvVars[m[1]] = m[2] === 'true';
@@ -2597,36 +2716,29 @@ async function extractFacebookListFromHtml(
           const rev = html.match(/"client_revision":(\d+)/)?.[1] || '';
           const hs = html.match(/"haste_session":"([^"]+)"/)?.[1] || '';
 
-          let cursor = reelsEndCursor;
-          let hasNext: boolean = reelsHasNextPage;
-
-          for (let page = 0; page < 9 && hasNext && cursor && videoMap.size < 100; page += 1) {
+          const postFbGraphql = async (
+            friendlyName: string,
+            docId: string,
+            variables: Record<string, any>
+          ): Promise<any | null> => {
             const form = new URLSearchParams();
-            form.set('av', cUser);
+            if (cUser !== '0') form.set('av', cUser);
             form.set('__user', cUser);
             form.set('__a', '1');
             form.set('__comet_req', '15');
             if (hs) form.set('__hs', hs);
             if (rev) form.set('__rev', rev);
             form.set('dpr', '1');
-            form.set('fb_dtsg', fbDtsg);
+            if (fbDtsg) form.set('fb_dtsg', fbDtsg);
             if (lsd) form.set('lsd', lsd);
-            form.set('jazoest', jazoest);
+            if (fbDtsg && lsd) {
+              const jazoest = '2' + Array.from(lsd).reduce((s, ch) => s + ch.charCodeAt(0), 0);
+              form.set('jazoest', jazoest);
+            }
             form.set('fb_api_caller_class', 'RelayModern');
-            form.set('fb_api_req_friendly_name', 'ProfileCometAppCollectionReelsRendererPaginationQuery');
+            form.set('fb_api_req_friendly_name', friendlyName);
             form.set('server_timestamps', 'true');
-            form.set(
-              'variables',
-              JSON.stringify({
-                count: 15,
-                cursor,
-                id: reelsCollectionId,
-                renderLocation: null,
-                scale: 1,
-                useDefaultActor: false,
-                ...pvVars,
-              })
-            );
+            form.set('variables', JSON.stringify(variables));
             form.set('doc_id', docId);
 
             const gRes = await fetch('https://www.facebook.com/api/graphql/', {
@@ -2635,7 +2747,11 @@ async function extractFacebookListFromHtml(
                 'User-Agent': USER_AGENT,
                 'Content-Type': 'application/x-www-form-urlencoded',
                 ...(lsd ? { 'X-FB-LSD': lsd } : {}),
-                'X-FB-Friendly-Name': 'ProfileCometAppCollectionReelsRendererPaginationQuery',
+                'X-FB-Friendly-Name': friendlyName,
+                'X-ASBD-ID': '129477',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
                 Origin: 'https://www.facebook.com',
                 Referer: finalUrl,
                 ...(combinedCookieHeader ? { Cookie: combinedCookieHeader } : {}),
@@ -2643,19 +2759,121 @@ async function extractFacebookListFromHtml(
               body: form.toString(),
               signal: AbortSignal.timeout(12_000),
             });
-            if (!gRes.ok) break;
+            if (!gRes.ok) return null;
             const gText = (await gRes.text()).replace(/^for\s*\(;;\);/, '');
             const firstLine = gText.split(/\r?\n/).find((l) => l.trim().startsWith('{'));
-            if (!firstLine) break;
+            if (!firstLine) return null;
             const gJson = JSON.parse(firstLine);
-            if (gJson?.error || gJson?.errors) break;
+            if (gJson?.error || (Array.isArray(gJson?.errors) && gJson.errors.length > 0 && !gJson?.data)) {
+              return null;
+            }
+            return gJson;
+          };
 
-            const agg = gJson?.data?.node?.aggregated_fb_shorts;
-            if (!agg || !Array.isArray(agg.edges) || agg.edges.length === 0) break;
+          // 1) Paginate Reels tab (aggregated_fb_shorts) — works both logged-out and logged-in
+          if (canPaginateReels) {
+            let cursor = reelsEndCursor;
+            let hasNext: boolean = reelsHasNextPage;
+            let stagnantPages = 0;
 
-            collectFacebookVideosFromJsonObject(agg, upsertVideo, pageAuthor);
-            cursor = String(agg.page_info?.end_cursor || '');
-            hasNext = Boolean(agg.page_info?.has_next_page);
+            for (let page = 0; page < 10 && hasNext && cursor && videoMap.size < 100; page += 1) {
+              const beforeSize = videoMap.size;
+              const gJson = await postFbGraphql(
+                'ProfileCometAppCollectionReelsRendererPaginationQuery',
+                reelsDocId,
+                {
+                  count: 10,
+                  cursor,
+                  id: reelsCollectionId,
+                  renderLocation: null,
+                  scale: 1,
+                  useDefaultActor: false,
+                  ...pvVars,
+                }
+              );
+              const agg = gJson?.data?.node?.aggregated_fb_shorts;
+              if (!agg || !Array.isArray(agg.edges) || agg.edges.length === 0) break;
+
+              collectFacebookVideosFromJsonObject(agg, upsertVideo, pageAuthor);
+              cursor = String(agg.page_info?.end_cursor || '');
+              hasNext = Boolean(agg.page_info?.has_next_page);
+              if (videoMap.size === beforeSize) {
+                stagnantPages += 1;
+                if (stagnantPages >= 2) break;
+              } else {
+                stagnantPages = 0;
+              }
+              if (hasNext && cursor && videoMap.size < 100) {
+                await new Promise((r) => setTimeout(r, 140));
+              }
+            }
+          }
+
+          // 2) Paginate Videos tab (all_videos / latest_videos)
+          if (canPaginateVideos && videoMap.size < 100) {
+            const videoStreams: {
+              name: string;
+              docId: string;
+              cursor: string;
+              hasNext: boolean;
+              field: 'all_videos' | 'latest_videos';
+            }[] = [];
+            if (allVideosHasNextPage && allVideosEndCursor) {
+              videoStreams.push({
+                name: 'PagesCometChannelTabAllVideosCardImplPaginationQuery',
+                docId: allVideosDocId,
+                cursor: allVideosEndCursor,
+                hasNext: allVideosHasNextPage,
+                field: 'all_videos',
+              });
+            }
+            if (latestVideosHasNextPage && latestVideosEndCursor) {
+              videoStreams.push({
+                name: 'CometChannelTabLatestVideosCardPaginationQuery',
+                docId: latestVideosDocId,
+                cursor: latestVideosEndCursor,
+                hasNext: latestVideosHasNextPage,
+                field: 'latest_videos',
+              });
+            }
+
+            for (const stream of videoStreams) {
+              let cursor = stream.cursor;
+              let hasNext = stream.hasNext;
+              let stagnantPages = 0;
+              for (let page = 0; page < 10 && hasNext && cursor && videoMap.size < 100; page += 1) {
+                const beforeSize = videoMap.size;
+                const gJson = await postFbGraphql(stream.name, stream.docId, {
+                  alwaysIncludeAudioRooms: false,
+                  count: 9,
+                  cursor,
+                  id: videosPageId,
+                  pageID: videosPageId,
+                  scale: 1,
+                  showReactions: false,
+                  useDefaultActor: false,
+                  ...pvVars,
+                });
+                const conn =
+                  gJson?.data?.node?.[stream.field] ||
+                  gJson?.data?.page?.[stream.field] ||
+                  gJson?.data?.[stream.field];
+                if (!conn || !Array.isArray(conn.edges) || conn.edges.length === 0) break;
+
+                collectFacebookVideosFromJsonObject(conn, upsertVideo, pageAuthor);
+                cursor = String(conn.page_info?.end_cursor || '');
+                hasNext = Boolean(conn.page_info?.has_next_page);
+                if (videoMap.size === beforeSize) {
+                  stagnantPages += 1;
+                  if (stagnantPages >= 2) break;
+                } else {
+                  stagnantPages = 0;
+                }
+                if (hasNext && cursor && videoMap.size < 100) {
+                  await new Promise((r) => setTimeout(r, 140));
+                }
+              }
+            }
           }
         } catch {
           // ignore pagination error and keep SSR items
@@ -2750,43 +2968,111 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
     const isSingleVideoId =
       /\/(?:reel|reels|videos)\/\d{5,}/i.test(resolvedUrl) ||
       /[?&](?:v|story_fbid)=\d{5,}/i.test(resolvedUrl);
+
+    // Detect bare Facebook Page or Profile URLs (e.g. facebook.com/natgeo or facebook.com/profile.php?id=12345)
+    let listTargetUrl = resolvedUrl;
+    let isBarePageOrProfile = false;
+    if (!isSingleVideoId) {
+      try {
+        const parsedFb = new URL(resolvedUrl);
+        const pathParts = parsedFb.pathname.split('/').filter(Boolean);
+        if (
+          pathParts.length === 1 &&
+          pathParts[0].toLowerCase() === 'profile.php' &&
+          parsedFb.searchParams.get('id') &&
+          !parsedFb.searchParams.get('sk') &&
+          !parsedFb.searchParams.get('v') &&
+          !parsedFb.searchParams.get('story_fbid')
+        ) {
+          parsedFb.searchParams.set('sk', 'reels_tab');
+          listTargetUrl = parsedFb.toString();
+          isBarePageOrProfile = true;
+        } else if (
+          pathParts.length === 1 &&
+          !/^(?:watch|reel|reels|video|videos|share|story\.php|permalink\.php|photo|photo\.php|photos|posts|events|groups|marketplace|gaming|login|help|privacy|policies|sharer|plugins|dialog|l\.php|flx|r\.php|home\.php)$/i.test(
+            pathParts[0]
+          ) &&
+          !parsedFb.searchParams.get('v') &&
+          !parsedFb.searchParams.get('story_fbid')
+        ) {
+          listTargetUrl = `https://www.facebook.com/${pathParts[0]}/reels`;
+          isBarePageOrProfile = true;
+        }
+      } catch {
+        // ignore URL parse error
+      }
+    }
+
     const isPageOrList =
       !isSingleVideoId &&
-      /facebook\.com\/(?:[^/?#]+\/(?:videos|reels(?:_tab)?|owner_reels)(?:\/)?(?:[?#]|$)|groups\/[^/?#]+\/(?:videos|reels(?:_tab)?)(?:\/)?(?:[?#]|$)|profile\.php\?[^#]*\bsk=(?:videos|reels(?:_tab)?)\b|reels?(?:\/)?(?:[?#]|$)|watch\/latest)/i.test(
-        resolvedUrl
-      );
+      (isBarePageOrProfile ||
+        /facebook\.com\/(?:[^/?#]+\/(?:videos|reels(?:_tab)?|owner_reels)(?:\/)?(?:[?#]|$)|groups\/[^/?#]+\/(?:videos|reels(?:_tab)?)(?:\/)?(?:[?#]|$)|profile\.php\?[^#]*\bsk=(?:videos|reels(?:_tab)?)\b|reels?(?:\/)?(?:[?#]|$)|watch\/latest)/i.test(
+          listTargetUrl
+        ));
 
     if (isPageOrList) {
-      const htmlList = await extractFacebookListFromHtml(resolvedUrl, rawCookies);
+      const mergeFbItemLists = (...lists: any[][]): any[] => {
+        const merged = new Map<string, any>();
+        for (const list of lists) {
+          for (const it of list) {
+            const key = String(it.bvid || it.id);
+            const prev = merged.get(key);
+            if (!prev) {
+              merged.set(key, it);
+            } else {
+              merged.set(key, {
+                ...prev,
+                title: prev.title && !/^Facebook (?:Reel|Video) \d+$/.test(prev.title) ? prev.title : it.title,
+                pic: prev.pic || it.pic,
+                duration: prev.duration || it.duration,
+                pubdate: prev.pubdate || it.pubdate,
+                author: prev.author && prev.author !== 'Facebook' ? prev.author : it.author,
+              });
+            }
+          }
+        }
+        return Array.from(merged.values()).slice(0, 100);
+      };
+
+      const htmlList = await extractFacebookListFromHtml(listTargetUrl, rawCookies);
       if (htmlList.items.length >= 25) {
         return htmlList.items;
       }
 
-      // Use local Edge/Chrome headless CDP scroll to paginate beyond Facebook's initial ~10 SSR items
-      const cdpList = await extractFacebookListViaBrowserCdp(resolvedUrl, rawCookies, 100);
-      if (cdpList.items.length > 0 || htmlList.items.length > 0) {
-        const merged = new Map<string, any>();
-        for (const it of htmlList.items) {
-          merged.set(String(it.bvid || it.id), it);
-        }
-        for (const it of cdpList.items) {
-          const key = String(it.bvid || it.id);
-          const prev = merged.get(key);
-          if (!prev) {
-            merged.set(key, it);
-          } else {
-            merged.set(key, {
-              ...prev,
-              title: prev.title && !/^Facebook (?:Reel|Video) \d+$/.test(prev.title) ? prev.title : it.title,
-              pic: prev.pic || it.pic,
-              duration: prev.duration || it.duration,
-              pubdate: prev.pubdate || it.pubdate,
-              author: prev.author && prev.author !== 'Facebook' ? prev.author : it.author,
-            });
+      // If /videos tab hit Facebook's anonymous rate-limit (returning only ~9 SSR items),
+      // also fetch the sibling /reels tab (which paginates up to 100 videos even without cookies) and merge.
+      let combinedHtmlItems = htmlList.items;
+      let siblingUrl = '';
+      if (/\/videos(?:\/)?(?:[?#]|$)/i.test(listTargetUrl)) {
+        siblingUrl = listTargetUrl.replace(/\/videos(\/)?(?=[?#]|$)/i, '/reels');
+      } else if (/[?&]sk=videos\b/i.test(listTargetUrl)) {
+        siblingUrl = listTargetUrl.replace(/([?&])sk=videos\b/i, '$1sk=reels_tab');
+      } else if (isBarePageOrProfile && /\/reels(?:\/)?(?:[?#]|$)/i.test(listTargetUrl)) {
+        siblingUrl = listTargetUrl.replace(/\/reels(\/)?(?=[?#]|$)/i, '/videos');
+      } else if (isBarePageOrProfile && /[?&]sk=reels_tab\b/i.test(listTargetUrl)) {
+        siblingUrl = listTargetUrl.replace(/([?&])sk=reels_tab\b/i, '$1sk=videos');
+      }
+
+      if (siblingUrl && siblingUrl !== listTargetUrl) {
+        try {
+          const siblingList = await extractFacebookListFromHtml(siblingUrl, rawCookies);
+          if (siblingList.items.length > 0) {
+            combinedHtmlItems = mergeFbItemLists(combinedHtmlItems, siblingList.items);
+            if (combinedHtmlItems.length >= 25) {
+              return combinedHtmlItems;
+            }
           }
+        } catch {
+          // ignore sibling tab failure
         }
-        if (merged.size > 0) {
-          return Array.from(merged.values()).slice(0, 100);
+      }
+
+      // Use local Edge/Chrome headless CDP scroll to paginate beyond Facebook's initial ~10 SSR items
+      const cdpList = await extractFacebookListViaBrowserCdp(listTargetUrl, rawCookies, 100);
+      if (cdpList.items.length > 0 || combinedHtmlItems.length > 0) {
+        const mergedItems = mergeFbItemLists(combinedHtmlItems, cdpList.items);
+        if (mergedItems.length > 0) {
+          return mergedItems;
         }
       }
 
@@ -4997,6 +5283,32 @@ async function startServer() {
       res.json({ ok: removed, projects: listStudioProjectProfiles() });
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không xóa được hồ sơ dự án.' });
+    }
+  });
+
+  app.get('/api/studio/character-library', (_req, res) => {
+    try {
+      res.json({ characters: listStudioCharacterLibrary() });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không đọc được thư viện nhân vật.' });
+    }
+  });
+
+  app.post('/api/studio/character-library', (req, res) => {
+    try {
+      const character = saveStudioCharacterLibraryItem(req.body || {});
+      res.json({ character, characters: listStudioCharacterLibrary() });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không lưu được nhân vật vào thư viện.' });
+    }
+  });
+
+  app.delete('/api/studio/character-library/:id', (req, res) => {
+    try {
+      const removed = deleteStudioCharacterLibraryItem(req.params.id);
+      res.json({ ok: removed, characters: listStudioCharacterLibrary() });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không xóa được nhân vật khỏi thư viện.' });
     }
   });
 

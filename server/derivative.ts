@@ -4947,6 +4947,114 @@ export function deleteStudioProjectProfile(id: string): boolean {
   return true;
 }
 
+// ==========================================
+// STUDIO PERSISTENT CHARACTER LIBRARY
+// ==========================================
+
+export interface StudioCharacterLibraryRecord extends StudioCharacterRefInput {
+  id: string;
+  name: string;
+  dataUrl: string;
+  description?: string;
+  source: 'uploaded' | 'ai_generated';
+  createdAt: number;
+  updatedAt: number;
+}
+
+const STUDIO_CHARACTER_LIBRARY_FILE = path.join(process.cwd(), 'data', 'studio_character_library.json');
+
+function ensureStudioCharacterLibraryFile(): void {
+  const dir = path.dirname(STUDIO_CHARACTER_LIBRARY_FILE);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  if (!fs.existsSync(STUDIO_CHARACTER_LIBRARY_FILE)) {
+    fs.writeFileSync(STUDIO_CHARACTER_LIBRARY_FILE, '[]', 'utf8');
+  }
+}
+
+export function listStudioCharacterLibrary(): StudioCharacterLibraryRecord[] {
+  try {
+    ensureStudioCharacterLibraryFile();
+    const raw = fs.readFileSync(STUDIO_CHARACTER_LIBRARY_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveStudioCharacterLibraryItem(
+  input: Partial<StudioCharacterLibraryRecord>
+): StudioCharacterLibraryRecord {
+  const list = listStudioCharacterLibrary();
+  const dataUrl = String(input.dataUrl || '').trim();
+  if (!dataUrl || (!dataUrl.startsWith('data:image/') && !dataUrl.startsWith('http://') && !dataUrl.startsWith('https://') && !dataUrl.startsWith('/'))) {
+    throw new Error('Thiếu ảnh nhân vật hợp lệ để lưu vào thư viện.');
+  }
+
+  const rawId = String(input.id || '').trim();
+  const existingIdx = rawId ? list.findIndex((item) => item.id === rawId) : -1;
+  const existing = existingIdx >= 0 ? list[existingIdx] : null;
+  const id = existing?.id || rawId || `charlib_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const now = Date.now();
+  const cleanName = String(input.name ?? existing?.name ?? '').trim().slice(0, 80) || 'Nhân vật chưa đặt tên';
+  const cleanDesc =
+    input.description !== undefined
+      ? String(input.description || '').trim().slice(0, 600)
+      : existing?.description || '';
+
+  const rawSync = input.syncProfile !== undefined ? input.syncProfile : existing?.syncProfile;
+  const cleanSyncProfile =
+    rawSync && typeof rawSync === 'object'
+      ? {
+          face: String(rawSync.face || '').trim().slice(0, 400),
+          physique: String(rawSync.physique || '').trim().slice(0, 400),
+          costume: String(rawSync.costume || '').trim().slice(0, 400),
+          voice: String(rawSync.voice || '').trim().slice(0, 400),
+          distinguishingMarks: String(rawSync.distinguishingMarks || '').trim().slice(0, 400),
+        }
+      : undefined;
+
+  const record: StudioCharacterLibraryRecord = {
+    id,
+    name: cleanName,
+    dataUrl,
+    ...(cleanDesc ? { description: cleanDesc } : {}),
+    source: input.source === 'ai_generated' ? 'ai_generated' : existing?.source || 'uploaded',
+    ...(input.ageGroup || existing?.ageGroup ? { ageGroup: input.ageGroup ?? existing?.ageGroup } : {}),
+    ...(input.gender || existing?.gender ? { gender: input.gender ?? existing?.gender } : {}),
+    ...(input.voiceMode || existing?.voiceMode ? { voiceMode: input.voiceMode ?? existing?.voiceMode } : {}),
+    ...(input.voiceId || existing?.voiceId ? { voiceId: input.voiceId ?? existing?.voiceId } : {}),
+    ...(input.offlineVoice || existing?.offlineVoice ? { offlineVoice: input.offlineVoice ?? existing?.offlineVoice } : {}),
+    ...(input.voiceStyle || existing?.voiceStyle ? { voiceStyle: input.voiceStyle ?? existing?.voiceStyle } : {}),
+    accentLock: 'vn_north',
+    ...(cleanSyncProfile ? { syncProfile: cleanSyncProfile } : {}),
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  };
+
+  if (existingIdx >= 0) {
+    list[existingIdx] = record;
+  } else {
+    list.unshift(record);
+  }
+  ensureStudioCharacterLibraryFile();
+  fs.writeFileSync(STUDIO_CHARACTER_LIBRARY_FILE, JSON.stringify(list.slice(0, 120), null, 2), 'utf8');
+  return record;
+}
+
+export function deleteStudioCharacterLibraryItem(id: string): boolean {
+  const targetId = String(id || '').trim();
+  if (!targetId) return false;
+  const list = listStudioCharacterLibrary();
+  const next = list.filter((item) => item.id !== targetId);
+  if (next.length === list.length) return false;
+  ensureStudioCharacterLibraryFile();
+  fs.writeFileSync(STUDIO_CHARACTER_LIBRARY_FILE, JSON.stringify(next, null, 2), 'utf8');
+  return true;
+}
+
 export function listStudioLibraryVideos() {
   const items: {
     id: string;
