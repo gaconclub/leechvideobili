@@ -2989,27 +2989,50 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
       /\/(?:reel|reels|videos)\/\d{5,}/i.test(resolvedUrl) ||
       /[?&](?:v|story_fbid)=\d{5,}/i.test(resolvedUrl);
 
-    // Detect bare Facebook Page or Profile URLs (e.g. facebook.com/natgeo or facebook.com/profile.php?id=12345)
+    // Detect bare Facebook Page or Profile URLs (e.g. facebook.com/natgeo, facebook.com/profile.php?id=12345, facebook.com/people/Name/12345)
     let listTargetUrl = resolvedUrl;
     let isBarePageOrProfile = false;
     if (!isSingleVideoId) {
       try {
         const parsedFb = new URL(resolvedUrl);
         const pathParts = parsedFb.pathname.split('/').filter(Boolean);
+        const isProfilePhp = pathParts.length === 1 && pathParts[0].toLowerCase() === 'profile.php';
+        const isPeopleProfile =
+          pathParts.length >= 3 &&
+          pathParts[0].toLowerCase() === 'people' &&
+          /^\d{6,}$/.test(pathParts[2]);
+        const currentSk = (parsedFb.searchParams.get('sk') || '').toLowerCase();
+
         if (
-          pathParts.length === 1 &&
-          pathParts[0].toLowerCase() === 'profile.php' &&
+          isProfilePhp &&
           parsedFb.searchParams.get('id') &&
-          !parsedFb.searchParams.get('sk') &&
           !parsedFb.searchParams.get('v') &&
           !parsedFb.searchParams.get('story_fbid')
         ) {
-          parsedFb.searchParams.set('sk', 'reels_tab');
-          listTargetUrl = parsedFb.toString();
-          isBarePageOrProfile = true;
+          if (!currentSk) {
+            parsedFb.searchParams.set('sk', 'reels_tab');
+            listTargetUrl = parsedFb.toString();
+            isBarePageOrProfile = true;
+          } else if (currentSk === 'reels') {
+            parsedFb.searchParams.set('sk', 'reels_tab');
+            listTargetUrl = parsedFb.toString();
+          }
+        } else if (
+          isPeopleProfile &&
+          !parsedFb.searchParams.get('v') &&
+          !parsedFb.searchParams.get('story_fbid')
+        ) {
+          if (!currentSk) {
+            parsedFb.searchParams.set('sk', 'reels_tab');
+            listTargetUrl = parsedFb.toString();
+            isBarePageOrProfile = true;
+          } else if (currentSk === 'reels') {
+            parsedFb.searchParams.set('sk', 'reels_tab');
+            listTargetUrl = parsedFb.toString();
+          }
         } else if (
           pathParts.length === 1 &&
-          !/^(?:watch|reel|reels|video|videos|share|story\.php|permalink\.php|photo|photo\.php|photos|posts|events|groups|marketplace|gaming|login|help|privacy|policies|sharer|plugins|dialog|l\.php|flx|r\.php|home\.php)$/i.test(
+          !/^(?:profile\.php|people|watch|reel|reels|video|videos|share|story\.php|permalink\.php|photo|photo\.php|photos|posts|events|groups|marketplace|gaming|login|help|privacy|policies|sharer|plugins|dialog|l\.php|flx|r\.php|home\.php)$/i.test(
             pathParts[0]
           ) &&
           !parsedFb.searchParams.get('v') &&
@@ -3026,7 +3049,7 @@ async function inspectFacebookUrl(rawUrl: string, rawCookies?: string): Promise<
     const isPageOrList =
       !isSingleVideoId &&
       (isBarePageOrProfile ||
-        /facebook\.com\/(?:[^/?#]+\/(?:videos|reels(?:_tab)?|owner_reels)(?:\/)?(?:[?#]|$)|groups\/[^/?#]+\/(?:videos|reels(?:_tab)?)(?:\/)?(?:[?#]|$)|profile\.php\?[^#]*\bsk=(?:videos|reels(?:_tab)?)\b|reels?(?:\/)?(?:[?#]|$)|watch\/latest)/i.test(
+        /facebook\.com\/(?:[^/?#]+\/(?:videos|reels(?:_tab)?|owner_reels)(?:\/)?(?:[?#]|$)|groups\/[^/?#]+\/(?:videos|reels(?:_tab)?)(?:\/)?(?:[?#]|$)|people\/[^/?#]+\/\d{6,}(?:\/)?(?:[?#]|$)|profile\.php\?[^#]*\bsk=(?:videos|reels(?:_tab)?)\b|reels?(?:\/)?(?:[?#]|$)|watch\/latest)/i.test(
           listTargetUrl
         ));
 
