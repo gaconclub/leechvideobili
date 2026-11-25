@@ -12,6 +12,7 @@ import {
   FolderOpen,
   History,
   Image as ImageIcon,
+  Layers,
   Loader2,
   Lock,
   MessageSquare,
@@ -247,18 +248,95 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
     setErrorMsg('');
     setNotice('');
     try {
-      const res = await callCoordApi<{ queuedSessionIds?: string[] }>('/api/coordination/queue/run-all', {
-        method: 'POST',
-        body: JSON.stringify({ retryErrors: false }),
-      });
-      const count = res.queuedSessionIds?.length || 0;
+      const res = await callCoordApi<{ startedSessionIds?: string[]; queuedSessionIds?: string[] }>(
+        '/api/coordination/queue/run-parallel',
+        {
+          method: 'POST',
+          body: JSON.stringify({ retryErrors: false }),
+        }
+      );
+      const count = res.startedSessionIds?.length || res.queuedSessionIds?.length || 0;
       setNotice(
         count > 0
-          ? `Đã khởi động chạy tuần tự ${count} kịch bản đang chờ trong Trung Tâm Điều Phối AI.`
+          ? `Đã mở ${count} luồng chạy SONG SONG độc lập trong Trung Tâm Điều Phối AI.`
           : 'Không có kịch bản nào đang chờ chạy.'
       );
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Không thể chạy tuần tự hàng đợi.');
+      setErrorMsg(err?.message || 'Không thể chạy song song hàng đợi.');
+    } finally {
+      setBusyKey('');
+    }
+  };
+
+  const handleAutoDistributeAndRun = async () => {
+    setBusyKey('distribute_run');
+    setErrorMsg('');
+    setNotice('');
+    try {
+      const res = await callCoordApi<{
+        startedSessionIds?: string[];
+        assignments?: Array<{ sessionId: string }>;
+        activeProviders?: string[];
+      }>('/api/coordination/queue/distribute-run', {
+        method: 'POST',
+        body: JSON.stringify({ includeErrorSessions: true }),
+      });
+      const count = res.startedSessionIds?.length || res.assignments?.length || 0;
+      setNotice(
+        count > 0
+          ? `Đã chia tải ${count} phiên sang các AI sẵn sàng (${(res.activeProviders || []).join(', ')}) và kích hoạt chạy song song.`
+          : 'Không có phiên chờ/lỗi nào cần chia tải.'
+      );
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể chia tải đa luồng tự động.');
+    } finally {
+      setBusyKey('');
+    }
+  };
+
+  const handleRegenerateSceneImage = async (sessionId: string, sceneIndex: number) => {
+    setBusyKey(`regen_${sessionId}_${sceneIndex}`);
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await callCoordApi(
+        `/api/coordination/sessions/${encodeURIComponent(sessionId)}/scenes/${sceneIndex}/regenerate-image`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ autoResumeVideo: true }),
+        }
+      );
+      setNotice(
+        `Đang tạo lại Ảnh Phân cảnh #${sceneIndex} (${sessionId}) và tự động chạy tiếp bước Video → Ghép phim.`
+      );
+    } catch (err: any) {
+      setErrorMsg(err?.message || `Không thể tạo lại ảnh Phân cảnh #${sceneIndex}.`);
+    } finally {
+      setBusyKey('');
+    }
+  };
+
+  const handleRetryTaskWithSource = async (
+    sessionId: string,
+    taskCode: string,
+    overrideVideoSource: IndependentVideoSource
+  ) => {
+    setBusyKey(`retry_src_${sessionId}_${taskCode}_${overrideVideoSource}`);
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await callCoordApi(
+        `/api/coordination/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskCode)}/retry`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ overrideVideoSource, autoContinueSession: true }),
+        }
+      );
+      setNotice(
+        `Đã giữ nguyên Ảnh Bước 1, chuyển ${taskCode} sang ${SOURCE_META[overrideVideoSource].short} và kích hoạt chạy lại ngay.`
+      );
+    } catch (err: any) {
+      setErrorMsg(err?.message || `Không thể đổi nguồn & chạy lại ${taskCode}.`);
     } finally {
       setBusyKey('');
     }
@@ -380,15 +458,30 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
 
           <div className="flex flex-wrap items-center gap-2">
             {queueWaitingCount > 0 && (
-              <button
-                type="button"
-                disabled={busyKey === 'run_all'}
-                onClick={() => void handleRunAllQueued()}
-                className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-indigo-600 hover:brightness-110 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-50"
-              >
-                {busyKey === 'run_all' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                <span>Chạy tuần tự {queueWaitingCount} kịch bản chờ</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  disabled={busyKey === 'distribute_run'}
+                  onClick={() => void handleAutoDistributeAndRun()}
+                  className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-cyan-600 hover:brightness-110 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-50"
+                >
+                  {busyKey === 'distribute_run' ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Layers className="w-3.5 h-3.5" />
+                  )}
+                  <span>Chia tải AI &amp; Chạy song song</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={busyKey === 'run_all'}
+                  onClick={() => void handleRunAllQueued()}
+                  className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-indigo-600 hover:brightness-110 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-50"
+                >
+                  {busyKey === 'run_all' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                  <span>Chạy song song ({queueWaitingCount})</span>
+                </button>
+              </>
             )}
 
             {onOpenCommandCenter && (
@@ -777,6 +870,26 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                                 ({sc.durationSec}s)
                               </span>
                             </div>
+                            {selectedSession.status !== 'DANG_CHAY' && imgTask && (
+                              <button
+                                type="button"
+                                disabled={busyKey === `regen_${selectedSession.sessionId}_${sc.sceneIndex}`}
+                                onClick={() => void handleRegenerateSceneImage(selectedSession.sessionId, sc.sceneIndex)}
+                                title="Tạo lại Ảnh Phân cảnh Bước 1 và tự động chạy tiếp bước Video → Ghép phim"
+                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer disabled:opacity-50 ${
+                                  vidTask?.status === 'LOI' || imgTask.status === 'LOI'
+                                    ? 'bg-amber-600 text-white border-amber-500 hover:brightness-110'
+                                    : 'bg-white dark:bg-[#131a35] text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-600 hover:border-amber-500'
+                                }`}
+                              >
+                                {busyKey === `regen_${selectedSession.sessionId}_${sc.sceneIndex}` ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="w-3 h-3" />
+                                )}
+                                <span>Tạo lại ảnh &amp; Chạy tiếp</span>
+                              </button>
+                            )}
                           </div>
 
                           {(sc.actionDetail || sc.dialogue) && (
@@ -880,8 +993,26 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                                   </p>
                                 )}
                                 {vidTask.errorReason && (
-                                  <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-700 dark:text-rose-200">
-                                    {vidTask.errorReason}
+                                  <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-700 dark:text-rose-200 space-y-2">
+                                    <div>{vidTask.errorReason}</div>
+                                    {selectedSession.status !== 'DANG_CHAY' && (
+                                      <div className="pt-1.5 border-t border-rose-500/20 flex flex-wrap items-center gap-1.5">
+                                        <span className="text-[10px] font-semibold">Đổi nguồn chạy lại (giữ ảnh B1):</span>
+                                        {(['gemini', 'qwen', 'google_flow', 'muse'] as IndependentVideoSource[]).map((srcId) => (
+                                          <button
+                                            key={srcId}
+                                            type="button"
+                                            disabled={Boolean(busyKey)}
+                                            onClick={() =>
+                                              void handleRetryTaskWithSource(selectedSession.sessionId, vidTask.taskCode, srcId)
+                                            }
+                                            className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-white dark:bg-[#131a35] border border-rose-400/45 text-slate-800 dark:text-slate-100 hover:border-cyan-500 cursor-pointer disabled:opacity-50"
+                                          >
+                                            {SOURCE_META[srcId].short}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
                                 )}
 

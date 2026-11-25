@@ -59,6 +59,7 @@ interface StudioSceneCardProps {
   sceneErr?: string;
   sceneVideoEngine: 'gemini' | 'muse2api' | 'qwen';
   voiceMode: DerivativeVoiceMode;
+  musicPromptDirective?: string;
   previewingSceneId: string | null;
   capabilities: ServerCapabilitiesStatus | null;
   onUpdateScene: (sceneId: string, patch: Partial<DerivativeScene>) => void;
@@ -101,6 +102,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
   sceneErr,
   sceneVideoEngine,
   voiceMode,
+  musicPromptDirective = '',
   previewingSceneId,
   capabilities,
   onUpdateScene,
@@ -172,6 +174,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
       hasAttachedRefs: hasCharacterRefs,
       targetEngine: sceneVideoEngine === 'muse2api' ? 'muse2api' : 'gemini',
       allowFreeCostumeChange,
+      musicPromptDirective,
     });
     onUpdateScene(scene.id, {
       videoTimeline: nextTimeline,
@@ -198,6 +201,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
     hasAttachedRefs: hasCharacterRefs,
     targetEngine: sceneVideoEngine === 'muse2api' ? 'muse2api' : 'gemini',
     allowFreeCostumeChange,
+    musicPromptDirective,
   }).length;
 
   return (
@@ -412,7 +416,7 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
       {/* Right Column: All 15 Detailed Production Fields (8 cols) */}
       <div className="lg:col-span-8 space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-          <label className="sm:col-span-7 space-y-1">
+          <label className="sm:col-span-12 space-y-1">
             <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
               Tên phân cảnh ({sceneCode})
             </span>
@@ -422,19 +426,6 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
               onChange={(e) => onUpdateScene(scene.id, { sceneTitle: e.target.value })}
               placeholder={`VD: Mở đầu tại cổng thiên cung (${sceneCode})...`}
               className={`${fieldInputCls} font-semibold`}
-            />
-          </label>
-
-          <label className="sm:col-span-5 space-y-1">
-            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-              Chữ hiển thị trên màn hình
-            </span>
-            <input
-              type="text"
-              value={scene.onScreenText || ''}
-              onChange={(e) => onUpdateScene(scene.id, { onScreenText: e.target.value })}
-              placeholder="Tiêu đề ngắn hiện trên khung hình..."
-              className={fieldInputCls}
             />
           </label>
         </div>
@@ -498,14 +489,21 @@ export const StudioSceneCard: React.FC<StudioSceneCardProps> = ({
           </div>
         )}
 
-        {productionFormat === 'narration_story' && scene.musicMoodEn && (
-          <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-[11px] text-emerald-800 dark:text-emerald-200">
-            <span className="inline-flex items-center gap-1.5 font-medium truncate">
-              <Music className="w-3.5 h-3.5 shrink-0" />
-              <span>Nhạc nền AI theo cảnh: <strong className="font-mono">{scene.musicMoodEn}</strong></span>
-            </span>
-            <span className="text-[10px] opacity-80 shrink-0">1 giọng dẫn chuyện</span>
+        {musicPromptDirective ? (
+          <div className="flex items-start gap-2 px-2.5 py-1.5 rounded-xl bg-violet-500/10 border border-violet-400/30 text-[11px] text-violet-800 dark:text-violet-200">
+            <Music className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span className="leading-snug">{musicPromptDirective}</span>
           </div>
+        ) : (
+          productionFormat === 'narration_story' && scene.musicMoodEn && (
+            <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-[11px] text-emerald-800 dark:text-emerald-200">
+              <span className="inline-flex items-center gap-1.5 font-medium truncate">
+                <Music className="w-3.5 h-3.5 shrink-0" />
+                <span>Nhạc nền AI theo cảnh: <strong className="font-mono">{scene.musicMoodEn}</strong></span>
+              </span>
+              <span className="text-[10px] opacity-80 shrink-0">1 giọng dẫn chuyện</span>
+            </div>
+          )
         )}
 
         {/* Dialogue + Narration */}

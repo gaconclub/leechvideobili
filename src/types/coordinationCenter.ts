@@ -147,6 +147,15 @@ export interface CoordinationSession {
   finalVideoDriveUrl?: string;
   lastSheetsSyncAt?: number;
   lastError?: string;
+  musicConfig?: {
+    musicMode: 'none' | 'auto_adaptive' | 'ai_lyria' | 'public_free' | 'uploaded';
+    musicStyle?: string;
+    musicPrompt?: string;
+    musicVolume: number; // 0..0.9 (max 90%)
+    musicAssetId?: string;
+    publicMusicUrl?: string;
+    instrumentalOnly?: boolean;
+  };
 }
 
 export interface CoordinationWorkspaceConfig {

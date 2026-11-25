@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type, type FunctionDeclaration } from '@google/genai';
 import type {
   AiEngineReadinessItem,
   CoordinationCenterState,
@@ -22,6 +22,8 @@ import type {
   StudioVideoStyle,
 } from '../src/types/bilibili';
 import {
+  AI_MUSIC_STYLE_DIRECTIVES,
+  buildVideoMusicPromptDirective,
   generateSceneVideoWithOmniFlash,
   generateStudioImage,
   getStudioAsset,
@@ -60,6 +62,84 @@ const sseListeners = new Set<SseListener>();
 const activeTaskLocks = new Set<string>();
 const activeSessionRunners = new Set<string>();
 const pauseRequestedSessions = new Set<string>();
+
+// Independent per-provider parallel worker pools so multiple sessions execute concurrently
+// across Gemini (scaled by healthy keys), Qwen, Google Flow, and Muse without blocking each other.
+const providerActiveCounts: Record<IndependentVideoSource, number> = {
+  gemini: 0,
+  qwen: 0,
+  muse: 0,
+  google_flow: 0,
+};
+const providerWaiters: Record<IndependentVideoSource, Array<() => void>> = {
+  gemini: [],
+  qwen: [],
+  muse: [],
+  google_flow: [],
+};
+
+function getProviderConcurrencyLimit(source: IndependentVideoSource): number {
+  if (source === 'gemini') {
+    try {
+      const pool = getGeminiPoolSummary();
+      const healthy = pool.healthy || pool.enabled || 1;
+      return Math.max(2, Math.min(6, healthy));
+    } catch {
+      return 2;
+    }
+  }
+  if (source === 'qwen') return 2;
+  if (source === 'google_flow') return 3;
+  return 1; // muse: 1 concurrent slot to avoid Muse2API browser queue overload
+}
+
+async function withProviderSlot<T>(source: IndependentVideoSource, fn: () => Promise<T>): Promise<T> {
+  const limit = getProviderConcurrencyLimit(source);
+  if (providerActiveCounts[source] >= limit) {
+    await new Promise<void>((resolve) => {
+      providerWaiters[source].push(resolve);
+    });
+  }
+  providerActiveCounts[source] += 1;
+  try {
+    return await fn();
+  } finally {
+    providerActiveCounts[source] = Math.max(0, providerActiveCounts[source] - 1);
+    const next = providerWaiters[source].shift();
+    if (next) next();
+  }
+}
+
+export function getActiveWorkerTelemetry(): {
+  activeSessionIds: string[];
+  providerSlots: Record<IndependentVideoSource, { active: number; limit: number; waiting: number }>;
+} {
+  return {
+    activeSessionIds: Array.from(activeSessionRunners),
+    providerSlots: {
+      gemini: {
+        active: providerActiveCounts.gemini,
+        limit: getProviderConcurrencyLimit('gemini'),
+        waiting: providerWaiters.gemini.length,
+      },
+      qwen: {
+        active: providerActiveCounts.qwen,
+        limit: getProviderConcurrencyLimit('qwen'),
+        waiting: providerWaiters.qwen.length,
+      },
+      muse: {
+        active: providerActiveCounts.muse,
+        limit: getProviderConcurrencyLimit('muse'),
+        waiting: providerWaiters.muse.length,
+      },
+      google_flow: {
+        active: providerActiveCounts.google_flow,
+        limit: getProviderConcurrencyLimit('google_flow'),
+        waiting: providerWaiters.google_flow.length,
+      },
+    },
+  };
+}
 
 let stateCache: CoordinationCenterState | null = null;
 let ffmpegCheckCache: { checkedAt: number; available: boolean; version?: string } | null = null;
@@ -1158,6 +1238,7 @@ function buildTasksForSession(params: {
   videoSource: IndependentVideoSource;
   scenes: CoordinationSceneSpec[];
   references: CoordinationReferenceItem[];
+  musicDirective?: string;
 }): CoordinationTaskRow[] {
   const now = Date.now();
   const sourceLabel = SOURCE_LABELS[params.videoSource];
@@ -1207,7 +1288,12 @@ function buildTasksForSession(params: {
       sceneIndex: sc.sceneIndex,
       sceneId: sc.sceneId,
       title: `Video phân cảnh #${sc.sceneIndex} (${sc.durationSec}s): ${sc.title}`,
-      instructions: sc.videoPrompt || sc.videoTimeline || sc.actionDetail || sc.title,
+      instructions: [
+        sc.videoPrompt || sc.videoTimeline || sc.actionDetail || sc.title,
+        params.musicDirective || '',
+      ]
+        .filter(Boolean)
+        .join(' | '),
       videoSourceLock: params.videoSource,
       assignedAiLabel: sourceLabel,
       dependsOnTaskCodes: [imgCode],
@@ -1255,6 +1341,15 @@ export async function createSessionFromStudio(
     characterRefs?: StudioCharacterRef[];
     blueprint?: any;
     sourceAction?: 'studio_dispatch' | 'manual_order';
+    musicConfig?: {
+      musicMode?: 'none' | 'auto_adaptive' | 'ai_lyria' | 'public_free' | 'uploaded';
+      musicStyle?: string;
+      musicPrompt?: string;
+      musicVolume?: number;
+      musicAssetId?: string;
+      publicMusicUrl?: string;
+      instrumentalOnly?: boolean;
+    };
   },
   optionalGoogleToken?: string
 ): Promise<CoordinationSession> {
@@ -1436,11 +1531,32 @@ export async function createSessionFromStudio(
     });
   }
 
+  const rawMusic = payload.musicConfig;
+  const normalizedMusicMode =
+    rawMusic?.musicMode === 'auto_adaptive' ||
+    rawMusic?.musicMode === 'ai_lyria' ||
+    rawMusic?.musicMode === 'public_free' ||
+    rawMusic?.musicMode === 'uploaded'
+      ? rawMusic.musicMode
+      : 'none';
+  const normalizedMusicVolume = Math.max(
+    0,
+    Math.min(0.9, Number(rawMusic?.musicVolume ?? 0.25))
+  );
+  const musicDirective = buildVideoMusicPromptDirective({
+    musicMode: normalizedMusicMode,
+    musicStyle: rawMusic?.musicStyle || 'auto_context',
+    musicPrompt: String(rawMusic?.musicPrompt || '').trim(),
+    musicVolume: normalizedMusicVolume,
+    instrumentalOnly: rawMusic?.instrumentalOnly !== false,
+  });
+
   const tasks = buildTasksForSession({
     sessionId,
     videoSource,
     scenes,
     references,
+    musicDirective,
   });
 
   const session: CoordinationSession = {
@@ -1462,6 +1578,18 @@ export async function createSessionFromStudio(
     scenes,
     references,
     tasks,
+    musicConfig:
+      normalizedMusicMode !== 'none'
+        ? {
+            musicMode: normalizedMusicMode,
+            musicStyle: rawMusic?.musicStyle || 'auto_context',
+            musicPrompt: String(rawMusic?.musicPrompt || '').trim(),
+            musicVolume: normalizedMusicVolume,
+            musicAssetId: rawMusic?.musicAssetId || undefined,
+            publicMusicUrl: rawMusic?.publicMusicUrl || undefined,
+            instrumentalOnly: rawMusic?.instrumentalOnly !== false,
+          }
+        : undefined,
   };
 
   st.sessions = [session, ...st.sessions].slice(0, 40);
@@ -1539,10 +1667,77 @@ export function updateSessionVideoSource(
     senderName: 'Trung Tâm Điều Phối AI',
     senderRole: 'Khóa nguồn độc lập',
     kind: 'report',
-    content: `Đã khóa nguồn sáng tạo video độc lập cho phiên ${sessionId} sang: ${sourceLabel}. Chỉ duy nhất nguồn này thực thi các tác vụ chưa hoàn thành — không chồng lấn nguồn khác.`,
+    content: `Đã khóa nguồn sáng tạo video độc lập cho phiên ${sessionId} sang: ${sourceLabel}. Chỉ duy nhất nguồn này thực thi các tác vụ chưa hoàn thành — các ảnh Bước 1 đã hoàn thành được giữ nguyên làm mốc cố định.`,
   });
 
   return session;
+}
+
+export function bulkUpdateSessionVideoSource(params: {
+  sessionIds: string[];
+  videoSource: IndependentVideoSource;
+  resetFailedTasks?: boolean;
+}): {
+  updatedSessionIds: string[];
+  skippedRunningSessionIds: string[];
+  preservedDoneTasksTotal: number;
+} {
+  const st = loadState();
+  const sourceLabel = SOURCE_LABELS[params.videoSource];
+  const updatedSessionIds: string[] = [];
+  const skippedRunningSessionIds: string[] = [];
+  let preservedDoneTasksTotal = 0;
+
+  const uniqueIds = Array.from(new Set((params.sessionIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+  for (const sid of uniqueIds) {
+    const session = st.sessions.find((s) => s.sessionId === sid);
+    if (!session) continue;
+    if (activeSessionRunners.has(sid) || session.tasks.some((t) => t.status === 'DANG_LAM')) {
+      skippedRunningSessionIds.push(sid);
+      continue;
+    }
+    session.videoSource = params.videoSource;
+    for (const t of session.tasks) {
+      if (t.status === 'HOAN_THANH') {
+        preservedDoneTasksTotal += 1;
+        continue;
+      }
+      t.videoSourceLock = params.videoSource;
+      if (t.taskCode.includes('-IMG-')) {
+        t.assignedAiLabel =
+          params.videoSource === 'google_flow'
+            ? 'Google Flow · Chuẩn bị khung hình'
+            : `${sourceLabel} · Ảnh`;
+      } else if (t.taskCode.includes('-VID-')) {
+        t.assignedAiLabel = sourceLabel;
+      }
+      if (params.resetFailedTasks && t.status === 'LOI') {
+        t.status = 'CHO_NHAN';
+        t.errorReason = undefined;
+      }
+      t.updatedAt = Date.now();
+    }
+    if (params.resetFailedTasks) {
+      session.lastError = undefined;
+    }
+    recomputeSessionStatus(session);
+    session.updatedAt = Date.now();
+    updatedSessionIds.push(sid);
+  }
+
+  if (updatedSessionIds.length > 0) {
+    saveState(true);
+    pushMeetingMessage({
+      sessionId: updatedSessionIds.length === 1 ? updatedSessionIds[0] : 'GLOBAL',
+      senderId: 'coordinator',
+      senderName: 'Trung Tâm Điều Phối AI',
+      senderRole: 'Chuyển nguồn hàng loạt',
+      kind: 'report',
+      content: `Đã chuyển nguồn độc lập sang ${sourceLabel} cho ${updatedSessionIds.length} phiên (${updatedSessionIds.join(', ')}). Giữ nguyên ${preservedDoneTasksTotal} bước đã hoàn thành làm mốc cố định.${skippedRunningSessionIds.length > 0 ? ` Bỏ qua ${skippedRunningSessionIds.length} phiên đang chạy.` : ''}`,
+    });
+  }
+
+  return { updatedSessionIds, skippedRunningSessionIds, preservedDoneTasksTotal };
 }
 
 export function deleteCoordinationSession(sessionId: string): CoordinationCenterState {
@@ -1589,6 +1784,15 @@ function loadSessionCharacterRefs(session: CoordinationSession): StudioCharacter
 }
 
 function buildGoogleFlowPrompt(session: CoordinationSession, scene: CoordinationSceneSpec, refSummary: string): string {
+  const musicLine = session.musicConfig
+    ? buildVideoMusicPromptDirective({
+        musicMode: session.musicConfig.musicMode,
+        musicStyle: session.musicConfig.musicStyle,
+        musicPrompt: session.musicConfig.musicPrompt,
+        musicVolume: session.musicConfig.musicVolume,
+        instrumentalOnly: session.musicConfig.instrumentalOnly,
+      })
+    : '';
   return [
     `[PHIÊN ${session.sessionId} · CẢNH ${scene.sceneIndex}/${session.scenes.length} · ${scene.durationSec}s · ${session.aspectRatio}]`,
     `Tiêu đề cảnh: ${scene.title}`,
@@ -1599,19 +1803,58 @@ function buildGoogleFlowPrompt(session: CoordinationSession, scene: Coordination
     scene.actionDetail ? `Diễn biến hành động: ${scene.actionDetail}` : '',
     scene.videoTimeline ? `Timeline từng giây:\n${scene.videoTimeline}` : '',
     scene.dialogue ? `Lời thoại: ${scene.dialogue}` : '',
+    musicLine,
     scene.cameraAngle || scene.cameraMovement
       ? `Góc máy & chuyển động: ${[scene.cameraAngle, scene.cameraMovement].filter(Boolean).join(' · ')}`
       : '',
     scene.lighting ? `Ánh sáng: ${scene.lighting}` : '',
+    'Không chèn chữ hiển thị trên màn hình (Strictly NO on-screen text, no captions, no titles).',
   ]
     .filter(Boolean)
     .join('\n');
 }
 
+async function resolveSessionBgmPath(
+  session: CoordinationSession,
+  dir: string
+): Promise<{ bgmPath: string; label: string; volume: number } | null> {
+  const cfg = session.musicConfig;
+  if (!cfg || cfg.musicMode === 'none') return null;
+  const vol = Math.max(0, Math.min(0.9, Number(cfg.musicVolume ?? 0.25)));
+  if (vol <= 0) return null;
+
+  const stylePreset = cfg.musicStyle ? AI_MUSIC_STYLE_DIRECTIVES[cfg.musicStyle] : undefined;
+  const styleLabel = stylePreset?.labelVi || (cfg.musicPrompt ? 'AI tùy chỉnh' : 'Nhạc nền AI');
+
+  // For AI prompt-embedded music ('ai_lyria' / 'auto_adaptive'), the video AI server natively generates BGM from the prompt —
+  // only mix external FFmpeg BGM when the user explicitly attached an uploaded audio file or public_free URL.
+  if (cfg.musicMode === 'uploaded' && cfg.musicAssetId) {
+    const rec = getStudioAsset(cfg.musicAssetId);
+    if (rec && fs.existsSync(rec.filePath)) {
+      return { bgmPath: rec.filePath, label: 'Nhạc tải lên', volume: vol };
+    }
+  } else if (cfg.musicMode === 'public_free' && cfg.publicMusicUrl) {
+    try {
+      const dl = await fetch(cfg.publicMusicUrl, { signal: AbortSignal.timeout(25_000) });
+      if (dl.ok) {
+        const buf = Buffer.from(await dl.arrayBuffer());
+        if (buf.byteLength > 10_000) {
+          const out = path.resolve(dir, 'session_bgm.audio');
+          fs.writeFileSync(out, buf);
+          return { bgmPath: out, label: styleLabel, volume: vol };
+        }
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 async function assembleFinalFilmWithFfmpeg(
   session: CoordinationSession,
   clipPaths: string[]
-): Promise<{ fileName: string; localUrl: string }> {
+): Promise<{ fileName: string; localUrl: string; bgmSummary?: string }> {
   const dir = getSessionArtifactDir(session.sessionId);
   const outFileName = `final_${sanitizeIdSegment(session.sessionId, 'film')}.mp4`;
   const outPath = path.resolve(dir, outFileName);
@@ -1619,7 +1862,9 @@ async function assembleFinalFilmWithFfmpeg(
     throw new Error('Đường dẫn xuất phim không hợp lệ.');
   }
 
-  if (clipPaths.length === 1) {
+  const bgm = await resolveSessionBgmPath(session, dir).catch(() => null);
+
+  if (clipPaths.length === 1 && !bgm) {
     fs.copyFileSync(clipPaths[0], outPath);
     return { fileName: outFileName, localUrl: artifactUrlFor(session.sessionId, outFileName) };
   }
@@ -1630,6 +1875,18 @@ async function assembleFinalFilmWithFfmpeg(
 
   for (let i = 0; i < clipPaths.length; i += 1) {
     const normPath = path.resolve(dir, `norm_${String(i + 1).padStart(2, '0')}.mp4`);
+    let clipHasAudio = false;
+    try {
+      const probe = await execFileAsync(
+        'ffprobe',
+        ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', clipPaths[i]],
+        { timeout: 10_000 }
+      );
+      clipHasAudio = Boolean(String(probe.stdout || '').trim());
+    } catch {
+      clipHasAudio = false;
+    }
+
     await execFileAsync(
       'ffmpeg',
       [
@@ -1639,7 +1896,7 @@ async function assembleFinalFilmWithFfmpeg(
         '-f',
         'lavfi',
         '-t',
-        '15',
+        '60',
         '-i',
         'anullsrc=channel_layout=stereo:sample_rate=44100',
         '-vf',
@@ -1647,7 +1904,7 @@ async function assembleFinalFilmWithFfmpeg(
         '-map',
         '0:v:0',
         '-map',
-        '0:a:0?',
+        clipHasAudio ? '0:a:0' : '1:a:0',
         '-c:v',
         'libx264',
         '-preset',
@@ -1676,6 +1933,51 @@ async function assembleFinalFilmWithFfmpeg(
     normalizedPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'),
     'utf8'
   );
+
+  if (bgm) {
+    const volPct = Math.round(bgm.volume * 100);
+    await execFileAsync(
+      'ffmpeg',
+      [
+        '-y',
+        '-f',
+        'concat',
+        '-safe',
+        '0',
+        '-i',
+        concatListPath,
+        '-stream_loop',
+        '-1',
+        '-i',
+        bgm.bgmPath,
+        '-filter_complex',
+        `[0:a]aresample=44100[avoice];[1:a]aresample=44100,volume=${bgm.volume.toFixed(2)}[abgm];[avoice][abgm]amix=inputs=2:duration=first:dropout_transition=0.3:normalize=0[aout]`,
+        '-map',
+        '0:v',
+        '-map',
+        '[aout]',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-crf',
+        '21',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '192k',
+        '-movflags',
+        '+faststart',
+        outPath,
+      ],
+      { timeout: 240_000 }
+    );
+    return {
+      fileName: outFileName,
+      localUrl: artifactUrlFor(session.sessionId, outFileName),
+      bgmSummary: `trộn nhạc nền (${bgm.label} · âm lượng ${volPct}%)`,
+    };
+  }
 
   await execFileAsync(
     'ffmpeg',
@@ -1931,6 +2233,11 @@ export async function runSingleCoordinationTask(params: {
           geminiApiKey: geminiWorker?.apiKey,
           allowFreeCostumeChange: session.allowFreeCostumeChange,
           strictSingleFrameLock: true,
+          musicMode: session.musicConfig?.musicMode,
+          musicStyle: session.musicConfig?.musicStyle,
+          musicPrompt: session.musicConfig?.musicPrompt,
+          musicVolume: session.musicConfig?.musicVolume,
+          musicInstrumentalOnly: session.musicConfig?.instrumentalOnly,
         });
 
         const studioAsset = getStudioAsset(vidRes.assetId);
@@ -1969,7 +2276,9 @@ export async function runSingleCoordinationTask(params: {
       task.localOutputFileName = assembled.fileName;
       task.localOutputUrl = assembled.localUrl;
       session.finalVideoLocalUrl = assembled.localUrl;
-      task.resultSummary = `Đã ghép trực tiếp ${clipPaths.length} clip thành phim MP4 hoàn chỉnh.`;
+      task.resultSummary = assembled.bgmSummary
+        ? `Đã ghép ${clipPaths.length} clip & ${assembled.bgmSummary} thành phim MP4 hoàn chỉnh.`
+        : `Đã ghép trực tiếp ${clipPaths.length} clip thành phim MP4 hoàn chỉnh.`;
       task.status = 'HOAN_THANH';
       task.completedAt = Date.now();
       task.updatedAt = Date.now();
@@ -2058,6 +2367,13 @@ export async function startSessionSequentialRun(params: {
     }
   }
 
+  const hasRunnableOrQueued = session.tasks.some((t) => t.status === 'CHO_NHAN');
+  if (!hasRunnableOrQueued) {
+    recomputeSessionStatus(session);
+    saveState(true);
+    return session;
+  }
+
   activeSessionRunners.add(session.sessionId);
   session.status = 'DANG_CHAY';
   session.lastError = undefined;
@@ -2068,12 +2384,13 @@ export async function startSessionSequentialRun(params: {
     sessionId: session.sessionId,
     senderId: 'coordinator',
     senderName: 'Trung Tâm Điều Phối AI',
-    senderRole: 'Khởi động dây chuyền tuần tự',
+    senderRole: 'Khởi động luồng sản xuất',
     kind: 'report',
-    content: `Bắt đầu chạy tuần tự các tác vụ phiên ${session.sessionId} theo Sổ Điều Phối. Nguồn video khóa độc lập: ${SOURCE_LABELS[session.videoSource]}.`,
+    content: `Bắt đầu chạy luồng phiên ${session.sessionId} ("${session.title}") theo Sổ Điều Phối. Nguồn khóa độc lập: ${SOURCE_LABELS[session.videoSource]}.`,
   });
 
-  // Execute sequentially in background so HTTP request responds immediately while SSE streams every step
+  // Execute steps sequentially WITHIN this session while running in PARALLEL across other sessions,
+  // gated by per-provider concurrency slots so one failed/slow provider never blocks other providers.
   void (async () => {
     try {
       while (!pauseRequestedSessions.has(session.sessionId)) {
@@ -2086,11 +2403,24 @@ export async function startSessionSequentialRun(params: {
         });
         if (!nextTask) break;
 
-        await runSingleCoordinationTask({
-          sessionId: session.sessionId,
-          taskCode: nextTask.taskCode,
-          googleToken: params.googleToken,
-        });
+        const isMediaGenStep =
+          nextTask.taskCode.includes('-IMG-') || nextTask.taskCode.includes('-VID-');
+        if (isMediaGenStep) {
+          await withProviderSlot(nextTask.videoSourceLock, async () => {
+            if (pauseRequestedSessions.has(session.sessionId)) return;
+            await runSingleCoordinationTask({
+              sessionId: session.sessionId,
+              taskCode: nextTask.taskCode,
+              googleToken: params.googleToken,
+            });
+          });
+        } else {
+          await runSingleCoordinationTask({
+            sessionId: session.sessionId,
+            taskCode: nextTask.taskCode,
+            googleToken: params.googleToken,
+          });
+        }
       }
     } finally {
       activeSessionRunners.delete(session.sessionId);
@@ -2103,21 +2433,252 @@ export async function startSessionSequentialRun(params: {
   return session;
 }
 
-let queueBatchRunnerActive = false;
-let queueBatchPauseRequested = false;
+export async function retryCoordinationTask(params: {
+  sessionId: string;
+  taskCode: string;
+  overrideVideoSource?: IndependentVideoSource;
+  autoContinueSession?: boolean;
+  googleToken?: string;
+}): Promise<{ session: CoordinationSession; task: CoordinationTaskRow }> {
+  const st = loadState();
+  const session = st.sessions.find((s) => s.sessionId === params.sessionId);
+  if (!session) throw new Error(`Không tìm thấy phiên ${params.sessionId}.`);
+  const task = session.tasks.find((t) => t.taskCode === params.taskCode);
+  if (!task) throw new Error(`Không tìm thấy tác vụ ${params.taskCode}.`);
+  if (activeSessionRunners.has(session.sessionId) || task.status === 'DANG_LAM') {
+    throw new Error(`Phiên ${session.sessionId} đang chạy. Hãy tạm dừng trước khi đổi nguồn/chạy lại tác vụ.`);
+  }
 
-export function isSequentialQueueBatchRunning(): boolean {
-  return queueBatchRunnerActive;
+  // Verify upstream dependencies are still satisfied (e.g., Step 1 image is HOAN_THANH)
+  for (const depCode of task.dependsOnTaskCodes) {
+    const dep = session.tasks.find((t) => t.taskCode === depCode);
+    if (!dep || dep.status !== 'HOAN_THANH') {
+      throw new Error(`Tác vụ ${task.taskCode} cần hoàn thành tiền đề ${depCode} trước.`);
+    }
+  }
+
+  const nextSource = params.overrideVideoSource || task.videoSourceLock;
+  if (params.overrideVideoSource) {
+    const sourceLabel = SOURCE_LABELS[nextSource];
+    session.videoSource = nextSource;
+    // Preserve ALL completed tasks (especially Step 1 images!) and only update unfinished tasks
+    for (const t of session.tasks) {
+      if (t.status !== 'HOAN_THANH' || t.taskCode === task.taskCode) {
+        t.videoSourceLock = nextSource;
+        if (t.taskCode.includes('-IMG-')) {
+          t.assignedAiLabel =
+            nextSource === 'google_flow' ? 'Google Flow · Chuẩn bị khung hình' : `${sourceLabel} · Ảnh`;
+        } else if (t.taskCode.includes('-VID-')) {
+          t.assignedAiLabel = sourceLabel;
+        }
+        t.updatedAt = Date.now();
+      }
+    }
+  }
+
+  task.status = 'CHO_NHAN';
+  task.errorReason = undefined;
+  task.flowPrompt = undefined;
+  task.updatedAt = Date.now();
+  session.lastError = undefined;
+
+  // If this is a video task and final task had errored/completed earlier, unlock final task too
+  if (task.taskCode.includes('-VID-')) {
+    const finalTask = session.tasks.find((t) => t.taskCode.endsWith('-FINAL'));
+    if (finalTask && (finalTask.status === 'LOI' || finalTask.status === 'HOAN_THANH')) {
+      finalTask.status = 'CHO_NHAN';
+      finalTask.errorReason = undefined;
+      finalTask.updatedAt = Date.now();
+    }
+  }
+
+  recomputeSessionStatus(session);
+  session.updatedAt = Date.now();
+  saveState(true);
+
+  pushMeetingMessage({
+    sessionId: session.sessionId,
+    senderId: 'coordinator',
+    senderName: 'Trung Tâm Điều Phối AI',
+    senderRole: 'Chạy lại tác vụ (giữ mốc đã xong)',
+    kind: 'report',
+    taskCode: task.taskCode,
+    content: params.overrideVideoSource
+      ? `Giữ nguyên các ảnh Bước 1 đã hoàn thành, chuyển [${task.taskCode}] sang nguồn ${SOURCE_LABELS[nextSource]} và kích hoạt chạy lại ngay.`
+      : `Đã mở lại tác vụ [${task.taskCode}] trên nguồn ${SOURCE_LABELS[nextSource]} và kích hoạt chạy lại.`,
+  });
+
+  if (params.autoContinueSession !== false) {
+    await startSessionSequentialRun({
+      sessionId: session.sessionId,
+      googleToken: params.googleToken,
+      retryErrors: false,
+    });
+  } else {
+    const isMediaGenStep = task.taskCode.includes('-IMG-') || task.taskCode.includes('-VID-');
+    if (isMediaGenStep) {
+      await withProviderSlot(task.videoSourceLock, () =>
+        runSingleCoordinationTask({
+          sessionId: session.sessionId,
+          taskCode: task.taskCode,
+          googleToken: params.googleToken,
+        })
+      );
+    } else {
+      await runSingleCoordinationTask({
+        sessionId: session.sessionId,
+        taskCode: task.taskCode,
+        googleToken: params.googleToken,
+      });
+    }
+  }
+
+  return { session, task };
 }
 
-export async function startAllQueuedSessionsSequential(params?: {
+export async function regenerateSceneImageAndContinue(params: {
+  sessionId: string;
+  sceneIndex: number;
+  customPromptNote?: string;
+  overrideVideoSource?: IndependentVideoSource;
+  autoResumeVideo?: boolean;
+  googleToken?: string;
+}): Promise<{
+  session: CoordinationSession;
+  imgTask: CoordinationTaskRow;
+  vidTask?: CoordinationTaskRow;
+}> {
+  const st = loadState();
+  const session = st.sessions.find((s) => s.sessionId === params.sessionId);
+  if (!session) throw new Error(`Không tìm thấy phiên ${params.sessionId}.`);
+  if (activeSessionRunners.has(session.sessionId)) {
+    throw new Error(`Phiên ${session.sessionId} đang chạy. Hãy tạm dừng phiên trước khi tạo lại ảnh phân cảnh.`);
+  }
+
+  const scene = session.scenes.find((sc) => sc.sceneIndex === params.sceneIndex);
+  if (!scene) throw new Error(`Không tìm thấy Phân cảnh #${params.sceneIndex} trong phiên ${session.sessionId}.`);
+
+  const imgTask = session.tasks.find(
+    (t) => t.taskCode.includes('-IMG-') && (t.sceneIndex === scene.sceneIndex || t.sceneId === scene.sceneId)
+  );
+  if (!imgTask) {
+    throw new Error(`Không tìm thấy tác vụ Ảnh phân cảnh cho Cảnh #${params.sceneIndex}.`);
+  }
+  const vidTask = session.tasks.find(
+    (t) => t.taskCode.includes('-VID-') && (t.sceneIndex === scene.sceneIndex || t.sceneId === scene.sceneId)
+  );
+  const finalTask = session.tasks.find((t) => t.taskCode.endsWith('-FINAL'));
+
+  const cleanNote = String(params.customPromptNote || '').trim();
+  if (cleanNote) {
+    const basePrompt = String(scene.imagePrompt || scene.actionDetail || scene.title || '').trim();
+    if (!basePrompt.includes(cleanNote)) {
+      scene.imagePrompt = `${basePrompt}\n[Điều chỉnh bổ sung khi tạo lại ảnh]: ${cleanNote}`.trim();
+    }
+  }
+
+  if (params.overrideVideoSource) {
+    const sourceLabel = SOURCE_LABELS[params.overrideVideoSource];
+    session.videoSource = params.overrideVideoSource;
+    imgTask.videoSourceLock = params.overrideVideoSource;
+    imgTask.assignedAiLabel =
+      params.overrideVideoSource === 'google_flow'
+        ? 'Google Flow · Chuẩn bị khung hình'
+        : `${sourceLabel} · Ảnh`;
+    if (vidTask) {
+      vidTask.videoSourceLock = params.overrideVideoSource;
+      vidTask.assignedAiLabel = sourceLabel;
+    }
+  }
+
+  const now = Date.now();
+  // Reset Step 1 image so AI generates a brand-new reference keyframe
+  imgTask.status = 'CHO_NHAN';
+  imgTask.errorReason = undefined;
+  imgTask.resultSummary = undefined;
+  imgTask.localOutputFileName = undefined;
+  imgTask.localOutputUrl = undefined;
+  imgTask.driveOutputUrl = undefined;
+  imgTask.completedAt = undefined;
+  imgTask.updatedAt = now;
+
+  // Reset Step 2 video & Step 3 final assembly so they cleanly run on the new image
+  if (vidTask) {
+    vidTask.status = 'CHO_NHAN';
+    vidTask.errorReason = undefined;
+    vidTask.resultSummary = undefined;
+    vidTask.flowPrompt = undefined;
+    vidTask.localOutputFileName = undefined;
+    vidTask.localOutputUrl = undefined;
+    vidTask.driveOutputUrl = undefined;
+    vidTask.completedAt = undefined;
+    vidTask.updatedAt = now;
+  }
+  if (finalTask && finalTask.status !== 'CHO_NHAN') {
+    finalTask.status = 'CHO_NHAN';
+    finalTask.errorReason = undefined;
+    finalTask.resultSummary = undefined;
+    finalTask.completedAt = undefined;
+    finalTask.updatedAt = now;
+  }
+
+  session.lastError = undefined;
+  recomputeSessionStatus(session);
+  session.updatedAt = now;
+  saveState(true);
+
+  pushMeetingMessage({
+    sessionId: session.sessionId,
+    senderId: 'coordinator',
+    senderName: 'Trung Tâm Điều Phối AI',
+    senderRole: 'Tạo lại ảnh phân cảnh',
+    kind: 'report',
+    taskCode: imgTask.taskCode,
+    content: `Đã kích hoạt tạo lại Ảnh Phân cảnh #${scene.sceneIndex} (${imgTask.taskCode})${cleanNote ? ` với ghi chú điều chỉnh: "${cleanNote}"` : ''} và đặt lại ${vidTask ? vidTask.taskCode : 'bước Video'} để tiếp tục tiến trình sản xuất mới.${params.autoResumeVideo === false ? ' (Chỉ tạo ảnh mới)' : ' (Tự động chạy tiếp sang Video → Ghép phim)'}`,
+  });
+
+  if (params.autoResumeVideo === false) {
+    await withProviderSlot(imgTask.videoSourceLock, () =>
+      runSingleCoordinationTask({
+        sessionId: session.sessionId,
+        taskCode: imgTask.taskCode,
+        googleToken: params.googleToken,
+      })
+    );
+  } else {
+    await startSessionSequentialRun({
+      sessionId: session.sessionId,
+      googleToken: params.googleToken,
+      retryErrors: false,
+    });
+  }
+
+  return { session, imgTask, vidTask };
+}
+
+export function isSequentialQueueBatchRunning(): boolean {
+  return activeSessionRunners.size > 0;
+}
+
+export async function startParallelSessionsRun(params?: {
+  sessionIds?: string[];
   googleToken?: string;
   retryErrors?: boolean;
-}): Promise<{ queuedSessionIds: string[]; alreadyRunning: boolean }> {
+}): Promise<{
+  startedSessionIds: string[];
+  queuedSessionIds: string[];
+  alreadyRunningSessionIds: string[];
+}> {
   const st = loadState();
+  const requestedSet =
+    params?.sessionIds && params.sessionIds.length > 0
+      ? new Set(params.sessionIds.map((id) => String(id || '').trim()).filter(Boolean))
+      : null;
+
   const candidates = [...st.sessions]
     .reverse()
     .filter((s) => {
+      if (requestedSet && !requestedSet.has(s.sessionId)) return false;
       if (s.status === 'HOAN_THANH') return false;
       if (params?.retryErrors) {
         return s.tasks.some((t) => t.status === 'CHO_NHAN' || t.status === 'LOI');
@@ -2125,83 +2686,222 @@ export async function startAllQueuedSessionsSequential(params?: {
       return s.tasks.some((t) => t.status === 'CHO_NHAN');
     });
 
-  const queuedSessionIds = candidates.map((s) => s.sessionId);
-  if (queuedSessionIds.length === 0) {
-    return { queuedSessionIds: [], alreadyRunning: queueBatchRunnerActive };
-  }
-  if (queueBatchRunnerActive) {
-    return { queuedSessionIds, alreadyRunning: true };
+  const startedSessionIds: string[] = [];
+  const alreadyRunningSessionIds: string[] = [];
+
+  for (const sess of candidates) {
+    if (activeSessionRunners.has(sess.sessionId)) {
+      alreadyRunningSessionIds.push(sess.sessionId);
+      continue;
+    }
+    await startSessionSequentialRun({
+      sessionId: sess.sessionId,
+      googleToken: params?.googleToken,
+      retryErrors: params?.retryErrors === true,
+    });
+    startedSessionIds.push(sess.sessionId);
   }
 
-  queueBatchRunnerActive = true;
-  queueBatchPauseRequested = false;
+  if (startedSessionIds.length > 1) {
+    const summaryBySource: Record<string, number> = {};
+    for (const sid of startedSessionIds) {
+      const sess = st.sessions.find((s) => s.sessionId === sid);
+      if (sess) {
+        const lbl = SOURCE_LABELS[sess.videoSource];
+        summaryBySource[lbl] = (summaryBySource[lbl] || 0) + 1;
+      }
+    }
+    const distText = Object.entries(summaryBySource)
+      .map(([k, v]) => `${k}: ${v} phiên`)
+      .join(' · ');
+    pushMeetingMessage({
+      sessionId: 'GLOBAL',
+      senderId: 'coordinator',
+      senderName: 'Trung Tâm Điều Phối AI',
+      senderRole: 'Chạy đa luồng song song',
+      kind: 'report',
+      content: `Đã mở ${startedSessionIds.length} luồng sản xuất SONG SONG độc lập (${distText}). Nếu 1 phiên gặp sự cố hoặc chờ nạp Flow, các phiên khác vẫn tiếp tục chạy bình thường không bị chặn.`,
+    });
+  }
+
+  return {
+    startedSessionIds,
+    queuedSessionIds: [...startedSessionIds, ...alreadyRunningSessionIds],
+    alreadyRunningSessionIds,
+  };
+}
+
+export async function startAllQueuedSessionsSequential(params?: {
+  googleToken?: string;
+  retryErrors?: boolean;
+}): Promise<{ queuedSessionIds: string[]; alreadyRunning: boolean; startedSessionIds: string[] }> {
+  const res = await startParallelSessionsRun({
+    googleToken: params?.googleToken,
+    retryErrors: params?.retryErrors,
+  });
+  return {
+    queuedSessionIds: res.queuedSessionIds,
+    startedSessionIds: res.startedSessionIds,
+    alreadyRunning: res.startedSessionIds.length === 0 && res.alreadyRunningSessionIds.length > 0,
+  };
+}
+
+export async function autoDistributeAndRunSessions(params?: {
+  sessionIds?: string[];
+  providers?: IndependentVideoSource[];
+  includeErrorSessions?: boolean;
+  googleToken?: string;
+}): Promise<{
+  assignments: Array<{
+    sessionId: string;
+    title: string;
+    videoSource: IndependentVideoSource;
+    preservedDoneTasks: number;
+  }>;
+  startedSessionIds: string[];
+  activeProviders: IndependentVideoSource[];
+}> {
+  let st = loadState();
+  if (st.readiness.length === 0) {
+    await checkAllAiReadiness(false).catch(() => {});
+    st = loadState();
+  }
+
+  const validProviders: IndependentVideoSource[] = ['gemini', 'qwen', 'muse', 'google_flow'];
+  let activeProviders: IndependentVideoSource[] = [];
+
+  if (params?.providers && params.providers.length > 0) {
+    activeProviders = Array.from(
+      new Set(
+        params.providers
+          .map((p) => String(p || '').trim() as IndependentVideoSource)
+          .filter((p): p is IndependentVideoSource => validProviders.includes(p))
+      )
+    );
+  } else {
+    const readyMap = new Map(st.readiness.map((r) => [r.id, r.status]));
+    // Prefer fast healthy APIs first: Gemini -> Qwen -> Google Flow -> Muse (only if ready)
+    const order: IndependentVideoSource[] = ['gemini', 'qwen', 'google_flow', 'muse'];
+    for (const p of order) {
+      const status = readyMap.get(p);
+      if (status === 'ready') {
+        activeProviders.push(p);
+      }
+    }
+    // Always allow google_flow as fallback if nothing else is ready
+    if (activeProviders.length === 0) {
+      activeProviders = ['google_flow'];
+    }
+  }
+
+  // Build weighted round-robin ring so Gemini with multiple healthy keys takes proportional share
+  const weightedRing: IndependentVideoSource[] = [];
+  for (const p of activeProviders) {
+    const weight =
+      p === 'gemini'
+        ? Math.max(2, Math.min(4, Math.ceil(getProviderConcurrencyLimit('gemini') / 2)))
+        : p === 'qwen'
+        ? 2
+        : 1;
+    for (let i = 0; i < weight; i += 1) {
+      weightedRing.push(p);
+    }
+  }
+
+  const requestedSet =
+    params?.sessionIds && params.sessionIds.length > 0
+      ? new Set(params.sessionIds.map((id) => String(id || '').trim()).filter(Boolean))
+      : null;
+
+  const targets = [...st.sessions]
+    .reverse()
+    .filter((s) => {
+      if (requestedSet && !requestedSet.has(s.sessionId)) return false;
+      if (s.status === 'HOAN_THANH' || activeSessionRunners.has(s.sessionId)) return false;
+      if (params?.includeErrorSessions) {
+        return s.tasks.some((t) => t.status === 'CHO_NHAN' || t.status === 'LOI');
+      }
+      return s.status !== 'CO_LOI' && s.tasks.some((t) => t.status === 'CHO_NHAN');
+    });
+
+  const assignments: Array<{
+    sessionId: string;
+    title: string;
+    videoSource: IndependentVideoSource;
+    preservedDoneTasks: number;
+  }> = [];
+
+  targets.forEach((sess, idx) => {
+    const chosenSource = weightedRing[idx % weightedRing.length];
+    const sourceLabel = SOURCE_LABELS[chosenSource];
+    let preservedDoneTasks = 0;
+    sess.videoSource = chosenSource;
+    for (const t of sess.tasks) {
+      if (t.status === 'HOAN_THANH') {
+        preservedDoneTasks += 1;
+        continue;
+      }
+      t.videoSourceLock = chosenSource;
+      if (t.taskCode.includes('-IMG-')) {
+        t.assignedAiLabel =
+          chosenSource === 'google_flow' ? 'Google Flow · Chuẩn bị khung hình' : `${sourceLabel} · Ảnh`;
+      } else if (t.taskCode.includes('-VID-')) {
+        t.assignedAiLabel = sourceLabel;
+      }
+      if (params?.includeErrorSessions && t.status === 'LOI') {
+        t.status = 'CHO_NHAN';
+        t.errorReason = undefined;
+      }
+      t.updatedAt = Date.now();
+    }
+    if (params?.includeErrorSessions) {
+      sess.lastError = undefined;
+    }
+    recomputeSessionStatus(sess);
+    sess.updatedAt = Date.now();
+    assignments.push({
+      sessionId: sess.sessionId,
+      title: sess.title,
+      videoSource: chosenSource,
+      preservedDoneTasks,
+    });
+  });
+
+  if (assignments.length === 0) {
+    return { assignments: [], startedSessionIds: [], activeProviders };
+  }
+
+  saveState(true);
+
+  const groupedSummary = activeProviders
+    .map((p) => {
+      const list = assignments.filter((a) => a.videoSource === p);
+      if (list.length === 0) return '';
+      return `• ${SOURCE_LABELS[p]} (${list.length} phiên): ${list.map((x) => x.sessionId).join(', ')}`;
+    })
+    .filter(Boolean)
+    .join('\n');
 
   pushMeetingMessage({
     sessionId: 'GLOBAL',
     senderId: 'coordinator',
     senderName: 'Trung Tâm Điều Phối AI',
-    senderRole: 'Chạy tuần tự hàng đợi kịch bản',
+    senderRole: 'Chia tải đa luồng & Chạy song song',
     kind: 'report',
-    content: `Khởi động chạy tuần tự ${queuedSessionIds.length} kịch bản đang chờ theo đúng thứ tự: ${queuedSessionIds.join(' → ')}. Mỗi kịch bản chạy xong mới chuyển sang kịch bản kế tiếp, không chồng lấn.`,
+    content: `Đã chia tải tự động ${assignments.length} phiên sang các AI đang sẵn sàng (giữ nguyên toàn bộ Ảnh Bước 1 đã hoàn thành) và kích hoạt chạy song song:\n${groupedSummary}`,
   });
 
-  void (async () => {
-    try {
-      for (const sid of queuedSessionIds) {
-        if (queueBatchPauseRequested) break;
-        const curState = loadState();
-        const session = curState.sessions.find((s) => s.sessionId === sid);
-        if (!session) continue;
+  const runRes = await startParallelSessionsRun({
+    sessionIds: assignments.map((a) => a.sessionId),
+    googleToken: params?.googleToken,
+    retryErrors: Boolean(params?.includeErrorSessions),
+  });
 
-        curState.activeSessionId = session.sessionId;
-        pauseRequestedSessions.delete(session.sessionId);
-        if (params?.retryErrors) {
-          for (const t of session.tasks) {
-            if (t.status === 'LOI') {
-              t.status = 'CHO_NHAN';
-              t.errorReason = undefined;
-              t.updatedAt = Date.now();
-            }
-          }
-        }
-        activeSessionRunners.add(session.sessionId);
-        session.status = 'DANG_CHAY';
-        session.lastError = undefined;
-        session.updatedAt = Date.now();
-        saveState(true);
-
-        try {
-          while (!pauseRequestedSessions.has(session.sessionId) && !queueBatchPauseRequested) {
-            const nextTask = session.tasks.find((t) => {
-              if (t.status !== 'CHO_NHAN') return false;
-              return t.dependsOnTaskCodes.every((depCode) => {
-                const dep = session.tasks.find((x) => x.taskCode === depCode);
-                return dep?.status === 'HOAN_THANH';
-              });
-            });
-            if (!nextTask) break;
-
-            await runSingleCoordinationTask({
-              sessionId: session.sessionId,
-              taskCode: nextTask.taskCode,
-              googleToken: params?.googleToken,
-            });
-          }
-        } finally {
-          activeSessionRunners.delete(session.sessionId);
-          recomputeSessionStatus(session);
-          session.updatedAt = Date.now();
-          saveState(true);
-        }
-      }
-    } finally {
-      queueBatchRunnerActive = false;
-      queueBatchPauseRequested = false;
-      saveState(true);
-    }
-  })();
-
-  return { queuedSessionIds, alreadyRunning: false };
+  return {
+    assignments,
+    startedSessionIds: runRes.startedSessionIds,
+    activeProviders,
+  };
 }
 
 export function pauseSessionRun(sessionId: string): CoordinationSession {
@@ -2209,7 +2909,6 @@ export function pauseSessionRun(sessionId: string): CoordinationSession {
   const session = st.sessions.find((s) => s.sessionId === sessionId);
   if (!session) throw new Error('Không tìm thấy phiên làm việc.');
   pauseRequestedSessions.add(sessionId);
-  queueBatchPauseRequested = true;
   if (!activeSessionRunners.has(sessionId)) {
     session.status = 'TAM_DUNG';
   }
@@ -2222,10 +2921,29 @@ export function pauseSessionRun(sessionId: string): CoordinationSession {
     senderName: 'Trung Tâm Điều Phối AI',
     senderRole: 'Tạm dừng phiên',
     kind: 'report',
-    content: `Đã nhận lệnh tạm dừng phiên ${sessionId}. Hệ thống sẽ dừng an toàn sau khi bước hiện tại hoàn tất.`,
+    content: `Đã nhận lệnh tạm dừng riêng phiên ${sessionId} (không ảnh hưởng các phiên khác đang chạy song song).`,
   });
 
   return session;
+}
+
+export function pauseMultipleSessions(sessionIds?: string[]): { pausedSessionIds: string[] } {
+  const st = loadState();
+  const targets =
+    sessionIds && sessionIds.length > 0
+      ? sessionIds.filter((id) => st.sessions.some((s) => s.sessionId === id))
+      : Array.from(activeSessionRunners);
+
+  const pausedSessionIds: string[] = [];
+  for (const sid of targets) {
+    try {
+      pauseSessionRun(sid);
+      pausedSessionIds.push(sid);
+    } catch {
+      // ignore missing
+    }
+  }
+  return { pausedSessionIds };
 }
 
 export async function uploadFlowClipForTask(params: {
@@ -2393,11 +3111,254 @@ function buildMeetingContextSnapshot(st: CoordinationCenterState, focusSession?:
   ].join('\n');
 }
 
+const COORDINATOR_TOOL_DECLARATIONS: FunctionDeclaration[] = [
+  {
+    name: 'bulk_change_source',
+    description:
+      'Đổi nguồn AI sản xuất độc lập (gemini | qwen | muse | google_flow) cho một hoặc nhiều phiên làm việc. Luôn giữ nguyên các bước Ảnh Bước 1 đã HOAN_THANH làm mốc cố định.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionIds: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'Danh sách mã phiên cần đổi nguồn (ví dụ: ["SES-20261125-93D1", "SES-20261125-5A08"]).',
+        },
+        videoSource: {
+          type: Type.STRING,
+          enum: ['gemini', 'qwen', 'muse', 'google_flow'],
+          description: 'Nguồn AI mới cần gán độc lập cho các tác vụ chưa hoàn thành.',
+        },
+        resetFailedTasks: {
+          type: Type.BOOLEAN,
+          description: 'Nếu true, đặt lại các tác vụ đang LOI về CHO_NHAN để sẵn sàng chạy lại bằng nguồn mới.',
+        },
+      },
+      required: ['sessionIds', 'videoSource'],
+    },
+  },
+  {
+    name: 'auto_distribute_and_run',
+    description:
+      'Tự động chia tải các phiên đang chờ (và tùy chọn cả phiên đang lỗi) sang các nguồn AI đang sẵn sàng (Gemini, Qwen, Google Flow, Muse) rồi khởi chạy SONG SONG đa luồng ngay lập tức.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionIds: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'Tùy chọn: chỉ chia tải các mã phiên này. Để trống nếu áp dụng cho tất cả phiên đang chờ.',
+        },
+        providers: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING, enum: ['gemini', 'qwen', 'muse', 'google_flow'] },
+          description: 'Tùy chọn: danh sách nguồn AI muốn phân bổ (ví dụ ["gemini", "qwen", "google_flow"]). Để trống để tự chọn tất cả AI đang ready.',
+        },
+        includeErrorSessions: {
+          type: Type.BOOLEAN,
+          description: 'Nếu true, bao gồm cả các phiên đang CO_LOI để đổi nguồn & chạy lại phần chưa xong.',
+        },
+      },
+    },
+  },
+  {
+    name: 'start_parallel_sessions',
+    description:
+      'Kích hoạt chạy SONG SONG đa luồng cho các phiên cụ thể hoặc tất cả phiên đang chờ mà không để 1 phiên lỗi chặn các phiên khác.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionIds: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'Danh sách mã phiên cần kích hoạt. Để trống sẽ chạy song song tất cả phiên chưa hoàn thành.',
+        },
+        retryErrors: {
+          type: Type.BOOLEAN,
+          description: 'Nếu true, tự động reset các tác vụ LOI về CHO_NHAN trước khi chạy.',
+        },
+      },
+    },
+  },
+  {
+    name: 'retry_scene_task',
+    description:
+      'Chạy lại 1 tác vụ cụ thể (ví dụ T02-VID-S01 đang lỗi), có thể đổi sang nguồn AI khác (gemini | qwen | muse | google_flow) mà VẪN GIỮ NGUYÊN Ảnh Bước 1 đã hoàn thành, rồi tự chạy tiếp bước ghép phim.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionId: { type: Type.STRING, description: 'Mã phiên (ví dụ SES-20261125-93D1).' },
+        taskCode: { type: Type.STRING, description: 'Mã tác vụ cần chạy lại (ví dụ T02-VID-S01).' },
+        overrideVideoSource: {
+          type: Type.STRING,
+          enum: ['gemini', 'qwen', 'muse', 'google_flow'],
+          description: 'Tùy chọn đổi nguồn AI cho bước này và các bước chưa xong còn lại của phiên.',
+        },
+        autoContinueSession: {
+          type: Type.BOOLEAN,
+          description: 'Mặc định true: chạy xong bước này sẽ tự động chạy tiếp các bước sau (như ghép MP4).',
+        },
+      },
+      required: ['sessionId', 'taskCode'],
+    },
+  },
+  {
+    name: 'regenerate_scene_image',
+    description:
+      'Tạo lại Ảnh Phân cảnh Bước 1 (khi gặp lỗi khóa nhân vật / mâu thuẫn logic hành động / sai tham chiếu) và đặt lại bước Video + Ghép phim của phân cảnh đó để chạy tiến trình mới.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionId: { type: Type.STRING, description: 'Mã phiên chứa phân cảnh cần tạo lại ảnh.' },
+        sceneIndex: { type: Type.INTEGER, description: 'Số thứ tự phân cảnh (1, 2, 3...).' },
+        customPromptNote: {
+          type: Type.STRING,
+          description: 'Ghi chú điều chỉnh thêm vào prompt tạo ảnh để sửa lỗi ngoại hình/hành động.',
+        },
+        overrideVideoSource: {
+          type: Type.STRING,
+          enum: ['gemini', 'qwen', 'muse', 'google_flow'],
+          description: 'Tùy chọn đổi nguồn AI khi tạo lại ảnh & video.',
+        },
+        autoResumeVideo: {
+          type: Type.BOOLEAN,
+          description: 'Mặc định true: tạo ảnh mới xong sẽ tự động chạy tiếp bước tạo Video và ghép phim.',
+        },
+      },
+      required: ['sessionId', 'sceneIndex'],
+    },
+  },
+  {
+    name: 'pause_sessions',
+    description: 'Tạm dừng an toàn một hoặc nhiều phiên đang chạy (hoặc toàn bộ phiên đang chạy nếu không truyền sessionIds).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionIds: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'Danh sách mã phiên cần tạm dừng. Để trống sẽ tạm dừng mọi phiên đang chạy.',
+        },
+      },
+    },
+  },
+];
+
+async function executeCoordinatorToolCall(
+  name: string,
+  args: Record<string, any>,
+  googleToken?: string
+): Promise<Record<string, any>> {
+  const validSources: IndependentVideoSource[] = ['gemini', 'qwen', 'muse', 'google_flow'];
+  const asSource = (v: any): IndependentVideoSource | undefined => {
+    const s = String(v || '').trim() as IndependentVideoSource;
+    return validSources.includes(s) ? s : undefined;
+  };
+  const asStringList = (v: any): string[] =>
+    Array.isArray(v) ? v.map((x) => String(x || '').trim()).filter(Boolean) : [];
+
+  try {
+    if (name === 'bulk_change_source') {
+      const videoSource = asSource(args.videoSource);
+      const sessionIds = asStringList(args.sessionIds);
+      if (!videoSource || sessionIds.length === 0) {
+        return { ok: false, error: 'Thiếu sessionIds hoặc videoSource không hợp lệ.' };
+      }
+      const res = bulkUpdateSessionVideoSource({
+        sessionIds,
+        videoSource,
+        resetFailedTasks: args.resetFailedTasks === true,
+      });
+      return { ok: true, videoSource, ...res };
+    }
+
+    if (name === 'auto_distribute_and_run') {
+      const sessionIds = asStringList(args.sessionIds);
+      const providers = asStringList(args.providers)
+        .map((p) => asSource(p))
+        .filter((p): p is IndependentVideoSource => Boolean(p));
+      const res = await autoDistributeAndRunSessions({
+        sessionIds: sessionIds.length > 0 ? sessionIds : undefined,
+        providers: providers.length > 0 ? providers : undefined,
+        includeErrorSessions: args.includeErrorSessions === true,
+        googleToken,
+      });
+      return { ok: true, ...res };
+    }
+
+    if (name === 'start_parallel_sessions') {
+      const sessionIds = asStringList(args.sessionIds);
+      const res = await startParallelSessionsRun({
+        sessionIds: sessionIds.length > 0 ? sessionIds : undefined,
+        retryErrors: args.retryErrors === true,
+        googleToken,
+      });
+      return { ok: true, ...res };
+    }
+
+    if (name === 'retry_scene_task') {
+      const sessionId = String(args.sessionId || '').trim();
+      const taskCode = String(args.taskCode || '').trim();
+      if (!sessionId || !taskCode) {
+        return { ok: false, error: 'Thiếu sessionId hoặc taskCode.' };
+      }
+      const res = await retryCoordinationTask({
+        sessionId,
+        taskCode,
+        overrideVideoSource: asSource(args.overrideVideoSource),
+        autoContinueSession: args.autoContinueSession !== false,
+        googleToken,
+      });
+      return {
+        ok: true,
+        sessionId: res.session.sessionId,
+        sessionStatus: res.session.status,
+        videoSource: res.session.videoSource,
+        taskCode: res.task.taskCode,
+        taskStatus: res.task.status,
+      };
+    }
+
+    if (name === 'regenerate_scene_image') {
+      const sessionId = String(args.sessionId || '').trim();
+      const sceneIndex = Number(args.sceneIndex);
+      if (!sessionId || !Number.isFinite(sceneIndex) || sceneIndex < 1) {
+        return { ok: false, error: 'Thiếu sessionId hoặc sceneIndex không hợp lệ.' };
+      }
+      const res = await regenerateSceneImageAndContinue({
+        sessionId,
+        sceneIndex,
+        customPromptNote: typeof args.customPromptNote === 'string' ? args.customPromptNote : undefined,
+        overrideVideoSource: asSource(args.overrideVideoSource),
+        autoResumeVideo: args.autoResumeVideo !== false,
+        googleToken,
+      });
+      return {
+        ok: true,
+        sessionId: res.session.sessionId,
+        sessionStatus: res.session.status,
+        imgTaskCode: res.imgTask.taskCode,
+        vidTaskCode: res.vidTask?.taskCode || null,
+      };
+    }
+
+    if (name === 'pause_sessions') {
+      const sessionIds = asStringList(args.sessionIds);
+      const res = pauseMultipleSessions(sessionIds.length > 0 ? sessionIds : undefined);
+      return { ok: true, ...res };
+    }
+
+    return { ok: false, error: `Công cụ không tồn tại: ${name}` };
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || 'Lỗi thực thi lệnh điều phối.') };
+  }
+}
+
 export async function postMeetingRoomMessage(params: {
   sessionId?: string;
   content: string;
   googleToken?: string;
-}): Promise<{ userMessage: MeetingRoomMessage; replyMessage: MeetingRoomMessage }> {
+}): Promise<{ userMessage: MeetingRoomMessage; replyMessage: MeetingRoomMessage; executedTools?: string[] }> {
   const st = loadState();
   const cleanText = String(params.content || '').trim().slice(0, 2000);
   if (!cleanText) throw new Error('Vui lòng nhập nội dung trao đổi.');
@@ -2411,7 +3372,7 @@ export async function postMeetingRoomMessage(params: {
       st.sessions[0];
   const targetSessionId = !isExplicitGlobal && session ? session.sessionId : session?.sessionId || 'GLOBAL';
 
-  // Ensure readiness snapshot exists for accurate answers
+  // Ensure readiness snapshot exists for accurate answers & auto-distribution
   if (st.readiness.length === 0) {
     await checkAllAiReadiness(false).catch(() => {});
   }
@@ -2428,16 +3389,20 @@ export async function postMeetingRoomMessage(params: {
   // Gather recent conversation history for natural multi-turn chat
   const recentHistory = st.meetingMessages
     .filter((m) => m.id !== userMessage.id && (isExplicitGlobal || m.sessionId === targetSessionId || m.sessionId === 'GLOBAL'))
-    .slice(-12)
+    .slice(-10)
     .map((m) => `[${m.senderName} · ${m.senderRole}]: ${m.content}`)
     .join('\n');
 
   const snapshot = buildMeetingContextSnapshot(loadState(), session);
+  const telemetry = getActiveWorkerTelemetry();
+  const telemetryLine = `Luồng đa nhiệm đang chạy: ${telemetry.activeSessionIds.length} phiên (${telemetry.activeSessionIds.join(', ') || 'không có'}) | Slot song song: Gemini ${telemetry.providerSlots.gemini.active}/${telemetry.providerSlots.gemini.limit}, Qwen ${telemetry.providerSlots.qwen.active}/${telemetry.providerSlots.qwen.limit}, Google Flow ${telemetry.providerSlots.google_flow.active}/${telemetry.providerSlots.google_flow.limit}, Muse ${telemetry.providerSlots.muse.active}/${telemetry.providerSlots.muse.limit}.`;
+
   const workerAccount = pickWorkerGeminiAccount();
   const apiKey = workerAccount?.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
 
   let replyContent = '';
-  let replyRole = 'Điều phối viên AI (Gemini Trực tiếp)';
+  let replyRole = 'Điều phối viên AI (Quyền thực thi trực tiếp)';
+  const executedTools: string[] = [];
 
   if (apiKey) {
     try {
@@ -2447,38 +3412,79 @@ export async function postMeetingRoomMessage(params: {
       });
 
       const systemInstruction = [
-        'Bạn là Trợ lý Điều phối AI trực tiếp trong "Phòng họp trực tiếp — Trung Tâm Điều Phối AI" của ứng dụng sản xuất video.',
-        'Nhiệm vụ: Giao tiếp, trao đổi tự nhiên bằng tiếng Việt, báo cáo trung thực tiến độ công việc, phân tích lỗi từng phân cảnh, tư vấn chọn nguồn AI độc lập (Gemini AI / AI Qwen / Muse AI / Google Flow), hướng dẫn khắc phục khi Muse AI ngoại tuyến hoặc tác vụ lỗi, và hỗ trợ thảo luận kịch bản/phân cảnh.',
+        'Bạn là ĐIỀU PHỐI VIÊN AI CẤP CAO có QUYỀN THỰC THI TRỰC TIẾP (Function Calling) trên Sổ Điều Phối trong "Phòng họp trực tiếp — Trung Tâm Điều Phối AI".',
+        'Bạn KHÔNG còn là trợ lý chỉ-đọc nữa: bạn có 6 công cụ thực thi thật để thay đổi nguồn AI, chia tải đa luồng, kích hoạt chạy song song nhiều phiên cùng lúc, chạy lại tác vụ lỗi (vẫn giữ mốc Ảnh Bước 1 đã xong), tạo lại ảnh phân cảnh và tạm dừng phiên.',
         'Nguyên tắc tuyệt đối:',
-        '1. Mọi số liệu về phiên làm việc, mã phiên, trạng thái phân cảnh, trạng thái kết nối AI, lý do lỗi PHẢI căn cứ 100% vào dữ liệu thực tế trong DỮ LIỆU HỆ THỐNG HIỆN TẠI bên dưới. Tuyệt đối KHÔNG bịa đặt cảnh đã xong hay link Drive không có thật.',
-        '2. Trả lời thẳng trọng tâm, rõ ràng, có cấu trúc ngắn gọn dễ đọc (gạch đầu dòng khi liệt kê). Xưng hô tự nhiên, chuyên nghiệp như cộng sự điều hành phòng sản xuất.',
-        '3. Hệ thống đã bỏ hoàn toàn bước đối chiếu QA gây vòng lặp; mỗi kịch bản chạy thẳng 3 bước: Ảnh phân cảnh → Video phân cảnh → Ghép phim MP4, và nguồn video hoạt động độc lập 100%.',
+        '1. Khi Quản trị viên ra lệnh hành động (ví dụ: chuyển nguồn, chạy song song, chia tải sang Gemini/Qwen/Google Flow, xử lý phiên lỗi, tạo lại ảnh phân cảnh, tạm dừng...), PHẢI GỌI NGAY các công cụ (tools) tương ứng để thực thi thật trên hệ thống. Có thể gọi nhiều công cụ liên tiếp trong cùng một lượt.',
+        '2. TUYỆT ĐỐI KHÔNG BAO GIỜ giả vờ hoặc nói đã thực hiện hành động nếu bạn CHƯA thực sự gọi công cụ và nhận kết quả ok: true trả về. Mọi số liệu, mã phiên và trạng thái báo cáo lại PHẢI căn cứ 100% vào dữ liệu thực tế & kết quả trả về từ công cụ.',
+        '3. Khi xử lý phiên lỗi ở Bước 2 Video (ví dụ Muse quá thời gian chờ) mà Ảnh Bước 1 đã HOAN_THANH: dùng retry_scene_task với overrideVideoSource (hoặc bulk_change_source + start_parallel_sessions) để GIỮ NGUYÊN Ảnh Bước 1 và chạy tiếp bước Video trên nguồn khỏe hơn (Gemini / Qwen / Google Flow).',
+        '4. Khi ảnh phân cảnh gặp mâu thuẫn khóa nhân vật hoặc sai logic hành động: dùng regenerate_scene_image để tạo lại Ảnh Bước 1 và tự động chạy tiếp sang Video.',
+        '5. Hệ thống hỗ trợ chạy ĐA LUỒNG SONG SONG giữa các phiên theo từng nguồn AI (Gemini có thể chạy song song nhiều phiên theo số khóa khỏe, Qwen song song, Google Flow song song) — 1 phiên lỗi KHÔNG BAO GIỜ chặn các phiên khác.',
+        '6. Trả lời bằng tiếng Việt ngắn gọn, rõ ràng, trung thực, gạch đầu dòng các lệnh đã thực thi thành công và trạng thái mới nhất.',
       ].join('\n');
 
-      const userPrompt = [
+      const initialUserPrompt = [
         'DỮ LIỆU HỆ THỐNG HIỆN TẠI (trực tiếp từ Trung Tâm Điều Phối AI):',
         snapshot,
+        telemetryLine,
         recentHistory ? `\nLỊCH SỬ TRAO ĐỔI GẦN ĐÂY TRONG PHÒNG HỌP:\n${recentHistory}` : '',
-        `\nQUẢN TRỊ VIÊN VỪA NÓI:\n${cleanText}`,
+        `\nQUẢN TRỊ VIÊN VỪA CHỈ ĐẠO:\n${cleanText}`,
       ]
         .filter(Boolean)
         .join('\n');
 
       const candidateModels = ['gemini-4-hydrogen', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
       let lastModelErr: any = null;
+
       for (const modelName of candidateModels) {
         try {
-          const response = await ai.models.generateContent({
-            model: modelName,
-            contents: userPrompt,
-            config: {
-              systemInstruction,
-            },
-          });
-          const aiText = String(response.text || '').trim();
-          if (aiText) {
-            replyContent = aiText;
-            replyRole = `Điều phối viên AI (${modelName})`;
+          const contents: any[] = [{ role: 'user', parts: [{ text: initialUserPrompt }] }];
+          let finalText = '';
+
+          for (let round = 0; round < 4; round += 1) {
+            const response = await ai.models.generateContent({
+              model: modelName,
+              contents,
+              config: {
+                systemInstruction,
+                tools: [{ functionDeclarations: COORDINATOR_TOOL_DECLARATIONS }],
+              },
+            });
+
+            const calls = response.functionCalls;
+            if (calls && calls.length > 0) {
+              const modelContent = response.candidates?.[0]?.content;
+              if (modelContent) {
+                contents.push(modelContent);
+              }
+              const responseParts: any[] = [];
+              for (const call of calls) {
+                const toolName = String(call.name || '');
+                const toolArgs = (call.args && typeof call.args === 'object' ? call.args : {}) as Record<string, any>;
+                const toolResult = await executeCoordinatorToolCall(toolName, toolArgs, params.googleToken);
+                executedTools.push(toolName);
+                responseParts.push({
+                  functionResponse: {
+                    id: call.id,
+                    name: toolName,
+                    response: { result: toolResult },
+                  },
+                });
+              }
+              contents.push({ role: 'user', parts: responseParts });
+              continue;
+            }
+
+            finalText = String(response.text || '').trim();
+            break;
+          }
+
+          if (finalText) {
+            replyContent = finalText;
+            replyRole =
+              executedTools.length > 0
+                ? `Điều phối viên AI (${modelName}) · Đã thực thi ${executedTools.length} lệnh`
+                : `Điều phối viên AI (${modelName})`;
             break;
           }
         } catch (modelErr: any) {
@@ -2518,7 +3524,7 @@ export async function postMeetingRoomMessage(params: {
     senderId: 'coordinator',
     senderName: 'Điều phối viên AI',
     senderRole: replyRole,
-    kind: 'coordinator',
+    kind: executedTools.length > 0 ? 'completed' : 'coordinator',
     content: replyContent,
     referenceLink: st.workspace.spreadsheetUrl,
   });
@@ -2531,5 +3537,5 @@ export async function postMeetingRoomMessage(params: {
     }).catch(() => {});
   }
 
-  return { userMessage, replyMessage };
+  return { userMessage, replyMessage, executedTools };
 }

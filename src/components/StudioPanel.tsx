@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Film,
   Upload,
@@ -40,6 +40,7 @@ import {
   Pencil,
 } from 'lucide-react';
 import {
+  AiMusicStyleId,
   AiProviderId,
   BrollSourceId,
   CharacterAgeGroup,
@@ -76,8 +77,10 @@ import { formatBytes, formatDuration } from '../utils/formatters';
 import { getGoogleWorkspaceAccessToken } from '../lib/googleWorkspaceAuth';
 import { getDiscoveryThumbUrl } from './VideoDiscoveryCard';
 import {
+  AI_MUSIC_STYLE_OPTIONS,
   autoFixClientBlueprint,
   buildSceneTimelineFallbackClient,
+  buildVideoMusicPromptDirectiveClient,
   CHARACTER_AGE_GROUP_OPTIONS,
   compileScenePromptClient,
   compressImageFileToDataUrl,
@@ -393,13 +396,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [brollSource, setBrollSource] = useState<BrollSourceId>(studioDefaults.brollSource || 'wikimedia');
 
   const [musicMode, setMusicMode] = useState<DerivativeMusicMode>('none');
+  const [musicStyle, setMusicStyle] = useState<AiMusicStyleId>('auto_context');
+  const [musicInstrumentalOnly, setMusicInstrumentalOnly] = useState(true);
   const [musicPrompt, setMusicPrompt] = useState(
     'Nhạc nền hiện đại, truyền cảm hứng, tiết tấu vừa phải cho video kể chuyện'
   );
-  const [musicTrackTier, setMusicTrackTier] = useState<'clip' | 'pro'>('clip');
-  const [musicVolume, setMusicVolume] = useState(18);
-  const [isGeneratingMusic, setIsGeneratingMusic] = useState(false);
-  const [generatedAiTrack, setGeneratedAiTrack] = useState<StudioMusicTrack | null>(null);
+  const [musicVolume, setMusicVolume] = useState(25);
   const [publicMusicQuery, setPublicMusicQuery] = useState('ambient instrumental');
   const [isSearchingMusic, setIsSearchingMusic] = useState(false);
   const [publicMusicResults, setPublicMusicResults] = useState<StudioMusicTrack[]>([]);
@@ -407,6 +409,18 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [uploadedAudioTrack, setUploadedAudioTrack] = useState<StudioMusicTrack | null>(null);
   const [musicError, setMusicError] = useState('');
   const audioUploadInputRef = useRef<HTMLInputElement>(null);
+
+  const activeMusicPromptDirective = useMemo(
+    () =>
+      buildVideoMusicPromptDirectiveClient({
+        musicMode,
+        musicStyle,
+        musicPrompt,
+        musicVolume,
+        instrumentalOnly: musicInstrumentalOnly,
+      }),
+    [musicMode, musicStyle, musicPrompt, musicVolume, musicInstrumentalOnly]
+  );
 
   const [voiceMode, setVoiceMode] = useState<DerivativeVoiceMode>(
     studioDefaults.voice === 'none' ? 'none' : 'ai_online'
@@ -2046,6 +2060,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               settingBible: bp.settingBible ?? settingBibleDraft.trim(),
               costumeBible: bp.costumeBible ?? costumeBibleDraft.trim(),
               continuityBible: bp.continuityBible ?? continuityBibleDraft.trim(),
+              musicConfig: {
+                musicMode,
+                musicStyle,
+                musicPrompt: musicPrompt.trim(),
+                musicVolume: Math.max(0, Math.min(0.9, musicVolume / 100)),
+                musicAssetId: musicMode === 'uploaded' ? uploadedAudioTrack?.assetId : undefined,
+                publicMusicUrl: musicMode === 'public_free' ? selectedPublicTrack?.url : undefined,
+                instrumentalOnly: musicInstrumentalOnly,
+              },
             }),
           });
           const data = await parseJsonSafe<{ error?: string; coordinationSession?: { sessionId?: string } }>(res);
@@ -2154,6 +2177,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           settingBible: effectiveBlueprint?.settingBible ?? settingBibleDraft.trim(),
           costumeBible: effectiveBlueprint?.costumeBible ?? costumeBibleDraft.trim(),
           continuityBible: effectiveBlueprint?.continuityBible ?? continuityBibleDraft.trim(),
+          musicConfig: {
+            musicMode,
+            musicStyle,
+            musicPrompt: musicPrompt.trim(),
+            musicVolume: Math.max(0, Math.min(0.9, musicVolume / 100)),
+            musicAssetId: musicMode === 'uploaded' ? uploadedAudioTrack?.assetId : undefined,
+            publicMusicUrl: musicMode === 'public_free' ? selectedPublicTrack?.url : undefined,
+            instrumentalOnly: musicInstrumentalOnly,
+          },
         }),
       });
       const data = await parseJsonSafe<{ error?: string; coordinationSession?: { sessionId?: string } }>(res);
@@ -2198,7 +2230,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         durationSec: Math.max(4, Math.round(lastScene?.durationSec || 6)),
         sourceVideoIndex: sources.length > 0 ? idx % sources.length : 0,
         sourceStartPercent: (idx * 20) % 75,
-        onScreenText: sceneCode,
+        onScreenText: '',
         dialogue: '',
         narration:
           voiceMode === 'none'
@@ -2498,6 +2530,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       hasAttachedRefs: Boolean(sc.sceneImageDataUrl || characters.length > 0),
       targetEngine: sceneVideoEngine === 'muse2api' ? 'muse2api' : 'gemini',
       allowFreeCostumeChange: effectiveAllowFree,
+      musicPromptDirective: activeMusicPromptDirective,
     });
 
     try {
@@ -2525,6 +2558,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           costumeBible: activeCostumeBible,
           continuityBible: activeContinuityBible,
           allowFreeCostumeChange: effectiveAllowFree,
+          musicMode,
+          musicStyle,
+          musicPrompt: musicPrompt.trim(),
+          musicVolume: Math.max(0, Math.min(0.9, musicVolume / 100)),
+          musicInstrumentalOnly,
+          musicDirective: activeMusicPromptDirective,
           sceneIndex: sc.sceneIndex,
           totalScenes: blueprint.scenes.length,
           sceneTitle: sc.sceneTitle || '',
@@ -2709,42 +2748,15 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     window.speechSynthesis.speak(utter);
   };
 
-  // Music: Lyria AI generation & Wikimedia Commons Audio Search & Upload
-  const handleGenerateAiMusic = async () => {
-    setIsGeneratingMusic(true);
-    setMusicError('');
-    try {
-      const { res, data } = await fetchStudioJsonWithAutoRetry<{
-        assetId?: string;
-        previewUrl?: string;
-        mimeType?: string;
-        lyrics?: string;
-        durationSec?: number;
-        model?: string;
-        error?: string;
-      }>('/api/studio/generate-music', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: musicPrompt.trim() || `Instrumental soundtrack for ${blueprint?.derivativeTitle || 'video'}`,
-          mode: musicTrackTier,
-        }),
-      });
-      if (!res.ok || !data.assetId) throw new Error(data.error || `HTTP ${res.status}`);
-      setGeneratedAiTrack({
-        id: data.assetId,
-        assetId: data.assetId,
-        title: `Lyria AI (${data.model || 'lyria-3'}) · ${data.durationSec || 30}s`,
-        url: data.previewUrl,
-        source: 'ai_lyria',
-        mimeType: data.mimeType,
-        durationSec: data.durationSec,
-        lyrics: data.lyrics,
-      });
-    } catch (err: any) {
-      setMusicError(err?.message || 'Không thể sáng tác nhạc nền bằng Lyria AI.');
-    } finally {
-      setIsGeneratingMusic(false);
+  // Music: Prompt-embedded AI style selection, Wikimedia Commons Audio Search & Upload
+  const handleSelectAiMusicStyle = (nextStyle: AiMusicStyleId) => {
+    setMusicStyle(nextStyle);
+    const meta = AI_MUSIC_STYLE_OPTIONS.find((opt) => opt.value === nextStyle);
+    if (meta && nextStyle !== 'custom') {
+      setMusicPrompt(meta.defaultPromptVi);
+    }
+    if (musicMode === 'none') {
+      setMusicMode('ai_lyria');
     }
   };
 
@@ -2810,11 +2822,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   ): Promise<DerivativeJobState> => {
     const voiceObj = VOICE_OPTIONS.find((v) => v.value === voice);
     const activeMusicAssetId =
-      musicMode === 'ai_lyria'
-        ? generatedAiTrack?.assetId
-        : musicMode === 'uploaded'
-        ? uploadedAudioTrack?.assetId
-        : undefined;
+      musicMode === 'uploaded' ? uploadedAudioTrack?.assetId : undefined;
 
     setJobForKey(targetKey, {
       jobId: '',
@@ -2853,10 +2861,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         keepSourceAudio: studioMode === 'derivative' ? keepSourceAudio : false,
         brollSource,
         musicMode,
+        musicStyle,
+        musicInstrumentalOnly,
         musicAssetId: activeMusicAssetId,
         publicMusicUrl: musicMode === 'public_free' ? selectedPublicTrack?.url : undefined,
         musicPrompt,
-        musicVolume: musicVolume / 100,
+        musicVolume: Math.max(0, Math.min(0.9, musicVolume / 100)),
         characterRefs: characters.map((c) => ({
           id: c.id,
           dataUrl: c.dataUrl,
@@ -5703,14 +5713,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       <Music className="w-4 h-4" />
                       <span>
                         {productionFormat === 'narration_story'
-                          ? 'Nhạc nền AI linh động theo bối cảnh'
-                          : 'Ghép nhạc nền'}
+                          ? 'Nhạc nền AI sáng tạo & linh động'
+                          : 'Ghép nhạc nền & AI sáng tạo'}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
                       {musicMode !== 'none' && (
-                        <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                          Âm lượng {musicVolume}%
+                        <span className="text-[11px] font-mono font-bold tabular-nums text-violet-700 dark:text-violet-300">
+                          Âm lượng {musicVolume}% / 90%
                         </span>
                       )}
                       {productionFormat === 'narration_story' && (
@@ -5719,7 +5729,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                           onClick={() => setShowManualNarrationMusic((v) => !v)}
                           className="text-[10px] font-semibold text-cyan-700 dark:text-cyan-300 hover:underline cursor-pointer"
                         >
-                          {showManualNarrationMusic ? 'Ẩn tùy chỉnh tay' : 'Chọn nhạc thủ công'}
+                          {showManualNarrationMusic ? 'Thu gọn nguồn nhạc' : 'Đổi nguồn nhạc'}
                         </button>
                       )}
                     </div>
@@ -5728,77 +5738,151 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   {productionFormat === 'narration_story' && !showManualNarrationMusic ? (
                     <div className="p-2.5 rounded-xl bg-violet-500/10 border border-violet-400/30 space-y-2">
                       <div className="text-[11px] text-slate-700 dark:text-slate-200 leading-snug">
-                        Chế độ <strong>Phim thuyết minh kể chuyện</strong> tự động ưu tiên AI sáng tác hoặc chọn nhạc nền khớp với cảm xúc và bối cảnh kịch bản mà không cần cài đặt thủ công từng cảnh.
+                        Chế độ <strong>Phim thuyết minh kể chuyện</strong> ưu tiên AI tự sáng tạo nhạc nền theo phong cách bạn chọn (hoặc tự động khớp bối cảnh).
                       </div>
-                      {musicMode !== 'none' && (
-                        <input
-                          type="range"
-                          min={5}
-                          max={45}
-                          value={musicVolume}
-                          onChange={(e) => setMusicVolume(Number(e.target.value))}
-                          aria-label="Âm lượng nhạc nền"
-                          className="w-full accent-violet-500"
-                        />
-                      )}
                     </div>
                   ) : (
-                    <>
+                    <div className="space-y-2">
                       <select
                         value={musicMode}
                         onChange={(e) => setMusicMode(e.target.value as DerivativeMusicMode)}
                         aria-label="Nguồn nhạc nền"
                         className={inputCls}
                       >
-                        <option value="auto_adaptive">AI tự động chọn nhạc nền phù hợp bối cảnh</option>
-                        <option value="none">Không chèn nhạc nền</option>
-                        <option value="ai_lyria">Nhạc nền AI sáng tác (Lyria · Trả phí)</option>
+                        <option value="ai_lyria">AI tạo nhạc nền tích hợp trong prompt video (Chọn phong cách)</option>
+                        <option value="auto_adaptive">AI tự động khớp nhạc nền theo bối cảnh video</option>
                         <option value="public_free">Nhạc công cộng miễn phí (Wikimedia Audio)</option>
                         <option value="uploaded">Tải tệp nhạc từ máy (.mp3 / .wav)</option>
+                        <option value="none">Không chèn nhạc nền</option>
                       </select>
 
-                      {musicMode !== 'none' && (
-                        <input
-                          type="range"
-                          min={5}
-                          max={45}
-                          value={musicVolume}
-                          onChange={(e) => setMusicVolume(Number(e.target.value))}
-                          aria-label="Âm lượng nhạc nền"
-                          className="w-full accent-violet-500"
-                        />
+                      {musicMode === 'none' && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                            Bật nhanh nhạc AI trong prompt:
+                          </span>
+                          {(['country', 'remix', 'chamber', 'kids_fun', 'cinematic'] as AiMusicStyleId[]).map((sid) => {
+                            const opt = AI_MUSIC_STYLE_OPTIONS.find((o) => o.value === sid);
+                            if (!opt) return null;
+                            return (
+                              <button
+                                key={sid}
+                                type="button"
+                                onClick={() => handleSelectAiMusicStyle(sid)}
+                                className="px-2 py-0.5 rounded-lg border border-violet-400/30 bg-violet-500/10 hover:bg-violet-600 hover:text-white text-[10px] font-semibold text-violet-700 dark:text-violet-300 transition cursor-pointer"
+                              >
+                                + {opt.shortLabel}
+                              </button>
+                            );
+                          })}
+                        </div>
                       )}
-                    </>
+                    </div>
                   )}
 
-                  {musicMode === 'ai_lyria' && (
-                    <div className="space-y-2">
+                  {musicMode !== 'none' && (
+                    <div className="p-2.5 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/70 border border-slate-200/80 dark:border-slate-400/15 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="font-semibold text-slate-700 dark:text-slate-200">
+                          Âm lượng nhạc nền <span className="text-slate-400 font-normal">(0% – 90%)</span>
+                        </span>
+                        <div className="flex items-center gap-1">
+                          {[20, 45, 70, 90].map((presetVol) => (
+                            <button
+                              key={presetVol}
+                              type="button"
+                              onClick={() => setMusicVolume(presetVol)}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold cursor-pointer transition ${
+                                musicVolume === presetVol
+                                  ? 'bg-violet-600 text-white'
+                                  : 'bg-slate-200/80 dark:bg-white/10 text-slate-600 dark:text-slate-300 hover:bg-violet-500/20'
+                              }`}
+                            >
+                              {presetVol}%
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={90}
+                        step={1}
+                        value={musicVolume}
+                        onChange={(e) => setMusicVolume(Math.min(90, Math.max(0, Number(e.target.value))))}
+                        aria-label="Âm lượng nhạc nền tối đa 90 phần trăm"
+                        className="w-full accent-violet-500 cursor-pointer"
+                      />
+                    </div>
+                  )}
+
+                  {(musicMode === 'ai_lyria' || musicMode === 'auto_adaptive') && (
+                    <div className="space-y-2.5 p-2.5 rounded-xl bg-violet-500/5 border border-violet-400/25">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold text-violet-700 dark:text-violet-300">
+                          Phong cách nhạc nền truyền trực tiếp vào prompt AI tạo video
+                        </span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                          {AI_MUSIC_STYLE_OPTIONS.find((s) => s.value === musicStyle)?.shortLabel}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                        {AI_MUSIC_STYLE_OPTIONS.map((opt) => {
+                          const active = musicStyle === opt.value;
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => handleSelectAiMusicStyle(opt.value)}
+                              title={opt.desc}
+                              className={`px-2 py-1.5 rounded-lg border text-left text-[11px] font-semibold transition cursor-pointer truncate ${
+                                active
+                                  ? 'border-violet-500 bg-violet-600 text-white shadow-sm'
+                                  : 'border-slate-200 dark:border-slate-400/20 bg-white/80 dark:bg-[#0c1021]/80 text-slate-700 dark:text-slate-200 hover:border-violet-400/60'
+                              }`}
+                            >
+                              {opt.shortLabel}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {(() => {
+                        const activeOpt = AI_MUSIC_STYLE_OPTIONS.find((s) => s.value === musicStyle);
+                        return activeOpt?.desc ? (
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
+                            {activeOpt.desc}
+                          </p>
+                        ) : null;
+                      })()}
+
                       <input
                         type="text"
                         value={musicPrompt}
                         onChange={(e) => setMusicPrompt(e.target.value)}
-                        placeholder="Mô tả phong cách nhạc..."
+                        placeholder="Mô tả chi tiết thêm về tiết tấu, nhạc cụ, cảm xúc nhạc nền..."
                         className={inputCls}
                       />
-                      <div className="flex gap-2">
-                        <select
-                          value={musicTrackTier}
-                          onChange={(e) => setMusicTrackTier(e.target.value as 'clip' | 'pro')}
-                          className="h-8 px-2 text-[11px] bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 rounded-xl"
-                        >
-                          <option value="clip">Lyria Clip (30s)</option>
-                          <option value="pro">Lyria Pro</option>
-                        </select>
-                        <button
-                          type="button"
-                          disabled={isGeneratingMusic}
-                          onClick={handleGenerateAiMusic}
-                          className="flex-1 h-8 px-3 text-xs font-bold text-white bg-violet-600 hover:bg-violet-500 rounded-xl cursor-pointer disabled:opacity-50"
-                        >
-                          {isGeneratingMusic ? 'Đang tạo nhạc...' : 'Tạo nhạc AI trước'}
-                        </button>
-                      </div>
-                      {generatedAiTrack?.url && <audio controls src={generatedAiTrack.url} className="w-full h-8" />}
+
+                      <label className="inline-flex items-center gap-2 text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={musicInstrumentalOnly}
+                          onChange={(e) => setMusicInstrumentalOnly(e.target.checked)}
+                          className="rounded border-slate-300 dark:border-slate-600 accent-violet-600"
+                        />
+                        <span>Chỉ nhạc nền không lời (Instrumental — không lẫn giọng hát vào thoại)</span>
+                      </label>
+
+                      {activeMusicPromptDirective && (
+                        <div className="p-2 rounded-lg bg-white/80 dark:bg-[#0c1021]/90 border border-violet-400/25 text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                          <span className="font-bold text-violet-700 dark:text-violet-300">
+                            Tham số tự động gắn vào prompt tạo video:{' '}
+                          </span>
+                          {activeMusicPromptDirective}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -6839,6 +6923,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                               sceneErr={sceneImageErrors[sc.id]}
                               sceneVideoEngine={sceneVideoEngine}
                               voiceMode={voiceMode}
+                              musicPromptDirective={activeMusicPromptDirective}
                               previewingSceneId={previewingSceneId}
                               capabilities={capabilities}
                               onUpdateScene={updateScene}
