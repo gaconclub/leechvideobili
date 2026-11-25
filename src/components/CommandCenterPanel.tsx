@@ -1,3132 +1,2013 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { User } from 'firebase/auth';
 import {
   Activity,
-  AlertOctagon,
-  AlertTriangle,
+  AlertCircle,
+  Check,
+  CheckCircle2,
   CloudUpload,
+  Copy,
   Download,
   ExternalLink,
+  FileSpreadsheet,
   Film,
+  FolderOpen,
   Image as ImageIcon,
+  Layers,
   Loader2,
   Lock,
+  LogOut,
+  MessageSquare,
   Pause,
   Play,
   Plus,
   RefreshCw,
-  Save,
-  Search,
-  Siren,
-  Sparkles,
-  Square,
+  RotateCcw,
+  Send,
+  Settings,
+  ShieldCheck,
+  Trash2,
   Upload,
-  Wrench,
+  X,
 } from 'lucide-react';
+import type { CommandCenterState } from '../types/commandCenter';
 import type {
-  DerivativeAspectRatio,
-  StudioProductionFormat,
-  StudioProjectProfile,
-  StudioVideoStyle,
-} from '../types/bilibili';
-import type {
-  CommandCenterState,
-  CommandTask,
-  CommunicationChannelId,
-  ConversationMessage,
-  MuseAgentAvatarPreset,
-  MuseAgentConfig,
-  MuseAgentEngineMode,
-  MuseAgentId,
-  ProductionRun,
-  SceneProductionStage,
-  VideoGenerationEngine,
-} from '../types/commandCenter';
+  AiEngineReadinessItem,
+  CoordinationCenterState,
+  CoordinationSession,
+  CoordinationTaskRow,
+  CoordinationTaskStatus,
+  IndependentVideoSource,
+} from '../types/coordinationCenter';
 import {
-  AgentAvatar,
-  MUSE_ACCENT_SWATCHES,
-  MUSE_AVATAR_PRESETS,
-  renderPresetSvgIcon,
-} from './command-center/AgentAvatar';
-import { AiProgressBoardTab } from './command-center/AiProgressBoardTab';
-import { ChairmanCommandPanel } from './command-center/ChairmanCommandPanel';
-import { CommunicationHub } from './command-center/CommunicationHub';
-import { GoogleFlowModal } from './command-center/GoogleFlowModal';
-import { IncidentCommandTab } from './command-center/IncidentCommandTab';
-import { PerformanceMonitorTab } from './command-center/PerformanceMonitorTab';
+  classifyGoogleAuthError,
+  clearGoogleWorkspaceAccessToken,
+  getGoogleWorkspaceAccessToken,
+  initGoogleWorkspaceAuth,
+  logoutGoogleWorkspace,
+  signInGoogleWorkspace,
+  type GoogleAuthErrorInfo,
+} from '../lib/googleWorkspaceAuth';
 
-type CommandCenterSubTab =
-  | 'overview'
-  | 'progress'
-  | 'chairman'
-  | 'agents'
-  | 'chat'
-  | 'incidents'
-  | 'tasks'
-  | 'pipeline'
-  | 'qa'
-  | 'perf'
-  | 'logs'
-  | 'backup'
-  | 'cloud';
-
-const SUB_TABS: { id: CommandCenterSubTab; label: string }[] = [
-  { id: 'overview', label: 'Tổng quan & Lệnh tổng' },
-  { id: 'progress', label: 'Tiến độ AI & Cloud' },
-  { id: 'chairman', label: 'Chủ tịch Điều hành' },
-  { id: 'agents', label: 'Đội ngũ 5 Muse AI' },
-  { id: 'chat', label: 'Trung tâm giao tiếp' },
-  { id: 'incidents', label: 'Trung tâm sự cố' },
-  { id: 'tasks', label: 'Giao việc & Nhiệm vụ' },
-  { id: 'pipeline', label: 'Điều phối & Project Memory' },
-  { id: 'qa', label: 'Giám sát chất lượng' },
-  { id: 'perf', label: 'Hiệu năng & Kênh nhanh' },
-  { id: 'logs', label: 'Tiến độ & Nhật ký' },
-  { id: 'backup', label: 'Backup & Lưu trữ' },
-  { id: 'cloud', label: 'Tài khoản & Cloud' },
-];
-
-const AGENT_STATUS_LABELS: Record<MuseAgentConfig['status'], string> = {
-  online: 'Sẵn sàng',
-  working: 'Đang làm việc',
-  waiting: 'Đang chờ',
-  supervising: 'Đang giám sát',
-  paused: 'Tạm dừng',
-  offline: 'Chưa kết nối',
-  error: 'Gặp lỗi',
-};
-
-const AGENT_STATUS_TEXT_CLASS: Record<MuseAgentConfig['status'], string> = {
-  online: 'text-emerald-600 dark:text-emerald-400',
-  working: 'text-cyan-600 dark:text-cyan-400',
-  waiting: 'text-amber-600 dark:text-amber-400',
-  supervising: 'text-violet-600 dark:text-violet-400',
-  paused: 'text-slate-500 dark:text-slate-400',
-  offline: 'text-slate-500 dark:text-slate-400',
-  error: 'text-rose-600 dark:text-rose-400',
-};
-
-const TASK_STATUS_LABELS: Record<CommandTask['status'], string> = {
-  queued: 'Trong hàng đợi',
-  blocked_by_deps: 'Chờ phụ thuộc',
-  running: 'Đang thực thi',
-  completed: 'Hoàn thành',
-  failed: 'Thất bại',
-  qa_rejected: 'QA trả về',
-  cancelled: 'Đã hủy',
-};
-
-const TASK_STATUS_TEXT_CLASS: Record<CommandTask['status'], string> = {
-  queued: 'text-sky-600 dark:text-sky-400',
-  blocked_by_deps: 'text-amber-600 dark:text-amber-400',
-  running: 'text-cyan-600 dark:text-cyan-400',
-  completed: 'text-emerald-600 dark:text-emerald-400',
-  failed: 'text-rose-600 dark:text-rose-400',
-  qa_rejected: 'text-orange-600 dark:text-orange-400',
-  cancelled: 'text-slate-500 dark:text-slate-400',
-};
-
-const RUN_STATUS_LABELS: Record<string, string> = {
-  idle: 'Chờ lệnh',
-  planning: 'Gemini AI – Chủ tịch đang lập kế hoạch',
-  producing: '4 Muse đang sản xuất song song',
-  inspecting: 'Muse AI 05 đang kiểm định',
-  assembling: 'Đang ghép xuất phim',
-  completed: 'Đã bàn giao hoàn chỉnh',
-  paused: 'Đang tạm dừng',
-  cancelled: 'Đã hủy phiên',
-  failed: 'Thất bại',
-  needs_attention: 'Cần kiểm tra thủ công',
-};
-
-const SCENE_STAGE_LABELS: Record<SceneProductionStage, string> = {
-  waiting_data: 'Chờ dữ liệu',
-  creating_image: 'Đang tạo ảnh',
-  image_ready: 'Ảnh sẵn sàng',
-  waiting_video: 'Chờ dựng video',
-  creating_video: 'Đang dựng video',
-  inspecting_qa: 'Đang kiểm duyệt QA',
-  completed: 'Hoàn thành',
-  failed: 'Lỗi',
-  needs_regen: 'Cần tạo lại',
-};
-
-const SCENE_STAGE_TEXT_CLASS: Record<SceneProductionStage, string> = {
-  waiting_data: 'text-slate-500 dark:text-slate-400',
-  creating_image: 'text-cyan-600 dark:text-cyan-400',
-  image_ready: 'text-emerald-600 dark:text-emerald-400',
-  waiting_video: 'text-sky-600 dark:text-sky-400',
-  creating_video: 'text-amber-600 dark:text-amber-400',
-  inspecting_qa: 'text-violet-600 dark:text-violet-400',
-  completed: 'text-emerald-600 dark:text-emerald-400',
-  failed: 'text-rose-600 dark:text-rose-400',
-  needs_regen: 'text-orange-600 dark:text-orange-400',
-};
-
-function fmtTime(ts?: number): string {
-  if (!ts) return '—';
-  return new Date(ts).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
-function fmtDateTime(ts?: number): string {
-  if (!ts) return '—';
-  return new Date(ts).toLocaleString('vi-VN', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-async function apiJson<T = any>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
-  const text = await res.text();
-  let data: any = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    throw new Error(`Phản hồi không hợp lệ (HTTP ${res.status})`);
-  }
-  if (!res.ok) {
-    throw new Error(data?.error || data?.message || `Yêu cầu thất bại (HTTP ${res.status})`);
-  }
-  return data as T;
-}
+type CoordinationTab = 'hub' | 'meeting' | 'workspace';
 
 interface CommandCenterPanelProps {
   onOpenSettings?: () => void;
   onOpenProductionMonitor?: () => void;
   isActiveTab?: boolean;
-  liveState: CommandCenterState | null;
-  setLiveState: React.Dispatch<React.SetStateAction<CommandCenterState | null>>;
-  liveLoading: boolean;
-  sseConnected: boolean;
-  onRefreshLive: (forceHealth?: boolean) => Promise<CommandCenterState | null>;
-  externalSubTabRequest?: { subTab: CommandCenterSubTab; nonce: number } | null;
+  liveState?: CommandCenterState | null;
+  setLiveState?: React.Dispatch<React.SetStateAction<CommandCenterState | null>>;
+  liveLoading?: boolean;
+  sseConnected?: boolean;
+  onRefreshLive?: (forceHealth?: boolean) => Promise<CommandCenterState | null>;
+  externalSubTabRequest?: { subTab: string; nonce: number } | null;
+}
+
+type WorkspaceConfirmAction =
+  | {
+      kind: 'init_workspace';
+      title: string;
+      description: string;
+      details: string[];
+      existingSpreadsheetId: string;
+    }
+  | {
+      kind: 'sync_session';
+      title: string;
+      description: string;
+      details: string[];
+      sessionId: string;
+    };
+
+const INDEPENDENT_SOURCES: {
+  id: IndependentVideoSource;
+  name: string;
+  tagline: string;
+  rule: string;
+}[] = [
+  {
+    id: 'gemini',
+    name: 'Gemini AI',
+    tagline: 'Ảnh Gemini + Video Omni Flash',
+    rule: 'Chỉ dùng Gemini, không gọi Muse hay Qwen',
+  },
+  {
+    id: 'qwen',
+    name: 'AI Qwen (Alibaba)',
+    tagline: 'Ảnh Qwen-Image + Video Wan',
+    rule: 'Chỉ dùng Alibaba ModelStudio, không chồng lấn',
+  },
+  {
+    id: 'muse',
+    name: 'Muse AI (Muse2API)',
+    tagline: 'Ảnh muse-image + Video muse-video',
+    rule: 'Chỉ dùng Muse2API theo đúng bảng nhiệm vụ',
+  },
+  {
+    id: 'google_flow',
+    name: 'Google Flow (Veo)',
+    tagline: 'Xuất prompt chuẩn + Nạp MP4 từng cảnh',
+    rule: 'Tách biệt 100%, chờ bạn tải clip Flow lên',
+  },
+];
+
+function fmtTime(ts?: number): string {
+  if (!ts) return '—';
+  try {
+    return new Date(ts).toLocaleTimeString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return '—';
+  }
+}
+
+function fmtDateTime(ts?: number): string {
+  if (!ts) return '—';
+  try {
+    return new Date(ts).toLocaleString('vi-VN', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '—';
+  }
+}
+
+function taskStatusMeta(status: CoordinationTaskStatus): {
+  label: string;
+  cls: string;
+} {
+  switch (status) {
+    case 'HOAN_THANH':
+      return {
+        label: 'Hoàn thành',
+        cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35',
+      };
+    case 'DANG_LAM':
+      return {
+        label: 'Đang làm',
+        cls: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/35',
+      };
+    case 'LOI':
+      return {
+        label: 'Lỗi',
+        cls: 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/35',
+      };
+    case 'CHO_NHAP_FLOW':
+      return {
+        label: 'Chờ nhập Flow',
+        cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35',
+      };
+    default:
+      return {
+        label: 'Chờ nhận',
+        cls: 'bg-slate-500/10 text-slate-600 dark:text-slate-300 border-slate-400/30',
+      };
+  }
+}
+
+function readinessMeta(status: AiEngineReadinessItem['status']): {
+  label: string;
+  dot: string;
+  badge: string;
+} {
+  switch (status) {
+    case 'ready':
+      return {
+        label: 'Sẵn sàng',
+        dot: 'bg-emerald-500',
+        badge: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35',
+      };
+    case 'unconfigured':
+      return {
+        label: 'Chưa cấu hình',
+        dot: 'bg-amber-500',
+        badge: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35',
+      };
+    case 'error':
+      return {
+        label: 'Cảnh báo lỗi',
+        dot: 'bg-rose-500',
+        badge: 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/35',
+      };
+    default:
+      return {
+        label: 'Ngoại tuyến',
+        dot: 'bg-slate-400',
+        badge: 'bg-slate-500/15 text-slate-600 dark:text-slate-300 border-slate-400/30',
+      };
+  }
 }
 
 export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   onOpenSettings,
-  onOpenProductionMonitor,
-  isActiveTab = false,
-  liveState: state,
-  setLiveState: setState,
-  liveLoading: loading,
-  sseConnected,
-  onRefreshLive,
+  isActiveTab = true,
   externalSubTabRequest,
 }) => {
-  const [subTab, setSubTab] = useState<CommandCenterSubTab>('overview');
-  const [busyAction, setBusyAction] = useState<string>('');
-  const [bannerError, setBannerError] = useState('');
-  const [bannerNotice, setBannerNotice] = useState('');
-  const [confirmCancelRun, setConfirmCancelRun] = useState<ProductionRun | null>(null);
+  const [tab, setTab] = useState<CoordinationTab>('hub');
+  const [state, setState] = useState<CoordinationCenterState | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [sseOnline, setSseOnline] = useState(false);
+  const [busyAction, setBusyAction] = useState('');
+  const [notice, setNotice] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
-  // Overview / Script Dispatcher form
-  const [projectTitle, setProjectTitle] = useState('');
-  const [scriptText, setScriptText] = useState('');
-  const [productionFormat, setProductionFormat] = useState<StudioProductionFormat>('dialogue_film');
-  const [aspectRatio, setAspectRatio] = useState<DerivativeAspectRatio>('16:9');
-  const [videoStyle, setVideoStyle] = useState<StudioVideoStyle>('cinematic');
-  const [allowFreeCostumeChange, setAllowFreeCostumeChange] = useState<boolean>(false);
-  const [videoGenerationEngine, setVideoGenerationEngine] = useState<VideoGenerationEngine>('gemini');
-  const [flowModalOpen, setFlowModalOpen] = useState(false);
-  const [flowFocusSceneId, setFlowFocusSceneId] = useState<string | null>(null);
-  const [studioProfiles, setStudioProfiles] = useState<StudioProjectProfile[]>([]);
-  const [hasManualFormEdit, setHasManualFormEdit] = useState(false);
-  const hydratedSyncAtRef = useRef<number>(0);
+  // Google Workspace Auth state (in-memory token only)
+  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [googleToken, setGoogleToken] = useState<string | null>(() => getGoogleWorkspaceAccessToken());
+  const [isGoogleSigningIn, setIsGoogleSigningIn] = useState(false);
+  const [authErrorInfo, setAuthErrorInfo] = useState<GoogleAuthErrorInfo | null>(null);
+  const [existingSheetInput, setExistingSheetInput] = useState('');
+  const [confirmModal, setConfirmModal] = useState<WorkspaceConfirmAction | null>(null);
+  const [liveSheetRows, setLiveSheetRows] = useState<{
+    tasks: Record<string, string>[];
+    references: Record<string, string>[];
+  } | null>(null);
 
-  // Agent editing draft
-  const [editingAgentId, setEditingAgentId] = useState<MuseAgentId | null>(null);
-  const [agentDraftName, setAgentDraftName] = useState('');
-  const [agentDraftRole, setAgentDraftRole] = useState('');
-  const [agentDraftDesc, setAgentDraftDesc] = useState('');
-  const [agentDraftAccount, setAgentDraftAccount] = useState('auto');
-  const [agentDraftEngine, setAgentDraftEngine] = useState<MuseAgentEngineMode>('muse2api');
-  const [agentDraftPreset, setAgentDraftPreset] = useState<MuseAgentAvatarPreset>('director_clapboard');
-  const [agentDraftColor, setAgentDraftColor] = useState('#7C3AED');
-  const [agentDraftAvatarDataUrl, setAgentDraftAvatarDataUrl] = useState<string | undefined>(undefined);
-  const [agentDraftClearAvatar, setAgentDraftClearAvatar] = useState(false);
-  const [agentTestReplies, setAgentTestReplies] = useState<Record<string, string>>({});
+  // Quick manual session form
+  const [showQuickCreate, setShowQuickCreate] = useState(false);
+  const [quickTitle, setQuickTitle] = useState('');
+  const [quickIdea, setQuickIdea] = useState('');
+  const [quickSource, setQuickSource] = useState<IndependentVideoSource>('gemini');
+  const [confirmDeleteSessionId, setConfirmDeleteSessionId] = useState('');
 
-  // Chat & Incident deep-link
-  const [chatInitialChannel, setChatInitialChannel] = useState<CommunicationChannelId>('commander');
-  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
+  // Meeting room state
+  const [meetingScope, setMeetingScope] = useState<'active' | 'all'>('active');
+  const [meetingInput, setMeetingInput] = useState('');
+  const meetingEndRef = useRef<HTMLDivElement>(null);
 
-  // Manual Task form
-  const [manualAgentId, setManualAgentId] = useState<MuseAgentId>('muse-01');
-  const [manualTitle, setManualTitle] = useState('');
-  const [manualInstructions, setManualInstructions] = useState('');
-  const [manualSceneId, setManualSceneId] = useState('');
-
-  // QA manual reject modal/inline
-  const [qaFixInputs, setQaFixInputs] = useState<Record<string, string>>({});
-
-  // Logs filter
-  const [logAgentFilter, setLogAgentFilter] = useState<string>('all');
-  const [logLevelFilter, setLogLevelFilter] = useState<string>('all');
-
-  // Backup & Search
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchAgentId, setSearchAgentId] = useState('all');
-  const [searchDateFrom, setSearchDateFrom] = useState('');
-  const [searchDateTo, setSearchDateTo] = useState('');
-  const [searchResults, setSearchResults] = useState<{ messages: ConversationMessage[]; tasks: CommandTask[] } | null>(
-    null
-  );
-
-  // Cloud & Muse2API form
-  const [cloudUrl, setCloudUrl] = useState('');
-  const [cloudKey, setCloudKey] = useState('');
-  const [parallelLimit, setParallelLimit] = useState(4);
-  const [perAgentConcurrencyLimit, setPerAgentConcurrencyLimit] = useState(2);
-  const [qaThreshold, setQaThreshold] = useState(72);
-  const [maxRetries, setMaxRetries] = useState(2);
-  const [maxIncidentRetries, setMaxIncidentRetries] = useState(3);
-  const [autoDirectorIncidentResponse, setAutoDirectorIncidentResponse] = useState(true);
-  const [autoApproveAfterMaxRetries, setAutoApproveAfterMaxRetries] = useState(true);
-  const [autoBackup, setAutoBackup] = useState(true);
-  const [newAccLabel, setNewAccLabel] = useState('');
-  const [newAccCookie, setNewAccCookie] = useState('');
-  const [cloudSyncedOnce, setCloudSyncedOnce] = useState(false);
-
-  const applySyncedDirectiveToForm = useCallback(
-    (dir: CommandCenterState['latestStudioDirective'] | null | undefined, mem?: CommandCenterState['projectMemory']) => {
-      if (dir && dir.scriptOrCommand) {
-        setProjectTitle(dir.title || '');
-        setScriptText(dir.scriptOrCommand || '');
-        setProductionFormat(dir.productionFormat || 'dialogue_film');
-        setAspectRatio(dir.aspectRatio || '16:9');
-        setVideoStyle(dir.videoStyle || 'cinematic');
-        setAllowFreeCostumeChange(Boolean(dir.allowFreeCostumeChange));
-        hydratedSyncAtRef.current = dir.syncedAt;
-        return true;
-      }
-      if (mem && mem.originalScript) {
-        setProjectTitle(mem.title || '');
-        setScriptText(mem.originalScript || '');
-        setProductionFormat(mem.productionFormat || 'dialogue_film');
-        setAspectRatio(mem.aspectRatio || '16:9');
-        setVideoStyle(mem.videoStyle || 'cinematic');
-        setAllowFreeCostumeChange(Boolean(mem.allowFreeCostumeChange));
-        hydratedSyncAtRef.current = mem.updatedAt;
-        return true;
-      }
-      return false;
-    },
-    []
-  );
-
-  const fetchState = useCallback(
-    async (forceHealth = false) => {
-      const data = await onRefreshLive(forceHealth);
-      return data;
-    },
-    [onRefreshLive]
-  );
+  // Flow clip upload state
+  const flowUploadInputRef = useRef<HTMLInputElement>(null);
+  const [flowUploadTaskCode, setFlowUploadTaskCode] = useState('');
+  const [copiedPromptCode, setCopiedPromptCode] = useState('');
 
   useEffect(() => {
-    if (!state) return;
-    if (!cloudSyncedOnce) {
-      setCloudUrl(state.cloudConfig.muse2ApiBaseUrl || '');
-      setParallelLimit(state.cloudConfig.parallelLimit);
-      setPerAgentConcurrencyLimit(state.cloudConfig.perAgentConcurrencyLimit ?? 2);
-      setQaThreshold(state.cloudConfig.qaPassThreshold);
-      setMaxRetries(state.cloudConfig.maxRetriesPerScene);
-      setMaxIncidentRetries(state.cloudConfig.maxIncidentRetries ?? 3);
-      setAutoDirectorIncidentResponse(state.cloudConfig.autoDirectorIncidentResponse !== false);
-      setAutoApproveAfterMaxRetries(state.cloudConfig.autoApproveAfterMaxRetries !== false);
-      setAutoBackup(state.cloudConfig.autoBackupRealtime);
-      setCloudSyncedOnce(true);
-    }
-    const dir = state.latestStudioDirective;
-    if (dir && dir.syncedAt > hydratedSyncAtRef.current && (!hasManualFormEdit || !scriptText.trim())) {
-      applySyncedDirectiveToForm(dir, state.projectMemory);
-    } else if (!hasManualFormEdit && !scriptText.trim() && state.projectMemory?.originalScript) {
-      applySyncedDirectiveToForm(null, state.projectMemory);
-    }
-  }, [state, cloudSyncedOnce, hasManualFormEdit, scriptText, applySyncedDirectiveToForm]);
-
-  const refreshStudioProjects = useCallback(() => {
-    fetch('/api/studio/projects')
-      .then((r) => (r.ok ? r.json() : { projects: [] }))
-      .then((d) => {
-        if (Array.isArray(d?.projects)) setStudioProfiles(d.projects);
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    refreshStudioProjects();
-  }, [refreshStudioProjects]);
-
-  useEffect(() => {
-    if (isActiveTab) {
-      refreshStudioProjects();
-    }
-  }, [isActiveTab, refreshStudioProjects]);
-
-  useEffect(() => {
-    if (externalSubTabRequest) {
-      setSubTab(externalSubTabRequest.subTab);
+    if (!externalSubTabRequest) return;
+    if (externalSubTabRequest.subTab === 'chat') {
+      setTab('meeting');
+    } else if (externalSubTabRequest.subTab === 'workspace') {
+      setTab('workspace');
+    } else {
+      setTab('hub');
     }
   }, [externalSubTabRequest]);
 
-  const runAction = async (key: string, fn: () => Promise<CommandCenterState | null | void>, okNotice?: string) => {
-    setBusyAction(key);
-    setBannerError('');
-    setBannerNotice('');
-    try {
-      const next = await fn();
-      if (next && 'metrics' in next) {
-        setState(next);
-      } else {
-        await fetchState(true);
+  // Listen to Firebase Google Auth state (token kept strictly in memory)
+  useEffect(() => {
+    const unsub = initGoogleWorkspaceAuth(
+      (user, tok) => {
+        setGoogleUser(user);
+        setGoogleToken(tok);
+        setAuthErrorInfo(null);
+      },
+      () => {
+        setGoogleToken(null);
       }
-      if (okNotice) setBannerNotice(okNotice);
+    );
+    return () => unsub();
+  }, []);
+
+  const refreshState = useCallback(async (forceHealth = false) => {
+    try {
+      const res = await fetch(`/api/coordination/state${forceHealth ? '?force=1' : ''}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: CoordinationCenterState = await res.json();
+      setState(data);
     } catch (err: any) {
-      setBannerError(err?.message || 'Thao tác thất bại.');
+      setErrorMsg(err?.message || 'Không thể tải dữ liệu Trung Tâm Điều Phối AI.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshState(false);
+  }, [refreshState]);
+
+  // Real-time SSE connection
+  useEffect(() => {
+    if (typeof EventSource === 'undefined') return;
+    const es = new EventSource('/api/coordination/events');
+    es.onopen = () => setSseOnline(true);
+    es.onerror = () => setSseOnline(false);
+    es.addEventListener('state:sync', (ev) => {
+      try {
+        const next = JSON.parse((ev as MessageEvent).data) as CoordinationCenterState;
+        setState(next);
+        setLoading(false);
+      } catch {
+        // ignore malformed payload
+      }
+    });
+    return () => {
+      es.close();
+      setSseOnline(false);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isActiveTab && !sseOnline) {
+      void refreshState(false);
+    }
+  }, [isActiveTab, sseOnline, refreshState]);
+
+  const activeSession: CoordinationSession | null = useMemo(() => {
+    if (!state || state.sessions.length === 0) return null;
+    return (
+      state.sessions.find((s) => s.sessionId === state.activeSessionId) || state.sessions[0] || null
+    );
+  }, [state]);
+
+  const visibleMessages = useMemo(() => {
+    const all = state?.meetingMessages || [];
+    if (meetingScope === 'all' || !activeSession) return all;
+    return all.filter((m) => m.sessionId === activeSession.sessionId);
+  }, [state?.meetingMessages, meetingScope, activeSession]);
+
+  useEffect(() => {
+    if (tab === 'meeting') {
+      meetingEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [tab, visibleMessages.length]);
+
+  const apiCall = useCallback(
+    async <T,>(url: string, init?: RequestInit, requireGoogleToken = false): Promise<T> => {
+      const tok = googleToken || getGoogleWorkspaceAccessToken();
+      if (requireGoogleToken && !tok) {
+        throw new Error('Vui lòng đăng nhập bằng Google trước để thao tác với Google Sheets & Drive.');
+      }
+      const headers: Record<string, string> = {
+        ...(init?.body && !(init.body instanceof ArrayBuffer) && !(init.body instanceof Blob)
+          ? { 'Content-Type': 'application/json' }
+          : {}),
+        ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
+        ...(init?.headers as Record<string, string> | undefined),
+      };
+      const res = await fetch(url, { ...init, headers });
+      const data: any = await res.json().catch(() => ({}));
+      if (res.status === 401 && requireGoogleToken) {
+        clearGoogleWorkspaceAccessToken();
+        setGoogleToken(null);
+        throw new Error('Phiên Google đã hết hạn. Vui lòng bấm "Sign in with Google" để kết nối lại.');
+      }
+      if (!res.ok) {
+        throw new Error(data?.error || `Thao tác thất bại (HTTP ${res.status})`);
+      }
+      if (data?.state) {
+        setState(data.state);
+      }
+      return data as T;
+    },
+    [googleToken]
+  );
+
+  const handleGoogleSignIn = async () => {
+    setIsGoogleSigningIn(true);
+    setErrorMsg('');
+    setAuthErrorInfo(null);
+    try {
+      const result = await signInGoogleWorkspace();
+      if (result) {
+        setGoogleUser(result.user);
+        setGoogleToken(result.accessToken);
+        setNotice(`Đã kết nối Google Workspace (${result.user.email || 'Google Account'}).`);
+      }
+    } catch (err: any) {
+      const info = classifyGoogleAuthError(err);
+      setAuthErrorInfo(info);
+      setErrorMsg(info.message);
+    } finally {
+      setIsGoogleSigningIn(false);
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    await logoutGoogleWorkspace();
+    setGoogleUser(null);
+    setGoogleToken(null);
+    setLiveSheetRows(null);
+    setNotice('Đã đăng xuất khỏi Google Workspace.');
+  };
+
+  const handleCheckAllReadiness = async () => {
+    setBusyAction('check_readiness');
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await apiCall('/api/coordination/readiness/check', { method: 'POST' });
+      setNotice('Đã kiểm tra xong tình trạng sẵn sàng của toàn bộ các AI & FFmpeg.');
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể kiểm tra trạng thái AI.');
     } finally {
       setBusyAction('');
     }
   };
 
-  const handleStartProduction = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!scriptText.trim()) {
-      setBannerError('Vui lòng nhập kịch bản hoặc câu lệnh sản xuất.');
-      return;
-    }
-    await runAction(
-      'start_production',
-      () =>
-        apiJson<CommandCenterState>('/api/command-center/productions/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: projectTitle.trim(),
-            script: scriptText.trim(),
-            productionFormat,
-            aspectRatio,
-            videoStyle,
-            allowFreeCostumeChange,
-            videoGenerationEngine,
-          }),
-        }),
-      `Đã khởi động sản xuất với nguồn video: ${
-        videoGenerationEngine === 'qwen'
-          ? 'AI Qwen (Alibaba Model Studio · Wan)'
-          : videoGenerationEngine === 'gemini'
-          ? 'AI Gemini (Omni Flash)'
-          : videoGenerationEngine === 'google_flow'
-          ? 'Google Flow (Xuất kịch bản & nạp MP4)'
-          : 'AI Muse (Tự dự phòng AI Gemini)'
-      }.`
-    );
-  };
-
-  const handleLoadStudioProject = (projId: string) => {
-    if (projId === '__latest_studio_directive__') {
-      if (applySyncedDirectiveToForm(state?.latestStudioDirective, state?.projectMemory)) {
-        setHasManualFormEdit(false);
-        setBannerNotice('Đã nạp chỉ thị mới nhất đồng bộ từ Studio vào Trung tâm giao nhiệm vụ tổng.');
-      }
-      return;
-    }
-    const proj = studioProfiles.find((p) => p.id === projId);
-    if (!proj) return;
-    setProjectTitle(proj.name);
-    setVideoStyle(proj.videoStyle || 'cinematic');
-    setAllowFreeCostumeChange(Boolean(proj.allowFreeCostumeChange));
-    const summaryParts = [
-      proj.description ? `Ý tưởng / Kịch bản: ${proj.description}` : '',
-      proj.characterBible ? `Hồ sơ nhân vật: ${proj.characterBible}` : '',
-      proj.settingBible ? `Bối cảnh: ${proj.settingBible}` : '',
-      proj.costumeBible ? `Trang phục: ${proj.costumeBible}` : '',
-      proj.continuityBible ? `Nối cảnh: ${proj.continuityBible}` : '',
-    ].filter(Boolean);
-    setScriptText(summaryParts.join('\n\n'));
-    setHasManualFormEdit(true);
-    setBannerNotice(`Đã nạp dữ liệu dự án "${proj.name}" từ Studio.`);
-  };
-
-  const openAgentEditor = (agent: MuseAgentConfig) => {
-    setEditingAgentId(agent.id);
-    setAgentDraftName(agent.name);
-    setAgentDraftRole(agent.roleTitle);
-    setAgentDraftDesc(agent.description);
-    setAgentDraftAccount(agent.boundAccountId || 'auto');
-    setAgentDraftEngine(agent.engineMode);
-    setAgentDraftPreset(agent.avatarPreset || 'director_clapboard');
-    setAgentDraftColor(agent.accentColor || '#7C3AED');
-    setAgentDraftAvatarDataUrl(undefined);
-    setAgentDraftClearAvatar(false);
-  };
-
-  const handleAgentLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      setAgentDraftAvatarDataUrl(String(reader.result || ''));
-      setAgentDraftClearAvatar(false);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleSaveAgentEdit = async (agentId: MuseAgentId) => {
-    await runAction(
-      `save_agent_${agentId}`,
-      () =>
-        apiJson<CommandCenterState>(`/api/command-center/agents/${agentId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: agentDraftName,
-            roleTitle: agentDraftRole,
-            description: agentDraftDesc,
-            boundAccountId: agentDraftAccount,
-            engineMode: agentDraftEngine,
-            avatarPreset: agentDraftPreset,
-            accentColor: agentDraftColor,
-            ...(agentDraftAvatarDataUrl ? { avatarDataUrl: agentDraftAvatarDataUrl } : {}),
-            ...(agentDraftClearAvatar ? { avatarUrl: '' } : {}),
-          }),
-        }),
-      'Đã lưu cấu hình danh tính & kết nối Muse AI.'
-    );
-    setEditingAgentId(null);
-  };
-
-  const handleTestAgent = async (agentId: MuseAgentId) => {
-    setBusyAction(`test_${agentId}`);
-    setBannerError('');
+  const handleSelectSession = async (sessionId: string) => {
+    setErrorMsg('');
     try {
-      const res = await apiJson<{ ok: boolean; provider: string; reply: string }>(
-        `/api/command-center/agents/${agentId}/test`,
+      const next = await apiCall<CoordinationCenterState>(
+        `/api/coordination/sessions/${encodeURIComponent(sessionId)}/select`,
         { method: 'POST' }
       );
-      setAgentTestReplies((prev) => ({
-        ...prev,
-        [agentId]: `[${res.provider}] ${res.reply}`,
-      }));
-      await fetchState(false);
+      setState(next);
     } catch (err: any) {
-      setBannerError(err?.message || 'Kiểm tra kết nối thất bại.');
+      setErrorMsg(err?.message || 'Không chọn được phiên.');
+    }
+  };
+
+  const handleChangeVideoSource = async (videoSource: IndependentVideoSource) => {
+    if (!activeSession) return;
+    setBusyAction(`source_${videoSource}`);
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await apiCall(`/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/source`, {
+        method: 'POST',
+        body: JSON.stringify({ videoSource }),
+      });
+      setNotice(`Đã khóa nguồn sáng tạo video độc lập cho phiên ${activeSession.sessionId}.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể đổi nguồn video.');
     } finally {
       setBusyAction('');
     }
   };
 
-  const handleCreateManualTask = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!manualTitle.trim() && !manualInstructions.trim()) {
-      setBannerError('Vui lòng nhập tiêu đề hoặc nội dung nhiệm vụ.');
+  const handleQuickCreateSession = async () => {
+    const cleanTitle = quickTitle.trim();
+    const cleanIdea = quickIdea.trim();
+    if (!cleanTitle && !cleanIdea) {
+      setErrorMsg('Hãy nhập tên phiên hoặc mô tả kịch bản ngắn trước khi tạo.');
       return;
     }
-    await runAction(
-      'create_manual_task',
-      () =>
-        apiJson<CommandCenterState>('/api/command-center/tasks', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            assignedAgentId: manualAgentId,
-            title: manualTitle.trim() || manualInstructions.trim().slice(0, 60),
-            instructions: manualInstructions.trim() || manualTitle.trim(),
-            sceneId: manualSceneId || undefined,
-          }),
-        }),
-      'Đã giao nhiệm vụ vào hàng đợi thực thi.'
-    );
-    setManualTitle('');
-    setManualInstructions('');
-  };
-
-  const handleSearchArchive = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusyAction('search_archive');
-    setBannerError('');
+    setBusyAction('quick_create');
+    setErrorMsg('');
+    setNotice('');
     try {
-      const qs = new URLSearchParams({
-        query: searchQuery,
-        agentId: searchAgentId,
-        dateFrom: searchDateFrom,
-        dateTo: searchDateTo,
+      await apiCall('/api/coordination/sessions', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: cleanTitle || cleanIdea.slice(0, 60),
+          ideaOrCommand: cleanIdea || cleanTitle,
+          videoSource: quickSource,
+          sourceAction: 'manual_order',
+        }),
       });
-      const res = await apiJson<{ messages: ConversationMessage[]; tasks: CommandTask[] }>(
-        `/api/command-center/search?${qs.toString()}`
-      );
-      setSearchResults(res);
+      setQuickTitle('');
+      setQuickIdea('');
+      setShowQuickCreate(false);
+      setNotice('Đã lập phiên mới với bảng nhiệm vụ tuần tự và khóa nguồn video độc lập.');
     } catch (err: any) {
-      setBannerError(err?.message || 'Tìm kiếm kho lưu trữ thất bại.');
+      setErrorMsg(err?.message || 'Không thể tạo phiên mới.');
     } finally {
       setBusyAction('');
     }
   };
 
-  const handleSaveCloudConfig = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await runAction(
-      'save_cloud',
-      () =>
-        apiJson<CommandCenterState>('/api/command-center/cloud-config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            muse2ApiBaseUrl: cloudUrl,
-            muse2ApiKey: cloudKey || undefined,
-            parallelLimit,
-            perAgentConcurrencyLimit,
-            qaPassThreshold: qaThreshold,
-            maxRetriesPerScene: maxRetries,
-            maxIncidentRetries,
-            autoDirectorIncidentResponse,
-            autoApproveAfterMaxRetries,
-            autoBackupRealtime: autoBackup,
-          }),
-        }),
-      'Đã lưu cấu hình Cloud Orchestrator & kiểm tra kết nối Muse2API.'
-    );
-    setCloudKey('');
+  const handleDeleteSession = async (sessionId: string) => {
+    setBusyAction(`del_${sessionId}`);
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await apiCall(`/api/coordination/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+      });
+      setConfirmDeleteSessionId('');
+      setNotice(`Đã xóa phiên ${sessionId} khỏi danh sách cục bộ.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể xóa phiên.');
+    } finally {
+      setBusyAction('');
+    }
   };
 
-  const handleAddMuseAccount = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newAccCookie.trim()) return;
-    await runAction(
-      'add_muse_acc',
-      async () => {
-        await apiJson('/api/muse2api/accounts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            label: newAccLabel.trim() || 'Muse Account',
-            cookieHeader: newAccCookie.trim(),
-          }),
-        });
-        return fetchState(true) as any;
-      },
-      'Đã thêm tài khoản Muse.ai vào Pool.'
-    );
-    setNewAccLabel('');
-    setNewAccCookie('');
+  const handleStartSequentialRun = async (retryErrors = false) => {
+    if (!activeSession) return;
+    setBusyAction(retryErrors ? 'retry_run' : 'start_run');
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await apiCall(`/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/run`, {
+        method: 'POST',
+        body: JSON.stringify({ retryErrors }),
+      });
+      setNotice(
+        retryErrors
+          ? `Đang chạy lại các tác vụ lỗi của phiên ${activeSession.sessionId} theo đúng thứ tự phụ thuộc.`
+          : `Đã khởi động dây chuyền tuần tự cho phiên ${activeSession.sessionId}.`
+      );
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể chạy phiên.');
+    } finally {
+      setBusyAction('');
+    }
   };
 
-  if (loading && !state) {
-    return (
-      <div className="glass-card rounded-2xl p-8 flex items-center justify-center gap-3 text-sm text-slate-600 dark:text-slate-300">
-        <Loader2 className="w-4 h-4 animate-spin text-violet-500" />
-        <span>Đang khởi tạo Phòng Điều Hành AI Muse...</span>
-      </div>
-    );
-  }
+  const handlePauseRun = async () => {
+    if (!activeSession) return;
+    setBusyAction('pause_run');
+    setErrorMsg('');
+    try {
+      await apiCall(`/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/pause`, {
+        method: 'POST',
+      });
+      setNotice(`Đã gửi lệnh tạm dừng phiên ${activeSession.sessionId}.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể tạm dừng.');
+    } finally {
+      setBusyAction('');
+    }
+  };
 
-  const metrics = state?.metrics;
-  const agents = state?.agents || [];
-  const memory = state?.projectMemory;
-  const activeRun = state?.activeRun || null;
-  const health = state?.integrationHealth;
-  const incidents = state?.incidents || [];
-  const escalatedIncidents = incidents.filter((i) => i.status === 'escalated_to_user');
-  const activeIncidents = incidents.filter((i) => !['resolved', 'escalated_to_user'].includes(i.status));
-  const openIncidentsCount = escalatedIncidents.length + activeIncidents.length;
-  const filteredLogs = (state?.logs || []).filter((l) => {
-    if (logAgentFilter !== 'all' && l.agentId !== logAgentFilter) return false;
-    if (logLevelFilter !== 'all' && l.level !== logLevelFilter) return false;
-    return true;
-  });
+  const handleRunSingleTask = async (taskCode: string) => {
+    if (!activeSession) return;
+    setBusyAction(`task_${taskCode}`);
+    setErrorMsg('');
+    setNotice('');
+    try {
+      await apiCall(
+        `/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/tasks/${encodeURIComponent(taskCode)}/run`,
+        { method: 'POST' }
+      );
+      setNotice(`Đã thực thi xong tác vụ ${taskCode}.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || `Không thể chạy tác vụ ${taskCode}.`);
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const handleTriggerFlowUpload = (taskCode: string) => {
+    setFlowUploadTaskCode(taskCode);
+    flowUploadInputRef.current?.click();
+  };
+
+  const handleFlowFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !activeSession || !flowUploadTaskCode) return;
+    setBusyAction(`flow_${flowUploadTaskCode}`);
+    setErrorMsg('');
+    setNotice('');
+    try {
+      const buf = await file.arrayBuffer();
+      await apiCall(
+        `/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/tasks/${encodeURIComponent(flowUploadTaskCode)}/upload-flow`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': file.type || 'video/mp4',
+            'X-File-Name': encodeURIComponent(file.name),
+          },
+          body: buf,
+        }
+      );
+      setNotice(`Đã nạp video Google Flow cho tác vụ ${flowUploadTaskCode}.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể tải video Google Flow lên.');
+    } finally {
+      setBusyAction('');
+      setFlowUploadTaskCode('');
+    }
+  };
+
+  const handleCopyPrompt = async (code: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedPromptCode(code);
+      setTimeout(() => setCopiedPromptCode((c) => (c === code ? '' : c)), 2000);
+    } catch {
+      setErrorMsg('Không thể sao chép vào bộ nhớ tạm.');
+    }
+  };
+
+  // Workspace mutating actions ALWAYS require explicit custom confirmation modal first
+  const requestInitWorkspaceConfirm = () => {
+    if (!googleToken) {
+      setErrorMsg('Hãy đăng nhập bằng Google trước khi khởi tạo Google Sheets & Drive.');
+      return;
+    }
+    const cleanInput = existingSheetInput.trim();
+    setConfirmModal({
+      kind: 'init_workspace',
+      title: cleanInput
+        ? 'Xác nhận liên kết Google Sheets hiện có?'
+        : 'Xác nhận tạo mới Sổ Google Sheets & Thư mục Google Drive?',
+      description: cleanInput
+        ? 'Hệ thống sẽ kết nối tới tệp Google Sheets bạn cung cấp và bổ sung 4 trang tính điều phối (nếu chưa có) mà không xóa dữ liệu cũ.'
+        : 'Hệ thống sẽ tạo thư mục gốc "Trung_Tam_Dieu_Phoi_AI" trên Google Drive và 1 tệp Google Sheets mới gồm 4 bảng chuẩn.',
+      details: [
+        'Tab 1: Phien_Lam_Viec (Thông tin phiên, nguồn AI độc lập, trạng thái)',
+        'Tab 2: Du_Lieu_Tham_Chieu (Kịch bản, hồ sơ & link Drive ảnh nhân vật)',
+        'Tab 3: Bang_Nhiem_Vu_AI (Thứ tự nhận việc, kết quả Drive, lý do lỗi)',
+        'Tab 4: Phong_Hop_Tien_Do (Nhật ký báo cáo trực tiếp theo phiên)',
+      ],
+      existingSpreadsheetId: cleanInput,
+    });
+  };
+
+  const requestSyncSessionConfirm = () => {
+    if (!activeSession) return;
+    if (!googleToken) {
+      setTab('workspace');
+      setErrorMsg('Hãy bấm "Sign in with Google" trong tab Google Sheets & Drive để đồng bộ phiên này.');
+      return;
+    }
+    setConfirmModal({
+      kind: 'sync_session',
+      title: `Xác nhận đồng bộ phiên ${activeSession.sessionId} lên Google Sheets & Drive?`,
+      description: `Toàn bộ dữ liệu tham chiếu (${activeSession.references.length} mục), ${activeSession.tasks.length} tác vụ và tệp ảnh/video của phiên "${activeSession.title}" sẽ được tải lên Google Drive và cập nhật vào Sổ Google Sheets.`,
+      details: [
+        `Tạo/cập nhật thư mục phiên trên Drive: ${activeSession.sessionId} - ${activeSession.title}`,
+        `Ghi đúng dòng theo khóa phiên ${activeSession.sessionId} — không ghi đè dữ liệu của các phiên khác`,
+        'Cập nhật đầy đủ link Drive đầu vào/đầu ra và lý do lỗi (nếu có) để các AI đọc lại chính xác',
+      ],
+      sessionId: activeSession.sessionId,
+    });
+  };
+
+  const executeConfirmedWorkspaceAction = async () => {
+    const action = confirmModal;
+    if (!action) return;
+    setConfirmModal(null);
+    setErrorMsg('');
+    setNotice('');
+
+    if (action.kind === 'init_workspace') {
+      setBusyAction('init_workspace');
+      try {
+        await apiCall(
+          '/api/coordination/workspace/init',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              existingSpreadsheetId: action.existingSpreadsheetId || undefined,
+            }),
+          },
+          true
+        );
+        setExistingSheetInput('');
+        setNotice('Đã khởi tạo & xác minh Sổ Google Sheets (4 bảng) cùng Thư mục Google Drive thành công.');
+      } catch (err: any) {
+        setErrorMsg(err?.message || 'Không thể khởi tạo Google Sheets & Drive.');
+      } finally {
+        setBusyAction('');
+      }
+    } else if (action.kind === 'sync_session') {
+      setBusyAction('sync_session');
+      try {
+        const res = await apiCall<{ uploadedFilesCount: number }>(
+          `/api/coordination/sessions/${encodeURIComponent(action.sessionId)}/sync-workspace`,
+          { method: 'POST' },
+          true
+        );
+        setNotice(
+          `Đã đồng bộ phiên ${action.sessionId} lên Google Sheets & tải ${res.uploadedFilesCount} tệp lên Google Drive.`
+        );
+      } catch (err: any) {
+        setErrorMsg(err?.message || 'Đồng bộ Google Sheets & Drive thất bại.');
+      } finally {
+        setBusyAction('');
+      }
+    }
+  };
+
+  const handleLoadLiveSheets = async () => {
+    if (!activeSession) return;
+    setBusyAction('read_sheets');
+    setErrorMsg('');
+    try {
+      const data = await apiCall<{
+        tasks: Record<string, string>[];
+        references: Record<string, string>[];
+      }>(
+        `/api/coordination/sessions/${encodeURIComponent(activeSession.sessionId)}/sheets-live`,
+        { method: 'GET' },
+        true
+      );
+      setLiveSheetRows(data);
+      setNotice(`Đã đọc trực tiếp ${data.tasks.length} dòng tác vụ và ${data.references.length} mục tham chiếu từ Google Sheets.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể đọc dữ liệu từ Google Sheets.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const handleSendMeetingMessage = async (presetText?: string) => {
+    const text = (presetText ?? meetingInput).trim();
+    if (!text) return;
+    const targetSessionId = activeSession?.sessionId || 'GLOBAL';
+    setBusyAction('send_meeting');
+    setErrorMsg('');
+    try {
+      await apiCall(`/api/coordination/sessions/${encodeURIComponent(targetSessionId)}/meeting`, {
+        method: 'POST',
+        body: JSON.stringify({ content: text }),
+      });
+      if (!presetText) setMeetingInput('');
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể gửi tin nhắn trong Phòng họp.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const completedTasksCount = activeSession
+    ? activeSession.tasks.filter((t) => t.status === 'HOAN_THANH').length
+    : 0;
+  const failedTasksCount = activeSession
+    ? activeSession.tasks.filter((t) => t.status === 'LOI').length
+    : 0;
+  const totalTasksCount = activeSession ? activeSession.tasks.length : 0;
+  const progressPct =
+    totalTasksCount > 0 ? Math.round((completedTasksCount / totalTasksCount) * 100) : 0;
+  const isRunning = activeSession?.status === 'DANG_CHAY';
+
+  const canTaskRun = (task: CoordinationTaskRow): boolean => {
+    if (!activeSession) return false;
+    if (task.status === 'DANG_LAM') return false;
+    return task.dependsOnTaskCodes.every((depCode) => {
+      const dep = activeSession.tasks.find((t) => t.taskCode === depCode);
+      return dep?.status === 'HOAN_THANH';
+    });
+  };
 
   return (
-    <div className="space-y-5">
-      {/* Top Header & KPI Summary Bar */}
-      <section className="glass-card rounded-2xl p-5 space-y-5">
-        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200/80 dark:border-slate-700/40 pb-4">
+    <div className="space-y-4">
+      <input
+        ref={flowUploadInputRef}
+        type="file"
+        accept="video/*"
+        onChange={handleFlowFileSelected}
+        className="hidden"
+      />
+
+      {/* TOP HEADER BAR */}
+      <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
-            <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-              AI Muse Command Center · Điều phối 5 AI sản xuất phim song song
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="font-display text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+                Trung Tâm Điều Phối AI
+              </h1>
+              <span
+                className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-semibold rounded-md border ${
+                  sseOnline
+                    ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
+                    : 'bg-slate-500/10 text-slate-600 dark:text-slate-300 border-slate-400/25'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${sseOnline ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                <span>{sseOnline ? 'Trực tuyến' : 'Đang đồng bộ'}</span>
+              </span>
+              {state?.workspace?.spreadsheetUrl && (
+                <a
+                  href={state.workspace.spreadsheetUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-md hover:bg-emerald-500/20 transition"
+                >
+                  <FileSpreadsheet className="w-3 h-3" />
+                  <span>Sổ Google Sheets</span>
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              )}
             </div>
-            <h1 className="text-xl sm:text-2xl font-display font-bold text-slate-900 dark:text-white tracking-tight">
-              Phòng Điều Hành AI Muse
-            </h1>
+            <p className="text-xs text-slate-600 dark:text-slate-400">
+              Điều phối tuần tự theo phiên qua Google Sheets &amp; Google Drive · Nguồn sáng tạo video khóa độc lập, không chồng lấn nhiệm vụ.
+            </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={busyAction === 'refresh'}
-              onClick={() => runAction('refresh', () => fetchState(true))}
-              className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] hover:bg-slate-50 dark:hover:bg-slate-800/70 text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${busyAction === 'refresh' ? 'animate-spin' : ''}`} />
-              <span>Kiểm tra kết nối</span>
-            </button>
-
-            <button
-              type="button"
-              disabled={busyAction === 'manual_backup'}
-              onClick={() =>
-                runAction(
-                  'manual_backup',
-                  () =>
-                    apiJson<CommandCenterState>('/api/command-center/backups', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({}),
-                    }),
-                  'Đã tạo bản sao lưu trạng thái & hội thoại.'
-                )
-              }
-              className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] hover:bg-slate-50 dark:hover:bg-slate-800/70 text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>Sao lưu ngay</span>
-            </button>
-          </div>
-        </div>
-
-        {/* 4 Tabular Metric Columns (flat surface, subtle hairline borders) */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
-            <div className="text-xs text-slate-500 dark:text-slate-400">Muse AI kết nối thực tế</div>
-            <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-              {metrics?.connectedAgents ?? 0}/{metrics?.totalAgents ?? 5}
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-              {health?.healthyAccounts ?? 0} tài khoản Muse.ai sẵn sàng
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
-            <div className="text-xs text-slate-500 dark:text-slate-400">Đang sản xuất</div>
-            <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-cyan-600 dark:text-cyan-400">
-              {metrics?.workingAgents ?? 0}
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-              {metrics?.waitingAgents ?? 0} chờ dữ liệu · {metrics?.pausedAgents ?? 0} tạm dừng
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
-            <div className="text-xs text-slate-500 dark:text-slate-400">Giám sát QA (Muse 05)</div>
-            <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-violet-600 dark:text-violet-400">
-              {metrics?.supervisingAgents ?? 0}
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-              Ngưỡng đạt: {state?.cloudConfig.qaPassThreshold ?? 80}/100
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700/40 bg-slate-50/70 dark:bg-[#0c1021]/70 p-3.5">
-            <div className="text-xs text-slate-500 dark:text-slate-400">Tiến độ tác vụ Cloud</div>
-            <div className="mt-1 text-2xl font-display font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
-              {metrics?.completedTasks ?? 0}/{metrics?.totalTasks ?? 0}
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-              {metrics?.runningTasks ?? 0} đang chạy · {metrics?.queuedTasks ?? 0} chờ
-            </div>
-          </div>
-        </div>
-
-        {/* Sub-navigation Segmented Control */}
-        <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0c1021] border border-slate-200/80 dark:border-slate-700/40">
-          {SUB_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setSubTab(t.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
-                subTab === t.id
-                  ? 'bg-white dark:bg-[#1a2244] text-slate-900 dark:text-white shadow-sm border border-slate-200/80 dark:border-slate-600/40'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white border border-transparent'
-              }`}
-            >
-              <span>{t.label}</span>
-              {t.id === 'incidents' && openIncidentsCount > 0 && (
-                <span
-                  className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono tabular-nums font-bold ${
-                    escalatedIncidents.length > 0
-                      ? 'bg-rose-500 text-white'
-                      : 'bg-cyan-500/20 text-cyan-700 dark:text-cyan-300'
-                  }`}
+            {googleToken ? (
+              <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-700 dark:text-emerald-300">
+                <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                <span className="max-w-[160px] truncate font-medium">
+                  {googleUser?.email || 'Đã kết nối Google'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleGoogleSignOut()}
+                  title="Đăng xuất Google Workspace"
+                  className="p-0.5 text-emerald-700/70 hover:text-rose-500 cursor-pointer"
                 >
-                  {openIncidentsCount}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      {/* Honest Integration Diagnostics & Alerts */}
-      {health && health.warnings.length > 0 && (
-        <div className="rounded-xl border border-amber-300/70 dark:border-amber-700/50 bg-amber-50/90 dark:bg-amber-950/30 px-4 py-3 text-xs text-amber-900 dark:text-amber-200 flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1 flex-1 min-w-[260px]">
-            <div className="font-semibold flex items-center gap-1.5">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>Kiểm tra tích hợp thực tế &amp; điều kiện chạy Cloud</span>
-            </div>
-            <ul className="space-y-0.5 pl-5 list-disc text-amber-800 dark:text-amber-200/90">
-              {health.warnings.map((w, idx) => (
-                <li key={idx}>{w}</li>
-              ))}
-            </ul>
-          </div>
-          <button
-            type="button"
-            onClick={() => setSubTab('cloud')}
-            className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-medium whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            Mở Cấu hình Tài khoản &amp; Cloud
-          </button>
-        </div>
-      )}
-
-      {bannerError && (
-        <div className="rounded-xl border border-rose-300 dark:border-rose-700/60 bg-rose-50 dark:bg-rose-950/35 px-4 py-3 text-xs text-rose-800 dark:text-rose-200 flex items-center justify-between gap-3">
-          <span>{bannerError}</span>
-          <button type="button" onClick={() => setBannerError('')} className="underline cursor-pointer shrink-0">
-            Đóng
-          </button>
-        </div>
-      )}
-
-      {bannerNotice && (
-        <div className="rounded-xl border border-emerald-300 dark:border-emerald-700/60 bg-emerald-50 dark:bg-emerald-950/35 px-4 py-3 text-xs text-emerald-800 dark:text-emerald-200 flex items-center justify-between gap-3">
-          <span>{bannerNotice}</span>
-          <button type="button" onClick={() => setBannerNotice('')} className="underline cursor-pointer shrink-0">
-            Đóng
-          </button>
-        </div>
-      )}
-
-      {/* =========================================================
-          1. OVERVIEW & CENTRAL COMMAND DISPATCHER
-         ========================================================= */}
-      {subTab === 'overview' && (
-        <div className="space-y-5">
-          {/* Quick Workforce Mode & Cloud Handoff Bar */}
-          {state?.activeRun && (
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-400/20 bg-white dark:bg-[#0c1021]/95 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="font-bold text-slate-900 dark:text-white">
-                  Lực lượng phiên:{' '}
-                  {state.activeRun.aiWorkforceMode === 'gemini_only'
-                    ? 'Chỉ Gemini làm việc'
-                    : state.activeRun.aiWorkforceMode === 'muse_only'
-                    ? 'Chỉ Muse làm việc'
-                    : 'Gemini + Muse cùng làm việc'}
-                </span>
-                <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
-                <span className="text-slate-600 dark:text-slate-300 tabular-nums">
-                  {(state.activeRun.selectedGeminiAccountIds || []).length} Gemini API tham gia
-                </span>
-                <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
-                <span
-                  className={
-                    state.activeRun.cloudHandoff?.safeToShutdownLocalPc
-                      ? 'font-semibold text-emerald-600 dark:text-emerald-400'
-                      : 'text-slate-500 dark:text-slate-400'
-                  }
-                >
-                  {state.activeRun.cloudHandoff?.safeToShutdownLocalPc
-                    ? 'Đã bàn giao Cloud · An toàn tắt máy'
-                    : 'Thiết bị cá nhân đang kết nối'}
-                </span>
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
               </div>
-
+            ) : (
               <button
                 type="button"
-                onClick={() => setSubTab('progress')}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-semibold transition cursor-pointer whitespace-nowrap shrink-0"
+                disabled={isGoogleSigningIn}
+                onClick={() => void handleGoogleSignIn()}
+                className="inline-flex items-center gap-2 h-9 px-3 rounded-xl bg-white text-[#1f1f1f] border border-[#747775]/40 hover:bg-slate-50 shadow-sm text-xs font-semibold transition cursor-pointer disabled:opacity-60"
               >
-                <CloudUpload className="w-3.5 h-3.5" />
-                <span>Chọn lực lượng &amp; Chuyển giao Đám mây</span>
+                {isGoogleSigningIn ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                ) : (
+                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 48 48" aria-hidden="true">
+                    <path
+                      fill="#EA4335"
+                      d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+                    />
+                    <path
+                      fill="#4285F4"
+                      d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+                    />
+                  </svg>
+                )}
+                <span>Sign in with Google</span>
               </button>
-            </div>
-          )}
+            )}
 
-          {/* Escalated Incidents Banner (ONLY interrupts user when Muse 01 escalates) */}
-          {escalatedIncidents.length > 0 && (
-            <div className="rounded-2xl border border-rose-400/70 bg-rose-50/95 dark:bg-rose-950/40 p-4 space-y-2.5 text-xs">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 font-bold text-rose-800 dark:text-rose-200">
-                  <AlertOctagon className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
-                  <span>
-                    Muse AI 01 báo cáo khẩn: {escalatedIncidents.length} sự cố cần quyết định của bạn
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setChatInitialChannel('incident');
-                      setSubTab('chat');
-                    }}
-                    className="px-2.5 py-1 rounded-lg border border-rose-300 dark:border-rose-700 bg-white/80 dark:bg-[#0c1021] text-rose-700 dark:text-rose-300 font-semibold cursor-pointer"
-                  >
-                    Mở # INCIDENT COMMAND
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedIncidentId(escalatedIncidents[0].id);
-                      setSubTab('incidents');
-                    }}
-                    className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold cursor-pointer"
-                  >
-                    Xử lý ngay →
-                  </button>
-                </div>
-              </div>
+            <button
+              type="button"
+              disabled={busyAction === 'check_readiness'}
+              onClick={() => void handleCheckAllReadiness()}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 hover:bg-slate-200/70 dark:hover:bg-white/10 transition cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${busyAction === 'check_readiness' ? 'animate-spin' : ''}`} />
+              <span>Kiểm tra toàn bộ AI</span>
+            </button>
+
+            {onOpenSettings && (
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 hover:bg-slate-200/70 dark:hover:bg-white/10 transition cursor-pointer"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                <span>Cài đặt AI</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 3 Focused Navigation Tabs */}
+        <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-200/80 dark:border-slate-400/15">
+          {[
+            { id: 'hub' as const, label: 'Trung tâm điều phối & Bảng nhiệm vụ', icon: Activity },
+            {
+              id: 'meeting' as const,
+              label: `Phòng họp trực tiếp (${visibleMessages.length})`,
+              icon: MessageSquare,
+            },
+            {
+              id: 'workspace' as const,
+              label: 'Sổ Google Sheets & Kho Drive',
+              icon: FileSpreadsheet,
+            },
+          ].map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id)}
+                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  active
+                    ? 'bg-cyan-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {errorMsg && (
+          <div className="flex items-start justify-between gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-200">
+            <div className="flex items-start gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <div className="space-y-1">
-                {escalatedIncidents.slice(0, 3).map((inc) => (
-                  <div
-                    key={inc.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white/75 dark:bg-[#0c1021]/80 px-3 py-2 border border-rose-200 dark:border-rose-800/50"
-                  >
-                    <div className="min-w-0">
-                      <span className="font-mono font-bold text-rose-700 dark:text-rose-300 mr-2">{inc.code}</span>
-                      <span className="font-semibold text-slate-900 dark:text-white mr-2">{inc.categoryLabel}:</span>
-                      <span className="text-slate-700 dark:text-slate-200">
-                        {inc.escalationReason || inc.errorDescription}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedIncidentId(inc.id);
-                        setSubTab('incidents');
-                      }}
-                      className="text-[11px] font-semibold text-rose-700 dark:text-rose-300 underline cursor-pointer shrink-0"
+                <div>{errorMsg}</div>
+                {authErrorInfo?.code === 'unauthorized-domain' && (
+                  <div className="text-[11px] opacity-90">
+                    Thêm tên miền <code className="px-1 py-0.5 rounded bg-black/15">{authErrorInfo.currentHostname}</code> vào{' '}
+                    <a
+                      href={authErrorInfo.firebaseAuthSettingsUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline font-semibold"
                     >
-                      Mở hồ sơ
-                    </button>
+                      Firebase Authorized Domains
+                    </a>
+                    .
                   </div>
-                ))}
+                )}
               </div>
             </div>
-          )}
+            <button type="button" onClick={() => setErrorMsg('')} className="p-0.5 cursor-pointer shrink-0">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
-          {/* Subtle Autonomous Recovery Info Strip (non-intrusive when Muse 01 handles silently) */}
-          {escalatedIncidents.length === 0 && activeIncidents.length > 0 && (
-            <div className="rounded-xl border border-cyan-500/35 bg-cyan-50/70 dark:bg-cyan-950/25 px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-cyan-900 dark:text-cyan-200">
-                <Siren className="w-4 h-4 text-cyan-600 dark:text-cyan-400 shrink-0" />
-                <span>
-                  <strong>Muse AI 01 (Đạo diễn tổng)</strong> đang trực tiếp trao đổi và xử lý tự động{' '}
-                  <strong>{activeIncidents.length} sự cố</strong> trong phạm vi quyền hạn (không gián đoạn các cảnh đã đạt).
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedIncidentId(activeIncidents[0].id);
-                  setSubTab('incidents');
-                }}
-                className="text-xs font-semibold text-cyan-700 dark:text-cyan-300 underline cursor-pointer"
-              >
-                Theo dõi trong Trung tâm sự cố →
-              </button>
-            </div>
-          )}
+        {notice && (
+          <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-700 dark:text-emerald-300">
+            <span className="inline-flex items-center gap-1.5 min-w-0">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span className="truncate">{notice}</span>
+            </span>
+            <button type="button" onClick={() => setNotice('')} className="p-0.5 cursor-pointer shrink-0">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
 
-          {/* 5 Muse AI Live Team Roster */}
-          <section className="glass-card rounded-2xl p-5 space-y-4">
+      {loading && !state ? (
+        <div className="glass-card rounded-2xl p-10 flex items-center justify-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+          <Loader2 className="w-5 h-5 animate-spin text-cyan-500" />
+          <span>Đang tải Trung Tâm Điều Phối AI...</span>
+        </div>
+      ) : null}
+
+      {/* ======================================================== */}
+      {/* TAB 1: TRUNG TÂM ĐIỀU PHỐI & BẢNG NHIỆM VỤ TUẦN TỰ       */}
+      {/* ======================================================== */}
+      {state && tab === 'hub' && (
+        <div className="space-y-4">
+          {/* 1. AI READINESS MATRIX */}
+          <div className="glass-card rounded-2xl p-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-                  Đội ngũ 5 Muse AI
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                  Tình trạng sẵn sàng của các AI
                 </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Muse 01 Tổng đạo diễn &amp; Phân tích kịch bản · Muse 02–04 Thiết kế ảnh &amp; Sản xuất video đa nhiệm · Muse 05 Kiểm định độc lập
-                </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setSubTab('agents')}
-                className="text-xs font-medium text-violet-600 dark:text-violet-300 hover:underline cursor-pointer"
-              >
-                Tùy chỉnh vai trò &amp; tài khoản →
-              </button>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                Kiểm tra lần cuối: {fmtTime(state.readinessCheckedAt)}
+              </span>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-              {agents.map((ag) => (
-                <div
-                  key={ag.id}
-                  className="rounded-xl border border-slate-200 dark:border-slate-700/45 bg-white/80 dark:bg-[#0c1021]/85 p-3.5 flex flex-col justify-between gap-3"
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">{ag.code}</span>
-                      <span className={`font-semibold ${AGENT_STATUS_TEXT_CLASS[ag.status]}`}>
-                        {AGENT_STATUS_LABELS[ag.status]}
-                        {ag.activeTaskCount && ag.activeTaskCount > 0
-                          ? ` (${ag.activeTaskCount}/${ag.maxConcurrentTasks || 2})`
-                          : ''}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2.5">
-                      <AgentAvatar agent={ag} size="md" showStatusDot />
-                      <div className="min-w-0">
-                        <div className="font-display font-bold text-sm text-slate-900 dark:text-white truncate">
-                          {ag.name}
-                        </div>
-                        <div
-                          className="text-xs font-medium truncate"
-                          style={{ color: ag.accentColor || '#7C3AED' }}
-                        >
-                          {ag.roleTitle}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 min-h-[2rem]">
-                      {ag.currentTaskSummary || ag.lastError || ag.description}
-                    </div>
-                  </div>
-
-                  <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/40 space-y-2">
-                    <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-                      <span>Acc: {ag.boundAccountId === 'auto' ? 'Tự động' : ag.boundAccountId}</span>
-                      <span>
-                        {ag.stats.completed} xong · {ag.stats.failed} lỗi
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runAction(`toggle_pause_${ag.id}`, () =>
-                            apiJson<CommandCenterState>(
-                              `/api/command-center/agents/${ag.id}/${ag.paused ? 'resume' : 'pause'}`,
-                              { method: 'POST' }
-                            )
-                          )
-                        }
-                        className="flex-1 py-1.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700/60 hover:bg-slate-100 dark:hover:bg-slate-800 text-[11px] font-medium text-slate-700 dark:text-slate-200 inline-flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
-                      >
-                        {ag.paused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
-                        <span>{ag.paused ? 'Tiếp tục' : 'Tạm dừng'}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setChatInitialChannel(ag.id);
-                          setSubTab('chat');
-                        }}
-                        className="py-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 hover:bg-slate-100 dark:hover:bg-slate-800 text-[11px] font-medium text-slate-700 dark:text-slate-200 cursor-pointer whitespace-nowrap"
-                      >
-                        Chat
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          {/* Split Grid: Central Command Dispatcher + Active Run Progress */}
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
-            <form
-              onSubmit={handleStartProduction}
-              className="xl:col-span-7 glass-card rounded-2xl p-5 space-y-4"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-                    Trung tâm giao nhiệm vụ tổng
-                  </h2>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Gửi một kịch bản hoặc lệnh sản xuất duy nhất — Muse AI 01 tự chia việc, khóa Project Memory và chạy song song.
-                  </p>
-                </div>
-
-                {(studioProfiles.length > 0 || state?.latestStudioDirective) && (
-                  <select
-                    defaultValue=""
-                    onChange={(e) => {
-                      if (e.target.value) handleLoadStudioProject(e.target.value);
-                    }}
-                    className="h-8 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-700 dark:text-slate-200"
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2.5">
+              {state.readiness.map((item) => {
+                const rm = readinessMeta(item.status);
+                const isSelectedSource =
+                  activeSession && item.independentSource && activeSession.videoSource === item.independentSource;
+                return (
+                  <div
+                    key={item.id}
+                    className={`p-3 rounded-xl border transition space-y-1.5 ${
+                      isSelectedSource
+                        ? 'border-cyan-500/60 bg-cyan-500/5 dark:bg-cyan-500/10'
+                        : 'border-slate-200 dark:border-slate-400/20 bg-slate-50/80 dark:bg-[#0c1021]/80'
+                    }`}
                   >
-                    <option value="">Nạp kịch bản từ Studio...</option>
-                    {state?.latestStudioDirective && (
-                      <option value="__latest_studio_directive__">
-                        [Mới nhất từ Studio] {state.latestStudioDirective.title} ({state.latestStudioDirective.sceneCount} cảnh)
-                      </option>
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                        {item.name}
+                      </span>
+                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold rounded border shrink-0 ${rm.badge}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${rm.dot}`} />
+                        {rm.label}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{item.role}</div>
+                    {item.accountSummary && (
+                      <div className="text-[10px] font-mono text-slate-600 dark:text-slate-300 truncate">
+                        {item.accountSummary}
+                      </div>
                     )}
-                    {studioProfiles.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
+                    <p className="text-[10px] text-slate-600 dark:text-slate-400 line-clamp-2 leading-relaxed">
+                      {item.detail}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 2. SESSION BAR + STRICT INDEPENDENT VIDEO SOURCE LOCK */}
+          <div className="glass-card rounded-2xl p-4 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                <Layers className="w-4 h-4 text-violet-600 dark:text-violet-400 shrink-0" />
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                  Phiên làm việc ({state.sessions.length})
+                </h2>
+                {state.sessions.length > 0 && (
+                  <select
+                    value={activeSession?.sessionId || ''}
+                    onChange={(e) => void handleSelectSession(e.target.value)}
+                    aria-label="Chọn phiên làm việc"
+                    className="h-8 px-2.5 text-xs font-semibold bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/25 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500 max-w-[340px]"
+                  >
+                    {state.sessions.map((s) => (
+                      <option key={s.sessionId} value={s.sessionId}>
+                        {s.sessionId} · {s.title} ({s.scenes.length} cảnh)
                       </option>
                     ))}
                   </select>
                 )}
               </div>
 
-              {state?.latestStudioDirective && (
-                <div className="rounded-xl border border-cyan-500/35 bg-cyan-50/70 dark:bg-cyan-950/25 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div className="min-w-0">
-                    <div className="font-semibold text-cyan-900 dark:text-cyan-200 truncate">
-                      Đã nhận chỉ thị từ Studio: {state.latestStudioDirective.title}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowQuickCreate((v) => !v)}
+                  className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 hover:bg-slate-200/70 dark:hover:bg-white/10 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Tạo phiên nhanh</span>
+                </button>
+                {activeSession &&
+                  (confirmDeleteSessionId === activeSession.sessionId ? (
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteSession(activeSession.sessionId)}
+                        className="h-8 px-2.5 rounded-lg text-xs font-bold bg-rose-600 text-white cursor-pointer"
+                      >
+                        Xác nhận xóa
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteSessionId('')}
+                        className="h-8 px-2 rounded-lg text-xs bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-200 cursor-pointer"
+                      >
+                        Hủy
+                      </button>
                     </div>
-                    <div className="text-[11px] text-cyan-800/80 dark:text-cyan-300/80 tabular-nums">
-                      {state.latestStudioDirective.characterCount} nhân vật · {state.latestStudioDirective.sceneCount} phân cảnh · {state.latestStudioDirective.aspectRatio} · Đồng bộ lúc{' '}
-                      {new Date(state.latestStudioDirective.syncedAt).toLocaleTimeString('vi-VN')}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      applySyncedDirectiveToForm(state.latestStudioDirective, state.projectMemory);
-                      setHasManualFormEdit(false);
-                      setBannerNotice('Đã đồng bộ lại nội dung mới nhất từ Studio vào khung lệnh.');
-                    }}
-                    className="px-2.5 py-1 rounded-lg border border-cyan-500/40 bg-white/80 dark:bg-[#0c1021] text-[11px] font-medium text-cyan-800 dark:text-cyan-200 hover:bg-cyan-500/15 cursor-pointer whitespace-nowrap"
-                  >
-                    Nạp lại chỉ thị Studio
-                  </button>
-                </div>
-              )}
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={isRunning}
+                      onClick={() => setConfirmDeleteSessionId(activeSession.sessionId)}
+                      title="Xóa phiên khỏi bộ nhớ cục bộ"
+                      className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 border border-rose-500/20 cursor-pointer disabled:opacity-40"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Xóa phiên</span>
+                    </button>
+                  ))}
+              </div>
+            </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                    Tên dự án / Tập phim
-                  </label>
+            {showQuickCreate && (
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0c1124] border border-cyan-500/30 space-y-2.5">
+                <div className="text-xs font-bold text-slate-900 dark:text-white">
+                  Lập phiên điều phối mới (hoặc đẩy kịch bản đầy đủ từ phòng Studio)
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                   <input
                     type="text"
-                    value={projectTitle}
-                    onChange={(e) => {
-                      setProjectTitle(e.target.value);
-                      setHasManualFormEdit(true);
-                    }}
-                    placeholder="Ví dụ: Tập 01 - Cuộc gặp định mệnh"
-                    className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
+                    value={quickTitle}
+                    onChange={(e) => setQuickTitle(e.target.value)}
+                    placeholder="Tên phiên sản xuất..."
+                    className="sm:col-span-4 h-9 px-2.5 text-xs bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/25 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
                   />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                    Chế độ kịch bản
-                  </label>
+                  <input
+                    type="text"
+                    value={quickIdea}
+                    onChange={(e) => setQuickIdea(e.target.value)}
+                    placeholder="Nội dung kịch bản / bối cảnh chính..."
+                    className="sm:col-span-5 h-9 px-2.5 text-xs bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/25 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
+                  />
                   <select
-                    value={productionFormat}
-                    onChange={(e) => {
-                      setProductionFormat(e.target.value as StudioProductionFormat);
-                      setHasManualFormEdit(true);
-                    }}
-                    className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
+                    value={quickSource}
+                    onChange={(e) => setQuickSource(e.target.value as IndependentVideoSource)}
+                    className="sm:col-span-3 h-9 px-2 text-xs bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/25 rounded-lg text-slate-900 dark:text-white"
                   >
-                    <option value="dialogue_film">Phim có lời thoại</option>
-                    <option value="narration_story">Phim thuyết minh kể chuyện</option>
+                    {INDEPENDENT_SOURCES.map((src) => (
+                      <option key={src.id} value={src.id}>
+                        Nguồn: {src.name}
+                      </option>
+                    ))}
                   </select>
                 </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                    Tỷ lệ khung hình
-                  </label>
-                  <select
-                    value={aspectRatio}
-                    onChange={(e) => {
-                      setAspectRatio(e.target.value as DerivativeAspectRatio);
-                      setHasManualFormEdit(true);
-                    }}
-                    className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-                  >
-                    <option value="16:9">16:9 Ngang điện ảnh</option>
-                    <option value="9:16">9:16 Dọc Shorts/TikTok</option>
-                    <option value="1:1">1:1 Vuông</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                  Kịch bản / Lệnh điều phối sản xuất
-                </label>
-                <textarea
-                  rows={5}
-                  value={scriptText}
-                  onChange={(e) => {
-                    setScriptText(e.target.value);
-                    setHasManualFormEdit(true);
-                  }}
-                  placeholder="Nhập kịch bản chi tiết hoặc chỉ thị tổng (ví dụ: Hãy sản xuất tập phim ngắn theo kịch bản này, giữ đồng nhất gương mặt nhân vật, giọng nói theo độ tuổi và bối cảnh; kiểm định QA và tự sửa cảnh lỗi trước khi bàn giao)..."
-                  className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
-                />
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50/90 dark:bg-[#0c1021]/80 border border-slate-200 dark:border-slate-700/60">
-                <div className="space-y-0.5 min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100">
-                    <Lock
-                      className={`w-3.5 h-3.5 shrink-0 ${
-                        allowFreeCostumeChange
-                          ? 'text-amber-600 dark:text-amber-300'
-                          : 'text-emerald-600 dark:text-emerald-300'
-                      }`}
-                    />
-                    <span>AI được phép tự do thay đổi trang phục nhân vật</span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                    {allowFreeCostumeChange
-                      ? 'Đang BẬT: AI được đổi trang phục theo bối cảnh/diễn biến cảnh, nhưng VẪN KHÓA 100% mặt, tóc, vóc dáng.'
-                      : 'Đang TẮT (Mặc định): Khóa cứng ngoại hình & trang phục theo ảnh tham chiếu — Muse AI 05 sẽ trả về nếu phát hiện đổi đồ.'}
-                  </p>
-                </div>
-                <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700/60 overflow-hidden bg-white dark:bg-[#131a35] shrink-0">
+                <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => {
-                      setAllowFreeCostumeChange(false);
-                      setHasManualFormEdit(true);
-                    }}
-                    className={`px-2.5 py-1 text-[11px] font-bold cursor-pointer ${
-                      !allowFreeCostumeChange
-                        ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
-                        : 'text-slate-500 dark:text-slate-400'
-                    }`}
+                    disabled={busyAction === 'quick_create'}
+                    onClick={() => void handleQuickCreateSession()}
+                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-bold bg-cyan-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-50"
                   >
-                    TẮT (Khóa đồ)
+                    {busyAction === 'quick_create' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                    <span>Tạo phiên</span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setAllowFreeCostumeChange(true);
-                      setHasManualFormEdit(true);
-                    }}
-                    className={`px-2.5 py-1 text-[11px] font-bold cursor-pointer ${
-                      allowFreeCostumeChange
-                        ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
-                        : 'text-slate-500 dark:text-slate-400'
-                    }`}
+                    onClick={() => setShowQuickCreate(false)}
+                    className="h-8 px-3 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/10 cursor-pointer"
                   >
-                    BẬT (Tự do)
+                    Đóng
                   </button>
                 </div>
               </div>
+            )}
 
-              <div className="rounded-xl border border-slate-200 dark:border-slate-700/60 bg-slate-50/75 dark:bg-[#0c1021]/65 p-3 space-y-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-900 dark:text-white">
-                    <Sparkles className="w-3.5 h-3.5 text-sky-500" />
-                    <span>Nguồn tạo video sản xuất</span>
-                  </div>
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Có thể đổi ngay giữa chừng mà không cần chạy lại từ đầu
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                  {(
-                    [
-                      {
-                        id: 'gemini' as VideoGenerationEngine,
-                        title: 'AI Gemini (Khuyên dùng)',
-                        desc: 'Dựng video trực tiếp qua Gemini Omni Flash, không phụ thuộc cookie Muse.ai.',
-                      },
-                      {
-                        id: 'qwen' as VideoGenerationEngine,
-                        title: 'AI Qwen (Alibaba)',
-                        desc: 'Dựng video trực tiếp qua Alibaba Cloud Model Studio (Wan I2V/T2V) từ ảnh keyframe.',
-                      },
-                      {
-                        id: 'google_flow' as VideoGenerationEngine,
-                        title: 'Google Flow',
-                        desc: 'Xuất kịch bản & khung hình chuẩn để tạo video trên Google Flow rồi nạp MP4 về ghép phim.',
-                      },
-                      {
-                        id: 'muse' as VideoGenerationEngine,
-                        title: 'AI Muse (Tự dự phòng)',
-                        desc: 'Ưu tiên Muse.ai, tự động chuyển sang AI Gemini ngay khi Muse lỗi để không bị treo.',
-                      },
-                    ] as const
-                  ).map((opt) => {
-                    const active = videoGenerationEngine === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => setVideoGenerationEngine(opt.id)}
-                        className={`text-left p-2.5 rounded-xl border transition cursor-pointer ${
-                          active
-                            ? 'border-sky-500 bg-sky-500/12 text-slate-900 dark:text-white shadow-xs'
-                            : 'border-slate-200 dark:border-slate-700/60 bg-white/70 dark:bg-[#131a35]/60 text-slate-700 dark:text-slate-300 hover:border-slate-400'
-                        }`}
-                      >
-                        <div className="text-xs font-semibold">{opt.title}</div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug mt-0.5">
-                          {opt.desc}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
+            {!activeSession ? (
+              <div className="py-10 text-center space-y-2 text-xs text-slate-500 dark:text-slate-400">
+                <p className="font-semibold text-slate-700 dark:text-slate-200">
+                  Chưa có phiên sản xuất nào được tiếp nhận.
+                </p>
+                <p>
+                  Hãy vào <strong>Studio AI</strong>, tạo kịch bản và bấm <strong>Đẩy sang Trung tâm Điều phối AI</strong> — toàn bộ hồ sơ tham chiếu và bảng nhiệm vụ sẽ tự động lập phiên tại đây.
+                </p>
               </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Cloud Worker ID: <span className="font-mono">{state?.cloudConfig.workerBootId}</span>
-                </div>
-                <button
-                  type="submit"
-                  disabled={busyAction === 'start_production'}
-                  className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
-                >
-                  {busyAction === 'start_production' ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Play className="w-3.5 h-3.5" />
-                  )}
-                  <span>Bắt đầu sản xuất</span>
-                </button>
-              </div>
-            </form>
-
-            {/* Active Production Run & Final Deliverable */}
-            <section className="xl:col-span-5 glass-card rounded-2xl p-5 space-y-4">
-              <div className="flex items-center justify-between gap-2">
-                <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-                  Trạng thái phiên sản xuất
-                </h2>
-                {activeRun && (
-                  <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
-                    Memory v{memory?.version ?? 1}
-                  </span>
-                )}
-              </div>
-
-              {!activeRun ? (
-                <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center space-y-2">
-                  <Film className="w-6 h-6 text-slate-400 mx-auto" />
-                  <div className="text-xs font-medium text-slate-700 dark:text-slate-200">
-                    Chưa có phiên sản xuất nào đang chạy
-                  </div>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Gửi kịch bản ở khung bên trái để Muse AI 01 lập kế hoạch và điều phối 5 AI thực thi.
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="space-y-1">
-                    <div className="text-sm font-bold text-slate-900 dark:text-white">{activeRun.title}</div>
-                    <div className="text-xs text-slate-600 dark:text-slate-300 flex flex-wrap items-center gap-2">
-                      <span>{RUN_STATUS_LABELS[activeRun.status] || activeRun.status}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-mono tabular-nums">
-                        {activeRun.completedScenes}/{activeRun.sceneCount} cảnh có video
-                      </span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-mono tabular-nums">
-                        {activeRun.passedQaScenes}/{activeRun.sceneCount} đạt QA
-                      </span>
-                    </div>
+            ) : (
+              <>
+                {/* STRICT SINGLE-SOURCE SELECTOR */}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-bold text-slate-800 dark:text-slate-100 inline-flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
+                      <span>Nguồn sáng tạo video độc lập (chọn nguồn nào chỉ nguồn đó làm việc)</span>
+                    </span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Phiên <strong className="font-mono text-slate-800 dark:text-slate-200">{activeSession.sessionId}</strong> · Tỷ lệ {activeSession.aspectRatio} · {activeSession.references.filter((r) => r.kind === 'character').length} nhân vật tham chiếu
+                    </span>
                   </div>
 
-                  {activeRun.error && (
-                    <div className="rounded-xl border border-rose-300 dark:border-rose-700/60 bg-rose-50 dark:bg-rose-950/35 p-3 text-xs text-rose-800 dark:text-rose-200">
-                      {activeRun.error}
-                    </div>
-                  )}
-
-                  <div className="rounded-xl border border-slate-200 dark:border-slate-700/60 bg-slate-50/75 dark:bg-[#0c1021]/65 p-2.5 space-y-2">
-                    <div className="flex items-center justify-between gap-2 text-[11px]">
-                      <span className="font-semibold text-slate-700 dark:text-slate-200">
-                        Nguồn tạo video phiên hiện tại
-                      </span>
-                      <span className="font-mono text-sky-600 dark:text-sky-400">
-                        {activeRun.videoGenerationEngine === 'qwen'
-                          ? 'AI Qwen (Alibaba · Wan)'
-                          : activeRun.videoGenerationEngine === 'google_flow'
-                          ? 'Google Flow'
-                          : activeRun.videoGenerationEngine === 'muse'
-                          ? 'AI Muse (Auto-failover Gemini)'
-                          : 'AI Gemini'}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(
-                        [
-                          { id: 'gemini' as VideoGenerationEngine, label: 'AI Gemini' },
-                          { id: 'qwen' as VideoGenerationEngine, label: 'AI Qwen' },
-                          { id: 'google_flow' as VideoGenerationEngine, label: 'Google Flow' },
-                          { id: 'muse' as VideoGenerationEngine, label: 'AI Muse' },
-                        ] as const
-                      ).map((eng) => {
-                        const isCur = (activeRun.videoGenerationEngine || 'gemini') === eng.id;
-                        return (
-                          <button
-                            key={eng.id}
-                            type="button"
-                            disabled={busyAction === 'switch_engine'}
-                            onClick={() =>
-                              runAction(
-                                'switch_engine',
-                                () =>
-                                  apiJson<CommandCenterState>(
-                                    `/api/command-center/productions/${activeRun.id}/video-engine`,
-                                    {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ engine: eng.id }),
-                                    }
-                                  ),
-                                `Đã chuyển nguồn tạo video phiên hiện tại sang ${eng.label}.`
-                              )
-                            }
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition cursor-pointer ${
-                              isCur
-                                ? 'bg-sky-600 text-white border-sky-600'
-                                : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-sky-500'
-                            }`}
-                          >
-                            {eng.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    {activeRun.status !== 'paused' &&
-                      activeRun.status !== 'completed' &&
-                      activeRun.status !== 'cancelled' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                    {INDEPENDENT_SOURCES.map((src) => {
+                      const selected = activeSession.videoSource === src.id;
+                      const engineStatus = state.readiness.find((r) => r.independentSource === src.id);
+                      const rm = engineStatus ? readinessMeta(engineStatus.status) : null;
+                      return (
                         <button
+                          key={src.id}
                           type="button"
-                          onClick={() =>
-                            runAction('pause_run', () =>
-                              apiJson<CommandCenterState>(`/api/command-center/productions/${activeRun.id}/pause`, {
-                                method: 'POST',
-                              })
-                            )
-                          }
-                          className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700/60 text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 cursor-pointer"
+                          disabled={isRunning || busyAction.startsWith('source_')}
+                          onClick={() => void handleChangeVideoSource(src.id)}
+                          className={`text-left p-3 rounded-xl border transition cursor-pointer disabled:opacity-60 ${
+                            selected
+                              ? 'border-cyan-500 bg-cyan-500/10 ring-1 ring-cyan-500/40'
+                              : 'border-slate-200 dark:border-slate-400/20 bg-white/70 dark:bg-[#0d1327]/70 hover:border-cyan-400/50'
+                          }`}
                         >
-                          <Pause className="w-3.5 h-3.5" />
-                          <span>Tạm dừng phiên</span>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-xs font-bold text-slate-900 dark:text-white">
+                              {src.name}
+                            </span>
+                            {selected ? (
+                              <span className="px-1.5 py-0.5 text-[10px] font-bold bg-cyan-600 text-white rounded">
+                                Đang khóa
+                              </span>
+                            ) : rm ? (
+                              <span className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border ${rm.badge}`}>
+                                {rm.label}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-1">
+                            {src.tagline}
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            {src.rule}
+                          </div>
                         </button>
-                      )}
+                      );
+                    })}
+                  </div>
+                </div>
 
-                    {(activeRun.status === 'paused' || activeRun.status === 'needs_attention') && (
+                {/* RUN CONTROL & GOOGLE SHEETS SYNC BAR */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200/80 dark:border-slate-400/15">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {!isRunning ? (
                       <button
                         type="button"
-                        onClick={() =>
-                          runAction('resume_run', () =>
-                            apiJson<CommandCenterState>(`/api/command-center/productions/${activeRun.id}/resume`, {
-                              method: 'POST',
-                            })
-                          )
-                        }
-                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium inline-flex items-center gap-1.5 cursor-pointer"
+                        disabled={busyAction === 'start_run'}
+                        onClick={() => void handleStartSequentialRun(false)}
+                        className="inline-flex items-center gap-1.5 h-9 px-4 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-cyan-600 to-blue-600 hover:brightness-110 transition cursor-pointer disabled:opacity-50"
                       >
-                        <Play className="w-3.5 h-3.5" />
-                        <span>Tiếp tục chạy</span>
+                        {busyAction === 'start_run' ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Play className="w-4 h-4" />
+                        )}
+                        <span>Chạy tuần tự theo Sổ Điều Phối</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busyAction === 'pause_run'}
+                        onClick={() => void handlePauseRun()}
+                        className="inline-flex items-center gap-1.5 h-9 px-4 rounded-xl text-xs font-bold text-white bg-amber-600 hover:brightness-110 transition cursor-pointer disabled:opacity-50"
+                      >
+                        <Pause className="w-4 h-4" />
+                        <span>Tạm dừng an toàn</span>
+                      </button>
+                    )}
+
+                    {failedTasksCount > 0 && !isRunning && (
+                      <button
+                        type="button"
+                        disabled={busyAction === 'retry_run'}
+                        onClick={() => void handleStartSequentialRun(true)}
+                        className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs font-bold text-rose-700 dark:text-rose-200 bg-rose-500/15 border border-rose-500/35 hover:bg-rose-500/25 transition cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Chạy lại {failedTasksCount} tác vụ lỗi</span>
                       </button>
                     )}
 
                     <button
                       type="button"
-                      disabled={busyAction === 'unstick_run'}
-                      onClick={() =>
-                        runAction(
-                          'unstick_run',
-                          async () => {
-                            const res = await apiJson<{ state: CommandCenterState; summary: string }>(
-                              `/api/command-center/productions/${activeRun.id}/unstick`,
-                              { method: 'POST' }
-                            );
-                            if (res.summary) setBannerNotice(res.summary);
-                            return res.state;
-                          }
-                        )
-                      }
-                      className="px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-800 dark:text-amber-300 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                      disabled={busyAction === 'sync_session'}
+                      onClick={requestSyncSessionConfirm}
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 transition cursor-pointer disabled:opacity-50"
                     >
-                      {busyAction === 'unstick_run' ? (
+                      {busyAction === 'sync_session' ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
                       ) : (
-                        <Wrench className="w-3.5 h-3.5" />
+                        <CloudUpload className="w-3.5 h-3.5" />
                       )}
-                      <span>Gỡ treo đội AI</span>
+                      <span>Đồng bộ Google Sheets &amp; Drive</span>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFlowFocusSceneId(null);
-                        setFlowModalOpen(true);
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Gói Google Flow</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setChatInitialChannel('gemini');
-                        setSubTab('chat');
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-sky-600/15 hover:bg-sky-600/25 border border-sky-500/35 text-sky-700 dark:text-sky-300 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>Chat AI Gemini</span>
-                    </button>
-
-                    {activeRun.status !== 'completed' && activeRun.status !== 'cancelled' && (
-                      <button
-                        type="button"
-                        onClick={() => setConfirmCancelRun(activeRun)}
-                        className="px-3 py-1.5 rounded-lg border border-rose-300 dark:border-rose-700/60 text-xs font-medium text-rose-700 dark:text-rose-300 inline-flex items-center gap-1.5 cursor-pointer"
+                    {activeSession.driveFolderUrl && (
+                      <a
+                        href={activeSession.driveFolderUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 h-9 px-3 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 hover:bg-slate-200/70 dark:hover:bg-white/10 transition"
                       >
-                        <Square className="w-3 h-3" />
-                        <span>Hủy phiên</span>
-                      </button>
-                    )}
-
-                    {onOpenProductionMonitor && (
-                      <button
-                        type="button"
-                        onClick={onOpenProductionMonitor}
-                        className="px-3 py-1.5 rounded-lg bg-violet-600/15 hover:bg-violet-600/25 text-violet-700 dark:text-violet-300 text-xs font-medium cursor-pointer"
-                      >
-                        Mở Phiên Sản Xuất ({activeRun.overallProgressPct ?? 0}%) →
-                      </button>
+                        <FolderOpen className="w-3.5 h-3.5 text-amber-500" />
+                        <span>Thư mục Drive phiên</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
                     )}
                   </div>
 
-                  {activeRun.finalVideoUrl && (
-                    <div className="pt-3 border-t border-slate-200 dark:border-slate-700/45 space-y-2.5">
-                      <div className="flex items-center justify-between text-xs font-semibold text-emerald-700 dark:text-emerald-300">
-                        <span>Phim hoàn chỉnh đã bàn giao ({activeRun.finalDurationSec}s)</span>
-                        <a
-                          href={activeRun.finalVideoUrl}
-                          download={activeRun.finalVideoArtifactName || 'muse_final_film.mp4'}
-                          className="inline-flex items-center gap-1 underline"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>Tải MP4</span>
-                        </a>
-                      </div>
-                      <video
-                        src={activeRun.finalVideoUrl}
-                        controls
-                        className="w-full rounded-xl border border-slate-200 dark:border-slate-700/60 bg-black max-h-64"
+                  {/* Progress summary */}
+                  <div className="flex items-center gap-2.5 text-xs">
+                    <span className="text-slate-600 dark:text-slate-300 font-semibold">
+                      {completedTasksCount}/{totalTasksCount} tác vụ ({progressPct}%)
+                    </span>
+                    <div className="w-28 h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-cyan-500 to-emerald-500 transition-all"
+                        style={{ width: `${progressPct}%` }}
                       />
                     </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* 3. SEQUENTIAL TASK LEDGER TABLE (Bang_Nhiem_Vu_AI) */}
+          {activeSession && (
+            <div className="glass-card rounded-2xl p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                    Bảng nhiệm vụ tuần tự · Phiên {activeSession.sessionId}
+                  </h2>
+                </div>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Mỗi tác vụ chỉ chạy khi tiền đề đã hoàn thành và đọc đúng dữ liệu tham chiếu của phiên này.
+                </span>
+              </div>
+
+              <div className="space-y-2">
+                {activeSession.tasks.map((task) => {
+                  const sm = taskStatusMeta(task.status);
+                  const runnable = canTaskRun(task);
+                  const isBusyThis = busyAction === `task_${task.taskCode}` || busyAction === `flow_${task.taskCode}`;
+                  const isImageOut =
+                    task.localOutputUrl && /\.(png|jpe?g|webp)$/i.test(task.localOutputUrl);
+                  const isVideoOut =
+                    task.localOutputUrl && /\.(mp4|webm|mov)$/i.test(task.localOutputUrl);
+
+                  return (
+                    <div
+                      key={task.taskCode}
+                      className={`p-3 rounded-xl border transition space-y-2 ${
+                        task.status === 'LOI'
+                          ? 'border-rose-500/45 bg-rose-500/5'
+                          : task.status === 'DANG_LAM'
+                          ? 'border-cyan-500/55 bg-cyan-500/5'
+                          : task.status === 'HOAN_THANH'
+                          ? 'border-emerald-500/30 bg-emerald-500/5'
+                          : 'border-slate-200 dark:border-slate-400/20 bg-slate-50/70 dark:bg-[#0c1124]/80'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-slate-900 dark:bg-white/10 text-white rounded">
+                              {task.taskCode}
+                            </span>
+                            <span className={`px-2 py-0.5 text-[10px] font-bold rounded border ${sm.cls}`}>
+                              {task.status === 'DANG_LAM' && (
+                                <Loader2 className="w-2.5 h-2.5 inline mr-1 animate-spin" />
+                              )}
+                              {sm.label}
+                            </span>
+                            <span className="text-xs font-bold text-slate-900 dark:text-white">
+                              {task.title}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+                            <span>
+                              AI đảm nhận: <strong className="text-slate-700 dark:text-slate-200">{task.assignedAiLabel}</strong>
+                            </span>
+                            <span>
+                              Phụ thuộc:{' '}
+                              <strong className="font-mono text-slate-700 dark:text-slate-200">
+                                {task.dependsOnTaskCodes.length > 0 ? task.dependsOnTaskCodes.join(', ') : 'Không'}
+                              </strong>
+                            </span>
+                            <span>
+                              Tham chiếu: <strong className="font-mono">{task.inputRefIds.length} mục</strong>
+                            </span>
+                            {task.completedAt && <span>Xong lúc {fmtTime(task.completedAt)}</span>}
+                          </div>
+
+                          {task.resultSummary && (
+                            <p className="text-xs text-slate-700 dark:text-slate-200">
+                              {task.resultSummary}
+                            </p>
+                          )}
+
+                          {task.errorReason && (
+                            <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-200">
+                              <strong>Lý do lỗi (đã ghi Sổ Sheets):</strong> {task.errorReason}
+                            </div>
+                          )}
+
+                          {/* Google Flow prompt & clip upload */}
+                          {task.status === 'CHO_NHAP_FLOW' && task.flowPrompt && (
+                            <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-[11px] font-bold text-amber-800 dark:text-amber-200">
+                                  Prompt chuẩn Google Flow cho {task.taskCode}
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleCopyPrompt(task.taskCode, task.flowPrompt || '')}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-white dark:bg-[#131a35] border border-amber-500/40 text-amber-800 dark:text-amber-200 cursor-pointer"
+                                  >
+                                    {copiedPromptCode === task.taskCode ? (
+                                      <>
+                                        <Check className="w-3 h-3 text-emerald-500" />
+                                        <span>Đã sao chép</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3 h-3" />
+                                        <span>Sao chép prompt</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isBusyThis}
+                                    onClick={() => handleTriggerFlowUpload(task.taskCode)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-amber-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-50"
+                                  >
+                                    {isBusyThis ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+                                    <span>Tải clip MP4 Flow lên</span>
+                                  </button>
+                                </div>
+                              </div>
+                              <pre className="text-[11px] whitespace-pre-wrap font-sans text-slate-700 dark:text-slate-200 max-h-36 overflow-y-auto bg-white/70 dark:bg-black/20 p-2 rounded-md">
+                                {task.flowPrompt}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Output preview + Row action buttons */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {isImageOut && task.localOutputUrl && (
+                            <a
+                              href={task.localOutputUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="Xem ảnh kết quả"
+                              className="w-16 h-11 rounded-lg overflow-hidden border border-slate-300 dark:border-slate-500/30 bg-black/20 shrink-0 block"
+                            >
+                              <img
+                                src={task.localOutputUrl}
+                                alt={task.taskCode}
+                                className="w-full h-full object-cover"
+                              />
+                            </a>
+                          )}
+
+                          {isVideoOut && task.localOutputUrl && (
+                            <a
+                              href={task.localOutputUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30"
+                            >
+                              <Film className="w-3.5 h-3.5" />
+                              <span>Xem clip</span>
+                            </a>
+                          )}
+
+                          {task.driveOutputUrl && (
+                            <a
+                              href={task.driveOutputUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              <span>Drive</span>
+                            </a>
+                          )}
+
+                          <button
+                            type="button"
+                            disabled={!runnable || isBusyThis || isRunning}
+                            onClick={() => void handleRunSingleTask(task.taskCode)}
+                            title={
+                              runnable
+                                ? `Thực thi riêng ${task.taskCode}`
+                                : `Cần hoàn thành tiền đề: ${task.dependsOnTaskCodes.join(', ')}`
+                            }
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-slate-900 dark:bg-white/10 text-white hover:bg-cyan-600 transition cursor-pointer disabled:opacity-40"
+                          >
+                            {isBusyThis ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : task.status === 'LOI' || task.status === 'HOAN_THANH' ? (
+                              <RotateCcw className="w-3 h-3" />
+                            ) : (
+                              <Play className="w-3 h-3" />
+                            )}
+                            <span>
+                              {task.status === 'LOI'
+                                ? 'Thử lại'
+                                : task.status === 'HOAN_THANH'
+                                ? 'Chạy lại'
+                                : 'Chạy bước'}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* 4. FINAL ASSEMBLED FILM PLAYER */}
+          {activeSession?.finalVideoLocalUrl && (
+            <div className="glass-card rounded-2xl p-4 space-y-3 border border-emerald-500/35">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Film className="w-4 h-4 text-emerald-500" />
+                  <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                    Phim hoàn chỉnh · {activeSession.title} ({activeSession.sessionId})
+                  </h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  <a
+                    href={activeSession.finalVideoLocalUrl}
+                    download={`${activeSession.sessionId}.mp4`}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 text-white hover:brightness-110"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Tải MP4 về máy</span>
+                  </a>
+                  {activeSession.finalVideoDriveUrl && (
+                    <a
+                      href={activeSession.finalVideoDriveUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Mở trên Google Drive</span>
+                    </a>
                   )}
                 </div>
-              )}
-            </section>
-          </div>
+              </div>
+              <video
+                src={activeSession.finalVideoLocalUrl}
+                controls
+                className="w-full max-h-[420px] rounded-xl bg-black"
+              />
+            </div>
+          )}
         </div>
       )}
 
-      {/* =========================================================
-          2. AGENTS MANAGEMENT (5 MUSE AI IDENTITY & PERMISSIONS)
-         ========================================================= */}
-      {subTab === 'agents' && (
-        <section className="glass-card rounded-2xl p-5 space-y-4">
-          <div>
-            <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-              Hồ sơ danh tính, Logo &amp; Phân quyền 5 Muse AI
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Đổi tên, tải logo riêng hoặc chọn biểu tượng hệ thống, đặt màu nhận diện, gán tài khoản Muse2API và xem hiệu suất từng AI.
-            </p>
+      {/* ======================================================== */}
+      {/* TAB 2: PHÒNG HỌP TRỰC TIẾP (LIVE WAR ROOM)               */}
+      {/* ======================================================== */}
+      {state && tab === 'meeting' && (
+        <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200/80 dark:border-slate-400/15">
+            <div>
+              <h2 className="font-display text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <MessageSquare className="w-4 h-4 text-cyan-500" />
+                <span>Phòng họp trực tiếp — Trao đổi &amp; Báo cáo tiến độ</span>
+              </h2>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                Mọi báo cáo nhận việc, kết quả Drive và lý do lỗi từ các AI đều tập trung tại đây và đồng bộ sang tab Phong_Hop_Tien_Do trên Google Sheets.
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setMeetingScope('active')}
+                className={`px-2.5 py-1 rounded-lg font-semibold cursor-pointer ${
+                  meetingScope === 'active'
+                    ? 'bg-cyan-600 text-white'
+                    : 'bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                Phiên hiện tại
+              </button>
+              <button
+                type="button"
+                onClick={() => setMeetingScope('all')}
+                className={`px-2.5 py-1 rounded-lg font-semibold cursor-pointer ${
+                  meetingScope === 'all'
+                    ? 'bg-cyan-600 text-white'
+                    : 'bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                Tất cả phiên
+              </button>
+            </div>
           </div>
 
-          <div className="space-y-3">
-            {agents.map((ag) => {
-              const isEditing = editingAgentId === ag.id;
-              return (
-                <div
-                  key={ag.id}
-                  className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white/75 dark:bg-[#0c1021]/85 p-4 space-y-3"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="flex items-start gap-3 flex-1 min-w-[260px]">
-                      <AgentAvatar agent={ag} size="lg" showStatusDot />
-                      <div className="space-y-1 min-w-0">
-                        <div className="flex flex-wrap items-center gap-2 text-xs">
-                          <span className="font-mono text-slate-500 dark:text-slate-400">{ag.code}</span>
-                          <span aria-hidden="true">·</span>
-                          <span className={`font-semibold ${AGENT_STATUS_TEXT_CLASS[ag.status]}`}>
-                            {AGENT_STATUS_LABELS[ag.status]}
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <span className="text-slate-500 dark:text-slate-400">
-                            {ag.engineMode === 'muse2api'
-                              ? 'Chỉ chạy Muse2API thực tế'
-                              : 'Muse2API + Gemini Dự phòng'}
-                          </span>
-                        </div>
-                        <div className="text-base font-display font-bold text-slate-900 dark:text-white">
-                          {ag.name} —{' '}
-                          <span style={{ color: ag.accentColor || '#7C3AED' }}>{ag.roleTitle}</span>
-                        </div>
-                        <p className="text-xs text-slate-600 dark:text-slate-300">{ag.description}</p>
-                        <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400 pt-1 font-mono tabular-nums">
-                          <span>Phạm vi: {ag.permissions.allowedDataScopes.join(', ')}</span>
-                          <span>
-                            Đa nhiệm: {ag.activeTaskCount ?? 0}/{ag.maxConcurrentTasks ?? (ag.role === 'production_media' ? 2 : 1)} luồng
-                          </span>
-                          {typeof ag.avgResponseMs === 'number' && ag.avgResponseMs > 0 && (
-                            <span>TB phản hồi: {(ag.avgResponseMs / 1000).toFixed(1)}s</span>
-                          )}
-                          {typeof ag.successRate === 'number' && (
-                            <span>Thành công: {ag.successRate}%</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
+          {/* Quick report buttons */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              disabled={busyAction === 'send_meeting'}
+              onClick={() => void handleSendMeetingMessage('Báo cáo tiến độ hiện tại và các tác vụ còn lại của phiên này.')}
+              className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 dark:bg-white/5 hover:bg-cyan-500/15 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-white/10 cursor-pointer"
+            >
+              Yêu cầu báo cáo tiến độ
+            </button>
+            {activeSession && !isRunning && (
+              <button
+                type="button"
+                onClick={() => void handleStartSequentialRun(false)}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30 cursor-pointer"
+              >
+                Chạy tiếp tác vụ chờ
+              </button>
+            )}
+            {activeSession && failedTasksCount > 0 && !isRunning && (
+              <button
+                type="button"
+                onClick={() => void handleStartSequentialRun(true)}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-rose-500/15 hover:bg-rose-500/25 text-rose-700 dark:text-rose-300 border border-rose-500/30 cursor-pointer"
+              >
+                Thử lại {failedTasksCount} tác vụ lỗi
+              </button>
+            )}
+          </div>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={busyAction === `test_${ag.id}`}
-                        onClick={() => handleTestAgent(ag.id)}
-                        className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700/60 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                      >
-                        {busyAction === `test_${ag.id}` ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Activity className="w-3.5 h-3.5" />
+          {/* Messages feed */}
+          <div className="h-[420px] overflow-y-auto space-y-2.5 p-3 rounded-xl bg-slate-50/90 dark:bg-[#090d1c] border border-slate-200 dark:border-slate-400/15">
+            {visibleMessages.length === 0 ? (
+              <div className="h-full flex items-center justify-center text-xs text-slate-500 dark:text-slate-400">
+                Chưa có báo cáo nào trong phiên này. Hãy bấm &quot;Yêu cầu báo cáo tiến độ&quot; hoặc bắt đầu chạy phiên.
+              </div>
+            ) : (
+              visibleMessages.map((msg) => {
+                const isUser = msg.kind === 'user';
+                const isErr = msg.kind === 'error';
+                const isDone = msg.kind === 'completed' || msg.kind === 'sync';
+                return (
+                  <div
+                    key={msg.id}
+                    className={`p-3 rounded-xl border text-xs space-y-1 ${
+                      isUser
+                        ? 'ml-8 bg-cyan-600/10 border-cyan-500/35'
+                        : isErr
+                        ? 'mr-4 bg-rose-500/10 border-rose-500/35'
+                        : isDone
+                        ? 'mr-4 bg-emerald-500/5 border-emerald-500/30'
+                        : 'mr-4 bg-white dark:bg-[#111830] border-slate-200 dark:border-slate-400/20'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <strong className="text-slate-900 dark:text-white">{msg.senderName}</strong>
+                        <span className="px-1.5 py-0.5 text-[10px] rounded bg-slate-200/80 dark:bg-white/10 text-slate-600 dark:text-slate-300">
+                          {msg.senderRole}
+                        </span>
+                        {msg.taskCode && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-slate-900 dark:bg-cyan-500/20 text-white dark:text-cyan-200">
+                            {msg.taskCode}
+                          </span>
                         )}
-                        <span>Thử kết nối</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runAction(`pause_${ag.id}`, () =>
-                            apiJson<CommandCenterState>(
-                              `/api/command-center/agents/${ag.id}/${ag.paused ? 'resume' : 'pause'}`,
-                              { method: 'POST' }
-                            )
-                          )
-                        }
-                        className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700/60 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      </div>
+                      <span className="text-[10px] text-slate-400">
+                        {msg.sessionId} · {fmtTime(msg.createdAt)}
+                      </span>
+                    </div>
+                    <p className="whitespace-pre-wrap text-slate-800 dark:text-slate-100 leading-relaxed">
+                      {msg.content}
+                    </p>
+                    {msg.referenceLink && (
+                      <a
+                        href={msg.referenceLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-cyan-600 dark:text-cyan-300 hover:underline pt-0.5"
                       >
-                        {ag.paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-                        <span>{ag.paused ? 'Kích hoạt' : 'Tạm ngưng'}</span>
-                      </button>
+                        <ExternalLink className="w-3 h-3" />
+                        <span>Mở liên kết kết quả / Sổ Sheets</span>
+                      </a>
+                    )}
+                  </div>
+                );
+              })
+            )}
+            <div ref={meetingEndRef} />
+          </div>
 
-                      <button
-                        type="button"
-                        onClick={() => (isEditing ? setEditingAgentId(null) : openAgentEditor(ag))}
-                        className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium cursor-pointer whitespace-nowrap"
+          {/* Chat Composer */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleSendMeetingMessage();
+            }}
+            className="flex items-center gap-2"
+          >
+            <input
+              type="text"
+              value={meetingInput}
+              onChange={(e) => setMeetingInput(e.target.value)}
+              placeholder="Trao đổi trực tiếp hoặc yêu cầu báo cáo tiến độ phiên..."
+              className="flex-1 h-10 px-3 text-xs bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/25 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
+            />
+            <button
+              type="submit"
+              disabled={!meetingInput.trim() || busyAction === 'send_meeting'}
+              className="inline-flex items-center gap-1.5 h-10 px-4 rounded-xl text-xs font-bold bg-cyan-600 text-white hover:brightness-110 transition cursor-pointer disabled:opacity-50"
+            >
+              {busyAction === 'send_meeting' ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+              <span>Gửi</span>
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* TAB 3: SỔ GOOGLE SHEETS & KHO THAM CHIẾU GOOGLE DRIVE    */}
+      {/* ======================================================== */}
+      {state && tab === 'workspace' && (
+        <div className="space-y-4">
+          <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="space-y-0.5">
+                <h2 className="font-display text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
+                  <span>Kết nối Sổ Google Sheets &amp; Thư mục Google Drive</span>
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Mọi kịch bản, ảnh nhân vật tham chiếu, trạng thái tác vụ và video kết quả đều lưu tập trung trên Google Sheets &amp; Drive của bạn để các AI truy xuất đúng phiên.
+                </p>
+              </div>
+            </div>
+
+            {!googleToken ? (
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#0c1124] border border-slate-200 dark:border-slate-400/20 flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-1 text-xs">
+                  <div className="font-bold text-slate-900 dark:text-white">
+                    Chưa đăng nhập Google Workspace
+                  </div>
+                  <div className="text-slate-600 dark:text-slate-400">
+                    Đăng nhập bằng tài khoản Google để tạo Sổ Điều Phối 4 bảng và lưu tệp tham chiếu/kết quả lên Google Drive.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isGoogleSigningIn}
+                  onClick={() => void handleGoogleSignIn()}
+                  className="inline-flex items-center gap-2.5 h-10 px-4 rounded-xl bg-white text-[#1f1f1f] border border-[#747775]/45 hover:bg-slate-50 shadow-sm text-xs font-semibold transition cursor-pointer"
+                >
+                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 48 48" aria-hidden="true">
+                    <path
+                      fill="#EA4335"
+                      d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+                    />
+                    <path
+                      fill="#4285F4"
+                      d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+                    />
+                  </svg>
+                  <span>Sign in with Google</span>
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0c1124] border border-slate-200 dark:border-slate-400/20 space-y-1.5 text-xs">
+                    <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                      Tệp Google Sheets Điều Phối (4 bảng chuẩn)
+                    </div>
+                    {state.workspace.spreadsheetUrl ? (
+                      <a
+                        href={state.workspace.spreadsheetUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 font-bold text-emerald-700 dark:text-emerald-300 hover:underline"
                       >
-                        {isEditing ? 'Đóng' : 'Hồ sơ & Logo'}
-                      </button>
+                        <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                        <span className="truncate">{state.workspace.spreadsheetTitle || state.workspace.spreadsheetId}</span>
+                        <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                      </a>
+                    ) : (
+                      <div className="text-amber-600 dark:text-amber-300 font-medium">
+                        Chưa khởi tạo tệp Google Sheets.
+                      </div>
+                    )}
+                    <div className="text-[11px] text-slate-500">
+                      Đồng bộ gần nhất: {fmtDateTime(state.workspace.lastSyncedAt)}
                     </div>
                   </div>
 
-                  {agentTestReplies[ag.id] && (
-                    <div className="rounded-lg bg-emerald-50 dark:bg-emerald-950/35 border border-emerald-200 dark:border-emerald-800/50 px-3 py-2 text-xs text-emerald-800 dark:text-emerald-200">
-                      {agentTestReplies[ag.id]}
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0c1124] border border-slate-200 dark:border-slate-400/20 space-y-1.5 text-xs">
+                    <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                      Thư mục Google Drive gốc
                     </div>
-                  )}
+                    {state.workspace.rootFolderUrl ? (
+                      <a
+                        href={state.workspace.rootFolderUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300 hover:underline"
+                      >
+                        <FolderOpen className="w-4 h-4 shrink-0" />
+                        <span className="truncate">{state.workspace.rootFolderName || 'Trung_Tam_Dieu_Phoi_AI'}</span>
+                        <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                      </a>
+                    ) : (
+                      <div className="text-slate-500">Sẽ tự động tạo khi khởi tạo Sổ Google Sheets.</div>
+                    )}
+                  </div>
+                </div>
 
-                  {isEditing && (
-                    <div className="pt-3 border-t border-slate-200 dark:border-slate-700/45 space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                        <div>
-                          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                            Tên hiển thị AI
-                          </label>
-                          <input
-                            type="text"
-                            value={agentDraftName}
-                            onChange={(e) => setAgentDraftName(e.target.value)}
-                            className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                            Vai trò phụ trách
-                          </label>
-                          <input
-                            type="text"
-                            value={agentDraftRole}
-                            onChange={(e) => setAgentDraftRole(e.target.value)}
-                            className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                            Gán tài khoản Muse2API
-                          </label>
-                          <select
-                            value={agentDraftAccount}
-                            onChange={(e) => setAgentDraftAccount(e.target.value)}
-                            className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                          >
-                            <option value="auto">Tự động xoay vòng Pool</option>
-                            {(health?.accounts || []).map((acc) => (
-                              <option key={acc.id} value={acc.id}>
-                                {acc.label} ({acc.id}) {acc.ok === false ? '— Lỗi' : ''}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                            Chế độ thực thi AI
-                          </label>
-                          <select
-                            value={agentDraftEngine}
-                            onChange={(e) => setAgentDraftEngine(e.target.value as MuseAgentEngineMode)}
-                            className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                          >
-                            <option value="muse2api">Chỉ Muse2API (Tài khoản Muse.ai thực)</option>
-                            <option value="muse2api_with_gemini_fallback">
-                              Muse2API + Gemini Server Dự phòng
-                            </option>
-                          </select>
-                        </div>
-                      </div>
-
-                      {/* Custom Logo Upload, SVG Preset & Accent Color */}
-                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 rounded-xl border border-slate-200 dark:border-slate-700/45 bg-slate-50/70 dark:bg-[#090d1c]/70 p-3.5">
-                        <div className="lg:col-span-4 flex items-center gap-3">
-                          <AgentAvatar
-                            agent={ag}
-                            avatarUrl={agentDraftClearAvatar ? '' : agentDraftAvatarDataUrl ?? ag.avatarUrl}
-                            avatarPreset={agentDraftPreset}
-                            accentColor={agentDraftColor}
-                            size="lg"
-                          />
-                          <div className="space-y-1.5">
-                            <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
-                              Logo nhận diện
-                            </div>
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <label className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#131a35] text-[11px] font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-1 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800">
-                                <Upload className="w-3 h-3" />
-                                <span>Tải logo</span>
-                                <input
-                                  type="file"
-                                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                                  onChange={handleAgentLogoUpload}
-                                  className="hidden"
-                                />
-                              </label>
-                              {(ag.avatarUrl || agentDraftAvatarDataUrl) && !agentDraftClearAvatar && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setAgentDraftAvatarDataUrl(undefined);
-                                    setAgentDraftClearAvatar(true);
-                                  }}
-                                  className="px-2 py-1 rounded-lg text-[11px] text-rose-600 dark:text-rose-300 hover:underline cursor-pointer"
-                                >
-                                  Dùng icon hệ thống
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="lg:col-span-4 space-y-1.5">
-                          <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
-                            Biểu tượng hệ thống (Preset)
-                          </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {MUSE_AVATAR_PRESETS.map((p) => (
-                              <button
-                                key={p.id}
-                                type="button"
-                                title={p.label}
-                                onClick={() => {
-                                  setAgentDraftPreset(p.id);
-                                  setAgentDraftClearAvatar(true);
-                                  setAgentDraftAvatarDataUrl(undefined);
-                                }}
-                                className={`w-8 h-8 rounded-lg border flex items-center justify-center cursor-pointer transition ${
-                                  agentDraftPreset === p.id
-                                    ? 'border-violet-500 bg-violet-500/15 text-violet-600 dark:text-violet-300'
-                                    : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
-                                }`}
-                              >
-                                {renderPresetSvgIcon(p.id, 'w-4 h-4')}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="lg:col-span-4 space-y-1.5">
-                          <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
-                            Màu nhận diện
-                          </div>
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            {MUSE_ACCENT_SWATCHES.map((sw) => (
-                              <button
-                                key={sw.hex}
-                                type="button"
-                                title={sw.label}
-                                onClick={() => setAgentDraftColor(sw.hex)}
-                                className={`w-6 h-6 rounded-full border-2 cursor-pointer transition ${
-                                  agentDraftColor.toUpperCase() === sw.hex
-                                    ? 'border-slate-900 dark:border-white scale-110'
-                                    : 'border-transparent'
-                                }`}
-                                style={{ backgroundColor: sw.hex }}
-                              />
-                            ))}
-                            <input
-                              type="color"
-                              value={agentDraftColor}
-                              onChange={(e) => setAgentDraftColor(e.target.value)}
-                              className="w-7 h-6 rounded border border-slate-200 dark:border-slate-700 bg-transparent cursor-pointer"
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-                        <div className="md:col-span-9">
-                          <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                            Mô tả nhiệm vụ &amp; chỉ thị mặc định
-                          </label>
-                          <input
-                            type="text"
-                            value={agentDraftDesc}
-                            onChange={(e) => setAgentDraftDesc(e.target.value)}
-                            className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                          />
-                        </div>
-
-                        <div className="md:col-span-3">
-                          <button
-                            type="button"
-                            onClick={() => handleSaveAgentEdit(ag.id)}
-                            className="w-full h-9 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer"
-                          >
-                            Lưu thay đổi
-                          </button>
-                        </div>
-                      </div>
-                    </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={existingSheetInput}
+                    onChange={(e) => setExistingSheetInput(e.target.value)}
+                    placeholder="Để trống để tạo Sheets mới, hoặc dán link/ID Google Sheets có sẵn..."
+                    className="flex-1 min-w-[240px] h-9 px-3 text-xs bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-400/25 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={busyAction === 'init_workspace'}
+                    onClick={requestInitWorkspaceConfirm}
+                    className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-xl text-xs font-bold bg-emerald-600 text-white hover:brightness-110 transition cursor-pointer disabled:opacity-50"
+                  >
+                    {busyAction === 'init_workspace' ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                    )}
+                    <span>{existingSheetInput.trim() ? 'Kết nối Sheets này' : 'Tạo mới Sổ Sheets & Drive'}</span>
+                  </button>
+                  {activeSession && (
+                    <>
+                      <button
+                        type="button"
+                        disabled={busyAction === 'sync_session'}
+                        onClick={requestSyncSessionConfirm}
+                        className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs font-semibold bg-cyan-600 text-white hover:brightness-110 transition cursor-pointer disabled:opacity-50"
+                      >
+                        <CloudUpload className="w-3.5 h-3.5" />
+                        <span>Đồng bộ phiên hiện tại</span>
+                      </button>
+                      {state.workspace.spreadsheetId && (
+                        <button
+                          type="button"
+                          disabled={busyAction === 'read_sheets'}
+                          onClick={() => void handleLoadLiveSheets()}
+                          className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-white/10 cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${busyAction === 'read_sheets' ? 'animate-spin' : ''}`} />
+                          <span>Đọc trực tiếp từ Sheets</span>
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
-              );
-            })}
+              </div>
+            )}
           </div>
-        </section>
-      )}
 
-      {/* =========================================================
-          3. COMMUNICATION HUB (MULTI-CHANNEL SLACK/DISCORD STYLE)
-         ========================================================= */}
-      {subTab === 'chat' && state && (
-        <CommunicationHub
-          state={state}
-          setState={setState}
-          initialChannel={chatInitialChannel}
-          onJumpToTask={() => setSubTab('tasks')}
-          onJumpToScene={() => setSubTab('pipeline')}
-          onJumpToIncident={(incId) => {
-            if (incId) setSelectedIncidentId(incId);
-            setSubTab('incidents');
-          }}
-        />
-      )}
-
-      {/* =========================================================
-          1A. VISUAL AI PROGRESS BOARD, WORKFORCE SELECTOR & CLOUD HANDOFF
-         ========================================================= */}
-      {subTab === 'progress' && state && (
-        <AiProgressBoardTab
-          state={state}
-          setState={setState}
-          onOpenSettings={onOpenSettings}
-          onRefresh={() => void onRefreshLive(true)}
-        />
-      )}
-
-      {/* =========================================================
-          1B. EXECUTIVE CHAIRMAN AI COMMAND DESK
-         ========================================================= */}
-      {subTab === 'chairman' && state && (
-        <ChairmanCommandPanel
-          state={state}
-          busyAction={busyAction}
-          onRunAction={runAction}
-          onOpenIncidentsTab={(incId) => {
-            if (incId) setSelectedIncidentId(incId);
-            setSubTab('incidents');
-          }}
-          apiJson={apiJson}
-        />
-      )}
-
-      {/* =========================================================
-          3B. AI DIRECTOR INCIDENT COMMAND CENTER
-         ========================================================= */}
-      {subTab === 'incidents' && state && (
-        <IncidentCommandTab
-          state={state}
-          initialSelectedIncidentId={selectedIncidentId}
-          busyAction={busyAction}
-          onRunAction={runAction}
-          onOpenIncidentChannel={() => {
-            setChatInitialChannel('incident');
-            setSubTab('chat');
-          }}
-          apiJson={apiJson}
-        />
-      )}
-
-      {/* =========================================================
-          6B. FAST COMMUNICATION & PERFORMANCE MONITOR
-         ========================================================= */}
-      {subTab === 'perf' && state && (
-        <PerformanceMonitorTab state={state} sseConnected={sseConnected} />
-      )}
-
-      {/* =========================================================
-          4. TASKS & MANUAL ASSIGNMENT
-         ========================================================= */}
-      {subTab === 'tasks' && (
-        <div className="space-y-5">
-          <form onSubmit={handleCreateManualTask} className="glass-card rounded-2xl p-5 space-y-3">
-            <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-              Giao việc thủ công cho Muse AI
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
-              <div className="md:col-span-3">
-                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">Giao cho</label>
-                <select
-                  value={manualAgentId}
-                  onChange={(e) => setManualAgentId(e.target.value as MuseAgentId)}
-                  className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-                >
-                  {agents.map((ag) => (
-                    <option key={ag.id} value={ag.id}>
-                      {ag.name} — {ag.roleTitle}
-                    </option>
-                  ))}
-                </select>
+          {/* ACTIVE SESSION REFERENCE REPOSITORY (Du_Lieu_Tham_Chieu) */}
+          {activeSession && (
+            <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <ImageIcon className="w-4 h-4 text-violet-500" />
+                  <span>Kho dữ liệu tham chiếu · Phiên {activeSession.sessionId} ({activeSession.references.length} mục)</span>
+                </h3>
+                {activeSession.driveFolderUrl && (
+                  <a
+                    href={activeSession.driveFolderUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-cyan-600 dark:text-cyan-300 hover:underline"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    <span>Mở thư mục Drive của phiên</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
               </div>
 
-              <div className="md:col-span-3">
-                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                  Gắn phân cảnh (tùy chọn)
-                </label>
-                <select
-                  value={manualSceneId}
-                  onChange={(e) => setManualSceneId(e.target.value)}
-                  className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-                >
-                  <option value="">Nhiệm vụ tự do</option>
-                  {(memory?.scenes || []).map((sc) => (
-                    <option key={sc.sceneId} value={sc.sceneId}>
-                      Cảnh {sc.index}: {sc.title}
-                    </option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                {activeSession.references.map((ref) => {
+                  const isImg = ref.localUrl && /\.(png|jpe?g|webp)$/i.test(ref.localUrl);
+                  return (
+                    <div
+                      key={ref.refId}
+                      className="flex gap-2.5 p-2.5 rounded-xl border border-slate-200 dark:border-slate-400/20 bg-slate-50/80 dark:bg-[#0c1124]/80"
+                    >
+                      {isImg && ref.localUrl ? (
+                        <img
+                          src={ref.localUrl}
+                          alt={ref.name}
+                          className="w-14 h-14 rounded-lg object-cover bg-slate-200 dark:bg-slate-800 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-14 h-14 rounded-lg bg-violet-500/10 border border-violet-500/25 flex items-center justify-center shrink-0 text-[10px] font-mono font-bold text-violet-600 dark:text-violet-300">
+                          {ref.kind === 'script' ? 'JSON' : 'BIBLE'}
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1 space-y-1 text-[11px]">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-bold text-slate-900 dark:text-white truncate">{ref.name}</span>
+                          <span className="font-mono text-[9px] px-1 py-0.5 rounded bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-slate-300 shrink-0">
+                            {ref.refId}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-600 dark:text-slate-400 line-clamp-2">{ref.detail}</p>
+                        <div className="flex items-center gap-2 pt-0.5">
+                          {ref.driveUrl ? (
+                            <a
+                              href={ref.driveUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline"
+                            >
+                              <ExternalLink className="w-2.5 h-2.5" />
+                              <span>Đã lưu Drive</span>
+                            </a>
+                          ) : (
+                            <span className="text-[10px] text-slate-400">Lưu cục bộ (chưa đồng bộ Drive)</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
+            </div>
+          )}
 
-              <div className="md:col-span-6">
-                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">Tiêu đề nhiệm vụ</label>
-                <input
-                  type="text"
-                  value={manualTitle}
-                  onChange={(e) => setManualTitle(e.target.value)}
-                  placeholder="Ví dụ: Viết lại thoại Cảnh 2 tự nhiên hơn"
-                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div className="md:col-span-10">
-                <input
-                  type="text"
-                  value={manualInstructions}
-                  onChange={(e) => setManualInstructions(e.target.value)}
-                  placeholder="Chỉ thị chi tiết gửi cho AI thực hiện..."
-                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div className="md:col-span-2">
+          {/* LIVE GOOGLE SHEETS VERIFICATION TABLE */}
+          {liveSheetRows && (
+            <div className="glass-card rounded-2xl p-4 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                  Dữ liệu đọc trực tiếp từ Google Sheets ({liveSheetRows.tasks.length} dòng tác vụ)
+                </h3>
                 <button
-                  type="submit"
-                  className="w-full h-9 px-3 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  type="button"
+                  onClick={() => setLiveSheetRows(null)}
+                  className="text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Giao việc</span>
+                  Đóng bảng xem
                 </button>
               </div>
-            </div>
-          </form>
-
-          <section className="glass-card rounded-2xl p-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-                Danh sách nhiệm vụ &amp; hàng đợi Cloud
-              </h2>
-              <span className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                {state?.tasks.length || 0} tác vụ
-              </span>
-            </div>
-
-            {!state?.tasks.length ? (
-              <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400">
-                Chưa có tác vụ nào trong hàng đợi.
-              </div>
-            ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
+                <table className="w-full text-left text-[11px] border-collapse">
                   <thead>
-                    <tr className="border-b border-slate-200 dark:border-slate-700/60 text-slate-500 dark:text-slate-400">
-                      <th className="py-2 pr-3 font-medium">Mã</th>
-                      <th className="py-2 pr-3 font-medium">Phụ trách</th>
-                      <th className="py-2 pr-3 font-medium">Nhiệm vụ</th>
-                      <th className="py-2 pr-3 font-medium">Trạng thái</th>
-                      <th className="py-2 pr-3 font-medium">Thực thi / Kết quả</th>
-                      <th className="py-2 text-right font-medium">Điều khiển</th>
+                    <tr className="border-b border-slate-200 dark:border-slate-400/20 text-slate-500 dark:text-slate-400">
+                      <th className="py-1.5 pr-3">Mã tác vụ</th>
+                      <th className="py-1.5 pr-3">Nguồn khóa</th>
+                      <th className="py-1.5 pr-3">Trạng thái</th>
+                      <th className="py-1.5 pr-3">Kết quả / Drive</th>
+                      <th className="py-1.5">Lý do lỗi</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200/70 dark:divide-slate-700/40">
-                    {state.tasks.map((t) => {
-                      const isChairmanTask = t.assignedAgentId === 'chairman';
-                      const ag = agents.find((a) => a.id === t.assignedAgentId);
-                      return (
-                        <tr key={t.id} className="hover:bg-slate-50/70 dark:hover:bg-white/[0.02]">
-                          <td className="py-2.5 pr-3 font-mono tabular-nums text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                            {t.code}
-                          </td>
-                          <td className="py-2.5 pr-3 whitespace-nowrap font-medium">
-                            <span className={isChairmanTask ? 'text-amber-700 dark:text-amber-300 font-semibold' : 'text-slate-800 dark:text-slate-100'}>
-                              {isChairmanTask
-                                ? state.chairmanConfig?.name || 'Gemini AI – Chủ tịch'
-                                : ag?.name || t.assignedAgentId}
-                            </span>
-                          </td>
-                          <td className="py-2.5 pr-3 max-w-xs">
-                            <div className="font-medium text-slate-900 dark:text-white truncate">{t.title}</div>
-                            {t.dependsOnTaskIds.length > 0 && (
-                              <div className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-                                Phụ thuộc {t.dependsOnTaskIds.length} tác vụ tiền đề
-                              </div>
-                            )}
-                          </td>
-                          <td className={`py-2.5 pr-3 whitespace-nowrap font-semibold ${TASK_STATUS_TEXT_CLASS[t.status]}`}>
-                            {TASK_STATUS_LABELS[t.status]}
-                          </td>
-                          <td className="py-2.5 pr-3 max-w-sm">
-                            {t.error ? (
-                              <div className="text-rose-600 dark:text-rose-400 line-clamp-2">{t.error}</div>
-                            ) : (
-                              <div className="text-slate-600 dark:text-slate-300 line-clamp-2">
-                                {t.executedByProvider ? `[${t.executedByProvider}] ` : ''}
-                                {t.outputText || '—'}
-                              </div>
-                            )}
-                          </td>
-                          <td className="py-2.5 text-right whitespace-nowrap space-x-1.5">
-                            {(t.status === 'failed' || t.status === 'blocked_by_deps' || t.status === 'cancelled') && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  runAction(`retry_${t.id}`, () =>
-                                    apiJson<CommandCenterState>(`/api/command-center/tasks/${t.id}/retry`, {
-                                      method: 'POST',
-                                    })
-                                  )
-                                }
-                                className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-[11px] cursor-pointer"
-                              >
-                                Chạy lại
-                              </button>
-                            )}
-                            {(t.status === 'queued' || t.status === 'blocked_by_deps') && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  runAction(`cancel_${t.id}`, () =>
-                                    apiJson<CommandCenterState>(`/api/command-center/tasks/${t.id}/cancel`, {
-                                      method: 'POST',
-                                    })
-                                  )
-                                }
-                                className="px-2 py-1 rounded border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-300 text-[11px] cursor-pointer"
-                              >
-                                Hủy
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
+                  <tbody>
+                    {liveSheetRows.tasks.map((row, idx) => (
+                      <tr key={idx} className="border-b border-slate-200/60 dark:border-slate-400/10">
+                        <td className="py-1.5 pr-3 font-mono font-bold text-slate-900 dark:text-white">
+                          {row.task_code}
+                        </td>
+                        <td className="py-1.5 pr-3 text-slate-600 dark:text-slate-300">{row.nguon_ai_khoa}</td>
+                        <td className="py-1.5 pr-3 font-semibold">{row.trang_thai}</td>
+                        <td className="py-1.5 pr-3">
+                          {row.drive_output_url ? (
+                            <a
+                              href={row.drive_output_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-cyan-600 dark:text-cyan-300 underline"
+                            >
+                              Mở Drive
+                            </a>
+                          ) : (
+                            <span className="text-slate-400">{row.ket_qua_tom_tat?.slice(0, 60) || '—'}</span>
+                          )}
+                        </td>
+                        <td className="py-1.5 text-rose-600 dark:text-rose-300">{row.ly_do_loi || '—'}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
-            )}
-          </section>
+            </div>
+          )}
         </div>
       )}
 
-      {/* =========================================================
-          5. PARALLEL PIPELINE & PROJECT MEMORY
-         ========================================================= */}
-      {subTab === 'pipeline' && memory && (
-        <div className="space-y-5">
-          {/* Project Memory Locked Bible */}
-          <section className="glass-card rounded-2xl p-5 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-700/45 pb-3">
-              <div>
-                <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-                  Project Memory — Bộ hồ sơ sản xuất trung tâm (v{memory.version})
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Mọi Muse AI đọc cùng một phiên bản dữ liệu chuẩn · Chế độ trang phục:{' '}
-                  <strong className={memory.allowFreeCostumeChange ? 'text-amber-600 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-300'}>
-                    {memory.allowFreeCostumeChange ? 'Được phép tự do đổi theo cảnh' : 'Khóa cứng theo ảnh tham chiếu gốc'}
-                  </strong>
-                </p>
-              </div>
-              <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
-                Cập nhật bởi: {memory.updatedByAgentId} · {fmtDateTime(memory.updatedAt)}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
-              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-700/45 bg-slate-50/70 dark:bg-[#0c1021]/70">
-                <div className="font-semibold text-slate-800 dark:text-slate-100 mb-1">Visual &amp; Ánh sáng</div>
-                <div className="text-slate-600 dark:text-slate-300">{memory.visualBible || 'Chưa phân tích'}</div>
-              </div>
-              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-700/45 bg-slate-50/70 dark:bg-[#0c1021]/70">
-                <div className="font-semibold text-slate-800 dark:text-slate-100 mb-1">Bối cảnh tổng thể</div>
-                <div className="text-slate-600 dark:text-slate-300">{memory.settingBible || 'Chưa phân tích'}</div>
-              </div>
-              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-700/45 bg-slate-50/70 dark:bg-[#0c1021]/70">
-                <div className="font-semibold text-slate-800 dark:text-slate-100 mb-1">Trang phục đồng bộ</div>
-                <div className="text-slate-600 dark:text-slate-300">{memory.costumeBible || 'Chưa phân tích'}</div>
-              </div>
-              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-700/45 bg-slate-50/70 dark:bg-[#0c1021]/70">
-                <div className="font-semibold text-slate-800 dark:text-slate-100 mb-1">Quy chuẩn nối cảnh</div>
-                <div className="text-slate-600 dark:text-slate-300">{memory.continuityBible || 'Chưa phân tích'}</div>
-              </div>
-            </div>
-
-            {/* Characters 5-Part Sync */}
-            {memory.characters.length > 0 && (
-              <div className="space-y-2 pt-2">
-                <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">
-                  Nhân vật đồng bộ 5 thành phần ({memory.characters.length})
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {memory.characters.map((ch) => (
-                    <div
-                      key={ch.id}
-                      className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] p-3 flex gap-3"
-                    >
-                      {ch.artifactUrl || ch.dataUrl ? (
-                        <img
-                          src={ch.artifactUrl || ch.dataUrl}
-                          alt={ch.name}
-                          className="w-16 h-16 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0"
-                        />
-                      ) : (
-                        <div className="w-16 h-16 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center text-slate-400 shrink-0">
-                          <ImageIcon className="w-5 h-5" />
-                        </div>
-                      )}
-                      <div className="text-xs space-y-0.5 min-w-0">
-                        <div className="font-bold text-slate-900 dark:text-white flex flex-wrap items-center gap-1.5">
-                          <span>
-                            {ch.name} · {ch.ageGroup} · {ch.gender === 'female' ? 'Nữ' : 'Nam'}
-                          </span>
-                          {!memory.allowFreeCostumeChange && (
-                            <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
-                              <Lock className="w-3 h-3" />
-                              Khóa gốc
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-slate-600 dark:text-slate-300 line-clamp-1">1. Mặt: {ch.syncProfile.face}</div>
-                        <div className="text-slate-600 dark:text-slate-300 line-clamp-1">2. Dáng: {ch.syncProfile.physique}</div>
-                        <div className="text-slate-600 dark:text-slate-300 line-clamp-1">
-                          3. Đồ: {ch.confirmedOriginalSyncProfile?.costume || ch.syncProfile.costume}
-                        </div>
-                        <div className="text-slate-600 dark:text-slate-300 line-clamp-1">4. Giọng: {ch.syncProfile.voice}</div>
-                        {ch.costumeVersionHistory && ch.costumeVersionHistory.length > 0 && (
-                          <div className="text-[11px] text-cyan-700 dark:text-cyan-300 pt-0.5">
-                            Đã khôi phục trang phục {ch.costumeVersionHistory.length} lần (giữ nguyên bản gốc)
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* Parallel vs Sequential Scene DAG */}
-          <section className="glass-card rounded-2xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-                Luồng phân cảnh song song &amp; kế thừa nối cảnh ({memory.scenes.length} cảnh)
-              </h2>
-              <span className="text-xs text-slate-500 dark:text-slate-400">
-                Song song tối đa {state?.cloudConfig.parallelLimit} luồng · {state?.cloudConfig.perAgentConcurrencyLimit ?? 2} tác vụ/Muse
-              </span>
-            </div>
-
-            {memory.scenes.length === 0 ? (
-              <div className="py-8 text-center text-xs text-slate-500 dark:text-slate-400">
-                Chưa có phân cảnh nào được bóc tách. Hãy gửi kịch bản ở tab Tổng quan.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {memory.scenes.map((sc) => {
-                  const producerAgent = sc.assignedProducerAgentId
-                    ? agents.find((a) => a.id === sc.assignedProducerAgentId)
-                    : undefined;
-                  const producerLabel = producerAgent
-                    ? producerAgent.name
-                    : sc.assignedProducerAgentId
-                    ? sc.assignedProducerAgentId.replace('muse-', 'Muse ')
-                    : 'Muse 01–04';
-                  const stageLabel = sc.productionStage
-                    ? SCENE_STAGE_LABELS[sc.productionStage] || sc.productionStage
-                    : null;
-                  const stageClass = sc.productionStage
-                    ? SCENE_STAGE_TEXT_CLASS[sc.productionStage] || 'text-slate-500 dark:text-slate-400'
-                    : 'text-slate-500 dark:text-slate-400';
-
-                  return (
-                  <div
-                    key={sc.sceneId}
-                    className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] p-4 space-y-2.5"
-                  >
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="font-bold text-slate-900 dark:text-white">
-                        Cảnh {sc.index}: {sc.title}
-                      </span>
-                      <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                        {sc.durationSec}s · QA: {sc.qaScore !== undefined ? `${sc.qaScore}/100` : sc.qaStatus}
-                      </span>
-                    </div>
-
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                      <span className="text-violet-700 dark:text-violet-300">
-                        {sc.continuityAnchorFromSceneId
-                          ? `Nối tiếp tuần tự (kế thừa từ ${sc.continuityAnchorFromSceneId.replace('_', ' ')})`
-                          : 'Phân cảnh độc lập — chạy song song được'}
-                      </span>
-                      <span className={`font-semibold ${stageClass}`}>
-                        {producerLabel}
-                        {stageLabel ? ` · ${stageLabel}` : ''}
-                        {sc.lockedPromptVersion ? ` (v${sc.lockedPromptVersion})` : ''}
-                      </span>
-                    </div>
-
-                    <p className="text-xs text-slate-600 dark:text-slate-300">{sc.actionDetail}</p>
-                    {sc.dialogue && (
-                      <div className="text-xs text-slate-700 dark:text-slate-200 italic">
-                        Thoại ({sc.speakerName || 'Nhân vật'}): &ldquo;{sc.dialogue}&rdquo;
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      <div className="rounded-lg border border-slate-200 dark:border-slate-700/60 p-1.5 bg-slate-50 dark:bg-[#131a35]">
-                        <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500 dark:text-slate-400 mb-1">
-                          <span>Keyframe ({producerLabel})</span>
-                          {sc.imageValidated && (
-                            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
-                              ✓ Hợp lệ{sc.imageMemoryVersion ? ` v${sc.imageMemoryVersion}` : ''}
-                            </span>
-                          )}
-                        </div>
-                        {sc.keyframeImageUrl ? (
-                          <img src={sc.keyframeImageUrl} alt={sc.title} className="w-full h-24 object-cover rounded" />
-                        ) : (
-                          <div className="h-24 flex items-center justify-center text-[11px] text-slate-400">Chưa tạo ảnh</div>
-                        )}
-                      </div>
-                      <div className="rounded-lg border border-slate-200 dark:border-slate-700/60 p-1.5 bg-slate-50 dark:bg-[#131a35]">
-                        <div className="text-[10px] text-slate-500 dark:text-slate-400 mb-1">Video ({producerLabel})</div>
-                        {sc.videoUrl ? (
-                          <video src={sc.videoUrl} controls className="w-full h-24 rounded bg-black object-cover" />
-                        ) : (
-                          <div className="h-24 flex items-center justify-center text-[11px] text-slate-400">Chưa dựng video</div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Project Memory Version History */}
-            {memory.snapshots.length > 0 && (
-              <div className="pt-4 border-t border-slate-200 dark:border-slate-700/45 space-y-2">
-                <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">
-                  Lịch sử phiên bản Project Memory
-                </div>
-                <div className="space-y-1.5">
-                  {memory.snapshots.slice(0, 6).map((snap) => (
-                    <div
-                      key={snap.id}
-                      className="flex flex-wrap items-center justify-between gap-2 text-xs py-1.5 px-3 rounded-lg bg-slate-50 dark:bg-[#0c1021] border border-slate-200/70 dark:border-slate-700/40"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-semibold text-violet-600 dark:text-violet-300">
-                          v{snap.version}
-                        </span>
-                        <span className="text-slate-700 dark:text-slate-200">{snap.summary}</span>
-                        <span className="text-slate-400 font-mono">{fmtDateTime(snap.createdAt)}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runAction(`restore_mem_${snap.id}`, () =>
-                            apiJson<CommandCenterState>(
-                              `/api/command-center/project-memory/snapshots/${snap.id}/restore`,
-                              { method: 'POST' }
-                            )
-                          )
-                        }
-                        className="text-xs text-cyan-600 dark:text-cyan-300 hover:underline cursor-pointer"
-                      >
-                        Khôi phục bản này
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {memory.coordinationLog && memory.coordinationLog.length > 0 && (
-              <div className="pt-4 border-t border-slate-200 dark:border-slate-700/45 space-y-2">
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200">
-                  <span>Nhật ký chỉ đạo Chủ tịch &amp; phối hợp 5 Muse ({memory.coordinationLog.length})</span>
-                </div>
-                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-                  {memory.coordinationLog.slice(0, 12).map((entry) => (
-                    <div
-                      key={entry.id}
-                      className="text-xs py-1.5 px-3 rounded-lg bg-slate-50 dark:bg-[#0c1021] border border-slate-200/70 dark:border-slate-700/40 space-y-0.5"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                        <span className="font-semibold text-slate-800 dark:text-slate-100">
-                          {entry.actorName}
-                          {entry.targetAgentIds && entry.targetAgentIds.length > 0
-                            ? ` → ${entry.targetAgentIds.join(', ')}`
-                            : ''}
-                          {entry.sceneId ? ` · ${entry.sceneId}` : ''}
-                        </span>
-                        <span className="font-mono text-slate-400">
-                          {entry.kind} · {fmtDateTime(entry.timestamp)}
-                        </span>
-                      </div>
-                      <div className="text-slate-600 dark:text-slate-300 line-clamp-2">{entry.summary}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-        </div>
-      )}
-
-      {/* =========================================================
-          6. QUALITY ASSURANCE (MUSE AI 05)
-         ========================================================= */}
-      {subTab === 'qa' && (
-        <div className="space-y-5">
-          <section className="glass-card rounded-2xl p-5 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-                  Hệ thống AI Muse giám sát đồng nhất (Muse AI 05)
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Kiểm định đồng nhất thực tế (PASS / PASS WITH TOLERANCE / FAIL): chấp nhận sai khác góc máy, ánh sáng và biểu cảm tự nhiên. Sau tối đa {state?.cloudConfig.maxIncidentRetries ?? 3} vòng tự sửa, hệ thống tự thông qua bản tốt nhất hoặc chuyển gói Google Flow thay vì treo đội AI.
-                </p>
-              </div>
-              <div className="text-xs font-mono tabular-nums text-slate-600 dark:text-slate-300">
-                Ngưỡng duyệt: {state?.cloudConfig.qaPassThreshold}/100 · Chống treo sau {state?.cloudConfig.maxIncidentRetries ?? 3} vòng · Tối đa sửa: {state?.cloudConfig.maxRetriesPerScene} lần/cảnh
-              </div>
-            </div>
-
-            {!state?.qaReports.length ? (
-              <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400">
-                Chưa có báo cáo kiểm định nào. Sau khi 4 Muse sản xuất xuất ảnh hoặc video phân cảnh, Muse AI 05 sẽ tự động kiểm định độc lập tại đây.
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {state.qaReports.map((rep) => {
-                  const sc = memory?.scenes.find((s) => s.sceneId === rep.sceneId);
-                  const verdict = rep.verdictStatus || (rep.passed ? 'PASS' : 'FAIL');
-                  const verdictLabel =
-                    verdict === 'PASS'
-                      ? 'PASS'
-                      : verdict === 'PASS_WITH_TOLERANCE'
-                      ? 'PASS WITH TOLERANCE'
-                      : 'FAIL';
-                  const verdictClass =
-                    verdict === 'PASS'
-                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35'
-                      : verdict === 'PASS_WITH_TOLERANCE'
-                      ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35'
-                      : 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/35';
-                  const cm = rep.consistencyMetrics;
-                  return (
-                    <div
-                      key={rep.id}
-                      className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] p-4 space-y-3"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
-                          <span>
-                            {rep.targetMediaKind === 'character_image'
-                              ? `Ảnh nhân vật (${rep.characterId || rep.sceneId})`
-                              : rep.targetMediaKind === 'scene_image'
-                              ? `Ảnh Cảnh ${rep.sceneIndex}: ${sc?.title || rep.sceneId}`
-                              : `Cảnh ${rep.sceneIndex}: ${sc?.title || rep.sceneId}`}
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <span className={`font-mono tabular-nums ${rep.passed ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                            {rep.overallScore}/100
-                          </span>
-                          <span className={`px-2 py-0.5 rounded border text-[11px] font-mono font-bold ${verdictClass}`}>
-                            {verdictLabel}
-                          </span>
-                        </div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                          Lần {rep.attemptNumber} · Mốc {rep.timestampRange} · {fmtDateTime(rep.checkedAt)}
-                        </div>
-                      </div>
-
-                      <p className="text-xs text-slate-700 dark:text-slate-200">{rep.summary}</p>
-
-                      {cm && (
-                        <div className="rounded-lg border border-slate-200 dark:border-slate-700/60 bg-slate-50/80 dark:bg-[#131a35]/70 p-3 text-xs space-y-2">
-                          <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-slate-800 dark:text-slate-100">
-                            <span>Đối chiếu đồng nhất nhân vật (Ngưỡng ≤ 5% sau loại trừ phụ kiện)</span>
-                            <span
-                              className={`font-mono tabular-nums ${
-                                cm.overallDeviationExcludingAccessoriesPct <= 5
-                                  ? 'text-emerald-600 dark:text-emerald-400'
-                                  : 'text-rose-600 dark:text-rose-400'
-                              }`}
-                            >
-                              Lệch tổng: {cm.overallDeviationExcludingAccessoriesPct.toFixed(1)}%
-                            </span>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono tabular-nums text-[11px]">
-                            <div className="rounded border border-slate-200/80 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] px-2.5 py-1.5 flex items-center justify-between">
-                              <span className="text-slate-600 dark:text-slate-300 font-sans">Khuôn mặt (Lõi)</span>
-                              <span className={cm.faceDeviationPct <= 4 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
-                                {cm.faceSimilarityScore}/100 (lệch {cm.faceDeviationPct.toFixed(1)}%)
-                              </span>
-                            </div>
-                            <div className="rounded border border-slate-200/80 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] px-2.5 py-1.5 flex items-center justify-between">
-                              <span className="text-slate-600 dark:text-slate-300 font-sans">Vóc dáng (Lõi)</span>
-                              <span className={cm.physiqueDeviationPct <= 5 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
-                                {cm.physiqueSimilarityScore}/100 (lệch {cm.physiqueDeviationPct.toFixed(1)}%)
-                              </span>
-                            </div>
-                            <div className="rounded border border-slate-200/80 dark:border-slate-700/50 bg-white dark:bg-[#0c1021] px-2.5 py-1.5 flex items-center justify-between">
-                              <span className="text-slate-600 dark:text-slate-300 font-sans">Trang phục chính (Lõi)</span>
-                              <span className={cm.mainCostumeDeviationPct <= 4 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
-                                {cm.mainCostumeSimilarityScore}/100 (lệch {cm.mainCostumeDeviationPct.toFixed(1)}%)
-                              </span>
-                            </div>
-                          </div>
-                          {cm.allowedAccessoryChanges.length > 0 && (
-                            <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                              <span className="font-semibold">Phụ kiện độc lập được phép (đã loại trừ khỏi lỗi): </span>
-                              {cm.allowedAccessoryChanges.join(', ')}
-                            </div>
-                          )}
-                          {cm.criticalViolationFlags.length > 0 && (
-                            <div className="text-[11px] text-rose-700 dark:text-rose-300">
-                              <span className="font-semibold">Vi phạm thuộc tính lõi (FAIL lập tức): </span>
-                              {cm.criticalViolationFlags.join(' · ')}
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {rep.costumeMismatch && (
-                        <div className="rounded-lg border border-amber-300/70 dark:border-amber-700/60 bg-amber-50/70 dark:bg-amber-950/30 p-2.5 text-xs space-y-1.5">
-                          <div className="font-semibold text-amber-900 dark:text-amber-200">
-                            Sai trang phục: {rep.costumeMismatch.characterName} ({rep.costumeMismatch.characterId}) — Chuẩn gốc: {rep.costumeMismatch.expectedCostume}
-                          </div>
-                          <div className="text-amber-800 dark:text-amber-300">{rep.costumeMismatch.mismatchDetails}</div>
-                          {(rep.costumeMismatch.referenceImageUrl || rep.costumeMismatch.faultyArtifactUrl) && (
-                            <div className="flex flex-wrap gap-3 pt-1">
-                              {rep.costumeMismatch.referenceImageUrl && (
-                                <div className="space-y-0.5">
-                                  <div className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold">Tham chiếu gốc</div>
-                                  <img src={rep.costumeMismatch.referenceImageUrl} alt="Tham chiếu gốc" className="h-16 w-auto rounded border border-emerald-400/50 object-cover" />
-                                </div>
-                              )}
-                              {rep.costumeMismatch.faultyArtifactUrl && (
-                                <div className="space-y-0.5">
-                                  <div className="text-[10px] text-rose-700 dark:text-rose-300 font-semibold">Ảnh/Khung hình lỗi</div>
-                                  <img src={rep.costumeMismatch.faultyArtifactUrl} alt="Ảnh lỗi trang phục" className="h-16 w-auto rounded border border-rose-400/50 object-cover" />
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {rep.fixInstruction && (
-                        <div className="text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 rounded-lg p-2.5">
-                          Báo cáo về Gemini AI – Chủ tịch · Đề xuất giao {rep.targetFixAgentId}: {rep.fixInstruction}
-                        </div>
-                      )}
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
-                        {rep.criteriaResults.map((cr) => (
-                          <div
-                            key={cr.criterion}
-                            className="rounded-lg border border-slate-200/80 dark:border-slate-700/50 p-2 bg-slate-50/70 dark:bg-[#131a35]/60"
-                          >
-                            <div className="flex items-center justify-between font-medium">
-                              <span className="truncate text-slate-800 dark:text-slate-100">{cr.label.split(' (')[0]}</span>
-                              <span className={`font-mono tabular-nums ${cr.passed ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                                {cr.score}
-                              </span>
-                            </div>
-                            <div className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1 mt-0.5">
-                              {cr.note}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200/70 dark:border-slate-700/40">
-                        <input
-                          type="text"
-                          value={qaFixInputs[rep.sceneId] || ''}
-                          onChange={(e) => setQaFixInputs((p) => ({ ...p, [rep.sceneId]: e.target.value }))}
-                          placeholder="Ghi chú sửa riêng cho cảnh này (nếu muốn tạo lại)..."
-                          className="flex-1 min-w-[200px] h-8 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#131a35] text-xs text-slate-900 dark:text-white"
-                        />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            runAction(`qa_reject_${rep.sceneId}`, () =>
-                              apiJson<CommandCenterState>(`/api/command-center/qa/${rep.sceneId}/reject`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ instruction: qaFixInputs[rep.sceneId] }),
-                              })
-                            )
-                          }
-                          className="h-8 px-3 rounded-lg border border-rose-300 dark:border-rose-700/60 text-rose-700 dark:text-rose-300 text-xs font-medium cursor-pointer whitespace-nowrap"
-                        >
-                          Yêu cầu tạo lại cảnh này
-                        </button>
-                        {!rep.passed && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              runAction(`qa_approve_${rep.sceneId}`, () =>
-                                apiJson<CommandCenterState>(`/api/command-center/qa/${rep.sceneId}/approve`, {
-                                  method: 'POST',
-                                })
-                              )
-                            }
-                            className="h-8 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium cursor-pointer whitespace-nowrap"
-                          >
-                            Duyệt thủ công
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-        </div>
-      )}
-
-      {/* =========================================================
-          7. ACTIVITY LOGS & PROGRESS
-         ========================================================= */}
-      {subTab === 'logs' && (
-        <section className="glass-card rounded-2xl p-5 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-              Nhật ký hoạt động toàn hệ thống
-            </h2>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={logAgentFilter}
-                onChange={(e) => setLogAgentFilter(e.target.value)}
-                className="h-8 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-700 dark:text-slate-200"
-              >
-                <option value="all">Tất cả Muse AI</option>
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-                <option value="system">Hệ thống Cloud</option>
-              </select>
-              <select
-                value={logLevelFilter}
-                onChange={(e) => setLogLevelFilter(e.target.value)}
-                className="h-8 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-700 dark:text-slate-200"
-              >
-                <option value="all">Mọi mức độ</option>
-                <option value="info">Thông tin</option>
-                <option value="success">Hoàn thành</option>
-                <option value="warn">Cảnh báo</option>
-                <option value="error">Lỗi</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="divide-y divide-slate-200/70 dark:divide-slate-700/40 max-h-[520px] overflow-y-auto text-xs">
-            {filteredLogs.length === 0 ? (
-              <div className="py-10 text-center text-slate-500 dark:text-slate-400">Chưa có nhật ký phù hợp bộ lọc.</div>
-            ) : (
-              filteredLogs.map((log) => (
-                <div key={log.id} className="py-2.5 flex flex-wrap items-baseline justify-between gap-2">
-                  <div className="space-x-2">
-                    <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-                      {fmtTime(log.timestamp)}
-                    </span>
-                    <span
-                      className={`font-semibold ${
-                        log.level === 'error'
-                          ? 'text-rose-600 dark:text-rose-400'
-                          : log.level === 'warn'
-                          ? 'text-amber-600 dark:text-amber-400'
-                          : log.level === 'success'
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : 'text-slate-700 dark:text-slate-200'
-                      }`}
-                    >
-                      {log.action}
-                    </span>
-                    <span className="text-slate-600 dark:text-slate-300">{log.detail}</span>
-                  </div>
-                  <span className="text-[11px] font-mono text-slate-400">{log.agentId || 'system'}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* =========================================================
-          8. BACKUP & ARCHIVE SEARCH
-         ========================================================= */}
-      {subTab === 'backup' && (
-        <div className="space-y-5">
-          <form onSubmit={handleSearchArchive} className="glass-card rounded-2xl p-5 space-y-3">
-            <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-              Tìm kiếm kho lưu trữ hội thoại &amp; kết quả
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
-              <div className="md:col-span-5">
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Tìm theo nội dung hội thoại, prompt, mã tác vụ..."
-                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <select
-                  value={searchAgentId}
-                  onChange={(e) => setSearchAgentId(e.target.value)}
-                  className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-                >
-                  <option value="all">Tất cả Muse AI</option>
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="md:col-span-2">
-                <input
-                  type="date"
-                  value={searchDateFrom}
-                  onChange={(e) => setSearchDateFrom(e.target.value)}
-                  className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <input
-                  type="date"
-                  value={searchDateTo}
-                  onChange={(e) => setSearchDateTo(e.target.value)}
-                  className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-                />
-              </div>
-              <div className="md:col-span-1">
-                <button
-                  type="submit"
-                  className="w-full h-9 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center justify-center cursor-pointer"
-                >
-                  <Search className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {searchResults && (
-              <div className="pt-3 border-t border-slate-200 dark:border-slate-700/45 space-y-2 text-xs">
-                <div className="font-semibold text-slate-700 dark:text-slate-200">
-                  Tìm thấy {searchResults.messages.length} hội thoại và {searchResults.tasks.length} tác vụ
-                </div>
-                <div className="max-h-60 overflow-y-auto space-y-2">
-                  {searchResults.messages.map((m) => (
-                    <div
-                      key={m.id}
-                      className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-[#0c1021]"
-                    >
-                      <div className="flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
-                        <span className="font-semibold text-slate-800 dark:text-slate-100">{m.senderName}</span>
-                        <span className="font-mono">{fmtDateTime(m.createdAt)}</span>
-                      </div>
-                      <div className="mt-1 text-slate-700 dark:text-slate-200 whitespace-pre-wrap">{m.content}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </form>
-
-          <section className="glass-card rounded-2xl p-5 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-                  Bản sao lưu thời gian thực (Backup Snapshots)
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Lưu toàn bộ Project Memory, kịch bản, hội thoại 5 Muse AI và hàng đợi tác vụ để khôi phục khi gián đoạn.
-                </p>
-              </div>
+      {/* MANDATORY USER CONFIRMATION MODAL FOR GOOGLE SHEETS & DRIVE WRITES */}
+      {confirmModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white dark:bg-[#111830] border border-slate-200 dark:border-slate-400/25 shadow-2xl p-5 space-y-4">
+            <div className="flex items-start justify-between gap-2">
+              <h3 className="font-display text-base font-bold text-slate-900 dark:text-white">
+                {confirmModal.title}
+              </h3>
               <button
                 type="button"
-                onClick={() =>
-                  runAction(
-                    'manual_backup_tab',
-                    () =>
-                      apiJson<CommandCenterState>('/api/command-center/backups', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({}),
-                      }),
-                    'Đã tạo bản sao lưu mới.'
-                  )
-                }
-                className="px-3.5 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
+                onClick={() => setConfirmModal(null)}
+                aria-label="Đóng hộp thoại"
+                className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
               >
-                Tạo Backup thủ công
+                <X className="w-4 h-4" />
               </button>
             </div>
-
-            {!state?.backups.length ? (
-              <div className="py-8 text-center text-xs text-slate-500 dark:text-slate-400">
-                Chưa có bản sao lưu nào. Hệ thống sẽ tự động sao lưu theo mỗi mốc hoàn thành.
-              </div>
-            ) : (
-              <div className="divide-y divide-slate-200/70 dark:divide-slate-700/40 text-xs">
-                {state.backups.map((b) => (
-                  <div key={b.id} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="font-semibold text-slate-900 dark:text-white">{b.summary}</div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                        {fmtDateTime(b.createdAt)} · Memory v{b.memoryVersion} · {b.messageCount} hội thoại · {b.taskCount} tác vụ
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <a
-                        href={`/api/command-center/backups/${encodeURIComponent(b.id)}/export`}
-                        className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
-                      >
-                        Tải JSON
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runAction(
-                            `restore_${b.id}`,
-                            () =>
-                              apiJson<CommandCenterState>(
-                                `/api/command-center/backups/${encodeURIComponent(b.id)}/restore`,
-                                { method: 'POST' }
-                              ),
-                            'Đã khôi phục trạng thái từ bản sao lưu.'
-                          )
-                        }
-                        className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
-                      >
-                        Khôi phục
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-      )}
-
-      {/* =========================================================
-          9. CLOUD ORCHESTRATOR & MUSE2API ACCOUNT POOL
-         ========================================================= */}
-      {subTab === 'cloud' && (
-        <div className="space-y-5">
-          <form onSubmit={handleSaveCloudConfig} className="glass-card rounded-2xl p-5 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-                  Cấu hình Cloud Server &amp; Bộ điều phối chạy nền
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Kết nối tới máy chủ Muse2API trên Cloud (HTTPS/VPS) để 5 Muse AI chạy liên tục ngay cả khi máy tính cá nhân đã tắt.
-                </p>
-              </div>
-              <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
-                {state?.cloudConfig.isCloudEndpoint ? 'Cloud Endpoint' : 'Localhost Endpoint'}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-              <div className="md:col-span-2">
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                  Địa chỉ máy chủ Muse2API (Cloud URL hoặc Local)
-                </label>
-                <input
-                  type="url"
-                  value={cloudUrl}
-                  onChange={(e) => setCloudUrl(e.target.value)}
-                  placeholder="http://127.0.0.1:18610 hoặc https://muse-cloud.tenmien.com"
-                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                  MUSE2API_KEY {state?.cloudConfig.maskedMuse2ApiKey ? `(Hiện tại: ${state.cloudConfig.maskedMuse2ApiKey})` : ''}
-                </label>
-                <input
-                  type="password"
-                  value={cloudKey}
-                  onChange={(e) => setCloudKey(e.target.value)}
-                  placeholder="Để trống nếu giữ nguyên key hiện tại..."
-                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                  Số luồng song song tối đa (1–8)
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={parallelLimit}
-                  onChange={(e) => setParallelLimit(Math.max(1, Math.min(8, Number(e.target.value) || 4)))}
-                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono tabular-nums text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                  Đa nhiệm mỗi Muse AI (1–3)
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={3}
-                  value={perAgentConcurrencyLimit}
-                  onChange={(e) => setPerAgentConcurrencyLimit(Math.max(1, Math.min(3, Number(e.target.value) || 2)))}
-                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono tabular-nums text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                  Ngưỡng điểm QA đạt (50–98)
-                </label>
-                <input
-                  type="number"
-                  min={50}
-                  max={98}
-                  value={qaThreshold}
-                  onChange={(e) => setQaThreshold(Number(e.target.value) || 80)}
-                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono tabular-nums text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                  Giới hạn sửa lại mỗi cảnh
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={5}
-                  value={maxRetries}
-                  onChange={(e) => setMaxRetries(Number(e.target.value) || 2)}
-                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono tabular-nums text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
-                  Vòng tự xử lý sự cố tối đa (Muse 01)
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={5}
-                  value={maxIncidentRetries}
-                  onChange={(e) => setMaxIncidentRetries(Math.max(1, Math.min(5, Number(e.target.value) || 3)))}
-                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono tabular-nums text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div className="flex items-end pb-1.5">
-                <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={autoDirectorIncidentResponse}
-                    onChange={(e) => setAutoDirectorIncidentResponse(e.target.checked)}
-                    className="rounded border-slate-300"
-                  />
-                  <span>Muse AI 01 tự trao đổi &amp; xử lý sự cố</span>
-                </label>
-              </div>
-
-              <div className="flex items-end pb-1.5">
-                <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={autoApproveAfterMaxRetries}
-                    onChange={(e) => setAutoApproveAfterMaxRetries(e.target.checked)}
-                    className="rounded border-slate-300"
-                  />
-                  <span>Tự thông qua bản tốt nhất sau 3 vòng (chống treo đội AI)</span>
-                </label>
-              </div>
-
-              <div className="flex items-end pb-1.5">
-                <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={autoBackup}
-                    onChange={(e) => setAutoBackup(e.target.checked)}
-                    className="rounded border-slate-300"
-                  />
-                  <span>Tự động backup thời gian thực</span>
-                </label>
-              </div>
-            </div>
-
-            <div className="flex justify-end">
-              <button
-                type="submit"
-                className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold cursor-pointer"
-              >
-                Lưu cấu hình Cloud &amp; Kiểm tra
-              </button>
-            </div>
-          </form>
-
-          {/* Muse2API Account Pool */}
-          <section className="glass-card rounded-2xl p-5 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="text-base font-display font-semibold text-slate-900 dark:text-white">
-                  Pool Tài khoản Muse.ai ({health?.accounts.length ?? 0} tài khoản)
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Mỗi Muse AI (01–05) có thể gắn riêng một tài khoản trong danh sách dưới đây hoặc xoay vòng tự động.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                {!health?.muse2ApiReachable && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      runAction('start_local_muse', async () => {
-                        await apiJson('/api/muse2api/process/start', { method: 'POST' });
-                        return fetchState(true);
-                      })
-                    }
-                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium cursor-pointer"
-                  >
-                    Khởi chạy Muse2API trên máy chủ
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() =>
-                    runAction('keepalive_all', async () => {
-                      await apiJson('/api/muse2api/accounts/keepalive', { method: 'POST' });
-                      return fetchState(true);
-                    })
-                  }
-                  className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700/60 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-                >
-                  Gia hạn toàn bộ phiên
-                </button>
-              </div>
-            </div>
-
-            <form onSubmit={handleAddMuseAccount} className="grid grid-cols-1 md:grid-cols-12 gap-2">
-              <input
-                type="text"
-                value={newAccLabel}
-                onChange={(e) => setNewAccLabel(e.target.value)}
-                placeholder="Tên gợi nhớ (vd: Muse AI 01)"
-                className="md:col-span-3 h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs text-slate-900 dark:text-white"
-              />
-              <input
-                type="text"
-                value={newAccCookie}
-                onChange={(e) => setNewAccCookie(e.target.value)}
-                placeholder="Dán Cookie Header của muse.ai..."
-                className="md:col-span-7 h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700/60 bg-white dark:bg-[#0c1021] text-xs font-mono text-slate-900 dark:text-white"
-              />
-              <button
-                type="submit"
-                className="md:col-span-2 h-9 px-3 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold cursor-pointer"
-              >
-                Thêm tài khoản
-              </button>
-            </form>
-
-            {health && health.accounts.length > 0 ? (
-              <div className="divide-y divide-slate-200/70 dark:divide-slate-700/40 text-xs">
-                {health.accounts.map((acc) => (
-                  <div key={acc.id} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="font-semibold text-slate-900 dark:text-white">
-                        {acc.label} <span className="font-mono text-slate-400">({acc.id})</span>
-                      </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                        {acc.enabled ? 'Đang bật' : 'Đang tắt'} · {acc.ok === false ? `Lỗi: ${acc.error || acc.status}` : 'Sẵn sàng'}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runAction(`test_acc_${acc.id}`, async () => {
-                            await apiJson(`/api/muse2api/accounts/${encodeURIComponent(acc.id)}/test`, {
-                              method: 'POST',
-                            });
-                            return fetchState(true);
-                          })
-                        }
-                        className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 text-[11px] cursor-pointer"
-                      >
-                        Kiểm tra
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runAction(`del_acc_${acc.id}`, async () => {
-                            await apiJson(`/api/muse2api/accounts/${encodeURIComponent(acc.id)}`, {
-                              method: 'DELETE',
-                            });
-                            return fetchState(true);
-                          })
-                        }
-                        className="px-2.5 py-1 rounded border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-300 text-[11px] cursor-pointer"
-                      >
-                        Xóa
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="py-6 text-center text-xs text-slate-500 dark:text-slate-400">
-                Chưa có tài khoản Muse.ai nào trong Pool Muse2API.
-              </div>
-            )}
-          </section>
-        </div>
-      )}
-
-      {/* Cancel Session Confirmation Modal (No window.confirm!) */}
-      {confirmCancelRun && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md glass-card rounded-2xl p-5 border border-rose-400/50 space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-xl bg-rose-500/15 text-rose-500 flex items-center justify-center shrink-0">
-                <AlertTriangle className="w-5 h-5" />
-              </div>
-              <div className="space-y-1">
-                <h3 className="text-base font-display font-bold text-slate-900 dark:text-white">
-                  Xác nhận hủy phiên sản xuất?
-                </h3>
-                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                  Phiên <strong>{confirmCancelRun.title}</strong> ({confirmCancelRun.id}) sẽ hủy các tác vụ đang chờ/đang chạy và lưu vào lịch sử. Cảnh đã hoàn thành và backup không bị xóa.
-                </p>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              {confirmModal.description}
+            </p>
+            <ul className="space-y-1.5 text-[11px] text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-black/25 p-3 rounded-xl border border-slate-200 dark:border-slate-400/15">
+              {confirmModal.details.map((line, i) => (
+                <li key={i} className="flex items-start gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
+                  <span>{line}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex items-center justify-end gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setConfirmCancelRun(null)}
-                className="px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+                onClick={() => setConfirmModal(null)}
+                className="h-9 px-4 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/15 cursor-pointer"
               >
-                Giữ lại
+                Hủy
               </button>
               <button
                 type="button"
-                onClick={async () => {
-                  const targetId = confirmCancelRun.id;
-                  setConfirmCancelRun(null);
-                  await runAction(
-                    'cancel_run',
-                    () =>
-                      apiJson<CommandCenterState>(`/api/command-center/productions/${targetId}/cancel`, {
-                        method: 'POST',
-                      }),
-                    'Đã hủy các tác vụ đang chờ của phiên và giữ nguyên dữ liệu đã hoàn thành.'
-                  );
-                }}
-                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer"
+                onClick={() => void executeConfirmedWorkspaceAction()}
+                className="h-9 px-4 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:brightness-110 cursor-pointer"
               >
-                Xác nhận hủy phiên
+                Xác nhận thực hiện
               </button>
             </div>
           </div>
         </div>
       )}
-
-      <GoogleFlowModal
-        open={flowModalOpen}
-        onClose={() => {
-          setFlowModalOpen(false);
-          setFlowFocusSceneId(null);
-        }}
-        runId={activeRun?.id}
-        focusSceneId={flowFocusSceneId}
-        onStateUpdated={(nextState) => setState(nextState)}
-      />
     </div>
   );
 };

@@ -73,6 +73,7 @@ import {
   TrendingVideoItem,
 } from '../types/bilibili';
 import { formatBytes, formatDuration } from '../utils/formatters';
+import { getGoogleWorkspaceAccessToken } from '../lib/googleWorkspaceAuth';
 import { getDiscoveryThumbUrl } from './VideoDiscoveryCard';
 import {
   autoFixClientBlueprint,
@@ -1863,7 +1864,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     }
   };
 
-  // Send Studio idea / script / blueprint directly to Phòng Điều Hành (5 Muse AI)
+  // Send Studio idea / script / blueprint directly to Trung Tâm Điều Phối AI
   const handleDispatchToCommandCenter = async () => {
     const activeIdea = [expandedIdeaPrompt.trim(), ideaPrompt.trim(), customInstruction.trim()]
       .filter(Boolean)
@@ -1883,7 +1884,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
 
     if (!fullDirective && !blueprint?.scenes?.length) {
       setCommandCenterError(
-        'Vui lòng nhập ý tưởng, hướng dẫn hoặc tạo kịch bản phân cảnh trước khi giao cho Phòng Điều Hành 5 Muse AI.'
+        'Vui lòng nhập ý tưởng, hướng dẫn hoặc tạo kịch bản phân cảnh trước khi đẩy sang Trung Tâm Điều Phối AI.'
       );
       return;
     }
@@ -1903,11 +1904,26 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       }
       const effectiveAllowFree = blueprint?.allowFreeCostumeChange ?? allowFreeCostumeChange;
 
+      const resolvedVideoSource =
+        visualMode === 'qwen_video'
+          ? 'qwen'
+          : visualMode === 'muse2api_video'
+            ? 'muse'
+            : 'gemini';
+
+      const googleToken = getGoogleWorkspaceAccessToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (googleToken) {
+        headers.Authorization = `Bearer ${googleToken}`;
+      }
+
       const res = await fetch('/api/command-center/studio-sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           sourceAction: 'manual_dispatch',
+          createCoordinationSession: true,
+          videoSource: resolvedVideoSource,
           mode: studioMode,
           title: resolvedTitle,
           ideaOrCommand: fullDirective || resolvedTitle,
@@ -1923,14 +1939,17 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           continuityBible: blueprint?.continuityBible ?? continuityBibleDraft.trim(),
         }),
       });
-      const data = await parseJsonSafe<{ error?: string }>(res);
+      const data = await parseJsonSafe<{ error?: string; coordinationSession?: { sessionId?: string } }>(res);
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const sid = data.coordinationSession?.sessionId;
       setProjectStatusMsg(
-        'Đã đồng bộ kịch bản & nhân vật sang Phòng Điều Hành. Chọn nguồn tạo video (AI Gemini / Google Flow / AI Muse) rồi bấm "Bắt đầu sản xuất".'
+        sid
+          ? `Đã tạo phiên điều phối ${sid} kèm dữ liệu tham chiếu. Chọn nguồn tạo video độc lập rồi chạy tuần tự tại Trung Tâm Điều Phối AI.`
+          : 'Đã đẩy kịch bản & dữ liệu tham chiếu sang Trung Tâm Điều Phối AI.'
       );
       onOpenCommandCenter?.();
     } catch (err: any) {
-      const msg = err?.message || 'Không thể giao lệnh sang Phòng Điều Hành 5 Muse AI.';
+      const msg = err?.message || 'Không thể đẩy lệnh sang Trung Tâm Điều Phối AI.';
       setCommandCenterError(msg);
       setLearnError(msg);
     } finally {
@@ -5667,7 +5686,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               ) : (
                 <Clapperboard className="w-3.5 h-3.5 text-cyan-400" />
               )}
-              <span>Giao Phòng Điều Hành (5 Muse AI)</span>
+              <span>Đẩy sang Trung Tâm Điều Phối AI</span>
             </button>
 
             {/* Whenever expanded ideas exist (Creative or Derivative), hide bottom generate button so AI never re-invents away from the chosen idea */}
@@ -5885,7 +5904,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     ) : (
                       <Clapperboard className="w-3.5 h-3.5" />
                     )}
-                    <span>Giao đội 5 Muse AI sản xuất</span>
+                    <span>Đẩy sang Trung Tâm Điều Phối AI</span>
                   </button>
                   <button
                     type="button"
@@ -6557,7 +6576,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                 ) : (
                   <Clapperboard className="w-3.5 h-3.5" />
                 )}
-                <span>Giao Phòng Điều Hành (5 Muse AI)</span>
+                <span>Đẩy sang Trung Tâm Điều Phối AI</span>
               </button>
 
               <button
