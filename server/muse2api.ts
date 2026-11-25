@@ -18,13 +18,66 @@ export interface Muse2ApiRuntimeOverride {
   apiKey?: string;
 }
 
-let museRuntimeOverride: Muse2ApiRuntimeOverride = {};
+const MUSE2API_CONFIG_FILE = path.join(process.cwd(), 'data', 'muse2api_config.json');
+const LEGACY_CC_CONFIG_FILE = path.join(process.cwd(), 'data', 'muse_command_center.json');
+
+function loadPersistedMuseOverride(): Muse2ApiRuntimeOverride {
+  try {
+    if (fs.existsSync(MUSE2API_CONFIG_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(MUSE2API_CONFIG_FILE, 'utf8'));
+      return {
+        baseUrl: typeof parsed?.baseUrl === 'string' ? parsed.baseUrl.trim() : '',
+        apiKey: typeof parsed?.apiKey === 'string' ? parsed.apiKey.trim() : '',
+      };
+    }
+    if (fs.existsSync(LEGACY_CC_CONFIG_FILE)) {
+      const legacy = JSON.parse(fs.readFileSync(LEGACY_CC_CONFIG_FILE, 'utf8'));
+      const legacyUrl = typeof legacy?.cloudConfig?.muse2ApiBaseUrl === 'string' ? legacy.cloudConfig.muse2ApiBaseUrl.trim() : '';
+      const legacyKey = typeof legacy?.cloudConfig?.customMuse2ApiKey === 'string' ? legacy.cloudConfig.customMuse2ApiKey.trim() : '';
+      if (legacyUrl || legacyKey) {
+        return { baseUrl: legacyUrl, apiKey: legacyKey };
+      }
+    }
+  } catch {
+    // ignore corrupted config file
+  }
+  return {};
+}
+
+function persistMuseOverride(override: Muse2ApiRuntimeOverride): void {
+  try {
+    const dir = path.dirname(MUSE2API_CONFIG_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      MUSE2API_CONFIG_FILE,
+      JSON.stringify(
+        {
+          baseUrl: override.baseUrl || '',
+          apiKey: override.apiKey || '',
+          updatedAt: Date.now(),
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch {
+    // ignore disk write failure
+  }
+}
+
+let museRuntimeOverride: Muse2ApiRuntimeOverride = loadPersistedMuseOverride();
 
 export function setMuse2ApiRuntimeOverride(override?: Muse2ApiRuntimeOverride): void {
+  const nextBaseUrl =
+    override?.baseUrl !== undefined ? override.baseUrl.trim() : museRuntimeOverride.baseUrl || '';
+  const nextApiKey =
+    override?.apiKey !== undefined ? override.apiKey.trim() : museRuntimeOverride.apiKey || '';
   museRuntimeOverride = {
-    baseUrl: override?.baseUrl?.trim() || '',
-    apiKey: override?.apiKey?.trim() || '',
+    baseUrl: nextBaseUrl,
+    apiKey: nextApiKey,
   };
+  persistMuseOverride(museRuntimeOverride);
 }
 
 export function getMuse2ApiRuntimeOverride(): Muse2ApiRuntimeOverride {
@@ -503,34 +556,36 @@ export function convertCookieTextToHeader(rawInput: string): string {
   return trimmed.replace(/^cookie:\s*/i, '').trim();
 }
 
-export async function getMuse2ApiStatus(): Promise<Muse2ApiStatusResult> {
+export async function getMuse2ApiStatus(forceRuntimeProbe = false): Promise<Muse2ApiStatusResult> {
   const cfg = resolveMuse2ApiConfig();
-  const localRuntime = await probeLocalMuse2ApiRuntime();
+  const localRuntime = await probeLocalMuse2ApiRuntime(forceRuntimeProbe);
 
   let readyData: { status?: string; accounts?: number; browser_running?: boolean } | null = null;
+  let lastConnectError = '';
   try {
     const readyRes = await fetch(`${cfg.baseUrl}/readyz`, {
-      signal: AbortSignal.timeout(3500),
+      signal: AbortSignal.timeout(4000),
     });
     if (readyRes.ok) {
-      readyData = (await readyRes.json()) as any;
+      readyData = (await readyRes.json().catch(() => ({ status: 'ready' }))) as any;
+    } else if (readyRes.status === 404 || readyRes.status === 405) {
+      // Some Muse2API proxies/containers expose /health or /v1/models instead of /readyz
+      const healthRes = await fetch(`${cfg.baseUrl}/health`, {
+        signal: AbortSignal.timeout(3500),
+      }).catch(() => null);
+      if (healthRes?.ok) {
+        readyData = (await healthRes.json().catch(() => ({ status: 'ready' }))) as any;
+      } else {
+        const modelsRes = await museFetch('/v1/models', {}, 3500).catch(() => null);
+        if (modelsRes && (modelsRes.ok || modelsRes.status === 401)) {
+          readyData = { status: modelsRes.ok ? 'ready' : 'auth_required' };
+        }
+      }
+    } else {
+      lastConnectError = `HTTP ${readyRes.status} từ ${cfg.baseUrl}/readyz`;
     }
   } catch (err: any) {
-    return {
-      reachable: false,
-      ready: false,
-      status: 'offline',
-      baseUrl: cfg.baseUrl,
-      hasKey: cfg.hasKey,
-      maskedKey: cfg.maskedKey,
-      keySource: cfg.source,
-      accountsCount: 0,
-      healthyAccounts: 0,
-      browserRunning: false,
-      mediaCount: 0,
-      localRuntime,
-      error: `Không kết nối được tới Muse2API (${cfg.baseUrl}): ${err?.message || 'Service chưa chạy'}`,
-    };
+    lastConnectError = err?.message || 'Service chưa chạy';
   }
 
   if (!readyData) {
@@ -547,7 +602,7 @@ export async function getMuse2ApiStatus(): Promise<Muse2ApiStatusResult> {
       browserRunning: false,
       mediaCount: 0,
       localRuntime,
-      error: `Máy chủ tại ${cfg.baseUrl} không phản hồi /readyz.`,
+      error: `Không kết nối được tới Muse2API (${cfg.baseUrl}): ${lastConnectError || 'Service chưa chạy hoặc sai địa chỉ URL'}`,
     };
   }
 

@@ -28,6 +28,7 @@ import { StudioPanel } from './components/StudioPanel';
 import { CommandCenterPanel } from './components/CommandCenterPanel';
 import { ProductionMonitorPanel } from './components/ProductionMonitorPanel';
 import { useCommandCenterLive } from './hooks/useCommandCenterLive';
+import { useCoordinationCenterLive } from './hooks/useCoordinationCenterLive';
 import {
   COOKIE_SITES,
   buildCombinedCookiesString,
@@ -69,7 +70,10 @@ export default function App() {
     subTab: 'overview' | 'progress' | 'chairman' | 'chat' | 'tasks' | 'pipeline' | 'qa' | 'incidents' | 'perf';
     nonce: number;
   } | null>(null);
-  const ccLive = useCommandCenterLive(activeTab === 'command_center' || activeTab === 'production_monitor');
+  const ccLive = useCommandCenterLive(false);
+  const coordLive = useCoordinationCenterLive(
+    activeTab === 'command_center' || activeTab === 'production_monitor'
+  );
   const [trendingCount, setTrendingCount] = useState<number>(0);
   const [capabilities, setCapabilities] = useState<ServerCapabilitiesStatus | null>(null);
   const [searchQueryRequest, setSearchQueryRequest] = useState<{ query: string; nonce: number } | null>(null);
@@ -1331,14 +1335,21 @@ export default function App() {
         capabilities={capabilities}
         appVersion={appVersion}
         onRunBatchAction={handleSidebarBatchAction}
-        activeProductionProgressPct={ccLive.state?.activeRun?.overallProgressPct}
+        activeProductionProgressPct={(() => {
+          const sessions = coordLive.state?.sessions || [];
+          const active =
+            sessions.find((s) => s.sessionId === coordLive.state?.activeSessionId) || sessions[0];
+          if (!active || active.tasks.length === 0) return undefined;
+          const done = active.tasks.filter((t) => t.status === 'HOAN_THANH').length;
+          return Math.round((done / active.tasks.length) * 100);
+        })()}
         activeProductionRunning={Boolean(
-          ccLive.state?.activeRun &&
-            ['planning', 'producing', 'inspecting', 'assembling'].includes(ccLive.state.activeRun.status)
+          (coordLive.state?.sessions || []).some((s) => s.status === 'DANG_CHAY')
         )}
-        openIncidentsCount={
-          (ccLive.state?.incidents || []).filter((inc) => inc.status !== 'resolved').length
-        }
+        openIncidentsCount={(coordLive.state?.sessions || []).reduce(
+          (acc, s) => acc + s.tasks.filter((t) => t.status === 'LOI').length,
+          0
+        )}
       />
 
       <div className="flex-1 flex flex-col min-w-0">

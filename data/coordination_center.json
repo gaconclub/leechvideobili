@@ -10,7 +10,7 @@
       "activeModel": "gemini-3.1-flash-image / Veo & Omni",
       "accountSummary": "1 khóa đang bật (1 khỏe)",
       "detail": "Sẵn sàng chạy độc lập toàn bộ luồng tạo ảnh & video bằng Gemini.",
-      "checkedAt": 1795596844367
+      "checkedAt": 1795603278951
     },
     {
       "id": "qwen",
@@ -21,7 +21,7 @@
       "activeModel": "qwen-image-plus / wan2.5-i2v-preview",
       "accountSummary": "Chưa có DASHSCOPE_API_KEY",
       "detail": "Chưa bật hoặc chưa cấu hình DASHSCOPE_API_KEY trong Cài đặt AI.",
-      "checkedAt": 1795596844367
+      "checkedAt": 1795603278951
     },
     {
       "id": "muse",
@@ -29,11 +29,11 @@
       "role": "Tạo ảnh muse-image · Tạo video muse-video",
       "independentSource": "muse",
       "status": "offline",
-      "latencyMs": 2,
+      "latencyMs": 126,
       "activeModel": "muse-image / muse-video",
       "accountSummary": "0/0 tài khoản khỏe · http://127.0.0.1:18610",
       "detail": "Không kết nối được tới Muse2API (http://127.0.0.1:18610): fetch failed",
-      "checkedAt": 1795596844367
+      "checkedAt": 1795603278951
     },
     {
       "id": "google_flow",
@@ -44,22 +44,22 @@
       "activeModel": "Flow Veo Prompt + Upload Clip",
       "accountSummary": "Hoạt động độc lập 100%",
       "detail": "Luôn sẵn sàng. Tách biệt hoàn toàn, không tự gọi Gemini/Muse/Qwen tạo video.",
-      "checkedAt": 1795596844367
+      "checkedAt": 1795603278951
     },
     {
       "id": "ffmpeg",
       "name": "FFmpeg Ghép Phim",
-      "role": "Đối chiếu & ghép các phân cảnh thành phim hoàn chỉnh",
+      "role": "Ghép các phân cảnh đã tạo thành phim MP4 hoàn chỉnh",
       "status": "ready",
       "activeModel": "ffmpeg version 4.4.2-0ubuntu0.22.04.1+esm17 Copyright (c) 2000-2021 the FFmpeg d",
-      "detail": "Sẵn sàng ghép các cảnh đã hoàn thành thành tệp MP4 cuối cùng.",
-      "checkedAt": 1795596844367
+      "detail": "Sẵn sàng ghép thẳng các cảnh đã hoàn thành thành tệp MP4 cuối cùng.",
+      "checkedAt": 1795603278951
     }
   ],
-  "readinessCheckedAt": 1795596844367,
+  "readinessCheckedAt": 1795603278951,
   "workspace": {},
   "activeSessionId": null,
   "sessions": [],
   "meetingMessages": [],
-  "updatedAt": 1795597235926
+  "updatedAt": 1795603477980
 }
