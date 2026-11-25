@@ -1,0 +1,65 @@
+{
+  "readiness": [
+    {
+      "id": "gemini",
+      "name": "Gemini AI",
+      "role": "Kịch bản · Ảnh phân cảnh · Video Omni Flash",
+      "independentSource": "gemini",
+      "status": "ready",
+      "latencyMs": 1,
+      "activeModel": "gemini-3.1-flash-image / Veo & Omni",
+      "accountSummary": "1 khóa đang bật (1 khỏe)",
+      "detail": "Sẵn sàng chạy độc lập toàn bộ luồng tạo ảnh & video bằng Gemini.",
+      "checkedAt": 1795596844367
+    },
+    {
+      "id": "qwen",
+      "name": "AI Qwen (Alibaba ModelStudio)",
+      "role": "Ảnh Qwen-Image · Video Wan I2V/T2V",
+      "independentSource": "qwen",
+      "status": "unconfigured",
+      "activeModel": "qwen-image-plus / wan2.5-i2v-preview",
+      "accountSummary": "Chưa có DASHSCOPE_API_KEY",
+      "detail": "Chưa bật hoặc chưa cấu hình DASHSCOPE_API_KEY trong Cài đặt AI.",
+      "checkedAt": 1795596844367
+    },
+    {
+      "id": "muse",
+      "name": "Muse AI (Muse2API)",
+      "role": "Tạo ảnh muse-image · Tạo video muse-video",
+      "independentSource": "muse",
+      "status": "offline",
+      "latencyMs": 2,
+      "activeModel": "muse-image / muse-video",
+      "accountSummary": "0/0 tài khoản khỏe · http://127.0.0.1:18610",
+      "detail": "Không kết nối được tới Muse2API (http://127.0.0.1:18610): fetch failed",
+      "checkedAt": 1795596844367
+    },
+    {
+      "id": "google_flow",
+      "name": "Google Flow (Veo Độc lập)",
+      "role": "Xuất gói prompt chuẩn & Nạp clip MP4 từng cảnh",
+      "independentSource": "google_flow",
+      "status": "ready",
+      "activeModel": "Flow Veo Prompt + Upload Clip",
+      "accountSummary": "Hoạt động độc lập 100%",
+      "detail": "Luôn sẵn sàng. Tách biệt hoàn toàn, không tự gọi Gemini/Muse/Qwen tạo video.",
+      "checkedAt": 1795596844367
+    },
+    {
+      "id": "ffmpeg",
+      "name": "FFmpeg Ghép Phim",
+      "role": "Đối chiếu & ghép các phân cảnh thành phim hoàn chỉnh",
+      "status": "ready",
+      "activeModel": "ffmpeg version 4.4.2-0ubuntu0.22.04.1+esm17 Copyright (c) 2000-2021 the FFmpeg d",
+      "detail": "Sẵn sàng ghép các cảnh đã hoàn thành thành tệp MP4 cuối cùng.",
+      "checkedAt": 1795596844367
+    }
+  ],
+  "readinessCheckedAt": 1795596844367,
+  "workspace": {},
+  "activeSessionId": null,
+  "sessions": [],
+  "meetingMessages": [],
+  "updatedAt": 1795597235926
+}

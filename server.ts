@@ -158,6 +158,26 @@ import {
   pushSessionToGoogleWorkspace,
   verifyAppsScriptSecret,
 } from './server/googleWorkspaceSync';
+import {
+  checkAllAiReadiness,
+  createSessionFromStudio,
+  deleteCoordinationSession,
+  extractGoogleBearerToken,
+  extractOptionalGoogleBearerToken,
+  getCoordinationCenterState,
+  initCoordinationWorkspace,
+  pauseSessionRun,
+  postMeetingRoomMessage,
+  readLiveSessionFromGoogleSheets,
+  resolveCoordinationArtifactPath,
+  runSingleCoordinationTask,
+  selectCoordinationSession,
+  startSessionSequentialRun,
+  subscribeCoordinationEvents,
+  syncSessionToGoogleWorkspace,
+  updateSessionVideoSource,
+  uploadFlowClipForTask,
+} from './server/coordinationCenter';
 
 const require = createRequire(import.meta.url);
 const { ZipArchive } = require('archiver') as {
@@ -6594,11 +6614,36 @@ async function startServer() {
 
   app.post('/api/command-center/studio-sync', async (req, res) => {
     try {
+      const body = req.body || {};
       const state = await syncStudioDirectiveToCommandCenter({
         sourceAction: 'manual_dispatch',
-        ...(req.body || {}),
+        ...body,
       });
-      res.json(state);
+      // When Studio dispatches a production order, create an isolated session in the new AI Coordination Center
+      let coordinationSession: any = null;
+      const action = String(body.sourceAction || 'manual_dispatch');
+      if (action === 'manual_dispatch' || action === 'generate_video' || body.createCoordinationSession === true) {
+        const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+        coordinationSession = await createSessionFromStudio(
+          {
+            title: body.title,
+            ideaOrCommand: body.ideaOrCommand,
+            videoSource: body.videoSource,
+            aspectRatio: body.aspectRatio,
+            videoStyle: body.videoStyle,
+            allowFreeCostumeChange: body.allowFreeCostumeChange,
+            visualBible: body.visualBible,
+            settingBible: body.settingBible,
+            costumeBible: body.costumeBible,
+            continuityBible: body.continuityBible,
+            characterRefs: body.characterRefs,
+            blueprint: body.blueprint,
+            sourceAction: 'studio_dispatch',
+          },
+          googleToken
+        );
+      }
+      res.json({ ...state, coordinationSession });
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không thể đồng bộ chỉ thị từ Studio.' });
     }
@@ -7272,6 +7317,249 @@ async function startServer() {
     } catch (err: any) {
       res.status(404).json({ error: err?.message || 'Không tìm thấy phiên sản xuất.' });
     }
+  });
+
+  // ── Brand-New AI Coordination Center (Trung Tâm Điều Phối AI · Sheets & Drive · Independent Sources) ──
+  app.get('/api/coordination/events', async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    const writeEvent = (eventName: string, data: any) => {
+      try {
+        res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {
+        // ignore closed socket
+      }
+    };
+
+    try {
+      const initial = await getCoordinationCenterState(false);
+      writeEvent('state:sync', initial);
+    } catch {
+      // ignore initial error
+    }
+
+    const unsub = subscribeCoordinationEvents((nextState) => {
+      writeEvent('state:sync', nextState);
+    });
+    const ping = setInterval(() => {
+      try {
+        res.write(': ping\n\n');
+      } catch {
+        // ignore
+      }
+    }, 25_000);
+
+    req.on('close', () => {
+      clearInterval(ping);
+      unsub();
+    });
+  });
+
+  app.get('/api/coordination/state', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const state = await getCoordinationCenterState(force);
+      res.json(state);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể tải trạng thái Trung Tâm Điều Phối AI.' });
+    }
+  });
+
+  app.post('/api/coordination/readiness/check', async (_req, res) => {
+    try {
+      const readiness = await checkAllAiReadiness(true);
+      const state = await getCoordinationCenterState(false);
+      res.json({ readiness, state });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể kiểm tra trạng thái sẵn sàng của các AI.' });
+    }
+  });
+
+  app.post('/api/coordination/workspace/init', async (req, res) => {
+    try {
+      const token = extractGoogleBearerToken(req.headers.authorization);
+      const workspace = await initCoordinationWorkspace({
+        token,
+        existingSpreadsheetId: req.body?.existingSpreadsheetId,
+        spreadsheetTitle: req.body?.spreadsheetTitle,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ workspace, state });
+    } catch (err: any) {
+      res.status(err?.status === 401 ? 401 : 400).json({
+        error: err?.message || 'Không thể khởi tạo Sổ Google Sheets & Google Drive.',
+      });
+    }
+  });
+
+  app.post('/api/coordination/sessions', async (req, res) => {
+    try {
+      const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+      const session = await createSessionFromStudio(
+        {
+          ...(req.body || {}),
+          sourceAction: req.body?.sourceAction || 'manual_order',
+        },
+        googleToken
+      );
+      const state = await getCoordinationCenterState(false);
+      res.json({ session, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể lập phiên làm việc mới.' });
+    }
+  });
+
+  app.post('/api/coordination/sessions/:sessionId/select', (req, res) => {
+    try {
+      const state = selectCoordinationSession(req.params.sessionId);
+      res.json(state);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể chọn phiên làm việc.' });
+    }
+  });
+
+  app.post('/api/coordination/sessions/:sessionId/source', async (req, res) => {
+    try {
+      const raw = String(req.body?.videoSource || '').trim();
+      if (raw !== 'gemini' && raw !== 'qwen' && raw !== 'muse' && raw !== 'google_flow') {
+        return res.status(400).json({ error: 'Nguồn sáng tạo video không hợp lệ.' });
+      }
+      const session = updateSessionVideoSource(req.params.sessionId, raw);
+      const state = await getCoordinationCenterState(false);
+      res.json({ session, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể đổi nguồn sáng tạo video.' });
+    }
+  });
+
+  app.post('/api/coordination/sessions/:sessionId/sync-workspace', async (req, res) => {
+    try {
+      const token = extractGoogleBearerToken(req.headers.authorization);
+      const result = await syncSessionToGoogleWorkspace({
+        token,
+        sessionId: req.params.sessionId,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ ...result, state });
+    } catch (err: any) {
+      res.status(err?.status === 401 ? 401 : 400).json({
+        error: err?.message || 'Không thể đồng bộ phiên lên Google Sheets & Drive.',
+      });
+    }
+  });
+
+  app.get('/api/coordination/sessions/:sessionId/sheets-live', async (req, res) => {
+    try {
+      const token = extractGoogleBearerToken(req.headers.authorization);
+      const data = await readLiveSessionFromGoogleSheets({
+        token,
+        sessionId: req.params.sessionId,
+      });
+      res.json(data);
+    } catch (err: any) {
+      res.status(err?.status === 401 ? 401 : 400).json({
+        error: err?.message || 'Không thể đọc dữ liệu trực tiếp từ Google Sheets.',
+      });
+    }
+  });
+
+  app.post('/api/coordination/sessions/:sessionId/run', async (req, res) => {
+    try {
+      const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+      const session = await startSessionSequentialRun({
+        sessionId: req.params.sessionId,
+        googleToken,
+        retryErrors: req.body?.retryErrors === true,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ session, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể bắt đầu chạy phiên.' });
+    }
+  });
+
+  app.post('/api/coordination/sessions/:sessionId/pause', async (req, res) => {
+    try {
+      const session = pauseSessionRun(req.params.sessionId);
+      const state = await getCoordinationCenterState(false);
+      res.json({ session, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể tạm dừng phiên.' });
+    }
+  });
+
+  app.post('/api/coordination/sessions/:sessionId/tasks/:taskCode/run', async (req, res) => {
+    try {
+      const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+      const task = await runSingleCoordinationTask({
+        sessionId: req.params.sessionId,
+        taskCode: req.params.taskCode,
+        googleToken,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ task, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể thực thi tác vụ này.' });
+    }
+  });
+
+  app.post(
+    '/api/coordination/sessions/:sessionId/tasks/:taskCode/upload-flow',
+    express.raw({ type: '*/*', limit: '250mb' }),
+    async (req, res) => {
+      try {
+        const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+        if (buffer.byteLength === 0) {
+          return res.status(400).json({ error: 'Tệp video Google Flow rỗng.' });
+        }
+        const fileName = String(req.headers['x-file-name'] || 'flow_clip.mp4');
+        const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+        const task = await uploadFlowClipForTask({
+          sessionId: req.params.sessionId,
+          taskCode: req.params.taskCode,
+          fileName: decodeURIComponent(fileName),
+          buffer,
+          googleToken,
+        });
+        const state = await getCoordinationCenterState(false);
+        res.json({ task, state });
+      } catch (err: any) {
+        res.status(400).json({ error: err?.message || 'Không thể nạp clip Google Flow.' });
+      }
+    }
+  );
+
+  app.delete('/api/coordination/sessions/:sessionId', (req, res) => {
+    try {
+      const state = deleteCoordinationSession(req.params.sessionId);
+      res.json({ ok: true, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể xóa phiên làm việc.' });
+    }
+  });
+
+  app.post('/api/coordination/sessions/:sessionId/meeting', async (req, res) => {
+    try {
+      const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
+      const result = await postMeetingRoomMessage({
+        sessionId: req.params.sessionId,
+        content: String(req.body?.content || ''),
+        googleToken,
+      });
+      const state = await getCoordinationCenterState(false);
+      res.json({ ...result, state });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể gửi tin nhắn trong Phòng họp.' });
+    }
+  });
+
+  app.get('/api/coordination/artifacts/:sessionId/:filename', (req, res) => {
+    const fp = resolveCoordinationArtifactPath(req.params.sessionId, req.params.filename);
+    if (!fp) return res.status(404).json({ error: 'Không tìm thấy tệp dữ liệu phiên.' });
+    res.sendFile(fp);
   });
 
   app.get('/api/derivative/jobs/:jobId', (req, res) => {

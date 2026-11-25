@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.26",
+    "version": "1.0.27",
     "date": "25/11/2026",
-    "title": "feat(studio): add persistent character library",
+    "title": "feat: migrate to AI Coordination Center",
     "changes": [
-      "feat(studio): add persistent character library"
+      "feat: migrate to AI Coordination Center"
     ]
   },
   {

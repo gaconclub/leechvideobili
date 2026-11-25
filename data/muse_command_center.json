@@ -4,68 +4,9 @@
       "id": "muse-01",
       "code": "Muse AI 01",
       "name": "Muse Director",
-      "role": "director",
-      "roleTitle": "Đạo diễn tổng",
-      "description": "AI điều phối trưởng: nhận lệnh sản xuất, phân tích kịch bản tổng thể, chia việc song song, quản lý Project Memory và tổng hợp phim hoàn chỉnh.",
-      "boundAccountId": "auto",
-      "engineMode": "muse2api_with_gemini_fallback",
-      "status": "online",
-      "paused": false,
-      "permissions": {
-        "canModifyProjectMemory": true,
-        "canApproveQa": false,
-        "canExecuteMedia": false,
-        "allowedDataScopes": [
-          "project_memory:rw",
-          "tasks:dispatch",
-          "runs:control",
-          "chat:all"
-        ]
-      },
-      "stats": {
-        "completed": 0,
-        "failed": 0,
-        "retried": 0
-      },
-      "accentColor": "#7C3AED",
-      "avatarPreset": "director_clapboard"
-    },
-    {
-      "id": "muse-02",
-      "code": "Muse AI 02",
-      "name": "Muse Script",
-      "role": "screenwriter",
-      "roleTitle": "Biên kịch",
-      "description": "Phân tích kịch bản, hồ sơ nhân vật 5 thành phần, giọng nói theo độ tuổi, lời thoại, bối cảnh, timeline theo giây và cấu trúc phân cảnh.",
-      "boundAccountId": "auto",
-      "engineMode": "muse2api_with_gemini_fallback",
-      "status": "online",
-      "paused": false,
-      "permissions": {
-        "canModifyProjectMemory": false,
-        "canApproveQa": false,
-        "canExecuteMedia": false,
-        "allowedDataScopes": [
-          "project_memory:propose_script",
-          "chat:screenwriter",
-          "chat:group"
-        ]
-      },
-      "stats": {
-        "completed": 0,
-        "failed": 0,
-        "retried": 0
-      },
-      "accentColor": "#0891B2",
-      "avatarPreset": "script_feather"
-    },
-    {
-      "id": "muse-03",
-      "code": "Muse AI 03",
-      "name": "Muse Visual",
-      "role": "image_designer",
-      "roleTitle": "Thiết kế hình ảnh",
-      "description": "Tạo ảnh tham chiếu nhân vật và ảnh keyframe phân cảnh, giữ đồng bộ gương mặt, vóc dáng, trang phục và bối cảnh.",
+      "role": "production_media",
+      "roleTitle": "Nhân viên Sản xuất Hình ảnh & Video",
+      "description": "Nhân viên chuyên môn thuộc bộ phận sản xuất hình ảnh & video dưới quyền chỉ huy của Gemini AI: tiếp nhận phân cảnh, phân tích yêu cầu hình ảnh/video, tạo & chỉnh sửa ảnh, dựng video tuân thủ khóa nhân vật và báo cáo tiến độ về Gemini AI.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
       "status": "online",
@@ -77,7 +18,9 @@
         "allowedDataScopes": [
           "project_memory:read",
           "artifacts:write_image",
+          "artifacts:write_video",
           "chat:image",
+          "chat:video",
           "chat:group"
         ]
       },
@@ -86,16 +29,19 @@
         "failed": 0,
         "retried": 0
       },
-      "accentColor": "#DB2777",
-      "avatarPreset": "visual_palette"
+      "accentColor": "#7C3AED",
+      "avatarPreset": "director_clapboard",
+      "activeTaskIds": [],
+      "activeTaskCount": 0,
+      "maxConcurrentTasks": 2
     },
     {
-      "id": "muse-04",
-      "code": "Muse AI 04",
-      "name": "Muse Video",
-      "role": "video_director",
-      "roleTitle": "Đạo diễn hình ảnh & video",
-      "description": "Sản xuất video phân cảnh theo timeline từng giây, chuyển động, góc quay, lời thoại, khẩu hình và nối cảnh liên tục.",
+      "id": "muse-02",
+      "code": "Muse AI 02",
+      "name": "Muse Producer 02",
+      "role": "production_media",
+      "roleTitle": "Thiết kế Hình ảnh & Sản xuất Video",
+      "description": "AI Sản xuất đa nhiệm (nhận việc ngay khi đủ dữ liệu): thiết kế ảnh nhân vật/phân cảnh và nối tiếp ngay sang tạo video theo timeline, lời thoại, khẩu hình mà không chờ AI khác.",
       "boundAccountId": "auto",
       "engineMode": "muse2api_with_gemini_fallback",
       "status": "online",
@@ -106,7 +52,79 @@
         "canExecuteMedia": true,
         "allowedDataScopes": [
           "project_memory:read",
+          "artifacts:write_image",
           "artifacts:write_video",
+          "chat:image",
+          "chat:video",
+          "chat:group"
+        ]
+      },
+      "stats": {
+        "completed": 0,
+        "failed": 0,
+        "retried": 0
+      },
+      "accentColor": "#0891B2",
+      "avatarPreset": "visual_palette",
+      "activeTaskIds": [],
+      "activeTaskCount": 0,
+      "maxConcurrentTasks": 2
+    },
+    {
+      "id": "muse-03",
+      "code": "Muse AI 03",
+      "name": "Muse Producer 03",
+      "role": "production_media",
+      "roleTitle": "Thiết kế Hình ảnh & Sản xuất Video",
+      "description": "AI Sản xuất đa nhiệm & khôi phục trang phục chuẩn: thiết kế ảnh tham chiếu/phân cảnh, chuyển thẳng sang dựng video của cảnh đó ngay khi ảnh hoàn tất.",
+      "boundAccountId": "auto",
+      "engineMode": "muse2api_with_gemini_fallback",
+      "status": "online",
+      "paused": false,
+      "permissions": {
+        "canModifyProjectMemory": false,
+        "canApproveQa": false,
+        "canExecuteMedia": true,
+        "allowedDataScopes": [
+          "project_memory:read",
+          "artifacts:write_image",
+          "artifacts:write_video",
+          "chat:image",
+          "chat:video",
+          "chat:group"
+        ]
+      },
+      "stats": {
+        "completed": 0,
+        "failed": 0,
+        "retried": 0
+      },
+      "accentColor": "#DB2777",
+      "avatarPreset": "visual_palette",
+      "activeTaskIds": [],
+      "activeTaskCount": 0,
+      "maxConcurrentTasks": 2
+    },
+    {
+      "id": "muse-04",
+      "code": "Muse AI 04",
+      "name": "Muse Producer 04",
+      "role": "production_media",
+      "roleTitle": "Đạo diễn hình ảnh & video",
+      "description": "AI Sản xuất đa nhiệm: thiết kế keyframe phân cảnh và sản xuất trực tiếp video theo timeline từng giây, chuyển động, góc quay và lip-sync đồng bộ.",
+      "boundAccountId": "auto",
+      "engineMode": "muse2api_with_gemini_fallback",
+      "status": "online",
+      "paused": false,
+      "permissions": {
+        "canModifyProjectMemory": false,
+        "canApproveQa": false,
+        "canExecuteMedia": true,
+        "allowedDataScopes": [
+          "project_memory:read",
+          "artifacts:write_image",
+          "artifacts:write_video",
+          "chat:image",
           "chat:video",
           "chat:group"
         ]
@@ -117,7 +135,10 @@
         "retried": 0
       },
       "accentColor": "#D97706",
-      "avatarPreset": "video_camera"
+      "avatarPreset": "video_camera",
+      "activeTaskIds": [],
+      "activeTaskCount": 0,
+      "maxConcurrentTasks": 2
     },
     {
       "id": "muse-05",
@@ -148,27 +169,251 @@
         "retried": 0
       },
       "accentColor": "#059669",
-      "avatarPreset": "qa_shield"
+      "avatarPreset": "qa_shield",
+      "activeTaskIds": [],
+      "activeTaskCount": 0,
+      "maxConcurrentTasks": 2
     }
   ],
+  "chairmanConfig": {
+    "enabled": true,
+    "name": "Gemini AI – Chủ tịch",
+    "title": "Chủ tịch & Tổng chỉ huy toàn bộ hệ thống 5 Muse AI",
+    "autoInterveneOnIncident": true,
+    "autoExecuteRecommended": true,
+    "strictOversightMode": true,
+    "autonomousUpgraded": true
+  },
+  "chairmanBriefings": [],
   "projectMemory": {
     "projectId": "proj_mwqdvgza",
-    "title": "__test_costume_lock_default__",
-    "version": 3,
-    "updatedAt": 1795276219628,
+    "title": "Test Bo Doi Chieu",
+    "version": 6,
+    "updatedAt": 1795597235814,
     "updatedByAgentId": "system",
-    "originalScript": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
+    "originalScript": "Test khong con buoc doi chieu\n\nTiêu đề kịch bản Studio: Test Bo Doi Chieu\n\nDanh sách 1 phân cảnh:\n- Cảnh 1 (5s) [Phân cảnh]:",
     "productionFormat": "dialogue_film",
-    "aspectRatio": "16:9",
+    "aspectRatio": "9:16",
     "videoStyle": "cinematic",
     "visualBible": "",
     "settingBible": "",
     "costumeBible": "",
     "continuityBible": "",
     "timelineSummary": "",
-    "characters": [],
-    "scenes": [],
+    "characters": [
+      {
+        "id": "c1",
+        "name": "Minh",
+        "ageGroup": "auto",
+        "gender": "auto",
+        "voiceId": "Kore",
+        "description": "Ao khoac den",
+        "artifactUrl": "/api/command-center/artifacts/studio_char_c1_1795596844398_30b94b.png",
+        "syncProfile": {
+          "face": "Ao khoac den",
+          "physique": "Tỷ lệ cân đối tự nhiên",
+          "costume": "Trang phục đồng bộ xuyên suốt",
+          "voice": "Giọng đọc tự nhiên theo độ tuổi",
+          "distinguishingMarks": "Đặc điểm nhận dạng ổn định"
+        },
+        "approvedVersion": 4,
+        "confirmedOriginalArtifactUrl": "/api/command-center/artifacts/studio_char_c1_1795596844398_30b94b.png",
+        "confirmedOriginalSyncProfile": {
+          "face": "Ao khoac den",
+          "physique": "Tỷ lệ cân đối tự nhiên",
+          "costume": "Trang phục đồng bộ xuyên suốt",
+          "voice": "Giọng đọc tự nhiên theo độ tuổi",
+          "distinguishingMarks": "Đặc điểm nhận dạng ổn định"
+        },
+        "costumeVersionHistory": []
+      }
+    ],
+    "scenes": [
+      {
+        "sceneId": "scene_1",
+        "index": 1,
+        "title": "Cảnh 1",
+        "durationSec": 5,
+        "narration": "",
+        "dialogue": "",
+        "speakerName": "",
+        "actionDetail": "",
+        "settingDetail": "",
+        "costume": "",
+        "cameraAngle": "Trung cảnh",
+        "cameraMovement": "Đẩy máy chậm",
+        "lighting": "Ánh sáng điện ảnh tự nhiên",
+        "vfxNotes": "",
+        "videoTimeline": "",
+        "dependsOnSceneIds": [],
+        "qaStatus": "pending",
+        "retryCount": 0,
+        "lastModifiedBy": "studio"
+      }
+    ],
     "snapshots": [
+      {
+        "id": "memsnap_v5_mwvw8eau",
+        "version": 5,
+        "createdAt": 1795597235814,
+        "authorAgentId": "system",
+        "summary": "Bản lưu trước cập nhật (Đồng bộ chỉ thị từ Studio (manual_dispatch): Test Bo Doi Chieu)",
+        "data": {
+          "title": "Smoke Test Phien Doc Lap",
+          "originalScript": "Test luong dieu phoi\n\nTiêu đề kịch bản Studio: Smoke Test Phien Doc Lap\n\nTóm tắt kịch bản:\nTom tat test\n\nNhân vật đồng bộ (1):\n1. Minh: Ao khoac den\n\nDanh sách 1 phân cảnh:\n- Cảnh 1 (5s) [Phân cảnh]:",
+          "productionFormat": "dialogue_film",
+          "aspectRatio": "9:16",
+          "videoStyle": "cinematic",
+          "allowFreeCostumeChange": false,
+          "visualBible": "",
+          "settingBible": "",
+          "costumeBible": "",
+          "continuityBible": "",
+          "timelineSummary": "",
+          "characters": [
+            {
+              "id": "c1",
+              "name": "Minh",
+              "ageGroup": "auto",
+              "gender": "auto",
+              "voiceId": "Kore",
+              "description": "Ao khoac den",
+              "artifactUrl": "/api/command-center/artifacts/studio_char_c1_1795596844398_30b94b.png",
+              "syncProfile": {
+                "face": "Ao khoac den",
+                "physique": "Tỷ lệ cân đối tự nhiên",
+                "costume": "Trang phục đồng bộ xuyên suốt",
+                "voice": "Giọng đọc tự nhiên theo độ tuổi",
+                "distinguishingMarks": "Đặc điểm nhận dạng ổn định"
+              },
+              "approvedVersion": 4,
+              "confirmedOriginalArtifactUrl": "/api/command-center/artifacts/studio_char_c1_1795596844398_30b94b.png",
+              "confirmedOriginalSyncProfile": {
+                "face": "Ao khoac den",
+                "physique": "Tỷ lệ cân đối tự nhiên",
+                "costume": "Trang phục đồng bộ xuyên suốt",
+                "voice": "Giọng đọc tự nhiên theo độ tuổi",
+                "distinguishingMarks": "Đặc điểm nhận dạng ổn định"
+              },
+              "costumeVersionHistory": []
+            }
+          ],
+          "scenes": [
+            {
+              "sceneId": "scene_1",
+              "index": 1,
+              "title": "Cảnh 1",
+              "durationSec": 5,
+              "narration": "",
+              "dialogue": "",
+              "speakerName": "",
+              "actionDetail": "",
+              "settingDetail": "",
+              "costume": "",
+              "cameraAngle": "Trung cảnh",
+              "cameraMovement": "Đẩy máy chậm",
+              "lighting": "Ánh sáng điện ảnh tự nhiên",
+              "vfxNotes": "",
+              "videoTimeline": "",
+              "dependsOnSceneIds": [],
+              "qaStatus": "pending",
+              "retryCount": 0,
+              "lastModifiedBy": "studio"
+            }
+          ]
+        }
+      },
+      {
+        "id": "memsnap_v4_mwvw00a7",
+        "version": 4,
+        "createdAt": 1795596844399,
+        "authorAgentId": "system",
+        "summary": "Bản lưu trước cập nhật (Đồng bộ chỉ thị từ Studio (manual_dispatch): Smoke Test Phien Doc Lap)",
+        "data": {
+          "title": "Smoke Test Phien Doc Lap",
+          "originalScript": "Test luong dieu phoi\n\nTiêu đề kịch bản Studio: Smoke Test Phien Doc Lap\n\nTóm tắt kịch bản:\nTom tat test\n\nNhân vật đồng bộ (1):\n1. Minh: Ao khoac den\n\nDanh sách 1 phân cảnh:\n- Cảnh 1 (5s) [Phân cảnh]:",
+          "productionFormat": "dialogue_film",
+          "aspectRatio": "9:16",
+          "videoStyle": "cinematic",
+          "allowFreeCostumeChange": false,
+          "visualBible": "",
+          "settingBible": "",
+          "costumeBible": "",
+          "continuityBible": "",
+          "timelineSummary": "",
+          "characters": [
+            {
+              "id": "c1",
+              "name": "Minh",
+              "ageGroup": "auto",
+              "gender": "auto",
+              "voiceId": "Kore",
+              "description": "Ao khoac den",
+              "syncProfile": {
+                "face": "Ao khoac den",
+                "physique": "Tỷ lệ cân đối tự nhiên",
+                "costume": "Trang phục đồng bộ xuyên suốt",
+                "voice": "Giọng đọc tự nhiên theo độ tuổi",
+                "distinguishingMarks": "Đặc điểm nhận dạng ổn định"
+              },
+              "approvedVersion": 3,
+              "confirmedOriginalSyncProfile": {
+                "face": "Ao khoac den",
+                "physique": "Tỷ lệ cân đối tự nhiên",
+                "costume": "Trang phục đồng bộ xuyên suốt",
+                "voice": "Giọng đọc tự nhiên theo độ tuổi",
+                "distinguishingMarks": "Đặc điểm nhận dạng ổn định"
+              },
+              "costumeVersionHistory": []
+            }
+          ],
+          "scenes": [
+            {
+              "sceneId": "scene_1",
+              "index": 1,
+              "title": "Cảnh 1",
+              "durationSec": 5,
+              "narration": "",
+              "dialogue": "",
+              "speakerName": "",
+              "actionDetail": "",
+              "settingDetail": "",
+              "costume": "",
+              "cameraAngle": "Trung cảnh",
+              "cameraMovement": "Đẩy máy chậm",
+              "lighting": "Ánh sáng điện ảnh tự nhiên",
+              "vfxNotes": "",
+              "videoTimeline": "",
+              "dependsOnSceneIds": [],
+              "qaStatus": "pending",
+              "retryCount": 0,
+              "lastModifiedBy": "studio"
+            }
+          ]
+        }
+      },
+      {
+        "id": "memsnap_v3_mwvvyi4d",
+        "version": 3,
+        "createdAt": 1795596774205,
+        "authorAgentId": "system",
+        "summary": "Bản lưu trước cập nhật (Đồng bộ chỉ thị từ Studio (manual_dispatch): Smoke Test Phien Doc Lap)",
+        "data": {
+          "title": "__test_costume_lock_default__",
+          "originalScript": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
+          "productionFormat": "dialogue_film",
+          "aspectRatio": "16:9",
+          "videoStyle": "cinematic",
+          "allowFreeCostumeChange": true,
+          "visualBible": "",
+          "settingBible": "",
+          "costumeBible": "",
+          "continuityBible": "",
+          "timelineSummary": "",
+          "characters": [],
+          "scenes": []
+        }
+      },
       {
         "id": "memsnap_v2_mwql3wmj",
         "version": 2,
@@ -214,42 +459,64 @@
         }
       }
     ],
-    "allowFreeCostumeChange": true
+    "allowFreeCostumeChange": false
   },
   "sessionMemories": {},
   "selectedRunId": null,
   "latestStudioDirective": {
-    "syncedAt": 1795276219627,
-    "sourceAction": "save_project",
+    "syncedAt": 1795597235814,
+    "sourceAction": "manual_dispatch",
     "mode": "creative",
-    "title": "__test_costume_lock_default__",
-    "scriptOrCommand": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
+    "title": "Test Bo Doi Chieu",
+    "scriptOrCommand": "Test khong con buoc doi chieu\n\nTiêu đề kịch bản Studio: Test Bo Doi Chieu\n\nDanh sách 1 phân cảnh:\n- Cảnh 1 (5s) [Phân cảnh]:",
     "productionFormat": "dialogue_film",
-    "aspectRatio": "16:9",
+    "aspectRatio": "9:16",
     "videoStyle": "cinematic",
-    "allowFreeCostumeChange": true,
+    "allowFreeCostumeChange": false,
     "visualBible": "",
     "settingBible": "",
     "costumeBible": "",
     "continuityBible": "",
     "characterCount": 0,
-    "sceneCount": 0,
-    "hasBlueprint": false
+    "sceneCount": 1,
+    "hasBlueprint": true
   },
   "latestStudioBlueprint": {
-    "syncedAt": 1795276219627,
-    "title": "__test_costume_lock_default__",
-    "scriptOrCommand": "Hồ sơ dự án Studio \"__test_costume_lock_default__\"",
+    "syncedAt": 1795597235814,
+    "title": "Test Bo Doi Chieu",
+    "scriptOrCommand": "Test khong con buoc doi chieu\n\nTiêu đề kịch bản Studio: Test Bo Doi Chieu\n\nDanh sách 1 phân cảnh:\n- Cảnh 1 (5s) [Phân cảnh]:",
     "productionFormat": "dialogue_film",
-    "aspectRatio": "16:9",
+    "aspectRatio": "9:16",
     "videoStyle": "cinematic",
-    "allowFreeCostumeChange": true,
+    "allowFreeCostumeChange": false,
     "visualBible": "",
     "settingBible": "",
     "costumeBible": "",
     "continuityBible": "",
     "characters": [],
-    "scenes": []
+    "scenes": [
+      {
+        "sceneId": "scene_1",
+        "index": 1,
+        "title": "Cảnh 1",
+        "durationSec": 5,
+        "narration": "",
+        "dialogue": "",
+        "speakerName": "",
+        "actionDetail": "",
+        "settingDetail": "",
+        "costume": "",
+        "cameraAngle": "Trung cảnh",
+        "cameraMovement": "Đẩy máy chậm",
+        "lighting": "Ánh sáng điện ảnh tự nhiên",
+        "vfxNotes": "",
+        "videoTimeline": "",
+        "dependsOnSceneIds": [],
+        "qaStatus": "pending",
+        "retryCount": 0,
+        "lastModifiedBy": "studio"
+      }
+    ]
   },
   "runs": [],
   "tasks": [],
@@ -325,9 +592,71 @@
       "content": "Chỉ thị từ Studio [Lưu dự án Studio]: \"__test_costume_lock_default__\" (0 nhân vật, 0 phân cảnh · 16:9). Đã nạp sẵn vào Trung tâm giao nhiệm vụ tổng & Project Memory để đội 5 Muse AI tiếp nhận.",
       "id": "msg_1795276219607_21d0",
       "createdAt": 1795276219607
+    },
+    {
+      "channel": "commander",
+      "projectId": "proj_mwqdvgza",
+      "senderType": "system",
+      "senderId": "studio_sync",
+      "senderName": "Đồng bộ Studio → Gemini AI – Chủ tịch",
+      "targetAgentIds": [
+        "chairman",
+        "muse-01",
+        "muse-02",
+        "muse-03",
+        "muse-04",
+        "muse-05"
+      ],
+      "messageKind": "ack",
+      "content": "Chỉ thị từ Studio [Đồng bộ thủ công từ Studio]: \"Smoke Test Phien Doc Lap\" (1 nhân vật, 1 phân cảnh · 9:16). Đã nạp sẵn vào Trung tâm giao nhiệm vụ tổng & Project Memory để đội 5 Muse AI tiếp nhận.",
+      "id": "msg_1795596774206_f065",
+      "createdAt": 1795596774206
+    },
+    {
+      "channel": "commander",
+      "projectId": "proj_mwqdvgza",
+      "senderType": "system",
+      "senderId": "studio_sync",
+      "senderName": "Đồng bộ Studio → Gemini AI – Chủ tịch",
+      "targetAgentIds": [
+        "chairman",
+        "muse-01",
+        "muse-02",
+        "muse-03",
+        "muse-04",
+        "muse-05"
+      ],
+      "messageKind": "ack",
+      "content": "Chỉ thị từ Studio [Đồng bộ thủ công từ Studio]: \"Test Bo Doi Chieu\" (0 nhân vật, 1 phân cảnh · 9:16). Đã nạp sẵn vào Trung tâm giao nhiệm vụ tổng & Project Memory để đội 5 Muse AI tiếp nhận.",
+      "id": "msg_1795597235815_15bc",
+      "createdAt": 1795597235815
     }
   ],
   "logs": [
+    {
+      "id": "log_1795597235815_f94c",
+      "timestamp": 1795597235815,
+      "level": "info",
+      "agentId": "chairman",
+      "action": "Đồng bộ chỉ thị từ Studio",
+      "detail": "Đồng bộ thủ công từ Studio: \"Test Bo Doi Chieu\" (1 cảnh, 0 nhân vật)."
+    },
+    {
+      "id": "log_1795596844400_c5e8",
+      "timestamp": 1795596844400,
+      "level": "info",
+      "agentId": "chairman",
+      "action": "Đồng bộ chỉ thị từ Studio",
+      "detail": "Đồng bộ thủ công từ Studio: \"Smoke Test Phien Doc Lap\" (1 cảnh, 1 nhân vật)."
+    },
+    {
+      "id": "log_1795596774206_6042",
+      "timestamp": 1795596774206,
+      "level": "info",
+      "agentId": "chairman",
+      "action": "Đồng bộ chỉ thị từ Studio",
+      "detail": "Đồng bộ thủ công từ Studio: \"Smoke Test Phien Doc Lap\" (1 cảnh, 1 nhân vật)."
+    },
     {
       "id": "log_1795276219628_1feb",
       "timestamp": 1795276219629,
@@ -465,13 +794,15 @@
     "hasCustomMuse2ApiKey": false,
     "maskedMuse2ApiKey": "",
     "parallelLimit": 2,
+    "perAgentConcurrencyLimit": 2,
     "qaPassThreshold": 80,
     "maxRetriesPerScene": 2,
     "maxIncidentRetries": 3,
     "autoDirectorIncidentResponse": true,
+    "autoApproveAfterMaxRetries": true,
     "autoBackupRealtime": true,
-    "workerHeartbeatAt": 1795276217759,
-    "workerBootId": "worker_mwql2qoi_e36b",
+    "workerHeartbeatAt": 1795597233803,
+    "workerBootId": "worker_mwvw84pr_5473",
     "isCloudEndpoint": false
   },
   "taskSeq": 1,
