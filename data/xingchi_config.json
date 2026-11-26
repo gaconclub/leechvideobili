@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "enabled": true,
+  "protocol": "responses",
+  "selectedModel": "gpt-6.1-sol",
+  "reviewModel": "gpt-6.1-sol",
+  "webSearch": "live",
+  "disableResponseStorage": true,
+  "imageGeneration": true,
+  "apiKeyModelDiscovery": true,
+  "httpHeaders": {
+    "x-openai-actor-authorization": "local-image-extension"
+  },
+  "timeoutSec": 75,
+  "status": "unconfigured",
+  "requestsCount": 0,
+  "successCount": 0,
+  "errorCount": 0,
+  "models": []
+}

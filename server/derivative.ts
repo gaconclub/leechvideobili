@@ -12,7 +12,12 @@ import {
   getMuse2ApiStatus,
 } from './muse2api';
 import { resolveChairmanGeminiAccount } from './geminiPool';
-import { getXingchiRuntimeConfig, recordXingchiUsage, testXingchiConnection } from './xingchiApi';
+import {
+  callXingchiCompletion,
+  generateImageWithXingchi,
+  getXingchiRuntimeConfig,
+  testXingchiConnection,
+} from './xingchiApi';
 import {
   generateImageViaAlibabaQwen,
   generateVideoBufferViaAlibabaQwen,
@@ -1603,6 +1608,26 @@ TRẢ VỀ DUY NHẤT MỘT ĐỐI TƯỢNG JSON HỢP LỆ THEO CẤU TRÚC SAU
 }
 BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh đánh số sceneIndex lần lượt từ 1 đến ${params.desiredScenes} và nối tiếp liền mạch nhau.`;
 
+  if (params.provider === 'xingchi') {
+    const thumbDataUrls = params.contexts
+      .slice(0, 4)
+      .filter((ctx) => ctx.thumbnail && ctx.thumbnail.buffer.byteLength < 600_000)
+      .map(
+        (ctx) =>
+          `data:${ctx.thumbnail!.mimeType};base64,${ctx.thumbnail!.buffer.toString('base64')}`
+      );
+    const xcRes = await callXingchiCompletion({
+      prompt: `${params.promptText}\n\n${schemaInstruction}`,
+      systemPrompt:
+        'Bạn là Đạo diễn sáng tạo nội dung video chuyên nghiệp. Luôn phản hồi duy nhất JSON thuần túy tiếng Việt đúng schema được yêu cầu.',
+      imageDataUrls: thumbDataUrls,
+      jsonMode: true,
+      temperature: 0.7,
+      timeoutMs: 85_000,
+    });
+    return parseAiBlueprintJsonSafe(xcRes.text);
+  }
+
   const userContent: any[] = [{ type: 'text', text: `${params.promptText}\n\n${schemaInstruction}` }];
   for (const ctx of params.contexts.slice(0, 4)) {
     if (ctx.thumbnail && ctx.thumbnail.buffer.byteLength < 600_000) {
@@ -1641,18 +1666,14 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${params.desiredScenes} phân cảnh đ�
   const latencyMs = Math.max(1, Date.now() - startedAt);
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
-    if (params.provider === 'xingchi') {
-      recordXingchiUsage(false, { latencyMs, statusCode: res.status, errorMsg: errBody });
-    } else if (params.provider === 'alibaba') {
+    if (params.provider === 'alibaba') {
       recordAlibabaUsage(false, { latencyMs, statusCode: res.status, errorMsg: errBody });
     }
     throw new Error(
       `${cfg.label} lỗi HTTP ${res.status}: ${errBody.slice(0, 180) || res.statusText}`
     );
   }
-  if (params.provider === 'xingchi') {
-    recordXingchiUsage(true, { latencyMs });
-  } else if (params.provider === 'alibaba') {
+  if (params.provider === 'alibaba') {
     recordAlibabaUsage(true, { latencyMs });
   }
   const data = (await res.json()) as any;
@@ -2750,7 +2771,17 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ VỚI MẢNG "ideas" CÓ
         { role: 'user', content: expandPrompt },
       ]);
       parsed = parseAiBlueprintJsonSafe(raw);
-    } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi' || provider === 'alibaba') {
+    } else if (provider === 'xingchi') {
+      const xcRes = await callXingchiCompletion({
+        prompt: expandPrompt,
+        systemPrompt: `Chỉ trả về JSON hợp lệ theo schema với đúng ${ideaCount} phần tử trong mảng "ideas".`,
+        jsonMode: true,
+        temperature: 0.78,
+        timeoutMs: 70_000,
+      });
+      usedModel = xcRes.model;
+      parsed = parseAiBlueprintJsonSafe(xcRes.text);
+    } else if (provider === 'openai' || provider === 'meta' || provider === 'alibaba') {
       const cfg = resolveOpenAiCompatibleConfig(provider);
       if (!cfg.apiKey) {
         throw new Error(`Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env.`);
@@ -3170,7 +3201,18 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
         { role: 'user', content: watchPrompt },
       ]);
       parsed = parseAiBlueprintJsonSafe(raw);
-    } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi' || provider === 'alibaba') {
+    } else if (provider === 'xingchi') {
+      const xcRes = await callXingchiCompletion({
+        prompt: watchPrompt,
+        systemPrompt:
+          'Chỉ trả về 1 đối tượng JSON hợp lệ gồm detailedPrompt, suggestedSetting và sceneHighlights.',
+        imageDataUrls: openAiImageUrls.slice(0, 6),
+        jsonMode: true,
+        timeoutMs: 75_000,
+      });
+      usedModel = xcRes.model;
+      parsed = parseAiBlueprintJsonSafe(xcRes.text);
+    } else if (provider === 'openai' || provider === 'meta' || provider === 'alibaba') {
       const cfg = resolveOpenAiCompatibleConfig(provider);
       if (!cfg.apiKey) {
         throw new Error(`Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env.`);
@@ -4504,7 +4546,16 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
       { role: 'user', content: planPrompt },
     ]);
     parsed = parseAiBlueprintJsonSafe(raw);
-  } else if (params.provider === 'openai' || params.provider === 'meta' || params.provider === 'xingchi' || params.provider === 'alibaba') {
+  } else if (params.provider === 'xingchi') {
+    const xcRes = await callXingchiCompletion({
+      prompt: planPrompt,
+      systemPrompt: 'Chỉ trả về JSON thuần túy hợp lệ đúng schema.',
+      jsonMode: true,
+      temperature: 0.85,
+      timeoutMs: 80_000,
+    });
+    parsed = parseAiBlueprintJsonSafe(xcRes.text);
+  } else if (params.provider === 'openai' || params.provider === 'meta' || params.provider === 'alibaba') {
     const cfg = resolveOpenAiCompatibleConfig(params.provider);
     if (!cfg.apiKey) {
       throw new Error(`Chưa cấu hình ${cfg.envName} trong Settings > Secrets hoặc tệp .env.`);
@@ -5366,7 +5417,7 @@ export async function generateStudioImage(params: {
   prompt: string;
   aspectRatio?: '1:1' | '9:16' | '16:9';
   quality?: 'standard' | 'pro';
-  engine?: 'gemini' | 'muse2api' | 'qwen';
+  engine?: 'gemini' | 'muse2api' | 'qwen' | 'xingchi';
   videoStyle?: StudioVideoStyle;
   customStylePrompt?: string;
   characterBible?: string;
@@ -5511,6 +5562,16 @@ export async function generateStudioImage(params: {
       referenceImages: selectedRefs.map((r) => r.dataUrl),
     });
     return { dataUrl: res.dataUrl, model: `${res.model} (Alibaba Qwen)` };
+  }
+
+  if (params.engine === 'xingchi') {
+    const finalXingchiPrompt = buildScenePrompt(selectedRefs, mappingDirective);
+    const res = await generateImageWithXingchi({
+      prompt: finalXingchiPrompt,
+      aspectRatio,
+      referenceImages: selectedRefs.map((r) => r.dataUrl),
+    });
+    return { dataUrl: res.dataUrl, model: res.model };
   }
 
   const ai = getGeminiClient(params.geminiApiKey);
@@ -5721,7 +5782,30 @@ TRẢ VỀ DUY NHẤT JSON HỢP LỆ THEO MẪU:
       ]);
       ingestParsed(parseAiBlueprintJsonSafe(rawReply));
     }
-  } else if (provider === 'openai' || provider === 'meta' || provider === 'xingchi' || provider === 'alibaba') {
+  } else if (provider === 'xingchi') {
+    const xc = getXingchiRuntimeConfig();
+    if (xc.enabled && xc.apiKey) {
+      try {
+        const photoUrls = list.map((c) => c.dataUrl).filter((u): u is string => Boolean(u));
+        const charHeader = list
+          .map((c, idx) => `- Ảnh #${idx + 1}: id="${c.id}", Tên="${c.name}"`)
+          .join('\n');
+        const xcRes = await callXingchiCompletion({
+          prompt: `${analysisInstruction}\n\nDanh sách nhân vật kèm ảnh:\n${charHeader}`,
+          systemPrompt:
+            'Bạn là Đạo diễn thiết kế nhân vật. Luôn trả về duy nhất 1 JSON object hợp lệ với mảng profiles chứa đủ tất cả nhân vật theo id.',
+          imageDataUrls: photoUrls,
+          jsonMode: true,
+          temperature: 0.4,
+          timeoutMs: 55_000,
+        });
+        usedModel = xcRes.model;
+        ingestParsed(parseAiBlueprintJsonSafe(xcRes.text));
+      } catch {
+        // Fall through to Gemini fallback below if configured
+      }
+    }
+  } else if (provider === 'openai' || provider === 'meta' || provider === 'alibaba') {
     const cfg = resolveOpenAiCompatibleConfig(provider);
     if (cfg.apiKey) {
       usedModel = cfg.model;

@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.30",
-    "date": "25/11/2026",
-    "title": "feat(studio): add AI music generation support",
+    "version": "1.0.31",
+    "date": "26/11/2026",
+    "title": "feat(xingchi): integrate advanced Xingchi API features",
     "changes": [
-      "feat(studio): add AI music generation support"
+      "feat(xingchi): integrate advanced Xingchi API features"
     ]
   },
   {

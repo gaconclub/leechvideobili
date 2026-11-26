@@ -256,10 +256,81 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
   const [queueFilter, setQueueFilter] = useState<'all' | 'waiting' | 'done' | 'error'>('all');
   const [collapsedSessions, setCollapsedSessions] = useState<Record<string, boolean>>({});
 
-  // Flow clip upload state (supports any session card directly)
+  // Flow clip/image upload state (supports any session card directly)
   const flowUploadInputRef = useRef<HTMLInputElement>(null);
   const [flowUploadTarget, setFlowUploadTarget] = useState<{ sessionId: string; taskCode: string } | null>(null);
   const [copiedPromptCode, setCopiedPromptCode] = useState('');
+
+  // Google Flow Auto-Bridge (Chrome Extension) live state
+  const [flowBridge, setFlowBridge] = useState<{
+    connected: boolean;
+    status: 'online' | 'busy' | 'offline';
+    token: string;
+    maskedToken: string;
+    lastHeartbeatAt: number | null;
+    extensionVersion: string;
+    activeTabUrl: string;
+    flowTabReady: boolean;
+    activeLease: { taskCode: string; sessionId: string; kind: 'image' | 'video' } | null;
+    pendingJobsCount: number;
+    stats: { completedImages: number; completedVideos: number; failedJobs: number };
+    recentLogs: Array<{ id: string; at: number; level: string; message: string }>;
+  } | null>(null);
+  const [showFlowBridgePanel, setShowFlowBridgePanel] = useState(false);
+  const [copiedBridgeToken, setCopiedBridgeToken] = useState(false);
+
+  const refreshFlowBridge = useCallback(async () => {
+    try {
+      const res = await fetch('/api/flow-bridge/status');
+      if (res.ok) {
+        const data = await res.json();
+        setFlowBridge(data);
+      }
+    } catch {
+      // ignore transient network errors
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshFlowBridge();
+    if (!isActiveTab) return;
+    const timer = window.setInterval(() => {
+      void refreshFlowBridge();
+    }, 7000);
+    return () => window.clearInterval(timer);
+  }, [isActiveTab, refreshFlowBridge]);
+
+  const handleRotateBridgeToken = async () => {
+    setBusyAction('flow_rotate_token');
+    setErrorMsg('');
+    try {
+      const res = await fetch('/api/flow-bridge/rotate-token', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Không thể đổi Bridge Token.');
+      setFlowBridge(data);
+      setNotice('Đã tạo Bridge Token mới. Hãy dán token mới vào popup Chrome Extension (hoặc tải lại gói ZIP).');
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Không thể đổi Bridge Token.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const handleCopyBridgeToken = async () => {
+    if (!flowBridge?.token) return;
+    try {
+      await navigator.clipboard.writeText(flowBridge.token);
+      setCopiedBridgeToken(true);
+      setTimeout(() => setCopiedBridgeToken(false), 2000);
+    } catch {
+      setErrorMsg('Không thể sao chép Bridge Token.');
+    }
+  };
+
+  const flowBridgeZipHref =
+    typeof window !== 'undefined'
+      ? `/api/flow-bridge/extension.zip?appUrl=${encodeURIComponent(window.location.origin)}`
+      : '/api/flow-bridge/extension.zip';
 
   useEffect(() => {
     if (!externalSubTabRequest) return;
@@ -939,7 +1010,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
       <input
         ref={flowUploadInputRef}
         type="file"
-        accept="video/*"
+        accept="image/*,video/*"
         onChange={handleFlowFileSelected}
         className="hidden"
       />
@@ -1258,10 +1329,153 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                         )}
                       </div>
                     )}
+
+                    {item.id === 'google_flow' && (
+                      <div className="pt-1 border-t border-slate-200/70 dark:border-slate-400/15 flex flex-wrap items-center gap-1">
+                        <a
+                          href={flowBridgeZipHref}
+                          download="google-flow-auto-bridge-extension.zip"
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-cyan-600 text-white hover:brightness-110"
+                        >
+                          <Download className="w-2.5 h-2.5" />
+                          <span>Tải Extension</span>
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => setShowFlowBridgePanel((v) => !v)}
+                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold cursor-pointer ${
+                            flowBridge?.connected
+                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/35'
+                              : 'bg-slate-200/70 dark:bg-white/10 text-slate-700 dark:text-slate-200 hover:bg-slate-300/70'
+                          }`}
+                        >
+                          <Link2 className="w-2.5 h-2.5" />
+                          <span>{flowBridge?.connected ? 'Bridge Online' : 'Cài đặt Bridge'}</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
+
+            {/* GOOGLE FLOW AUTO-BRIDGE (CHROME EXTENSION) PANEL */}
+            {(showFlowBridgePanel || flowBridge?.connected || (flowBridge?.pendingJobsCount || 0) > 0) && (
+              <div className="rounded-xl border border-cyan-500/35 bg-cyan-500/[0.04] dark:bg-cyan-950/20 p-3.5 space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-2.5">
+                  <div className="space-y-0.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-display font-bold text-slate-900 dark:text-white">
+                        Google Flow Auto-Bridge (Chrome Extension · Dùng thẳng credit web Flow)
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded border ${
+                          flowBridge?.connected
+                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35'
+                            : 'bg-amber-500/15 text-amber-800 dark:text-amber-200 border-amber-500/35'
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            flowBridge?.connected ? 'bg-emerald-500' : 'bg-amber-500'
+                          }`}
+                        />
+                        {flowBridge?.status === 'busy'
+                          ? `Đang chạy ${flowBridge.activeLease?.taskCode || ''}`
+                          : flowBridge?.connected
+                          ? flowBridge.flowTabReady
+                            ? 'Extension trực tuyến · Tab Flow sẵn sàng'
+                            : 'Extension trực tuyến · Chờ mở tab Flow'
+                          : 'Chưa kết nối Extension Chrome'}
+                      </span>
+                      {flowBridge && (
+                        <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                          Hàng đợi: {flowBridge.pendingJobsCount} · Đã xong: {flowBridge.stats.completedImages} ảnh /{' '}
+                          {flowBridge.stats.completedVideos} video
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                      Extension chạy ngay trên trình duyệt Chrome đã đăng nhập <code className="font-mono">labs.google/fx/tools/flow</code> của bạn — tự nạp ảnh nhân vật, điền prompt, tạo Ảnh &amp; Video và gửi kết quả trực tiếp về App để tự ghép phim MP4.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                    <a
+                      href={flowBridgeZipHref}
+                      download="google-flow-auto-bridge-extension.zip"
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-bold bg-gradient-to-r from-cyan-600 to-indigo-600 text-white hover:brightness-110"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Tải Extension Flow Bridge (.zip)</span>
+                    </a>
+                    <a
+                      href="https://labs.google/fx/tools/flow"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-semibold bg-white dark:bg-[#131a35] border border-slate-200 dark:border-slate-500/30 text-slate-700 dark:text-slate-200 hover:border-cyan-500"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Mở Google Flow</span>
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => setShowFlowBridgePanel(false)}
+                      className="h-8 px-2 rounded-lg text-xs text-slate-500 hover:bg-slate-200/60 dark:hover:bg-white/10 cursor-pointer"
+                      aria-label="Ẩn bảng Flow Bridge"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 text-[11px]">
+                  <div className="lg:col-span-7 rounded-lg bg-white/80 dark:bg-[#0d1328]/90 border border-slate-200 dark:border-slate-400/20 p-2.5 space-y-1">
+                    <div className="font-bold text-slate-800 dark:text-slate-100">
+                      Cài đặt 1 lần trong 30 giây (đã nhúng sẵn App URL &amp; Bridge Token):
+                    </div>
+                    <ol className="list-decimal list-inside space-y-0.5 text-slate-600 dark:text-slate-300">
+                      <li>Bấm <strong>Tải Extension Flow Bridge (.zip)</strong> và giải nén thành 1 thư mục.</li>
+                      <li>Mở Chrome → vào <code className="font-mono font-semibold">chrome://extensions</code> → bật <strong>Developer mode</strong> → bấm <strong>Load unpacked</strong> chọn thư mục vừa giải nén.</li>
+                      <li>Mở tab <code className="font-mono font-semibold">https://labs.google/fx/tools/flow</code> (vào 1 dự án) và giữ tab mở — chọn nguồn <strong>Google Flow · Veo</strong> rồi bấm Chạy trên App.</li>
+                    </ol>
+                  </div>
+
+                  <div className="lg:col-span-5 rounded-lg bg-white/80 dark:bg-[#0d1328]/90 border border-slate-200 dark:border-slate-400/20 p-2.5 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-slate-800 dark:text-slate-100">Bridge Token bảo mật:</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void handleCopyBridgeToken()}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-200 hover:bg-cyan-500/15 cursor-pointer"
+                        >
+                          {copiedBridgeToken ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedBridgeToken ? 'Đã chép' : 'Chép'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyAction === 'flow_rotate_token'}
+                          onClick={() => void handleRotateBridgeToken()}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-200 hover:bg-amber-500/15 cursor-pointer disabled:opacity-50"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${busyAction === 'flow_rotate_token' ? 'animate-spin' : ''}`} />
+                          <span>Đổi token</span>
+                        </button>
+                      </div>
+                    </div>
+                    <div className="px-2 py-1 rounded bg-slate-100 dark:bg-black/30 font-mono text-[10px] text-slate-700 dark:text-cyan-200 truncate">
+                      {flowBridge?.token || 'Đang tải...'}
+                    </div>
+                    {flowBridge && flowBridge.recentLogs.length > 0 && (
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                        Gần nhất: {flowBridge.recentLogs[0].message}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* 2. SESSION BAR + STRICT INDEPENDENT VIDEO SOURCE LOCK */}
@@ -1851,10 +2065,15 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-50"
                                   >
                                     <Upload className="w-3 h-3" />
-                                    <span>Tải MP4 Flow</span>
+                                    <span>{task.taskCode.includes('-IMG-') ? 'Tải Ảnh Flow' : 'Tải MP4 Flow'}</span>
                                   </button>
                                 </div>
                               </div>
+                              {flowBridge?.connected && (
+                                <div className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                                  ✓ Flow Auto-Bridge đang kết nối — Chrome Extension sẽ tự nhận tác vụ này và gửi kết quả về App.
+                                </div>
+                              )}
                               <pre className="text-[10px] whitespace-pre-wrap font-sans text-slate-700 dark:text-slate-200 max-h-28 overflow-y-auto bg-white/70 dark:bg-black/20 p-1.5 rounded">
                                 {task.flowPrompt}
                               </pre>
