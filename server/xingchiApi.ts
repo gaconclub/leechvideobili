@@ -734,22 +734,75 @@ export async function fetchXingchiModels(): Promise<{
   }
 }
 
+function sanitizeDebugPreview(raw: string, maxLen = 180): string {
+  return String(raw || '')
+    .replace(/sk-[a-zA-Z0-9_-]{8,}/g, 'sk-***')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLen);
+}
+
+function extractEmbeddedError(data: any): string | undefined {
+  if (!data || typeof data !== 'object') return undefined;
+  const errObj = data?.error || data?.response?.error;
+  if (errObj) {
+    const msg =
+      typeof errObj === 'string'
+        ? errObj
+        : errObj?.message || errObj?.code || JSON.stringify(errObj);
+    if (msg) return sanitizeDebugPreview(String(msg), 220);
+  }
+  if (data?.status === 'failed') {
+    return sanitizeDebugPreview(
+      String(data?.incomplete_details?.reason || data?.message || 'Response status=failed'),
+      220
+    );
+  }
+  if (
+    typeof data?.code === 'string' &&
+    data.code.toLowerCase() !== 'ok' &&
+    data.code !== '0' &&
+    data.code !== '200' &&
+    typeof data?.message === 'string' &&
+    !data?.output &&
+    !data?.choices
+  ) {
+    return sanitizeDebugPreview(`${data.code}: ${data.message}`, 220);
+  }
+  return undefined;
+}
+
 function extractResponsesApiText(data: any): string {
-  if (typeof data?.output_text === 'string' && data.output_text.trim()) {
-    return data.output_text.trim();
+  if (!data || typeof data !== 'object') return '';
+  const root =
+    data?.response && typeof data.response === 'object' && !data.output && !data.output_text
+      ? data.response
+      : data?.data && typeof data.data === 'object' && !Array.isArray(data.data) && !data.output && !data.output_text
+      ? data.data
+      : data;
+
+  if (typeof root?.output_text === 'string' && root.output_text.trim()) {
+    return root.output_text.trim();
   }
   const chunks: string[] = [];
-  if (Array.isArray(data?.output)) {
-    for (const item of data.output) {
+  if (Array.isArray(root?.output)) {
+    for (const item of root.output) {
+      if (item?.type === 'reasoning') continue;
       if (typeof item?.text === 'string' && item.text.trim()) {
         chunks.push(item.text.trim());
       }
-      if (Array.isArray(item?.content)) {
+      if (typeof item?.content === 'string' && item.content.trim()) {
+        chunks.push(item.content.trim());
+      } else if (Array.isArray(item?.content)) {
         for (const part of item.content) {
-          if (typeof part?.text === 'string' && part.text.trim()) {
+          if (typeof part === 'string' && part.trim()) {
+            chunks.push(part.trim());
+          } else if (typeof part?.text === 'string' && part.text.trim()) {
             chunks.push(part.text.trim());
           } else if (typeof part?.output_text === 'string' && part.output_text.trim()) {
             chunks.push(part.output_text.trim());
+          } else if (typeof part?.text?.value === 'string' && part.text.value.trim()) {
+            chunks.push(part.text.value.trim());
           }
         }
       }
@@ -758,20 +811,37 @@ function extractResponsesApiText(data: any): string {
   if (chunks.length > 0) {
     return chunks.join('\n').trim();
   }
-  const fallbackContent = data?.choices?.[0]?.message?.content;
-  if (typeof fallbackContent === 'string') return fallbackContent.trim();
+  // OpenAI Chat Completions fallback shape
+  const choice = root?.choices?.[0];
+  const fallbackContent = choice?.message?.content ?? choice?.delta?.content ?? choice?.text;
+  if (typeof fallbackContent === 'string' && fallbackContent.trim()) {
+    return fallbackContent.trim();
+  }
   if (Array.isArray(fallbackContent)) {
-    return fallbackContent
+    const joined = fallbackContent
       .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
       .join('\n')
       .trim();
+    if (joined) return joined;
+  }
+  // Anthropic / generic content array fallback
+  if (Array.isArray(root?.content)) {
+    const joined = root.content
+      .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+      .join('\n')
+      .trim();
+    if (joined) return joined;
+  }
+  if (typeof root?.content === 'string' && root.content.trim()) {
+    return root.content.trim();
   }
   return '';
 }
 
 function extractImageFromResponsesPayload(data: any): string | null {
-  if (Array.isArray(data?.output)) {
-    for (const item of data.output) {
+  const root = data?.response && !data?.output ? data.response : data;
+  if (Array.isArray(root?.output)) {
+    for (const item of root.output) {
       if (item?.type === 'image_generation_call' && typeof item?.result === 'string' && item.result.trim()) {
         const b64 = item.result.trim();
         return b64.startsWith('data:image/') ? b64 : `data:image/png;base64,${b64}`;
@@ -794,7 +864,7 @@ function extractImageFromResponsesPayload(data: any): string | null {
 function extractXingchiUsage(
   data: any
 ): { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined {
-  const u = data?.usage;
+  const u = data?.usage || data?.response?.usage;
   if (!u || typeof u !== 'object') return undefined;
   const promptTokens = Number(u.input_tokens ?? u.prompt_tokens ?? 0);
   const completionTokens = Number(u.output_tokens ?? u.completion_tokens ?? 0);
@@ -808,6 +878,9 @@ async function parseResponsesBody(res: Response): Promise<{
   imageDataUrl: string | null;
   model?: string;
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
+  embeddedError?: string;
+  incompleteReason?: string;
+  debugPreview: string;
 }> {
   const ct = String(res.headers.get('content-type') || '').toLowerCase();
   const rawBody = await res.text();
@@ -815,29 +888,56 @@ async function parseResponsesBody(res: Response): Promise<{
 
   const looksLikeSse =
     ct.includes('text/event-stream') ||
-    trimmed.startsWith('event:') ||
-    trimmed.startsWith('data:');
+    /^(?:event:|data:|id:)/m.test(trimmed);
 
   if (!looksLikeSse) {
     let data: any = {};
     try {
       data = JSON.parse(trimmed || '{}');
     } catch {
-      return { text: '', imageDataUrl: null };
+      return {
+        text: '',
+        imageDataUrl: null,
+        debugPreview: `ct=${ct || 'unknown'} | ${sanitizeDebugPreview(trimmed, 160)}`,
+      };
     }
+    const text = extractResponsesApiText(data);
+    const embeddedError = extractEmbeddedError(data);
+    const incompleteReason =
+      typeof data?.incomplete_details?.reason === 'string'
+        ? data.incomplete_details.reason
+        : typeof data?.response?.incomplete_details?.reason === 'string'
+        ? data.response.incomplete_details.reason
+        : undefined;
+    const statusStr = data?.status || data?.response?.status || '';
+    const keys = Object.keys(data || {}).slice(0, 8).join(',');
     return {
-      text: extractResponsesApiText(data),
+      text,
       imageDataUrl: extractImageFromResponsesPayload(data),
-      model: typeof data?.model === 'string' ? data.model : undefined,
+      model:
+        typeof data?.model === 'string'
+          ? data.model
+          : typeof data?.response?.model === 'string'
+          ? data.response.model
+          : undefined,
       usage: extractXingchiUsage(data),
+      embeddedError,
+      incompleteReason,
+      debugPreview: `json keys=[${keys}]${statusStr ? ` status=${statusStr}` : ''}${
+        incompleteReason ? ` reason=${incompleteReason}` : ''
+      } | ${sanitizeDebugPreview(trimmed, 140)}`,
     };
   }
 
-  // Parse SSE stream (Codex Responses API stream=true format)
+  // Parse SSE stream (Codex Responses API / Chat Completions / Anthropic SSE formats)
   let deltaText = '';
+  let doneItemText = '';
   let finalResponse: any = null;
   let sseImage: string | null = null;
   let sseModel: string | undefined;
+  let embeddedError: string | undefined;
+  let incompleteReason: string | undefined;
+  const seenEventTypes = new Set<string>();
 
   for (const line of rawBody.split(/\r?\n/)) {
     const clean = line.trim();
@@ -846,46 +946,86 @@ async function parseResponsesBody(res: Response): Promise<{
     if (!payloadStr || payloadStr === '[DONE]') continue;
     try {
       const evt = JSON.parse(payloadStr) as any;
+      if (typeof evt?.type === 'string') {
+        seenEventTypes.add(evt.type);
+      }
       if (typeof evt?.response?.model === 'string') {
         sseModel = evt.response.model;
       } else if (typeof evt?.model === 'string') {
         sseModel = evt.model;
       }
-      if (evt?.type === 'response.output_text.delta' && typeof evt?.delta === 'string') {
-        deltaText += evt.delta;
-      } else if (
-        (evt?.type === 'response.output_text.done' || evt?.type === 'response.content_part.done') &&
-        !deltaText &&
-        typeof evt?.text === 'string'
-      ) {
-        deltaText = evt.text;
+
+      if (evt?.type === 'error' || evt?.type === 'response.failed') {
+        embeddedError = extractEmbeddedError(evt) || sanitizeDebugPreview(payloadStr, 180);
+      } else if (evt?.type === 'response.output_text.delta') {
+        if (typeof evt?.delta === 'string') {
+          deltaText += evt.delta;
+        } else if (typeof evt?.delta?.text === 'string') {
+          deltaText += evt.delta.text;
+        }
+      } else if (evt?.type === 'response.output_text.done' && typeof evt?.text === 'string') {
+        if (!doneItemText) doneItemText = evt.text;
+      } else if (evt?.type === 'response.content_part.done') {
+        const pt =
+          typeof evt?.part?.text === 'string'
+            ? evt.part.text
+            : typeof evt?.text === 'string'
+            ? evt.text
+            : '';
+        if (pt) doneItemText = doneItemText ? `${doneItemText}\n${pt}` : pt;
+      } else if (evt?.type === 'response.output_item.done' && evt?.item) {
+        if (evt.item.type === 'image_generation_call' && typeof evt.item.result === 'string' && evt.item.result.trim()) {
+          const b64 = evt.item.result.trim();
+          sseImage = b64.startsWith('data:image/') ? b64 : `data:image/png;base64,${b64}`;
+        } else {
+          const itemTxt = extractResponsesApiText({ output: [evt.item] });
+          if (itemTxt) {
+            doneItemText = doneItemText ? `${doneItemText}\n${itemTxt}` : itemTxt;
+          }
+        }
       } else if (
         evt?.type === 'response.image_generation_call.partial_image' &&
         typeof evt?.partial_image_b64 === 'string'
       ) {
         sseImage = `data:image/png;base64,${evt.partial_image_b64.trim()}`;
-      } else if (evt?.type === 'response.output_item.done' && evt?.item?.type === 'image_generation_call') {
-        if (typeof evt.item.result === 'string' && evt.item.result.trim()) {
-          const b64 = evt.item.result.trim();
-          sseImage = b64.startsWith('data:image/') ? b64 : `data:image/png;base64,${b64}`;
-        }
-      } else if (evt?.type === 'response.completed' || evt?.type === 'response.done') {
+      } else if (
+        evt?.type === 'response.completed' ||
+        evt?.type === 'response.done' ||
+        evt?.type === 'response.incomplete'
+      ) {
         finalResponse = evt?.response || evt;
-      } else if (evt?.choices?.[0]?.delta?.content) {
-        deltaText += String(evt.choices[0].delta.content);
+        if (typeof finalResponse?.incomplete_details?.reason === 'string') {
+          incompleteReason = finalResponse.incomplete_details.reason;
+        }
+      } else if (evt?.type === 'content_block_delta' && typeof evt?.delta?.text === 'string') {
+        deltaText += evt.delta.text;
+      } else if (typeof evt?.choices?.[0]?.delta?.content === 'string') {
+        deltaText += evt.choices[0].delta.content;
+      } else if (typeof evt?.choices?.[0]?.message?.content === 'string') {
+        doneItemText = evt.choices[0].message.content;
+      } else if (evt?.error) {
+        embeddedError = extractEmbeddedError(evt);
       }
     } catch {
       // Ignore malformed SSE lines
     }
   }
 
-  const finalText = (finalResponse ? extractResponsesApiText(finalResponse) : '') || deltaText.trim();
+  const finalText =
+    (finalResponse ? extractResponsesApiText(finalResponse) : '') ||
+    deltaText.trim() ||
+    doneItemText.trim();
   const finalImg = (finalResponse ? extractImageFromResponsesPayload(finalResponse) : null) || sseImage;
   return {
     text: finalText,
     imageDataUrl: finalImg,
     model: (typeof finalResponse?.model === 'string' ? finalResponse.model : undefined) || sseModel,
     usage: finalResponse ? extractXingchiUsage(finalResponse) : undefined,
+    embeddedError: embeddedError || (finalResponse ? extractEmbeddedError(finalResponse) : undefined),
+    incompleteReason,
+    debugPreview: `sse events=[${Array.from(seenEventTypes).slice(0, 8).join(',')}]${
+      incompleteReason ? ` reason=${incompleteReason}` : ''
+    } | ${sanitizeDebugPreview(trimmed, 140)}`,
   };
 }
 
@@ -960,7 +1100,7 @@ export async function callXingchiCompletion(params: {
       messages,
       store: !xingchiStore.disableResponseStorage,
     };
-    if (params.maxTokens) body.max_tokens = params.maxTokens;
+    if (params.maxTokens) body.max_tokens = Math.max(256, params.maxTokens);
     if (typeof params.temperature === 'number' && Number.isFinite(params.temperature)) {
       body.temperature = params.temperature;
     }
@@ -998,7 +1138,8 @@ export async function callXingchiCompletion(params: {
       store: !xingchiStore.disableResponseStorage,
       stream: opts.stream,
     };
-    if (opts.allowMaxTokens && params.maxTokens) {
+    // Avoid small max_output_tokens on Responses API because reasoning models (e.g. gpt-6.1-sol) consume tokens before text output
+    if (opts.allowMaxTokens && params.maxTokens && params.maxTokens >= 1024) {
       body.max_output_tokens = params.maxTokens;
     }
     if (opts.allowTemperature && typeof params.temperature === 'number' && Number.isFinite(params.temperature)) {
@@ -1027,6 +1168,7 @@ export async function callXingchiCompletion(params: {
   };
 
   let usedProtocol: XingchiProtocol = protocol;
+  let usedResponsesStream = false;
   let res: Response;
 
   if (protocol === 'anthropic') {
@@ -1052,39 +1194,30 @@ export async function callXingchiCompletion(params: {
       signal: AbortSignal.timeout(timeoutMs),
     });
   } else if (protocol === 'responses') {
+    // Codex Responses gateways natively stream SSE; start with stream: true for maximum compatibility
+    usedResponsesStream = true;
     res = await callResponsesApi({
-      stream: false,
+      stream: true,
       allowImages: true,
       allowTools: true,
       allowJsonFormat: true,
-      allowTemperature: true,
+      allowTemperature: false,
       allowMaxTokens: true,
     });
 
-    // Retry cleanly if Codex Responses proxy requires stream=true or rejects optional params
+    // Retry cleanly if optional params (tools/format/max_output_tokens/images/stream) are rejected
     if (res.status === 400 || res.status === 403 || res.status === 422) {
       const firstErr = await res.clone().text().catch(() => '');
       const lower = firstErr.toLowerCase();
-      const requiresStream = lower.includes('stream');
+      const rejectStream = lower.includes('stream') && (lower.includes('false') || lower.includes('not supported'));
       const isParamRejection =
         res.status !== 403 ||
-        requiresStream ||
         (!lower.includes('invalid_api_key') && !lower.includes('incorrect api key'));
 
-      if (
-        requiresStream ||
-        (isParamRejection &&
-          (lower.includes('temperature') ||
-            lower.includes('web_search') ||
-            lower.includes('tool') ||
-            lower.includes('format') ||
-            lower.includes('max_output_tokens') ||
-            lower.includes('input_image') ||
-            lower.includes('unsupported') ||
-            res.status === 400))
-      ) {
+      if (isParamRejection) {
+        usedResponsesStream = !rejectStream;
         res = await callResponsesApi({
-          stream: true,
+          stream: usedResponsesStream,
           allowImages: !lower.includes('image'),
           allowTools: false,
           allowJsonFormat: false,
@@ -1106,7 +1239,7 @@ export async function callXingchiCompletion(params: {
     }
   }
 
-  const latencyMs = Math.max(1, Date.now() - startedAt);
+  let latencyMs = Math.max(1, Date.now() - startedAt);
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
     const classified = classifyXingchiError(res.status, errText);
@@ -1117,41 +1250,63 @@ export async function callXingchiCompletion(params: {
   let text = '';
   let resolvedModel = model;
   let usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined;
+  let debugPreview = '';
+  let embeddedError: string | undefined;
 
   if (usedProtocol === 'responses') {
-    const parsed = await parseResponsesBody(res);
+    let parsed = await parseResponsesBody(res);
+    // If HTTP 200 returned empty text without an explicit upstream error, retry once with toggled stream mode and clean minimal payload
+    if (!parsed.text && !parsed.embeddedError) {
+      const retryRes = await callResponsesApi({
+        stream: !usedResponsesStream,
+        allowImages: false,
+        allowTools: false,
+        allowJsonFormat: false,
+        allowTemperature: false,
+        allowMaxTokens: false,
+      });
+      if (retryRes.ok) {
+        const retryParsed = await parseResponsesBody(retryRes);
+        if (retryParsed.text || retryParsed.embeddedError) {
+          parsed = retryParsed;
+        }
+      }
+      latencyMs = Math.max(1, Date.now() - startedAt);
+    }
     text = parsed.text;
     if (parsed.model) resolvedModel = parsed.model;
     usage = parsed.usage;
+    embeddedError = parsed.embeddedError;
+    debugPreview = parsed.debugPreview;
   } else {
-    const data = (await res.json().catch(() => ({}))) as any;
+    const rawText = await res.text();
+    let data: any = {};
+    try {
+      data = JSON.parse(rawText || '{}');
+    } catch {
+      debugPreview = sanitizeDebugPreview(rawText, 160);
+    }
+    embeddedError = extractEmbeddedError(data);
     if (typeof data?.model === 'string') resolvedModel = data.model;
     usage = extractXingchiUsage(data);
-    if (usedProtocol === 'anthropic') {
-      const blocks = Array.isArray(data?.content) ? data.content : [];
-      text = blocks
-        .map((b: any) => (typeof b?.text === 'string' ? b.text : ''))
-        .join('\n')
-        .trim();
-    } else {
-      const content = data?.choices?.[0]?.message?.content;
-      if (typeof content === 'string') {
-        text = content.trim();
-      } else if (Array.isArray(content)) {
-        text = content
-          .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
-          .join('\n')
-          .trim();
-      }
+    text = extractResponsesApiText(data);
+    if (!text) {
+      debugPreview = debugPreview || sanitizeDebugPreview(rawText, 160);
     }
   }
 
+  if (embeddedError && !text) {
+    recordXingchiUsage(false, { latencyMs, errorMsg: embeddedError });
+    throw new Error(`Xingchi API báo lỗi trong phản hồi: ${embeddedError}`);
+  }
+
   if (!text) {
+    const detail = debugPreview ? ` (${debugPreview})` : '';
     recordXingchiUsage(false, {
       latencyMs,
-      errorMsg: 'Xingchi API trả về nội dung phản hồi rỗng.',
+      errorMsg: `Xingchi API trả về nội dung phản hồi rỗng${detail}`,
     });
-    throw new Error('Xingchi API kết nối được nhưng trả về nội dung phản hồi rỗng.');
+    throw new Error(`Xingchi API kết nối được nhưng trả về nội dung phản hồi rỗng${detail}`);
   }
 
   recordXingchiUsage(true, { latencyMs });
@@ -1212,11 +1367,14 @@ export async function chatWithXingchi(params: {
       model,
       protocol,
       useWebSearch: params.useWebSearch ?? xingchiStore.webSearch === 'live',
-      maxTokens: Math.max(16, Math.min(2048, Number(params.maxTokens) || 512)),
+      maxTokens:
+        params.maxTokens !== undefined
+          ? Math.max(64, Math.min(4096, Number(params.maxTokens) || 1024))
+          : 1024,
       temperature:
         typeof params.temperature === 'number' && Number.isFinite(params.temperature)
           ? Math.max(0, Math.min(1.5, params.temperature))
-          : 0.4,
+          : undefined,
     });
 
     const routeLabel =
@@ -1244,7 +1402,7 @@ export async function chatWithXingchi(params: {
       model,
       protocol,
       latencyMs,
-      message: String(err?.message || err || 'Lỗi kết nối Xingchi API.').slice(0, 320),
+      message: String(err?.message || err || 'Lỗi kết nối Xingchi API.').slice(0, 360),
       status: getXingchiPublicStatus(),
     };
   }
@@ -1291,9 +1449,9 @@ export async function generateImageWithXingchi(params: {
   const timeoutMs = Math.max(60_000, clampTimeoutSec(xingchiStore.timeoutSec) * 1000);
   const startedAt = Date.now();
 
-  // 1) Primary path: OpenAI Responses API with image_generation tool (supports JSON and SSE)
+  // 1) Primary path: OpenAI Responses API with image_generation tool (prefer SSE stream first for Codex relays)
   if (xingchiStore.protocol === 'responses') {
-    for (const streamMode of [false, true]) {
+    for (const streamMode of [true, false]) {
       try {
         const contentParts: any[] = [{ type: 'input_text', text: prompt }];
         for (const url of refs) {
@@ -1331,7 +1489,7 @@ export async function generateImageWithXingchi(params: {
               latencyMs,
             };
           }
-          break;
+          continue;
         }
         if (resp.status === 401) {
           const errText = await resp.text().catch(() => '');
@@ -1415,7 +1573,6 @@ export async function testXingchiConnection(opts?: {
     model: opts?.model,
     protocol: opts?.protocol,
     useWebSearch: false,
-    maxTokens: 32,
-    temperature: 0,
+    maxTokens: 1024,
   });
 }
