@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.33",
+    "version": "1.0.34",
     "date": "26/11/2026",
-    "title": "feat(api): improve error extraction and sanitization",
+    "title": "feat(xingchi): handle image generation permissions",
     "changes": [
-      "feat(api): improve error extraction and sanitization"
+      "feat(xingchi): handle image generation permissions"
     ]
   },
   {
