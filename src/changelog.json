@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.32",
+    "version": "1.0.33",
     "date": "26/11/2026",
-    "title": "feat: improve API key parsing and validation",
+    "title": "feat(api): improve error extraction and sanitization",
     "changes": [
-      "feat: improve API key parsing and validation"
+      "feat(api): improve error extraction and sanitization"
     ]
   },
   {
