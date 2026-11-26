@@ -332,6 +332,15 @@ function classifyXingchiError(statusCode: number | undefined, rawText: string): 
       message: `Cổng api.xingchiapi.com báo khóa không hợp lệ (HTTP ${statusCode || 401}${detailSuffix}). Lưu ý: trong Settings > Secrets chỉ dán chuỗi sk-... (không kèm dấu ngoặc kép) và kiểm tra khóa còn hoạt động trên tài khoản Xingchi.`,
     };
   }
+  if (
+    lower.includes('image generation is not enabled') ||
+    lower.includes('not enabled for this group')
+  ) {
+    return {
+      status: xingchiStore.status === 'ready' ? 'ready' : 'error',
+      message: `Nhóm API Key hiện tại trên api.xingchiapi.com chưa được bật quyền tạo ảnh (HTTP ${statusCode || 403}${detailSuffix}). Kịch bản/text (${xingchiStore.selectedModel}) vẫn hoạt động bình thường; để tạo ảnh hãy bật quyền Image Generation cho nhóm key trên Xingchi hoặc chọn Gemini / Muse2API / Qwen / Google Flow.`,
+    };
+  }
   if (statusCode === 403 || lower.includes('unauthorized') || lower.includes('forbidden')) {
     return {
       status: 'auth_error',
@@ -1450,30 +1459,46 @@ export async function generateImageWithXingchi(params: {
   const startedAt = Date.now();
 
   // 1) Primary path: OpenAI Responses API with image_generation tool (prefer SSE stream first for Codex relays)
+  let responsesErrorText = '';
   if (xingchiStore.protocol === 'responses') {
-    for (const streamMode of [true, false]) {
+    const aspectHint =
+      params.aspectRatio === '16:9'
+        ? '16:9 landscape'
+        : params.aspectRatio === '9:16'
+        ? '9:16 vertical portrait'
+        : '1:1 square';
+
+    for (const attempt of [
+      { stream: true, includeSize: false },
+      { stream: true, includeSize: true },
+      { stream: false, includeSize: false },
+    ]) {
       try {
         const contentParts: any[] = [{ type: 'input_text', text: prompt }];
         for (const url of refs) {
           contentParts.push({ type: 'input_image', image_url: url });
         }
+        const toolSpec: Record<string, unknown> = attempt.includeSize
+          ? { type: 'image_generation', size }
+          : { type: 'image_generation' };
+
         const resp = await fetch(`${baseUrl}/v1/responses`, {
           method: 'POST',
           headers: buildXingchiHeaders(
             apiKey,
             {
               'Content-Type': 'application/json',
-              Accept: streamMode ? 'text/event-stream' : 'application/json',
+              Accept: attempt.stream ? 'text/event-stream' : 'application/json',
             },
             { codexClient: true }
           ),
           body: JSON.stringify({
             model,
-            instructions: 'Generate the requested image using the image_generation tool.',
+            instructions: `Generate a ${aspectHint} image matching the user request using the image_generation tool.`,
             input: [{ role: 'user', content: contentParts }],
             store: !xingchiStore.disableResponseStorage,
-            stream: streamMode,
-            tools: [{ type: 'image_generation', size }],
+            stream: attempt.stream,
+            tools: [toolSpec],
           }),
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -1491,8 +1516,9 @@ export async function generateImageWithXingchi(params: {
           }
           continue;
         }
+        const errText = await resp.text().catch(() => '');
+        responsesErrorText = errText;
         if (resp.status === 401) {
-          const errText = await resp.text().catch(() => '');
           const classified = classifyXingchiError(resp.status, errText);
           recordXingchiUsage(false, {
             latencyMs: Math.max(1, Date.now() - startedAt),
@@ -1500,6 +1526,9 @@ export async function generateImageWithXingchi(params: {
             errorMsg: errText,
           });
           throw new Error(classified.message);
+        }
+        if (resp.status === 403 && errText.toLowerCase().includes('not enabled for this group')) {
+          break;
         }
       } catch (err: any) {
         if (String(err?.message || '').includes('HTTP 401')) {
@@ -1530,9 +1559,14 @@ export async function generateImageWithXingchi(params: {
 
   const latencyMs = Math.max(1, Date.now() - startedAt);
   if (!imgRes.ok) {
-    const errText = await imgRes.text().catch(() => '');
+    const errText = (await imgRes.text().catch(() => '')) || responsesErrorText;
     const classified = classifyXingchiError(imgRes.status, errText);
-    recordXingchiUsage(false, { latencyMs, statusCode: imgRes.status, errorMsg: errText });
+    const isGroupImageDisabled =
+      errText.toLowerCase().includes('image generation is not enabled') ||
+      errText.toLowerCase().includes('not enabled for this group');
+    if (!isGroupImageDisabled) {
+      recordXingchiUsage(false, { latencyMs, statusCode: imgRes.status, errorMsg: errText });
+    }
     throw new Error(classified.message);
   }
 
