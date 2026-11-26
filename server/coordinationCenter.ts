@@ -36,6 +36,14 @@ import {
   hasAnyEnabledGeminiAccount,
   pickWorkerGeminiAccount,
 } from './geminiPool';
+import {
+  claimNextFlowBridgeJob,
+  getFlowBridgeStatus,
+  isFlowBridgeOnline,
+  markFlowBridgeJobDone,
+  markFlowBridgeJobFailed,
+  type FlowBridgeClaimedJob,
+} from './flowBridge';
 
 const execFileAsync = promisify(execFile);
 
@@ -522,16 +530,27 @@ export async function checkAllAiReadiness(force = false): Promise<AiEngineReadin
     });
   }
 
-  // 4) Google Flow (Veo Manual/Bundle Source)
+  // 4) Google Flow (Veo Auto-Bridge + Manual Fallback)
+  const flowBridge = getFlowBridgeStatus(st);
   results.push({
     id: 'google_flow',
-    name: 'Google Flow (Veo Độc lập)',
-    role: 'Xuất gói prompt chuẩn & Nạp clip MP4 từng cảnh',
+    name: 'Google Flow (Veo · Auto-Bridge)',
+    role: flowBridge.connected
+      ? 'Tự động tạo Ảnh & Video trên Google Flow qua Chrome Extension'
+      : 'Tạo Ảnh & Video Google Flow (cài Extension để chạy tự động 100%)',
     independentSource: 'google_flow',
     status: 'ready',
-    activeModel: 'Flow Veo Prompt + Upload Clip',
-    accountSummary: 'Hoạt động độc lập 100%',
-    detail: 'Luôn sẵn sàng. Tách biệt hoàn toàn, không tự gọi Gemini/Muse/Qwen tạo video.',
+    activeModel: flowBridge.connected
+      ? `Flow Auto-Bridge (${flowBridge.extensionVersion || 'v1.1'}) · ${flowBridge.flowTabReady ? 'Tab Flow sẵn sàng' : 'Chờ mở tab Flow'}`
+      : 'Flow Prompt + Upload (Chưa bật Extension)',
+    accountSummary: flowBridge.connected
+      ? `Extension TRỰC TUYẾN · ${flowBridge.stats.completedImages} ảnh / ${flowBridge.stats.completedVideos} video`
+      : 'Chưa kết nối Extension Chrome',
+    detail: flowBridge.connected
+      ? flowBridge.flowTabReady
+        ? 'Chrome Extension đang trực tuyến và tab labs.google/fx sẵn sàng — bấm Chạy để tự động tạo ảnh & video bằng credit Flow.'
+        : 'Chrome Extension đang trực tuyến — hãy mở tab https://labs.google/fx/tools/flow trên Chrome để tự động chạy.'
+      : 'Có thể tải Chrome Extension Flow Auto-Bridge ngay bên dưới để tạo ảnh & video tự động 100% không cần copy prompt.',
     checkedAt: now,
   });
 
@@ -2096,19 +2115,34 @@ export async function runSingleCoordinationTask(params: {
           .filter((r) => r.kind === 'character')
           .map((r) => `${r.name}: ${r.detail}`)
           .join('; ');
-        const flowPrompt = buildGoogleFlowPrompt(session, scene, refSummary);
-        const promptSaved = saveBufferArtifact(
-          session.sessionId,
-          `${task.taskCode}_prompt.txt`,
-          Buffer.from(flowPrompt, 'utf8')
-        );
-        task.flowPrompt = flowPrompt;
-        task.localOutputFileName = promptSaved.fileName;
-        task.localOutputUrl = promptSaved.localUrl;
-        task.resultSummary = `Đã chuẩn bị prompt Google Flow cho Cảnh #${scene.sceneIndex} (${charRefs.length} nhân vật tham chiếu).`;
-        task.status = 'HOAN_THANH';
-        task.completedAt = Date.now();
-        task.updatedAt = Date.now();
+        const flowImgPrompt = [
+          `[CREATE SCENE KEYFRAME IMAGE · ${session.aspectRatio}]`,
+          `Scene #${scene.sceneIndex}: ${scene.title}`,
+          scene.imagePrompt || scene.actionDetail || scene.title,
+          refSummary ? `Character visual lock: ${refSummary}` : '',
+          scene.settingDetail ? `Setting: ${scene.settingDetail}` : '',
+          scene.cameraAngle ? `Camera framing: ${scene.cameraAngle}` : '',
+          'Photorealistic cinematic still frame, no on-screen text, no watermark.',
+        ]
+          .filter(Boolean)
+          .join('\n');
+        task.flowPrompt = flowImgPrompt;
+        if (isFlowBridgeOnline()) {
+          task.status = 'CHO_NHAP_FLOW';
+          task.resultSummary = `Đã đưa Cảnh #${scene.sceneIndex} vào hàng đợi Flow Auto-Bridge để Chrome Extension tự động tạo Ảnh trên Google Flow (${charRefs.length} nhân vật tham chiếu).`;
+          task.updatedAt = Date.now();
+        } else {
+          const promptSaved = saveBufferArtifact(
+            session.sessionId,
+            `${task.taskCode}_prompt.txt`,
+            Buffer.from(flowImgPrompt, 'utf8')
+          );
+          task.localOutputFileName = promptSaved.fileName;
+          task.localOutputUrl = promptSaved.localUrl;
+          task.status = 'CHO_NHAP_FLOW';
+          task.resultSummary = `Đang chờ Flow Auto-Bridge (Chrome Extension) tự tạo Ảnh Cảnh #${scene.sceneIndex} — hoặc tải ảnh lên thủ công ngay tại đây.`;
+          task.updatedAt = Date.now();
+        }
       } else {
         const engineMap: Record<Exclude<IndependentVideoSource, 'google_flow'>, 'gemini' | 'qwen' | 'muse2api'> = {
           gemini: 'gemini',
@@ -2181,7 +2215,9 @@ export async function runSingleCoordinationTask(params: {
           .join('; ');
         task.flowPrompt = buildGoogleFlowPrompt(session, scene, refSummary);
         task.status = 'CHO_NHAP_FLOW';
-        task.resultSummary = `Đã sẵn sàng prompt Google Flow cho Cảnh #${scene.sceneIndex}. Hãy sao chép prompt, tạo video trên Google Flow rồi tải tệp MP4 lên ngay tại dòng này.`;
+        task.resultSummary = isFlowBridgeOnline()
+          ? `Đã đưa Video Cảnh #${scene.sceneIndex} vào hàng đợi Flow Auto-Bridge — Chrome Extension sẽ tự động tạo video Veo và gửi MP4 về App.`
+          : `Đã sẵn sàng prompt Google Flow cho Cảnh #${scene.sceneIndex}. Bật Chrome Extension Flow Auto-Bridge để tự chạy hoặc tải tệp MP4 lên ngay tại dòng này.`;
         task.updatedAt = Date.now();
       } else {
         const keyframeDataUrl = readLocalFileAsDataUrl(session.sessionId, imgTask?.localOutputFileName);
@@ -2951,6 +2987,9 @@ export async function uploadFlowClipForTask(params: {
   taskCode: string;
   fileName: string;
   buffer: Buffer;
+  mimeType?: string;
+  fromBridge?: boolean;
+  autoContinue?: boolean;
   googleToken?: string;
 }): Promise<CoordinationTaskRow> {
   const st = loadState();
@@ -2959,8 +2998,21 @@ export async function uploadFlowClipForTask(params: {
   const task = session.tasks.find((t) => t.taskCode === params.taskCode);
   if (!task) throw new Error(`Không tìm thấy tác vụ ${params.taskCode}.`);
 
-  const ext = path.extname(params.fileName || '.mp4').toLowerCase();
-  const safeExt = ext === '.webm' || ext === '.mov' ? ext : '.mp4';
+  const isImgTask = task.taskCode.includes('-IMG-');
+  const mime = String(params.mimeType || '').toLowerCase();
+  const ext = path.extname(params.fileName || '').toLowerCase();
+
+  let safeExt: string;
+  if (isImgTask) {
+    if (ext === '.jpg' || ext === '.jpeg' || mime.includes('jpeg')) safeExt = '.jpg';
+    else if (ext === '.webp' || mime.includes('webp')) safeExt = '.webp';
+    else safeExt = '.png';
+  } else {
+    if (ext === '.webm' || mime.includes('webm')) safeExt = '.webm';
+    else if (ext === '.mov' || mime.includes('quicktime')) safeExt = '.mov';
+    else safeExt = '.mp4';
+  }
+
   const saved = saveBufferArtifact(session.sessionId, `${task.taskCode}_flow${safeExt}`, params.buffer);
   task.localOutputFileName = saved.fileName;
   task.localOutputUrl = saved.localUrl;
@@ -2968,10 +3020,17 @@ export async function uploadFlowClipForTask(params: {
   task.errorReason = undefined;
   task.completedAt = Date.now();
   task.updatedAt = Date.now();
-  task.resultSummary = `Đã tiếp nhận video từ Google Flow (${(params.buffer.byteLength / (1024 * 1024)).toFixed(2)} MB) cho ${task.taskCode}.`;
+  const sizeMb = (params.buffer.byteLength / (1024 * 1024)).toFixed(2);
+  task.resultSummary = isImgTask
+    ? `Đã tiếp nhận ảnh phân cảnh từ ${params.fromBridge ? 'Google Flow Auto-Bridge' : 'Google Flow'} (${sizeMb} MB) cho ${task.taskCode}.`
+    : `Đã tiếp nhận video từ ${params.fromBridge ? 'Google Flow Auto-Bridge' : 'Google Flow'} (${sizeMb} MB) cho ${task.taskCode}.`;
   recomputeSessionStatus(session);
   session.updatedAt = Date.now();
   saveState(true);
+
+  if (params.fromBridge) {
+    markFlowBridgeJobDone(isImgTask ? 'image' : 'video', session.sessionId, task.taskCode, params.buffer.byteLength);
+  }
 
   if (params.googleToken && st.workspace.spreadsheetId) {
     await syncSessionToGoogleWorkspace({
@@ -2984,12 +3043,72 @@ export async function uploadFlowClipForTask(params: {
   pushMeetingMessage({
     sessionId: session.sessionId,
     senderId: 'google_flow',
-    senderName: 'Google Flow · Veo (Độc lập)',
-    senderRole: 'Bước 2 · Nạp clip hoàn tất',
+    senderName: params.fromBridge ? 'Google Flow Auto-Bridge' : 'Google Flow · Veo (Độc lập)',
+    senderRole: isImgTask ? 'Bước 1 · Nhận ảnh Flow hoàn tất' : 'Bước 2 · Nhận clip Flow hoàn tất',
     kind: 'completed',
     taskCode: task.taskCode,
     content: `[${task.taskCode}] ${task.resultSummary}`,
     referenceLink: task.driveOutputUrl || task.localOutputUrl,
+  });
+
+  // Automatically advance session to Step 2 Video (if Step 1 Image just completed) or Step 3 Final MP4 Assembly!
+  if (params.autoContinue !== false) {
+    const hasNextRunnable = session.tasks.some((t) => {
+      if (t.status !== 'CHO_NHAN') return false;
+      return t.dependsOnTaskCodes.every((depCode) => {
+        const dep = session.tasks.find((x) => x.taskCode === depCode);
+        return dep?.status === 'HOAN_THANH';
+      });
+    });
+    if (hasNextRunnable && !activeSessionRunners.has(session.sessionId)) {
+      await startSessionSequentialRun({
+        sessionId: session.sessionId,
+        googleToken: params.googleToken,
+        retryErrors: false,
+      }).catch(() => {});
+    }
+  }
+
+  return task;
+}
+
+export function claimNextFlowJobFromCenter(workerId?: string): FlowBridgeClaimedJob | null {
+  const st = loadState();
+  return claimNextFlowBridgeJob({
+    state: st,
+    workerId,
+    loadArtifactDataUrl: (sessionId, fileName) => readLocalFileAsDataUrl(sessionId, fileName) || undefined,
+  });
+}
+
+export function failFlowBridgeTask(params: {
+  sessionId: string;
+  taskCode: string;
+  error: string;
+}): CoordinationTaskRow | null {
+  const st = loadState();
+  const session = st.sessions.find((s) => s.sessionId === params.sessionId);
+  const task = session?.tasks.find((t) => t.taskCode === params.taskCode);
+  const reason = String(params.error || 'Google Flow Auto-Bridge báo lỗi không xác định.').slice(0, 400);
+  markFlowBridgeJobFailed(params.sessionId, params.taskCode, reason);
+
+  if (!session || !task) return null;
+  task.status = 'LOI';
+  task.errorReason = reason;
+  task.updatedAt = Date.now();
+  session.lastError = `[${task.taskCode}] ${reason}`;
+  recomputeSessionStatus(session);
+  session.updatedAt = Date.now();
+  saveState(true);
+
+  pushMeetingMessage({
+    sessionId: session.sessionId,
+    senderId: 'google_flow',
+    senderName: 'Google Flow Auto-Bridge',
+    senderRole: `Bước ${task.step} · Báo lỗi`,
+    kind: 'error',
+    taskCode: task.taskCode,
+    content: `[${task.taskCode}] Flow Auto-Bridge gặp sự cố: ${reason}`,
   });
 
   return task;

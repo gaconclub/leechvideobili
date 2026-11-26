@@ -100,7 +100,9 @@ import {
 import {
   chatWithXingchi,
   fetchXingchiModels,
+  generateImageWithXingchi,
   getXingchiPublicStatus,
+  importXingchiTomlConfig,
   testXingchiConnection,
   updateXingchiConfig,
 } from './server/xingchiApi';
@@ -163,10 +165,12 @@ import {
   autoDistributeAndRunSessions,
   bulkUpdateSessionVideoSource,
   checkAllAiReadiness,
+  claimNextFlowJobFromCenter,
   createSessionFromStudio,
   deleteCoordinationSession,
   extractGoogleBearerToken,
   extractOptionalGoogleBearerToken,
+  failFlowBridgeTask,
   getActiveWorkerTelemetry,
   getCoordinationCenterState,
   initCoordinationWorkspace,
@@ -187,6 +191,14 @@ import {
   updateSessionVideoSource,
   uploadFlowClipForTask,
 } from './server/coordinationCenter';
+import {
+  buildFlowBridgeExtensionFiles,
+  getFlowBridgeStatus,
+  recordFlowBridgeHeartbeat,
+  rotateFlowBridgeToken,
+  verifyFlowBridgeToken,
+  writeFlowBridgeExtensionToWorkspace,
+} from './server/flowBridge';
 
 const require = createRequire(import.meta.url);
 const { ZipArchive } = require('archiver') as {
@@ -5110,7 +5122,11 @@ async function startServer() {
             enabled: xc.enabled,
             status: xc.status,
             model: xc.selectedModel,
+            reviewModel: xc.reviewModel,
             protocol: xc.protocol,
+            webSearch: xc.webSearch,
+            disableResponseStorage: xc.disableResponseStorage,
+            imageGeneration: xc.imageGeneration,
             baseUrl: xc.baseUrl,
             source: xc.keySource,
           };
@@ -5632,7 +5648,7 @@ async function startServer() {
         prompt?: string;
         aspectRatio?: '1:1' | '9:16' | '16:9';
         quality?: 'standard' | 'pro';
-        engine?: 'gemini' | 'muse2api' | 'qwen';
+        engine?: 'gemini' | 'muse2api' | 'qwen' | 'xingchi';
         videoStyle?: StudioVideoStyle;
         customStylePrompt?: string;
         characterBible?: string;
@@ -5669,7 +5685,14 @@ async function startServer() {
         prompt: String(prompt),
         aspectRatio,
         quality: quality === 'pro' ? 'pro' : 'standard',
-        engine: engine === 'muse2api' ? 'muse2api' : engine === 'qwen' ? 'qwen' : 'gemini',
+        engine:
+          engine === 'muse2api'
+            ? 'muse2api'
+            : engine === 'qwen'
+            ? 'qwen'
+            : engine === 'xingchi'
+            ? 'xingchi'
+            : 'gemini',
         videoStyle,
         customStylePrompt: String(customStylePrompt || ''),
         characterBible: String(characterBible || ''),
@@ -6878,20 +6901,48 @@ async function startServer() {
 
   app.patch('/api/xingchi/config', (req, res) => {
     try {
+      const rawProtocol = req.body?.protocol;
+      const protocol =
+        rawProtocol === 'responses' || rawProtocol === 'openai' || rawProtocol === 'anthropic'
+          ? rawProtocol
+          : undefined;
       const status = updateXingchiConfig({
         enabled: typeof req.body?.enabled === 'boolean' ? req.body.enabled : undefined,
-        protocol:
-          req.body?.protocol === 'anthropic'
-            ? 'anthropic'
-            : req.body?.protocol === 'openai'
-            ? 'openai'
-            : undefined,
+        protocol,
         selectedModel: typeof req.body?.selectedModel === 'string' ? req.body.selectedModel : undefined,
+        reviewModel: typeof req.body?.reviewModel === 'string' ? req.body.reviewModel : undefined,
+        webSearch:
+          req.body?.webSearch === 'live' || req.body?.webSearch === 'off'
+            ? req.body.webSearch
+            : undefined,
+        disableResponseStorage:
+          typeof req.body?.disableResponseStorage === 'boolean'
+            ? req.body.disableResponseStorage
+            : undefined,
+        imageGeneration:
+          typeof req.body?.imageGeneration === 'boolean' ? req.body.imageGeneration : undefined,
+        apiKeyModelDiscovery:
+          typeof req.body?.apiKeyModelDiscovery === 'boolean'
+            ? req.body.apiKeyModelDiscovery
+            : undefined,
+        httpHeaders:
+          req.body?.httpHeaders && typeof req.body.httpHeaders === 'object'
+            ? req.body.httpHeaders
+            : undefined,
         timeoutSec: req.body?.timeoutSec !== undefined ? Number(req.body.timeoutSec) : undefined,
       });
       res.json({ ok: true, status });
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không thể lưu cấu hình Xingchi API.' });
+    }
+  });
+
+  app.post('/api/xingchi/import-toml', (req, res) => {
+    try {
+      const result = importXingchiTomlConfig(String(req.body?.toml || ''));
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'Không thể phân tích cấu hình TOML.' });
     }
   });
 
@@ -6906,14 +6957,14 @@ async function startServer() {
 
   app.post('/api/xingchi/test', async (req, res) => {
     try {
+      const rawProtocol = req.body?.protocol;
+      const protocol =
+        rawProtocol === 'responses' || rawProtocol === 'openai' || rawProtocol === 'anthropic'
+          ? rawProtocol
+          : undefined;
       const result = await testXingchiConnection({
         model: typeof req.body?.model === 'string' ? req.body.model : undefined,
-        protocol:
-          req.body?.protocol === 'anthropic'
-            ? 'anthropic'
-            : req.body?.protocol === 'openai'
-            ? 'openai'
-            : undefined,
+        protocol,
       });
       res.status(result.ok ? 200 : 400).json(result);
     } catch (err: any) {
@@ -6923,22 +6974,44 @@ async function startServer() {
 
   app.post('/api/xingchi/chat', async (req, res) => {
     try {
+      const rawProtocol = req.body?.protocol;
+      const protocol =
+        rawProtocol === 'responses' || rawProtocol === 'openai' || rawProtocol === 'anthropic'
+          ? rawProtocol
+          : undefined;
       const result = await chatWithXingchi({
         prompt: String(req.body?.prompt || ''),
         systemPrompt: typeof req.body?.systemPrompt === 'string' ? req.body.systemPrompt : undefined,
         model: typeof req.body?.model === 'string' ? req.body.model : undefined,
-        protocol:
-          req.body?.protocol === 'anthropic'
-            ? 'anthropic'
-            : req.body?.protocol === 'openai'
-            ? 'openai'
-            : undefined,
+        protocol,
+        useWebSearch: typeof req.body?.useWebSearch === 'boolean' ? req.body.useWebSearch : undefined,
         maxTokens: req.body?.maxTokens !== undefined ? Number(req.body.maxTokens) : undefined,
         temperature: req.body?.temperature !== undefined ? Number(req.body.temperature) : undefined,
       });
       res.status(result.ok ? 200 : 400).json(result);
     } catch (err: any) {
       res.status(400).json({ ok: false, error: err?.message || 'Gửi yêu cầu thử tới Xingchi API thất bại.' });
+    }
+  });
+
+  app.post('/api/xingchi/image-test', async (req, res) => {
+    try {
+      const aspectRatio =
+        req.body?.aspectRatio === '16:9' || req.body?.aspectRatio === '9:16'
+          ? req.body.aspectRatio
+          : '1:1';
+      const result = await generateImageWithXingchi({
+        prompt: String(req.body?.prompt || '').trim() || 'Cinematic golden hour coffee cup on wooden table, ultra detailed',
+        aspectRatio,
+        model: typeof req.body?.model === 'string' ? req.body.model : undefined,
+      });
+      res.json({ ok: true, ...result, status: getXingchiPublicStatus() });
+    } catch (err: any) {
+      res.status(400).json({
+        ok: false,
+        error: err?.message || 'Thử tạo ảnh qua Xingchi API thất bại.',
+        status: getXingchiPublicStatus(),
+      });
     }
   });
 
@@ -7625,11 +7698,13 @@ async function startServer() {
           return res.status(400).json({ error: 'Tệp video Google Flow rỗng.' });
         }
         const fileName = String(req.headers['x-file-name'] || 'flow_clip.mp4');
+        const mimeType = String(req.headers['content-type'] || '');
         const googleToken = extractOptionalGoogleBearerToken(req.headers.authorization);
         const task = await uploadFlowClipForTask({
           sessionId: req.params.sessionId,
           taskCode: req.params.taskCode,
           fileName: decodeURIComponent(fileName),
+          mimeType,
           buffer,
           googleToken,
         });
@@ -7794,6 +7869,147 @@ async function startServer() {
 
   app.get('/api/coordination/workers', (_req, res) => {
     res.json(getActiveWorkerTelemetry());
+  });
+
+  // ========================================================
+  // GOOGLE FLOW AUTO-BRIDGE API (CHROME EXTENSION BRIDGE)
+  // ========================================================
+  app.use('/api/flow-bridge', (req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, X-Flow-Bridge-Token, X-Session-Id, X-Task-Code, X-File-Name, X-Mime-Type'
+    );
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+    next();
+  });
+
+  app.get('/api/flow-bridge/status', async (_req, res) => {
+    try {
+      const state = await getCoordinationCenterState(false);
+      res.json(getFlowBridgeStatus(state));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không lấy được trạng thái Flow Auto-Bridge.' });
+    }
+  });
+
+  app.post('/api/flow-bridge/rotate-token', async (_req, res) => {
+    try {
+      rotateFlowBridgeToken();
+      const state = await getCoordinationCenterState(false);
+      res.json(getFlowBridgeStatus(state));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Không thể tạo mới Bridge Token.' });
+    }
+  });
+
+  app.get('/api/flow-bridge/extension.zip', (req, res) => {
+    try {
+      const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+      const host = String(req.headers['x-forwarded-host'] || req.get('host') || `127.0.0.1:${PORT}`).split(',')[0].trim();
+      const queryUrl = typeof req.query.appUrl === 'string' ? req.query.appUrl.trim() : '';
+      const resolvedAppUrl = /^https?:\/\//i.test(queryUrl) ? queryUrl : `${proto}://${host}`;
+
+      const files = buildFlowBridgeExtensionFiles(resolvedAppUrl);
+      try {
+        writeFlowBridgeExtensionToWorkspace(resolvedAppUrl);
+      } catch {
+        // workspace mirror is optional
+      }
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="google-flow-auto-bridge-extension.zip"');
+      const archive = new ZipArchive({ zlib: { level: 6 } });
+      archive.on('error', (err: Error) => {
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+      });
+      archive.pipe(res);
+      for (const [fileName, content] of Object.entries(files)) {
+        archive.append(Buffer.from(content, 'utf8'), { name: `google-flow-auto-bridge/${fileName}` });
+      }
+      void archive.finalize();
+    } catch (err: any) {
+      if (!res.headersSent) {
+        res.status(500).json({ error: err?.message || 'Không thể đóng gói Chrome Extension Flow Bridge.' });
+      }
+    }
+  });
+
+  app.post('/api/flow-bridge/heartbeat', async (req, res) => {
+    const token = String(req.headers['x-flow-bridge-token'] || '');
+    if (!verifyFlowBridgeToken(token)) {
+      return res.status(401).json({ error: 'Bridge Token không hợp lệ.' });
+    }
+    recordFlowBridgeHeartbeat({
+      extensionVersion: req.body?.extensionVersion,
+      activeTabUrl: req.body?.activeTabUrl,
+      flowTabReady: req.body?.flowTabReady === true,
+      busyJobId: typeof req.body?.busyJobId === 'string' ? req.body.busyJobId : '',
+    });
+    const state = await getCoordinationCenterState(false);
+    const snap = getFlowBridgeStatus(state);
+    res.json({ ok: true, pendingJobsCount: snap.pendingJobsCount, status: snap.status });
+  });
+
+  app.post('/api/flow-bridge/claim', (req, res) => {
+    const token = String(req.headers['x-flow-bridge-token'] || '');
+    if (!verifyFlowBridgeToken(token)) {
+      return res.status(401).json({ error: 'Bridge Token không hợp lệ.' });
+    }
+    const job = claimNextFlowJobFromCenter(typeof req.body?.workerId === 'string' ? req.body.workerId : undefined);
+    res.json({ ok: true, job });
+  });
+
+  app.post('/api/flow-bridge/complete', express.raw({ type: '*/*', limit: '250mb' }), async (req, res) => {
+    try {
+      const token = String(req.headers['x-flow-bridge-token'] || '');
+      if (!verifyFlowBridgeToken(token)) {
+        return res.status(401).json({ error: 'Bridge Token không hợp lệ.' });
+      }
+      const sessionId = decodeURIComponent(String(req.headers['x-session-id'] || '')).trim();
+      const taskCode = decodeURIComponent(String(req.headers['x-task-code'] || '')).trim();
+      const fileName = decodeURIComponent(String(req.headers['x-file-name'] || 'flow_output.mp4')).trim();
+      const mimeType = String(req.headers['x-mime-type'] || req.headers['content-type'] || '').trim();
+      const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+
+      if (!sessionId || !taskCode) {
+        return res.status(400).json({ error: 'Thiếu X-Session-Id hoặc X-Task-Code.' });
+      }
+      if (buffer.byteLength < 512) {
+        return res.status(400).json({ error: 'Tệp kết quả từ Google Flow quá nhỏ hoặc rỗng.' });
+      }
+
+      const task = await uploadFlowClipForTask({
+        sessionId,
+        taskCode,
+        fileName,
+        mimeType,
+        buffer,
+        fromBridge: true,
+        autoContinue: true,
+      });
+      res.json({ ok: true, task });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể lưu kết quả từ Flow Auto-Bridge.' });
+    }
+  });
+
+  app.post('/api/flow-bridge/fail', (req, res) => {
+    const token = String(req.headers['x-flow-bridge-token'] || '');
+    if (!verifyFlowBridgeToken(token)) {
+      return res.status(401).json({ error: 'Bridge Token không hợp lệ.' });
+    }
+    const sessionId = String(req.body?.sessionId || '').trim();
+    const taskCode = String(req.body?.taskCode || '').trim();
+    const error = String(req.body?.error || 'Google Flow gặp lỗi.').trim();
+    if (!sessionId || !taskCode) {
+      return res.status(400).json({ error: 'Thiếu sessionId hoặc taskCode.' });
+    }
+    const task = failFlowBridgeTask({ sessionId, taskCode, error });
+    res.json({ ok: true, task });
   });
 
   app.post('/api/coordination/meeting', async (req, res) => {

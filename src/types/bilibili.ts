@@ -531,7 +531,8 @@ export interface ServerCapabilitiesStatus {
   };
 }
 
-export type XingchiProtocol = 'openai' | 'anthropic';
+export type XingchiProtocol = 'responses' | 'openai' | 'anthropic';
+export type XingchiWebSearchMode = 'live' | 'off';
 export type XingchiConnectionStatus =
   | 'ready'
   | 'untested'
@@ -549,6 +550,7 @@ export interface XingchiModelItem {
 
 export interface XingchiPublicStatus {
   baseUrl: string;
+  modelCatalogUrl: string;
   hasKey: boolean;
   maskedKey: string;
   keySource: 'env' | 'none';
@@ -556,6 +558,12 @@ export interface XingchiPublicStatus {
   configured: boolean;
   protocol: XingchiProtocol;
   selectedModel: string;
+  reviewModel: string;
+  webSearch: XingchiWebSearchMode;
+  disableResponseStorage: boolean;
+  imageGeneration: boolean;
+  apiKeyModelDiscovery: boolean;
+  httpHeaders: Record<string, string>;
   timeoutSec: number;
   status: XingchiConnectionStatus;
   lastCheckedAt?: number;
