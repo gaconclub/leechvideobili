@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.31",
+    "version": "1.0.32",
     "date": "26/11/2026",
-    "title": "feat(xingchi): integrate advanced Xingchi API features",
+    "title": "feat: improve API key parsing and validation",
     "changes": [
-      "feat(xingchi): integrate advanced Xingchi API features"
+      "feat: improve API key parsing and validation"
     ]
   },
   {
