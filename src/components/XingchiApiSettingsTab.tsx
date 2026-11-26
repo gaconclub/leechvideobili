@@ -562,14 +562,15 @@ export const XingchiApiSettingsTab: React.FC<XingchiApiSettingsTabProps> = ({
           </div>
           <p className="text-[11px] leading-relaxed">
             Khóa API được giữ hoàn toàn trên máy chủ và không bao giờ lưu trên trình duyệt. Hãy mở{' '}
-            <strong>Settings &gt; Secrets</strong> (hoặc tệp <code className="font-mono">.env</code> khi chạy trên máy cá nhân)
-            và khai báo các biến sau, rồi bấm <strong>Làm mới</strong>:
+            <strong>Settings &gt; Secrets</strong> (nhập tên <code className="font-mono">XINGCHI_API_KEY</code> và dán
+            thẳng chuỗi <code className="font-mono">sk-...</code> <strong>không kèm dấu ngoặc kép</strong>) hoặc thêm vào tệp{' '}
+            <code className="font-mono">.env</code> khi chạy trên máy cá nhân, rồi bấm <strong>Làm mới</strong>:
           </p>
           <div className="rounded-lg bg-slate-900/90 text-emerald-300 font-mono text-[11px] p-2.5 overflow-x-auto space-y-0.5">
-            <div>XINGCHI_API_KEY=&quot;sk-your-xingchi-api-key&quot;</div>
-            <div>XINGCHI_BASE_URL=&quot;https://api.xingchiapi.com/v1&quot;</div>
-            <div>XINGCHI_MODEL=&quot;gpt-6.1-sol&quot;</div>
-            <div>XINGCHI_WIRE_API=&quot;responses&quot;</div>
+            <div>XINGCHI_API_KEY=sk-your-xingchi-api-key</div>
+            <div>XINGCHI_BASE_URL=https://api.xingchiapi.com/v1</div>
+            <div>XINGCHI_MODEL=gpt-6.1-sol</div>
+            <div>XINGCHI_WIRE_API=responses</div>
           </div>
         </div>
       )}

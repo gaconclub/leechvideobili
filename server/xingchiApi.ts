@@ -11,6 +11,7 @@ import type {
 const DEFAULT_XINGCHI_BASE_URL = 'https://api.xingchiapi.com';
 const DEFAULT_XINGCHI_MODEL = 'gpt-6.1-sol';
 const DEFAULT_XINGCHI_ACTOR_AUTH = 'local-image-extension';
+const CODEX_USER_AGENT = 'codex_cli_rs/0.29.0';
 const ALLOWED_XINGCHI_HOSTS = new Set(['api.xingchiapi.com', 'xingchiapi.com']);
 const BLOCKED_CUSTOM_HEADERS = new Set([
   'authorization',
@@ -94,6 +95,24 @@ function parseProtocolValue(val: unknown): XingchiProtocol | undefined {
     return val;
   }
   return undefined;
+}
+
+function normalizeApiKeySecret(raw?: string): string {
+  const original = String(raw || '');
+  if (!original) return '';
+  let s = original
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\r\n\t]+/g, '')
+    .trim();
+  // Strip accidental key=value assignment if pasted from .env or TOML
+  s = s.replace(/^(?:export\s+)?(?:XINGCHI_API_KEY|experimental_bearer_token|api_key)\s*=\s*/i, '').trim();
+  // Strip surrounding straight/smart quotes or backticks
+  s = s.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '').trim();
+  // Strip accidental Bearer prefix
+  s = s.replace(/^bearer\s+/i, '').trim();
+  // Strip quotes again in case value was "Bearer sk-..."
+  s = s.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '').trim();
+  return s;
 }
 
 function createDefaultConfig(): XingchiPersistedConfig {
@@ -221,19 +240,27 @@ export function resolveXingchiBaseUrl(): string {
 }
 
 export function hasXingchiEnvKey(): boolean {
-  return Boolean(process.env.XINGCHI_API_KEY?.trim());
+  return Boolean(getXingchiApiKeySecret());
 }
 
 function getXingchiApiKeySecret(): string {
-  return process.env.XINGCHI_API_KEY?.trim() || '';
+  return normalizeApiKeySecret(process.env.XINGCHI_API_KEY);
 }
 
 export function buildXingchiHeaders(
   apiKey: string,
-  extra?: Record<string, string>
+  extra?: Record<string, string>,
+  opts?: { codexClient?: boolean }
 ): Record<string, string> {
-  return {
+  const base: Record<string, string> = {
     ...sanitizeXingchiHeaders(xingchiStore.httpHeaders),
+  };
+  if (opts?.codexClient) {
+    base['User-Agent'] = CODEX_USER_AGENT;
+    base['originator'] = 'codex_cli_rs';
+  }
+  return {
+    ...base,
     ...(extra || {}),
     Authorization: `Bearer ${apiKey}`,
   };
@@ -262,21 +289,53 @@ function classifyModelFamily(id: string): XingchiModelItem['family'] {
   return 'other';
 }
 
+function extractUpstreamErrorDetail(rawText: string): string {
+  const trimmed = String(rawText || '').trim();
+  if (!trimmed) return '';
+  let extracted = '';
+  try {
+    const parsed = JSON.parse(trimmed) as any;
+    const code = parsed?.error?.code || parsed?.code || '';
+    const msg = parsed?.error?.message || parsed?.message || parsed?.detail || '';
+    if (code && msg) {
+      extracted = `${code}: ${msg}`;
+    } else if (msg) {
+      extracted = String(msg);
+    } else if (code) {
+      extracted = String(code);
+    }
+  } catch {
+    extracted = trimmed;
+  }
+  return extracted
+    .replace(/sk-[a-zA-Z0-9_-]{8,}/g, 'sk-***')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 220);
+}
+
 function classifyXingchiError(statusCode: number | undefined, rawText: string): {
   status: XingchiConnectionStatus;
   message: string;
 } {
   const lower = rawText.toLowerCase();
+  const detail = extractUpstreamErrorDetail(rawText);
+  const detailSuffix = detail ? ` · Chi tiết từ cổng: ${detail}` : '';
+
   if (
     statusCode === 401 ||
-    statusCode === 403 ||
     lower.includes('invalid_api_key') ||
-    lower.includes('unauthorized') ||
     lower.includes('incorrect api key')
   ) {
     return {
       status: 'auth_error',
-      message: 'XINGCHI_API_KEY không hợp lệ hoặc đã hết quyền truy cập (HTTP 401/403).',
+      message: `Cổng api.xingchiapi.com báo khóa không hợp lệ (HTTP ${statusCode || 401}${detailSuffix}). Lưu ý: trong Settings > Secrets chỉ dán chuỗi sk-... (không kèm dấu ngoặc kép) và kiểm tra khóa còn hoạt động trên tài khoản Xingchi.`,
+    };
+  }
+  if (statusCode === 403 || lower.includes('unauthorized') || lower.includes('forbidden')) {
+    return {
+      status: 'auth_error',
+      message: `Cổng api.xingchiapi.com từ chối quyền truy cập (HTTP ${statusCode || 403}${detailSuffix}).`,
     };
   }
   if (
@@ -289,22 +348,20 @@ function classifyXingchiError(statusCode: number | undefined, rawText: string): 
   ) {
     return {
       status: 'quota_exceeded',
-      message: 'Tài khoản Xingchi API chạm giới hạn tốc độ hoặc hết số dư/quota (HTTP 402/429).',
+      message: `Tài khoản Xingchi API chạm giới hạn tốc độ hoặc hết số dư/quota (HTTP ${statusCode || 429}${detailSuffix}).`,
     };
   }
   if (statusCode === 404 || lower.includes('model_not_found') || lower.includes('not found')) {
     return {
       status: 'error',
-      message:
-        'Model hoặc đường dẫn không tồn tại trên api.xingchiapi.com (HTTP 404). Hãy tải lại danh sách Model và chọn đúng mã model.',
+      message: `Model hoặc đường dẫn không tồn tại trên api.xingchiapi.com (HTTP 404${detailSuffix}). Hãy tải lại danh sách Model và chọn đúng mã model.`,
     };
   }
-  const cleanSnippet = rawText.replace(/\s+/g, ' ').trim().slice(0, 200);
   return {
     status: 'error',
     message: statusCode
-      ? `Xingchi API trả về HTTP ${statusCode}${cleanSnippet ? `: ${cleanSnippet}` : ''}`
-      : cleanSnippet || 'Không thể kết nối tới https://api.xingchiapi.com.',
+      ? `Xingchi API trả về HTTP ${statusCode}${detail ? `: ${detail}` : ''}`
+      : detail || 'Không thể kết nối tới https://api.xingchiapi.com.',
   };
 }
 
@@ -532,7 +589,6 @@ export function importXingchiTomlConfig(rawToml: string): {
     appliedFields.push(`api_key_model_discovery=${discovery}`);
   }
 
-  // Parse inline TOML table: http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
   const headersMatch = text.match(/^\s*http_headers\s*=\s*\{([^}]+)\}/m);
   if (headersMatch?.[1]) {
     const parsedHeaders: Record<string, string> = {};
@@ -558,7 +614,7 @@ export function importXingchiTomlConfig(rawToml: string): {
     appliedFields,
     ignoredSecretToken,
     warning: ignoredSecretToken
-      ? 'Khóa API trong TOML đã được bỏ qua để bảo mật. Hãy đặt biến XINGCHI_API_KEY trong Settings > Secrets (hoặc tệp .env trên máy chủ).'
+      ? 'Khóa API trong TOML đã được bỏ qua để bảo mật. Hãy đặt biến XINGCHI_API_KEY trong Settings > Secrets (chỉ dán chuỗi sk-..., không kèm dấu ngoặc kép).'
       : undefined,
     status: getXingchiPublicStatus(),
   };
@@ -604,7 +660,7 @@ export async function fetchXingchiModels(): Promise<{
   try {
     const res = await fetch(`${baseUrl}/v1/models`, {
       method: 'GET',
-      headers: buildXingchiHeaders(apiKey, { Accept: 'application/json' }),
+      headers: buildXingchiHeaders(apiKey, { Accept: 'application/json' }, { codexClient: true }),
       signal: AbortSignal.timeout(Math.min(30_000, xingchiStore.timeoutSec * 1000)),
     });
     const latencyMs = Math.max(1, Date.now() - startedAt);
@@ -713,6 +769,28 @@ function extractResponsesApiText(data: any): string {
   return '';
 }
 
+function extractImageFromResponsesPayload(data: any): string | null {
+  if (Array.isArray(data?.output)) {
+    for (const item of data.output) {
+      if (item?.type === 'image_generation_call' && typeof item?.result === 'string' && item.result.trim()) {
+        const b64 = item.result.trim();
+        return b64.startsWith('data:image/') ? b64 : `data:image/png;base64,${b64}`;
+      }
+      if (Array.isArray(item?.content)) {
+        for (const part of item.content) {
+          if (typeof part?.image_base64 === 'string' && part.image_base64.trim()) {
+            return `data:image/png;base64,${part.image_base64.trim()}`;
+          }
+          if (typeof part?.b64_json === 'string' && part.b64_json.trim()) {
+            return `data:image/png;base64,${part.b64_json.trim()}`;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function extractXingchiUsage(
   data: any
 ): { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined {
@@ -723,6 +801,92 @@ function extractXingchiUsage(
   const totalTokens = Number(u.total_tokens ?? promptTokens + completionTokens);
   if (!promptTokens && !completionTokens && !totalTokens) return undefined;
   return { promptTokens, completionTokens, totalTokens };
+}
+
+async function parseResponsesBody(res: Response): Promise<{
+  text: string;
+  imageDataUrl: string | null;
+  model?: string;
+  usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
+}> {
+  const ct = String(res.headers.get('content-type') || '').toLowerCase();
+  const rawBody = await res.text();
+  const trimmed = rawBody.trim();
+
+  const looksLikeSse =
+    ct.includes('text/event-stream') ||
+    trimmed.startsWith('event:') ||
+    trimmed.startsWith('data:');
+
+  if (!looksLikeSse) {
+    let data: any = {};
+    try {
+      data = JSON.parse(trimmed || '{}');
+    } catch {
+      return { text: '', imageDataUrl: null };
+    }
+    return {
+      text: extractResponsesApiText(data),
+      imageDataUrl: extractImageFromResponsesPayload(data),
+      model: typeof data?.model === 'string' ? data.model : undefined,
+      usage: extractXingchiUsage(data),
+    };
+  }
+
+  // Parse SSE stream (Codex Responses API stream=true format)
+  let deltaText = '';
+  let finalResponse: any = null;
+  let sseImage: string | null = null;
+  let sseModel: string | undefined;
+
+  for (const line of rawBody.split(/\r?\n/)) {
+    const clean = line.trim();
+    if (!clean.startsWith('data:')) continue;
+    const payloadStr = clean.slice(5).trim();
+    if (!payloadStr || payloadStr === '[DONE]') continue;
+    try {
+      const evt = JSON.parse(payloadStr) as any;
+      if (typeof evt?.response?.model === 'string') {
+        sseModel = evt.response.model;
+      } else if (typeof evt?.model === 'string') {
+        sseModel = evt.model;
+      }
+      if (evt?.type === 'response.output_text.delta' && typeof evt?.delta === 'string') {
+        deltaText += evt.delta;
+      } else if (
+        (evt?.type === 'response.output_text.done' || evt?.type === 'response.content_part.done') &&
+        !deltaText &&
+        typeof evt?.text === 'string'
+      ) {
+        deltaText = evt.text;
+      } else if (
+        evt?.type === 'response.image_generation_call.partial_image' &&
+        typeof evt?.partial_image_b64 === 'string'
+      ) {
+        sseImage = `data:image/png;base64,${evt.partial_image_b64.trim()}`;
+      } else if (evt?.type === 'response.output_item.done' && evt?.item?.type === 'image_generation_call') {
+        if (typeof evt.item.result === 'string' && evt.item.result.trim()) {
+          const b64 = evt.item.result.trim();
+          sseImage = b64.startsWith('data:image/') ? b64 : `data:image/png;base64,${b64}`;
+        }
+      } else if (evt?.type === 'response.completed' || evt?.type === 'response.done') {
+        finalResponse = evt?.response || evt;
+      } else if (evt?.choices?.[0]?.delta?.content) {
+        deltaText += String(evt.choices[0].delta.content);
+      }
+    } catch {
+      // Ignore malformed SSE lines
+    }
+  }
+
+  const finalText = (finalResponse ? extractResponsesApiText(finalResponse) : '') || deltaText.trim();
+  const finalImg = (finalResponse ? extractImageFromResponsesPayload(finalResponse) : null) || sseImage;
+  return {
+    text: finalText,
+    imageDataUrl: finalImg,
+    model: (typeof finalResponse?.model === 'string' ? finalResponse.model : undefined) || sseModel,
+    usage: finalResponse ? extractXingchiUsage(finalResponse) : undefined,
+  };
 }
 
 export async function callXingchiCompletion(params: {
@@ -813,33 +977,28 @@ export async function callXingchiCompletion(params: {
   };
 
   const callResponsesApi = async (opts: {
+    stream: boolean;
     allowImages: boolean;
     allowTools: boolean;
     allowJsonFormat: boolean;
     allowTemperature: boolean;
+    allowMaxTokens: boolean;
   }): Promise<Response> => {
-    const inputPayload: any =
-      opts.allowImages && images.length > 0
-        ? [
-            {
-              role: 'user',
-              content: [
-                { type: 'input_text', text: prompt },
-                ...images.map((url) => ({ type: 'input_image', image_url: url })),
-              ],
-            },
-          ]
-        : prompt;
+    const contentParts: any[] = [{ type: 'input_text', text: prompt }];
+    if (opts.allowImages && images.length > 0) {
+      for (const url of images) {
+        contentParts.push({ type: 'input_image', image_url: url });
+      }
+    }
 
     const body: Record<string, unknown> = {
       model,
-      input: inputPayload,
+      instructions: systemPrompt || 'You are a helpful AI assistant.',
+      input: [{ role: 'user', content: contentParts }],
       store: !xingchiStore.disableResponseStorage,
+      stream: opts.stream,
     };
-    if (systemPrompt) {
-      body.instructions = systemPrompt;
-    }
-    if (params.maxTokens) {
+    if (opts.allowMaxTokens && params.maxTokens) {
       body.max_output_tokens = params.maxTokens;
     }
     if (opts.allowTemperature && typeof params.temperature === 'number' && Number.isFinite(params.temperature)) {
@@ -854,7 +1013,14 @@ export async function callXingchiCompletion(params: {
 
     return fetch(`${baseUrl}/v1/responses`, {
       method: 'POST',
-      headers: buildXingchiHeaders(apiKey, { 'Content-Type': 'application/json' }),
+      headers: buildXingchiHeaders(
+        apiKey,
+        {
+          'Content-Type': 'application/json',
+          Accept: opts.stream ? 'text/event-stream' : 'application/json',
+        },
+        { codexClient: true }
+      ),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -887,29 +1053,43 @@ export async function callXingchiCompletion(params: {
     });
   } else if (protocol === 'responses') {
     res = await callResponsesApi({
+      stream: false,
       allowImages: true,
       allowTools: true,
       allowJsonFormat: true,
       allowTemperature: true,
+      allowMaxTokens: true,
     });
 
-    // Retry cleanly if upstream rejects optional parameters (temperature / web_search / json_object / images)
-    if (res.status === 400 || res.status === 422) {
+    // Retry cleanly if Codex Responses proxy requires stream=true or rejects optional params
+    if (res.status === 400 || res.status === 403 || res.status === 422) {
       const firstErr = await res.clone().text().catch(() => '');
       const lower = firstErr.toLowerCase();
+      const requiresStream = lower.includes('stream');
+      const isParamRejection =
+        res.status !== 403 ||
+        requiresStream ||
+        (!lower.includes('invalid_api_key') && !lower.includes('incorrect api key'));
+
       if (
-        lower.includes('temperature') ||
-        lower.includes('web_search') ||
-        lower.includes('tool') ||
-        lower.includes('format') ||
-        lower.includes('input_image') ||
-        lower.includes('unsupported')
+        requiresStream ||
+        (isParamRejection &&
+          (lower.includes('temperature') ||
+            lower.includes('web_search') ||
+            lower.includes('tool') ||
+            lower.includes('format') ||
+            lower.includes('max_output_tokens') ||
+            lower.includes('input_image') ||
+            lower.includes('unsupported') ||
+            res.status === 400))
       ) {
         res = await callResponsesApi({
+          stream: true,
           allowImages: !lower.includes('image'),
           allowTools: false,
           allowJsonFormat: false,
           allowTemperature: false,
+          allowMaxTokens: false,
         });
       }
     }
@@ -934,25 +1114,35 @@ export async function callXingchiCompletion(params: {
     throw new Error(classified.message);
   }
 
-  const data = (await res.json().catch(() => ({}))) as any;
   let text = '';
-  if (usedProtocol === 'anthropic') {
-    const blocks = Array.isArray(data?.content) ? data.content : [];
-    text = blocks
-      .map((b: any) => (typeof b?.text === 'string' ? b.text : ''))
-      .join('\n')
-      .trim();
-  } else if (usedProtocol === 'responses') {
-    text = extractResponsesApiText(data);
+  let resolvedModel = model;
+  let usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined;
+
+  if (usedProtocol === 'responses') {
+    const parsed = await parseResponsesBody(res);
+    text = parsed.text;
+    if (parsed.model) resolvedModel = parsed.model;
+    usage = parsed.usage;
   } else {
-    const content = data?.choices?.[0]?.message?.content;
-    if (typeof content === 'string') {
-      text = content.trim();
-    } else if (Array.isArray(content)) {
-      text = content
-        .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+    const data = (await res.json().catch(() => ({}))) as any;
+    if (typeof data?.model === 'string') resolvedModel = data.model;
+    usage = extractXingchiUsage(data);
+    if (usedProtocol === 'anthropic') {
+      const blocks = Array.isArray(data?.content) ? data.content : [];
+      text = blocks
+        .map((b: any) => (typeof b?.text === 'string' ? b.text : ''))
         .join('\n')
         .trim();
+    } else {
+      const content = data?.choices?.[0]?.message?.content;
+      if (typeof content === 'string') {
+        text = content.trim();
+      } else if (Array.isArray(content)) {
+        text = content
+          .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+          .join('\n')
+          .trim();
+      }
     }
   }
 
@@ -967,10 +1157,10 @@ export async function callXingchiCompletion(params: {
   recordXingchiUsage(true, { latencyMs });
   return {
     text,
-    model: String(data?.model || model),
+    model: resolvedModel,
     protocol: usedProtocol,
     latencyMs,
-    usage: extractXingchiUsage(data),
+    usage,
   };
 }
 
@@ -1054,7 +1244,7 @@ export async function chatWithXingchi(params: {
       model,
       protocol,
       latencyMs,
-      message: String(err?.message || err || 'Lỗi kết nối Xingchi API.').slice(0, 220),
+      message: String(err?.message || err || 'Lỗi kết nối Xingchi API.').slice(0, 320),
       status: getXingchiPublicStatus(),
     };
   }
@@ -1064,28 +1254,6 @@ function mapAspectRatioToOpenAiSize(aspectRatio?: '1:1' | '9:16' | '16:9'): stri
   if (aspectRatio === '16:9') return '1536x1024';
   if (aspectRatio === '9:16') return '1024x1536';
   return '1024x1024';
-}
-
-function extractImageFromResponsesPayload(data: any): string | null {
-  if (Array.isArray(data?.output)) {
-    for (const item of data.output) {
-      if (item?.type === 'image_generation_call' && typeof item?.result === 'string' && item.result.trim()) {
-        const b64 = item.result.trim();
-        return b64.startsWith('data:image/') ? b64 : `data:image/png;base64,${b64}`;
-      }
-      if (Array.isArray(item?.content)) {
-        for (const part of item.content) {
-          if (typeof part?.image_base64 === 'string' && part.image_base64.trim()) {
-            return `data:image/png;base64,${part.image_base64.trim()}`;
-          }
-          if (typeof part?.b64_json === 'string' && part.b64_json.trim()) {
-            return `data:image/png;base64,${part.b64_json.trim()}`;
-          }
-        }
-      }
-    }
-  }
-  return null;
 }
 
 export async function generateImageWithXingchi(params: {
@@ -1123,45 +1291,63 @@ export async function generateImageWithXingchi(params: {
   const timeoutMs = Math.max(60_000, clampTimeoutSec(xingchiStore.timeoutSec) * 1000);
   const startedAt = Date.now();
 
-  // 1) Primary path: OpenAI Responses API with image_generation tool (matches wire_api = "responses" + local-image-extension header)
+  // 1) Primary path: OpenAI Responses API with image_generation tool (supports JSON and SSE)
   if (xingchiStore.protocol === 'responses') {
-    try {
-      const inputPayload: any =
-        refs.length > 0
-          ? [
-              {
-                role: 'user',
-                content: [
-                  { type: 'input_text', text: prompt },
-                  ...refs.map((url) => ({ type: 'input_image', image_url: url })),
-                ],
-              },
-            ]
-          : prompt;
+    for (const streamMode of [false, true]) {
+      try {
+        const contentParts: any[] = [{ type: 'input_text', text: prompt }];
+        for (const url of refs) {
+          contentParts.push({ type: 'input_image', image_url: url });
+        }
+        const resp = await fetch(`${baseUrl}/v1/responses`, {
+          method: 'POST',
+          headers: buildXingchiHeaders(
+            apiKey,
+            {
+              'Content-Type': 'application/json',
+              Accept: streamMode ? 'text/event-stream' : 'application/json',
+            },
+            { codexClient: true }
+          ),
+          body: JSON.stringify({
+            model,
+            instructions: 'Generate the requested image using the image_generation tool.',
+            input: [{ role: 'user', content: contentParts }],
+            store: !xingchiStore.disableResponseStorage,
+            stream: streamMode,
+            tools: [{ type: 'image_generation', size }],
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
 
-      const resp = await fetch(`${baseUrl}/v1/responses`, {
-        method: 'POST',
-        headers: buildXingchiHeaders(apiKey, { 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          model,
-          input: inputPayload,
-          store: !xingchiStore.disableResponseStorage,
-          tools: [{ type: 'image_generation', size }],
-        }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-
-      if (resp.ok) {
-        const data = (await resp.json().catch(() => ({}))) as any;
-        const dataUrl = extractImageFromResponsesPayload(data);
-        if (dataUrl) {
-          const latencyMs = Math.max(1, Date.now() - startedAt);
-          recordXingchiUsage(true, { latencyMs });
-          return { dataUrl, model: `${String(data?.model || model)} (Xingchi Responses)`, latencyMs };
+        if (resp.ok) {
+          const parsed = await parseResponsesBody(resp);
+          if (parsed.imageDataUrl) {
+            const latencyMs = Math.max(1, Date.now() - startedAt);
+            recordXingchiUsage(true, { latencyMs });
+            return {
+              dataUrl: parsed.imageDataUrl,
+              model: `${parsed.model || model} (Xingchi Responses)`,
+              latencyMs,
+            };
+          }
+          break;
+        }
+        if (resp.status === 401) {
+          const errText = await resp.text().catch(() => '');
+          const classified = classifyXingchiError(resp.status, errText);
+          recordXingchiUsage(false, {
+            latencyMs: Math.max(1, Date.now() - startedAt),
+            statusCode: resp.status,
+            errorMsg: errText,
+          });
+          throw new Error(classified.message);
+        }
+      } catch (err: any) {
+        if (String(err?.message || '').includes('HTTP 401')) {
+          throw err;
         }
       }
-    } catch {
-      // Fall through cleanly to /v1/images/generations
     }
   }
 
@@ -1173,7 +1359,7 @@ export async function generateImageWithXingchi(params: {
 
   const imgRes = await fetch(`${baseUrl}/v1/images/generations`, {
     method: 'POST',
-    headers: buildXingchiHeaders(apiKey, { 'Content-Type': 'application/json' }),
+    headers: buildXingchiHeaders(apiKey, { 'Content-Type': 'application/json' }, { codexClient: true }),
     body: JSON.stringify({
       model: imgModel,
       prompt,
