@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.36",
+    "version": "1.0.37",
     "date": "27/11/2026",
-    "title": "feat: implement voiceover configuration in studio",
+    "title": "feat(ai): implement Gemini API key failover logic",
     "changes": [
-      "feat: implement voiceover configuration in studio"
+      "feat(ai): implement Gemini API key failover logic"
     ]
   },
   {

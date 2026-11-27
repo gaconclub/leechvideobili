@@ -12,6 +12,7 @@ import {
   getMuse2ApiStatus,
 } from './muse2api';
 import {
+  executeWithGeminiKeyFailover,
   hasAnyEnabledGeminiAccount,
   listHealthyGeminiWorkerAccounts,
   recordGeminiAccountUsage,
@@ -486,8 +487,11 @@ export function formatGeminiError(err: any): string {
   if (raw.includes('PERMISSION_DENIED') || raw.includes('API_KEY_INVALID') || raw.includes('403') || raw.includes('API key not valid')) {
     return 'API Key Gemini không hợp lệ hoặc mô hình này yêu cầu API Key trả phí (có thanh toán). Vui lòng kiểm tra khóa trong Settings > Secrets hoặc tệp .env.';
   }
+  if (raw.includes('Đã tự động thử luân phiên toàn bộ')) {
+    return raw;
+  }
   if (raw.includes('RESOURCE_EXHAUSTED') || raw.includes('429')) {
-    return 'Đã chạm giới hạn tần suất / hạn mức gói miễn phí Gemini API (429). Nếu dùng mô hình nâng cao (Omni Flash, Lyria, tạo ảnh), hãy dùng API Key có bật thanh toán trong Settings > Secrets hoặc thử lại sau.';
+    return 'Đã chạm giới hạn tần suất / hạn mức Gemini API (429). Hãy thêm thêm API Key dự phòng trong Cài đặt > Kết nối API Gemini (Quản lý Cụm API Gemini) để hệ thống tự động chuyển key khi hết lượt, hoặc thử lại sau.';
   }
   if (isTransientGemini503Error(err) || raw.includes('truy cập cao tạm thời')) {
     return 'Máy chủ Gemini đang có lượng truy cập cao tạm thời (503) trên cả mô hình chính và dự phòng. Hệ thống đã tự thử lại nhưng chưa thành công — bạn vui lòng đợi vài giây rồi bấm thử lại hoặc chuyển sang Muse AI / nhà cung cấp khác.';
@@ -912,24 +916,27 @@ async function transcribeLocalVideoAudio(asset: StudioAssetRecord): Promise<stri
     const mp3Buf = fs.readFileSync(tmpMp3);
     if (mp3Buf.byteLength < 1500 || mp3Buf.byteLength > 12_000_000) return '';
 
-    const ai = getGeminiClient();
-    const res = await retryWithGeminiBackoff(
-      () =>
-        ai.models.generateContent({
-          model: 'gemini-3.5-transcribe',
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: 'audio/mp3',
-                  data: mp3Buf.toString('base64'),
-                },
+    const { result: res } = await executeWithGeminiKeyFailover(
+      ({ ai }) =>
+        retryWithGeminiBackoff(
+          () =>
+            ai.models.generateContent({
+              model: 'gemini-3.5-transcribe',
+              contents: {
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: 'audio/mp3',
+                      data: mp3Buf.toString('base64'),
+                    },
+                  },
+                  { text: 'Transcribe all spoken dialogue clearly, keeping original language.' },
+                ],
               },
-              { text: 'Transcribe all spoken dialogue clearly, keeping original language.' },
-            ],
-          },
-        }),
-      [1200, 2600]
+            }),
+          [1200, 2600]
+        ),
+      { label: 'Transcribe video tham chiếu' }
     );
     return String(res.text || '').trim().slice(0, 1800);
   } catch {
@@ -1771,20 +1778,26 @@ export async function testAiProviderConnection(provider: AiProviderId): Promise<
     let lastErr: any;
     for (const model of models) {
       try {
-        const ai = getGeminiClient();
-        const res = await retryWithGeminiBackoff(
-          () =>
-            ai.models.generateContent({
-              model,
-              contents: 'Trả lời đúng 1 cụm từ: Sẵn sàng',
-            }),
-          [1200, 2500]
+        const { result: res, account, switchedFromLabel } = await executeWithGeminiKeyFailover(
+          ({ ai }) =>
+            retryWithGeminiBackoff(
+              () =>
+                ai.models.generateContent({
+                  model,
+                  contents: 'Trả lời đúng 1 cụm từ: Sẵn sàng',
+                }),
+              [1200, 2500]
+            ),
+          { label: 'Kiểm tra kết nối AI viết kịch bản' }
         );
         const text = (res.text || '').trim();
+        const switchNote = switchedFromLabel
+          ? ` (Key "${switchedFromLabel}" hết lượt — đã tự động kích hoạt key "${account.label}")`
+          : ` (Key đang dùng: ${account.label})`;
         const note =
           model === 'gemini-4-hydrogen'
-            ? `Kết nối Gemini (${model}) thành công: "${text.slice(0, 40) || 'OK'}"`
-            : `Gemini 4 đang quá tải tạm thời, đã chuyển tự động sang ${model} thành công: "${text.slice(0, 40) || 'OK'}"`;
+            ? `Kết nối Gemini (${model}) thành công${switchNote}: "${text.slice(0, 40) || 'OK'}"`
+            : `Gemini 4 đang quá tải tạm thời, đã chuyển tự động sang ${model} thành công${switchNote}: "${text.slice(0, 40) || 'OK'}"`;
         return { ok: true, model, message: note };
       } catch (err: any) {
         lastErr = err;
@@ -2187,7 +2200,6 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
       parsed = parseAiBlueprintJsonSafe(String(json?.choices?.[0]?.message?.content || '{}'));
     } else {
       usedProvider = 'gemini';
-      const ai = getGeminiClient();
       const parts: any[] = frameBuffers.map((fb) => ({
         inlineData: {
           mimeType: 'image/jpeg',
@@ -2214,11 +2226,13 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
             candidateModel === 'gemini-3.1-flash-lite'
               ? [...frameBuffers.slice(0, 8).map((fb) => ({ inlineData: { mimeType: 'image/jpeg', data: fb.toString('base64') } })), { text: analysisPrompt }]
               : parts;
-          const response = await retryWithGeminiBackoff(
-            () =>
-              ai.models.generateContent({
-                model: candidateModel,
-                contents: { parts: activeParts },
+          const { result: response } = await executeWithGeminiKeyFailover(
+            ({ ai }) =>
+              retryWithGeminiBackoff(
+                () =>
+                  ai.models.generateContent({
+                    model: candidateModel,
+                    contents: { parts: activeParts },
                 config: {
                   httpOptions: { timeout: 60_000 },
                   maxOutputTokens: 2048,
@@ -2251,7 +2265,9 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
                   },
                 },
               }),
-            [1200, 2600]
+                [1200, 2600]
+              ),
+            { label: 'Học phong cách video tham chiếu' }
           );
           parsed = parseAiBlueprintJsonSafe((response?.text ?? '{}').trim());
           if (String(parsed?.promptDirective || '').trim()) {
@@ -2856,7 +2872,6 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ VỚI MẢNG "ideas" CÓ
       const data = (await res.json()) as any;
       parsed = parseAiBlueprintJsonSafe(String(data?.choices?.[0]?.message?.content || '{}'));
     } else {
-      const ai = getGeminiClient();
       const baseCandidates = params.useProModel
         ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
         : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
@@ -2867,43 +2882,47 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ VỚI MẢNG "ideas" CÓ
         const isLastCandidate = mIdx === candidateModels.length - 1;
         const callTimeoutMs = isLastCandidate ? 45_000 : 28_000;
         try {
-          const response = await retryWithGeminiBackoff(
-            () =>
-              ai.models.generateContent({
-                model: candidateModel,
-                contents: [{ text: expandPrompt }],
-                config: {
-                  httpOptions: { timeout: callTimeoutMs },
-                  maxOutputTokens: dynamicMaxTokens,
-                  ...(candidateModel.startsWith('gemini-4-')
-                    ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-                    : {}),
-                  systemInstruction: `Luôn trả về ĐÚNG ${ideaCount} phần tử trong mảng "ideas" của JSON. Mỗi ý tưởng phải bám sát chủ đề ban đầu nhưng có tình huống & diễn biến riêng biệt, không trùng lặp.`,
-                  responseMimeType: 'application/json',
-                  responseSchema: {
-                    type: Type.OBJECT,
-                    required: ['ideas'],
-                    properties: {
-                      ideas: {
-                        type: Type.ARRAY,
-                        minItems: String(ideaCount),
-                        maxItems: String(ideaCount),
-                        items: {
-                          type: Type.OBJECT,
-                          required: ['title', 'summary', 'detail'],
-                          properties: {
-                            title: { type: Type.STRING },
-                            summary: { type: Type.STRING },
-                            detail: { type: Type.STRING },
-                            suggestedSetting: { type: Type.STRING },
+          const { result: response } = await executeWithGeminiKeyFailover(
+            ({ ai }) =>
+              retryWithGeminiBackoff(
+                () =>
+                  ai.models.generateContent({
+                    model: candidateModel,
+                    contents: [{ text: expandPrompt }],
+                    config: {
+                      httpOptions: { timeout: callTimeoutMs },
+                      maxOutputTokens: dynamicMaxTokens,
+                      ...(candidateModel.startsWith('gemini-4-')
+                        ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                        : {}),
+                      systemInstruction: `Luôn trả về ĐÚNG ${ideaCount} phần tử trong mảng "ideas" của JSON. Mỗi ý tưởng phải bám sát chủ đề ban đầu nhưng có tình huống & diễn biến riêng biệt, không trùng lặp.`,
+                      responseMimeType: 'application/json',
+                      responseSchema: {
+                        type: Type.OBJECT,
+                        required: ['ideas'],
+                        properties: {
+                          ideas: {
+                            type: Type.ARRAY,
+                            minItems: String(ideaCount),
+                            maxItems: String(ideaCount),
+                            items: {
+                              type: Type.OBJECT,
+                              required: ['title', 'summary', 'detail'],
+                              properties: {
+                                title: { type: Type.STRING },
+                                summary: { type: Type.STRING },
+                                detail: { type: Type.STRING },
+                                suggestedSetting: { type: Type.STRING },
+                              },
+                            },
                           },
                         },
                       },
                     },
-                  },
-                },
-              }),
-            isLastCandidate ? [800] : []
+                  }),
+                isLastCandidate ? [800] : []
+              ),
+            { label: 'Mở rộng ý tưởng kịch bản' }
           );
           const candidateParsed = parseAiBlueprintJsonSafe((response?.text ?? '{}').trim());
           if (
@@ -3305,7 +3324,6 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
       const data = (await res.json()) as any;
       parsed = parseAiBlueprintJsonSafe(String(data?.choices?.[0]?.message?.content || '{}'));
     } else {
-      const ai = getGeminiClient();
       const baseCandidates = params.useProModel
         ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
         : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
@@ -3317,37 +3335,43 @@ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON HỢP LỆ (không markdown, không
         mediaParts: any[],
         timeoutMs: number,
         retryDelays: number[]
-      ) =>
-        retryWithGeminiBackoff(
-          () =>
-            ai.models.generateContent({
-              model: candidateModel,
-              contents: { parts: [...mediaParts, { text: watchPrompt }] },
-              config: {
-                httpOptions: { timeout: timeoutMs },
-                maxOutputTokens: 4096,
-                ...(candidateModel.startsWith('gemini-4-')
-                  ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-                  : {}),
-                systemInstruction:
-                  'Xem thật kỹ toàn bộ video/khung hình tham chiếu và trả về JSON thuần túy gồm detailedPrompt (mô tả chi tiết bối cảnh & tình tiết), suggestedSetting và sceneHighlights.',
-                responseMimeType: 'application/json',
-                responseSchema: {
-                  type: Type.OBJECT,
-                  required: ['detailedPrompt', 'suggestedSetting', 'sceneHighlights'],
-                  properties: {
-                    detailedPrompt: { type: Type.STRING },
-                    suggestedSetting: { type: Type.STRING },
-                    sceneHighlights: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
+      ) => {
+        const { result } = await executeWithGeminiKeyFailover(
+          ({ ai }) =>
+            retryWithGeminiBackoff(
+              () =>
+                ai.models.generateContent({
+                  model: candidateModel,
+                  contents: { parts: [...mediaParts, { text: watchPrompt }] },
+                  config: {
+                    httpOptions: { timeout: timeoutMs },
+                    maxOutputTokens: 4096,
+                    ...(candidateModel.startsWith('gemini-4-')
+                      ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                      : {}),
+                    systemInstruction:
+                      'Xem thật kỹ toàn bộ video/khung hình tham chiếu và trả về JSON thuần túy gồm detailedPrompt (mô tả chi tiết bối cảnh & tình tiết), suggestedSetting và sceneHighlights.',
+                    responseMimeType: 'application/json',
+                    responseSchema: {
+                      type: Type.OBJECT,
+                      required: ['detailedPrompt', 'suggestedSetting', 'sceneHighlights'],
+                      properties: {
+                        detailedPrompt: { type: Type.STRING },
+                        suggestedSetting: { type: Type.STRING },
+                        sceneHighlights: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING },
+                        },
+                      },
                     },
                   },
-                },
-              },
-            }),
-          retryDelays
+                }),
+              retryDelays
+            ),
+          { label: 'Phân tích video tham chiếu viết kịch bản' }
         );
+        return result;
+      };
 
       for (let mIdx = 0; mIdx < candidateModels.length; mIdx += 1) {
         const candidateModel = candidateModels[mIdx];
@@ -3880,7 +3904,6 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         productionFormat,
       });
     } else {
-      const ai = getGeminiClient();
       const baseCandidates = params.useProModel
         ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']
         : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
@@ -4013,41 +4036,51 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         candidateModel: string,
         activeParts: any[],
         withSchema: boolean,
-        timeoutMs: number
+        timeoutMs: number,
+        backoffDelays: number[]
       ) => {
-        return ai.models.generateContent({
-          model: candidateModel,
-          contents: { parts: activeParts },
-          config: {
-            httpOptions: { timeout: timeoutMs },
-            maxOutputTokens: 24576,
-            ...(candidateModel.startsWith('gemini-4-')
-              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-              : {}),
-            systemInstruction:
-              `Luôn phản hồi bằng JSON thuần túy đúng cấu trúc, giữ đầy đủ tất cả trường của từng phân cảnh (kể cả dialogue, onScreenText, continuityNote, sceneEndState, imagePrompt, videoPrompt), prompt hình ảnh và prompt video CỰC KỲ CHI TIẾT và đồng nhất, đúng ngôn ngữ yêu cầu. BẮT BUỘC xuất đủ ${desiredScenes} phân cảnh trong mảng scenes (sceneIndex từ 1 đến ${desiredScenes}), tuyệt đối KHÔNG xuất chỉ 1 phân cảnh mẫu.`,
-            responseMimeType: 'application/json',
-            ...(withSchema
-              ? {
-                  responseSchema: {
-                    type: Type.OBJECT,
-                    required: [
-                      'learnedSummary',
-                      'characterBible',
-                      'settingBible',
-                      'visualStyleBible',
-                      'costumeBible',
-                      'continuityBible',
-                      'derivativeTitle',
-                      'derivativeHook',
-                      'scenes',
-                    ],
-                    properties: geminiSchemaProperties,
+        const { result, account, switchedFromLabel } = await executeWithGeminiKeyFailover(
+          ({ ai }) =>
+            retryWithGeminiBackoff(
+              () =>
+                ai.models.generateContent({
+                  model: candidateModel,
+                  contents: { parts: activeParts },
+                  config: {
+                    httpOptions: { timeout: timeoutMs },
+                    maxOutputTokens: 24576,
+                    ...(candidateModel.startsWith('gemini-4-')
+                      ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                      : {}),
+                    systemInstruction:
+                      `Luôn phản hồi bằng JSON thuần túy đúng cấu trúc, giữ đầy đủ tất cả trường của từng phân cảnh (kể cả dialogue, onScreenText, continuityNote, sceneEndState, imagePrompt, videoPrompt), prompt hình ảnh và prompt video CỰC KỲ CHI TIẾT và đồng nhất, đúng ngôn ngữ yêu cầu. BẮT BUỘC xuất đủ ${desiredScenes} phân cảnh trong mảng scenes (sceneIndex từ 1 đến ${desiredScenes}), tuyệt đối KHÔNG xuất chỉ 1 phân cảnh mẫu.`,
+                    responseMimeType: 'application/json',
+                    ...(withSchema
+                      ? {
+                          responseSchema: {
+                            type: Type.OBJECT,
+                            required: [
+                              'learnedSummary',
+                              'characterBible',
+                              'settingBible',
+                              'visualStyleBible',
+                              'costumeBible',
+                              'continuityBible',
+                              'derivativeTitle',
+                              'derivativeHook',
+                              'scenes',
+                            ],
+                            properties: geminiSchemaProperties,
+                          },
+                        }
+                      : {}),
                   },
-                }
-              : {}),
-          },
-        });
+                }),
+              backoffDelays
+            ),
+          { label: 'AI viết kịch bản phân cảnh' }
+        );
+        return { response: result, account, switchedFromLabel };
       };
 
       for (let mIdx = 0; mIdx < candidateModels.length; mIdx += 1) {
@@ -4061,25 +4094,24 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
         const mStart = Date.now();
         console.log(`[Studio AI] Calling ${candidateModel} (scenes=${desiredScenes}, mode=${studioMode}, timeout=${callTimeoutMs}ms)...`);
         try {
-          let response;
+          let callOutcome;
           try {
-            response = await retryWithGeminiBackoff(
-              () => callGeminiBlueprint(candidateModel, activeParts, true, callTimeoutMs),
-              backoffDelays
-            );
+            callOutcome = await callGeminiBlueprint(candidateModel, activeParts, true, callTimeoutMs, backoffDelays);
           } catch (schemaErr: any) {
             const msg = String(schemaErr?.message || schemaErr || '').toLowerCase();
             if (msg.includes('too many states') || msg.includes('invalid_argument')) {
               console.warn(`[Studio AI] Schema constraint too large on ${candidateModel}, retrying JSON-only without responseSchema...`);
-              response = await retryWithGeminiBackoff(
-                () => callGeminiBlueprint(candidateModel, activeParts, false, callTimeoutMs),
-                backoffDelays
-              );
+              callOutcome = await callGeminiBlueprint(candidateModel, activeParts, false, callTimeoutMs, backoffDelays);
             } else {
               throw schemaErr;
             }
           }
-          console.log(`[Studio AI] ${candidateModel} succeeded in ${Date.now() - mStart}ms`);
+          const { response, account, switchedFromLabel } = callOutcome;
+          console.log(
+            `[Studio AI] ${candidateModel} succeeded in ${Date.now() - mStart}ms via "${account.label}"${
+              switchedFromLabel ? ` (auto-failover from "${switchedFromLabel}")` : ''
+            }`
+          );
           const rawText = (response?.text ?? '{}').trim();
           const candidateParsed = parseAiBlueprintJsonSafe(rawText);
           const candidateScenes = Array.isArray(candidateParsed?.scenes) ? candidateParsed.scenes : [];
@@ -4091,7 +4123,9 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
             continue;
           }
           parsedFromGemini = candidateParsed;
-          usedModel = candidateModel;
+          usedModel = switchedFromLabel
+            ? `${candidateModel} · Key: ${account.label} (tự chuyển từ ${switchedFromLabel})`
+            : candidateModel;
           break;
         } catch (err: any) {
           console.warn(`[Studio AI] ${candidateModel} failed after ${Date.now() - mStart}ms:`, err?.message || err);
@@ -4626,7 +4660,6 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
     const data = (await res.json()) as any;
     parsed = parseAiBlueprintJsonSafe(String(data?.choices?.[0]?.message?.content || '{}'));
   } else {
-    const ai = getGeminiClient();
     const parts: any[] = [];
     for (const ctx of params.contexts.slice(0, 2)) {
       if (ctx.thumbnail) {
@@ -4649,48 +4682,52 @@ TRẢ VỀ JSON HỢP LỆ VỚI ĐÚNG ${params.videoCount} PHẦN TỬ TRONG M
       const callTimeoutMs = isLastCandidate ? 38_000 : 22_000;
       const backoffDelays = isLastCandidate ? [900, 1800] : [];
       try {
-        const response = await retryWithGeminiBackoff(
-          () =>
-            ai.models.generateContent({
-              model: candidateModel,
-              contents: { parts },
-              config: {
-                httpOptions: { timeout: callTimeoutMs },
-                maxOutputTokens: 12288,
-                ...(candidateModel.startsWith('gemini-4-')
-                  ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-                  : {}),
-                systemInstruction:
-                  `Luôn trả về ĐÚNG ${params.videoCount} video phái sinh độc lập trong mảng concepts của JSON. TẤT CẢ phải xoay quanh CÙNG MỘT mô-típ cốt truyện & cấu trúc tình huống lõi của ý tưởng gốc (coreMotif), KHÔNG tạo truyện ngẫu nhiên khác mô-típ và KHÔNG viết thành các tập nối tiếp; chỉ thay đổi nhân vật, phương tiện, bối cảnh cụ thể, hành vi và diễn biến giải quyết ở mỗi video.`,
-                responseMimeType: 'application/json',
-                responseSchema: {
-                  type: Type.OBJECT,
-                  required: ['coreMotif', 'sharedSpiritNote', 'concepts'],
-                  properties: {
-                    coreMotif: { type: Type.STRING },
-                    sharedSpiritNote: { type: Type.STRING },
-                    concepts: {
-                      type: Type.ARRAY,
-                      minItems: String(params.videoCount),
-                      maxItems: String(params.videoCount),
-                      items: {
-                        type: Type.OBJECT,
-                        required: ['title', 'premise', 'characterBible', 'settingBible'],
-                        properties: {
-                          title: { type: Type.STRING },
-                          premise: { type: Type.STRING },
-                          characterBible: { type: Type.STRING },
-                          settingBible: { type: Type.STRING },
-                          hookFormula: { type: Type.STRING },
-                          derivativeHook: { type: Type.STRING },
+        const { result: response } = await executeWithGeminiKeyFailover(
+          ({ ai }) =>
+            retryWithGeminiBackoff(
+              () =>
+                ai.models.generateContent({
+                  model: candidateModel,
+                  contents: { parts },
+                  config: {
+                    httpOptions: { timeout: callTimeoutMs },
+                    maxOutputTokens: 12288,
+                    ...(candidateModel.startsWith('gemini-4-')
+                      ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                      : {}),
+                    systemInstruction:
+                      `Luôn trả về ĐÚNG ${params.videoCount} video phái sinh độc lập trong mảng concepts của JSON. TẤT CẢ phải xoay quanh CÙNG MỘT mô-típ cốt truyện & cấu trúc tình huống lõi của ý tưởng gốc (coreMotif), KHÔNG tạo truyện ngẫu nhiên khác mô-típ và KHÔNG viết thành các tập nối tiếp; chỉ thay đổi nhân vật, phương tiện, bối cảnh cụ thể, hành vi và diễn biến giải quyết ở mỗi video.`,
+                    responseMimeType: 'application/json',
+                    responseSchema: {
+                      type: Type.OBJECT,
+                      required: ['coreMotif', 'sharedSpiritNote', 'concepts'],
+                      properties: {
+                        coreMotif: { type: Type.STRING },
+                        sharedSpiritNote: { type: Type.STRING },
+                        concepts: {
+                          type: Type.ARRAY,
+                          minItems: String(params.videoCount),
+                          maxItems: String(params.videoCount),
+                          items: {
+                            type: Type.OBJECT,
+                            required: ['title', 'premise', 'characterBible', 'settingBible'],
+                            properties: {
+                              title: { type: Type.STRING },
+                              premise: { type: Type.STRING },
+                              characterBible: { type: Type.STRING },
+                              settingBible: { type: Type.STRING },
+                              hookFormula: { type: Type.STRING },
+                              derivativeHook: { type: Type.STRING },
+                            },
+                          },
                         },
                       },
                     },
                   },
-                },
-              },
-            }),
-          backoffDelays
+                }),
+              backoffDelays
+            ),
+          { label: 'Lập kế hoạch kịch bản hàng loạt' }
         );
         const candidateConceptParsed = parseAiBlueprintJsonSafe((response?.text ?? '{}').trim());
         if (
@@ -5382,7 +5419,7 @@ KHÔNG ĐƯỢC phép tự sáng tạo khuôn mặt/vóc dáng/trang phục khá
   // Use Gemini semantic matcher when 2+ character refs exist and text matching might miss aliases/pronouns
   let selectedIndices: number[] = deterministicMatches;
   const shouldAskSemanticMapper =
-    Boolean(process.env.GEMINI_API_KEY?.trim()) &&
+    hasAnyGeminiTtsKey() &&
     (deterministicMatches.length === 0 ||
       (deterministicMatches.length < validRefs.length &&
         (allMentionedHint ||
@@ -5390,7 +5427,6 @@ KHÔNG ĐƯỢC phép tự sáng tạo khuôn mặt/vóc dáng/trang phục khá
 
   if (shouldAskSemanticMapper) {
     try {
-      const ai = getGeminiClient();
       const charListText = validRefs
         .map(
           (r, idx) =>
@@ -5410,27 +5446,31 @@ THÔNG TIN PHÂN CẢNH:
 
 YÊU CẦU: Trả về JSON dạng {"matchedIndices": [0, ...]} liệt kê CHỈ SỐ (index 0..${validRefs.length - 1}) của TẤT CẢ nhân vật có xuất hiện trong phân cảnh này. Nếu phân cảnh mô tả nhiều nhân vật (hoặc không loại trừ ai rõ ràng), phải liệt kê ĐẦY ĐỦ tất cả nhân vật xuất hiện.`;
 
-      const resp = await retryWithGeminiBackoff(
-        () =>
-          ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite',
-            contents: analyzePrompt,
-            config: {
-              httpOptions: { timeout: 12_000 },
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                required: ['matchedIndices'],
-                properties: {
-                  matchedIndices: {
-                    type: Type.ARRAY,
-                    items: { type: Type.INTEGER },
+      const { result: resp } = await executeWithGeminiKeyFailover(
+        ({ ai }) =>
+          retryWithGeminiBackoff(
+            () =>
+              ai.models.generateContent({
+                model: 'gemini-3.1-flash-lite',
+                contents: analyzePrompt,
+                config: {
+                  httpOptions: { timeout: 12_000 },
+                  responseMimeType: 'application/json',
+                  responseSchema: {
+                    type: Type.OBJECT,
+                    required: ['matchedIndices'],
+                    properties: {
+                      matchedIndices: {
+                        type: Type.ARRAY,
+                        items: { type: Type.INTEGER },
+                      },
+                    },
                   },
                 },
-              },
-            },
-          }),
-        [800]
+              }),
+            [800]
+          ),
+        { label: 'Ánh xạ nhân vật phân cảnh' }
       );
       const parsed = parseAiBlueprintJsonSafe((resp.text || '{}').trim());
       if (Array.isArray(parsed?.matchedIndices)) {
@@ -5883,8 +5923,7 @@ TRẢ VỀ DUY NHẤT JSON HỢP LỆ THEO MẪU:
   }
 
   // Default & fallback Gemini Vision multi-character analyzer
-  if (parsedMap.size < list.length && process.env.GEMINI_API_KEY?.trim()) {
-    const ai = getGeminiClient();
+  if (parsedMap.size < list.length && hasAnyGeminiTtsKey()) {
     const parts: any[] = [];
     list.forEach((c, idx) => {
       const parsed = c.dataUrl ? parseDataUrlToBuffer(c.dataUrl) : null;
@@ -5898,42 +5937,46 @@ TRẢ VỀ DUY NHẤT JSON HỢP LỆ THEO MẪU:
     const candidateModels = prioritizeGeminiCandidateModels(['gemini-4-hydrogen', 'gemini-3.1-flash-lite']);
     for (const model of candidateModels) {
       try {
-        const resp = await retryWithGeminiBackoff(
-          () =>
-            ai.models.generateContent({
-              model,
-              contents: { parts },
-              config: {
-                httpOptions: { timeout: 35_000 },
-                responseMimeType: 'application/json',
-                ...(model.startsWith('gemini-4-') ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
-                responseSchema: {
-                  type: Type.OBJECT,
-                  required: ['profiles'],
-                  properties: {
-                    profiles: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        required: ['id', 'name', 'face', 'physique', 'costume', 'voice', 'distinguishingMarks'],
-                        properties: {
-                          id: { type: Type.STRING },
-                          name: { type: Type.STRING },
-                          ageGroup: { type: Type.STRING },
-                          gender: { type: Type.STRING },
-                          face: { type: Type.STRING },
-                          physique: { type: Type.STRING },
-                          costume: { type: Type.STRING },
-                          voice: { type: Type.STRING },
-                          distinguishingMarks: { type: Type.STRING },
+        const { result: resp } = await executeWithGeminiKeyFailover(
+          ({ ai }) =>
+            retryWithGeminiBackoff(
+              () =>
+                ai.models.generateContent({
+                  model,
+                  contents: { parts },
+                  config: {
+                    httpOptions: { timeout: 35_000 },
+                    responseMimeType: 'application/json',
+                    ...(model.startsWith('gemini-4-') ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
+                    responseSchema: {
+                      type: Type.OBJECT,
+                      required: ['profiles'],
+                      properties: {
+                        profiles: {
+                          type: Type.ARRAY,
+                          items: {
+                            type: Type.OBJECT,
+                            required: ['id', 'name', 'face', 'physique', 'costume', 'voice', 'distinguishingMarks'],
+                            properties: {
+                              id: { type: Type.STRING },
+                              name: { type: Type.STRING },
+                              ageGroup: { type: Type.STRING },
+                              gender: { type: Type.STRING },
+                              face: { type: Type.STRING },
+                              physique: { type: Type.STRING },
+                              costume: { type: Type.STRING },
+                              voice: { type: Type.STRING },
+                              distinguishingMarks: { type: Type.STRING },
+                            },
+                          },
                         },
                       },
                     },
                   },
-                },
-              },
-            }),
-          [800]
+                }),
+              [800]
+            ),
+          { label: 'Phân tích hồ sơ 5 phần nhân vật' }
         );
         ingestParsed(parseAiBlueprintJsonSafe((resp.text || '{}').trim()));
         usedModel = model;
@@ -5955,14 +5998,18 @@ TRẢ VỀ DUY NHẤT JSON HỢP LỆ THEO MẪU:
           },
           { inlineData: { mimeType: parsedImg.mimeType, data: parsedImg.buffer.toString('base64') } },
         ];
-        const singleResp = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite',
-          contents: { parts: singleParts },
-          config: {
-            httpOptions: { timeout: 18_000 },
-            responseMimeType: 'application/json',
-          },
-        });
+        const { result: singleResp } = await executeWithGeminiKeyFailover(
+          ({ ai }) =>
+            ai.models.generateContent({
+              model: 'gemini-3.1-flash-lite',
+              contents: { parts: singleParts },
+              config: {
+                httpOptions: { timeout: 18_000 },
+                responseMimeType: 'application/json',
+              },
+            }),
+          { label: 'Phân tích đơn lẻ nhân vật' }
+        );
         const one = parseAiBlueprintJsonSafe((singleResp.text || '{}').trim());
         if (one?.face || one?.costume) {
           parsedMap.set(c.id, one);

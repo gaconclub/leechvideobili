@@ -5302,7 +5302,12 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     <span className="text-[11px] text-slate-500 dark:text-slate-400">Hệ thống AI viết kịch bản</span>
                     <select value={aiProvider} onChange={(e) => setAiProvider(e.target.value as AiProviderId)} className={inputCls}>
                       <option value="gemini">
-                        Google Gemini {capabilities?.aiProviders.gemini.configured ? '(Sẵn sàng)' : '(Chưa đặt key)'}
+                        Google Gemini{' '}
+                        {capabilities?.aiProviders.gemini.configured
+                          ? (capabilities.aiProviders.gemini.accountsCount || 0) > 1
+                            ? `(Sẵn sàng · ${capabilities.aiProviders.gemini.healthyAccounts ?? capabilities.aiProviders.gemini.accountsCount}/${capabilities.aiProviders.gemini.accountsCount} key · Tự đổi key)`
+                            : '(Sẵn sàng)'
+                          : '(Chưa đặt key)'}
                       </option>
                       <option value="muse2api">
                         Muse2API (muse-spark · {capabilities?.aiProviders.muse2api?.configured ? 'Sẵn sàng' : 'Tự host'})
