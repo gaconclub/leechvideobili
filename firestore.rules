@@ -1,0 +1,196 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: default-deny all unspecified paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---- Global Hardened Primitives ----
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function hasUserProfile(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId)) &&
+        get(/databases/$(database)/documents/users/$(userId)).data.uid == userId;
+    }
+
+    // ---- Validation Blueprints ----
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.uid == request.auth.uid &&
+        data.email is string &&
+        data.email.size() >= 3 &&
+        data.email.size() <= 254 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidGeminiAccount(data, userId, accountId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'label', 'apiKey', 'enabled', 'isChairman',
+          'note', 'preferredModel', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'label', 'apiKey', 'enabled', 'isChairman',
+          'note', 'preferredModel', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.id == accountId &&
+        isValidId(data.ownerId) &&
+        data.ownerId == userId &&
+        data.ownerId == request.auth.uid &&
+        data.label is string &&
+        data.label.size() >= 1 &&
+        data.label.size() <= 120 &&
+        data.apiKey is string &&
+        data.apiKey.size() >= 16 &&
+        data.apiKey.size() <= 256 &&
+        data.enabled is bool &&
+        data.isChairman is bool &&
+        data.note is string &&
+        data.note.size() <= 300 &&
+        data.preferredModel is string &&
+        data.preferredModel.size() >= 1 &&
+        data.preferredModel.size() <= 80 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidGeminiPoolSettings(data, userId) {
+      return data.keys().hasAll([
+          'ownerId', 'chairmanAccountId', 'envDefaultEnabled',
+          'envDefaultLabel', 'envDefaultNote', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId', 'chairmanAccountId', 'envDefaultEnabled',
+          'envDefaultLabel', 'envDefaultNote', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.ownerId) &&
+        data.ownerId == userId &&
+        data.ownerId == request.auth.uid &&
+        isValidId(data.chairmanAccountId) &&
+        data.envDefaultEnabled is bool &&
+        data.envDefaultLabel is string &&
+        data.envDefaultLabel.size() >= 1 &&
+        data.envDefaultLabel.size() <= 120 &&
+        data.envDefaultNote is string &&
+        data.envDefaultNote.size() <= 300 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // ---- Users Master Gate Collection ----
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+      allow delete: if false;
+
+      // ---- Persisted Gemini API Accounts Vault ----
+      match /geminiAccounts/{accountId} {
+        allow get: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(accountId) &&
+          hasUserProfile(userId);
+        allow list: if isOwner(userId) &&
+          resource.data.ownerId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(accountId) &&
+          isValidGeminiAccount(incoming(), userId, accountId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasUserProfile(userId);
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(accountId) &&
+          isValidGeminiAccount(incoming(), userId, accountId) &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasUserProfile(userId) && (
+            // Action: Update metadata, enabled flag, API key, or model
+            incoming().diff(existing()).affectedKeys().hasOnly(['label', 'apiKey', 'enabled', 'note', 'preferredModel', 'updatedAt']) ||
+            // Action: Promote / demote Chairman role
+            incoming().diff(existing()).affectedKeys().hasOnly(['isChairman', 'enabled', 'updatedAt']) ||
+            // Action: Full owner sync update
+            incoming().diff(existing()).affectedKeys().hasOnly(['label', 'apiKey', 'enabled', 'isChairman', 'note', 'preferredModel', 'updatedAt'])
+          );
+        allow delete: if isOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(accountId) &&
+          hasUserProfile(userId);
+      }
+
+      // ---- Persisted Gemini Pool Settings ----
+      match /poolSettings/{settingId} {
+        allow get: if isOwner(userId) &&
+          isValidId(userId) &&
+          settingId == 'gemini' &&
+          hasUserProfile(userId);
+        allow list: if false;
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          settingId == 'gemini' &&
+          isValidGeminiPoolSettings(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasUserProfile(userId);
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          settingId == 'gemini' &&
+          isValidGeminiPoolSettings(incoming(), userId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasUserProfile(userId) && (
+            // Action: Update chairman or default env account settings
+            incoming().diff(existing()).affectedKeys().hasOnly(['chairmanAccountId', 'envDefaultEnabled', 'envDefaultLabel', 'envDefaultNote', 'updatedAt']) ||
+            // Action: Change chairman only
+            incoming().diff(existing()).affectedKeys().hasOnly(['chairmanAccountId', 'updatedAt'])
+          );
+        allow delete: if isOwner(userId) &&
+          isValidId(userId) &&
+          settingId == 'gemini' &&
+          hasUserProfile(userId);
+      }
+    }
+  }
+}

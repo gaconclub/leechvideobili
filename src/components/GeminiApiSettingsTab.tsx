@@ -1,10 +1,14 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { User } from 'firebase/auth';
 import {
   CheckCircle2,
+  Cloud,
+  CloudOff,
   Crown,
   KeyRound,
   Loader2,
   Lock,
+  LogIn,
   Plus,
   Power,
   RefreshCw,
@@ -15,6 +19,14 @@ import {
   EyeOff,
 } from 'lucide-react';
 import type { GeminiAccountPublic } from '../types/commandCenter';
+import { onFirebaseUserChanged, signInFirebaseCloudSync } from '../lib/firebaseFirestore';
+import {
+  deleteGeminiAccountFromCloud,
+  hydrateServerGeminiPoolFromCloud,
+  saveGeminiAccountToCloud,
+  saveGeminiPoolSettingsToCloud,
+  updateGeminiAccountInCloud,
+} from '../lib/geminiAccountCloudSync';
 
 interface GeminiPoolSummary {
   total: number;
@@ -43,6 +55,26 @@ export const GeminiApiSettingsTab: React.FC = () => {
   const [notice, setNotice] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Cloud Vault Sync (Firestore)
+  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [cloudSyncedCount, setCloudSyncedCount] = useState<number | null>(null);
+  const [cloudBusy, setCloudBusy] = useState(false);
+  // In-memory only buffer for accounts added before signing in during the same tab session
+  const pendingCloudUploadsRef = useRef<
+    Map<
+      string,
+      {
+        id: string;
+        label: string;
+        apiKey: string;
+        enabled: boolean;
+        isChairman: boolean;
+        note?: string;
+        preferredModel?: string;
+      }
+    >
+  >(new Map());
+
   // Add account form
   const [label, setLabel] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -68,15 +100,93 @@ export const GeminiApiSettingsTab: React.FC = () => {
     }
   }, []);
 
+  const syncWithCloud = useCallback(async (user: User, showSuccessToast = false) => {
+    if (!user?.emailVerified) return;
+    setCloudBusy(true);
+    try {
+      // Flush any keys added earlier in this tab session before sign-in
+      if (pendingCloudUploadsRef.current.size > 0) {
+        const pendingItems = Array.from(pendingCloudUploadsRef.current.values());
+        for (const item of pendingItems) {
+          await saveGeminiAccountToCloud(user, item);
+          pendingCloudUploadsRef.current.delete(item.id);
+        }
+      }
+      const hydrated = await hydrateServerGeminiPoolFromCloud(user);
+      setCloudSyncedCount(hydrated.cloudCount);
+      if (hydrated.accounts.length > 0) {
+        setAccounts(hydrated.accounts);
+      }
+      if (hydrated.summary) {
+        setSummary(hydrated.summary);
+      }
+      if (showSuccessToast) {
+        setNotice(
+          hydrated.cloudCount > 0
+            ? `Đã đồng bộ ${hydrated.cloudCount} tài khoản Gemini API từ Đám mây lên máy chủ.`
+            : 'Đã kết nối lưu trữ bền vững trên Đám mây. Các tài khoản bạn thêm sẽ tự động được giữ lại ở các phiên làm việc sau.'
+        );
+      }
+    } catch (err: any) {
+      if (showSuccessToast) {
+        setErrorMsg(err?.message || 'Không thể đồng bộ tài khoản Gemini API với Đám mây.');
+      }
+    } finally {
+      setCloudBusy(false);
+    }
+  }, []);
+
   useEffect(() => {
     void fetchAccounts();
   }, [fetchAccounts]);
+
+  useEffect(() => {
+    const unsub = onFirebaseUserChanged((user) => {
+      const verifiedUser = user && user.emailVerified ? user : null;
+      setCloudUser(verifiedUser);
+      if (verifiedUser) {
+        void syncWithCloud(verifiedUser, false);
+      } else {
+        setCloudSyncedCount(null);
+      }
+    });
+
+    const handleGlobalSynced = (evt: Event) => {
+      const detail = (evt as CustomEvent).detail;
+      if (detail?.accounts) setAccounts(detail.accounts);
+      if (detail?.summary) setSummary(detail.summary);
+      if (typeof detail?.cloudCount === 'number') setCloudSyncedCount(detail.cloudCount);
+    };
+    window.addEventListener('gemini-pool-synced', handleGlobalSynced);
+    return () => {
+      unsub();
+      window.removeEventListener('gemini-pool-synced', handleGlobalSynced);
+    };
+  }, [syncWithCloud]);
+
+  const handleEnableCloudSync = async () => {
+    setNotice('');
+    setErrorMsg('');
+    setCloudBusy(true);
+    try {
+      const signedInUser = await signInFirebaseCloudSync();
+      setCloudUser(signedInUser);
+      await syncWithCloud(signedInUser, true);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Đăng nhập Google để đồng bộ chưa thành công.');
+    } finally {
+      setCloudBusy(false);
+    }
+  };
 
   const handleAddAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     setNotice('');
     setErrorMsg('');
-    if (!label.trim() || !apiKey.trim()) {
+    const trimmedLabel = label.trim();
+    const trimmedKey = apiKey.trim();
+    const trimmedNote = note.trim();
+    if (!trimmedLabel || !trimmedKey) {
       setErrorMsg('Vui lòng nhập đầy đủ Tên tài khoản và Gemini API Key.');
       return;
     }
@@ -86,9 +196,9 @@ export const GeminiApiSettingsTab: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          label: label.trim(),
-          apiKey: apiKey.trim(),
-          note: note.trim() || undefined,
+          label: trimmedLabel,
+          apiKey: trimmedKey,
+          note: trimmedNote || undefined,
           setAsChairman,
         }),
       });
@@ -96,11 +206,54 @@ export const GeminiApiSettingsTab: React.FC = () => {
       if (!res.ok) throw new Error(data?.error || 'Không thể thêm tài khoản Gemini API.');
       setAccounts(data.accounts || []);
       setSummary(data.summary || null);
+
+      const createdAcc: GeminiAccountPublic | undefined = data.account;
+      let savedToCloud = false;
+      if (createdAcc?.id) {
+        const cloudRecord = {
+          id: createdAcc.id,
+          label: createdAcc.label,
+          apiKey: trimmedKey,
+          enabled: createdAcc.enabled,
+          isChairman: createdAcc.isChairman,
+          note: trimmedNote,
+          preferredModel: createdAcc.preferredModel || 'gemini-4-hydrogen',
+        };
+        if (cloudUser?.emailVerified) {
+          try {
+            await saveGeminiAccountToCloud(cloudUser, cloudRecord);
+            if (createdAcc.isChairman && data.summary?.chairmanAccountId) {
+              const envAcc = (data.accounts || []).find((a: GeminiAccountPublic) => a.source === 'env');
+              await saveGeminiPoolSettingsToCloud(
+                cloudUser,
+                {
+                  chairmanAccountId: data.summary.chairmanAccountId,
+                  envDefaultEnabled: envAcc?.enabled ?? true,
+                  envDefaultLabel: envAcc?.label,
+                  envDefaultNote: envAcc?.note,
+                },
+                true
+              );
+            }
+            savedToCloud = true;
+            setCloudSyncedCount((prev) => (prev ?? 0) + 1);
+          } catch {
+            // Keep server record active even if cloud write fails transiently
+          }
+        } else {
+          pendingCloudUploadsRef.current.set(createdAcc.id, cloudRecord);
+        }
+      }
+
       setLabel('');
       setApiKey('');
       setNote('');
       setSetAsChairman(false);
-      setNotice(`Đã thêm tài khoản "${data.account?.label || label}" an toàn trên máy chủ.`);
+      setNotice(
+        savedToCloud
+          ? `Đã lưu tài khoản "${createdAcc?.label || trimmedLabel}" trên máy chủ và đồng bộ bền vững trên Đám mây (tự khôi phục ở phiên sau).`
+          : `Đã lưu tài khoản "${createdAcc?.label || trimmedLabel}" trên máy chủ. Bấm "Bật đồng bộ Đám mây" phía trên nếu muốn tự động khôi phục khi máy chủ khởi động lại.`
+      );
     } catch (err: any) {
       setErrorMsg(err?.message || 'Thêm tài khoản thất bại.');
     } finally {
@@ -162,16 +315,34 @@ export const GeminiApiSettingsTab: React.FC = () => {
     setErrorMsg('');
     setBusyAction(`toggle:${acc.id}`);
     try {
+      const nextEnabled = !acc.enabled;
       const res = await fetch(`/api/gemini-accounts/${encodeURIComponent(acc.id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: !acc.enabled }),
+        body: JSON.stringify({ enabled: nextEnabled }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Không thể đổi trạng thái tài khoản.');
       setAccounts(data.accounts || []);
       setSummary(data.summary || null);
-      setNotice(`Đã ${!acc.enabled ? 'bật' : 'tạm tắt'} tài khoản "${acc.label}".`);
+
+      if (cloudUser?.emailVerified) {
+        try {
+          if (acc.source === 'env') {
+            await saveGeminiPoolSettingsToCloud(cloudUser, {
+              chairmanAccountId: data.summary?.chairmanAccountId || 'gemini-env-default',
+              envDefaultEnabled: nextEnabled,
+              envDefaultLabel: acc.label,
+              envDefaultNote: acc.note,
+            });
+          } else {
+            await updateGeminiAccountInCloud(cloudUser, acc.id, { enabled: nextEnabled });
+          }
+        } catch {
+          // non-fatal cloud mirror failure
+        }
+      }
+      setNotice(`Đã ${nextEnabled ? 'bật' : 'tạm tắt'} tài khoản "${acc.label}".`);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Lỗi cập nhật trạng thái.');
     } finally {
@@ -191,6 +362,24 @@ export const GeminiApiSettingsTab: React.FC = () => {
       if (!res.ok) throw new Error(data?.error || 'Không thể chỉ định Chỉ huy trưởng.');
       setAccounts(data.accounts || []);
       setSummary(data.summary || null);
+
+      if (cloudUser?.emailVerified) {
+        try {
+          const envAcc = (data.accounts || []).find((a: GeminiAccountPublic) => a.source === 'env');
+          await saveGeminiPoolSettingsToCloud(
+            cloudUser,
+            {
+              chairmanAccountId: acc.id,
+              envDefaultEnabled: envAcc?.enabled ?? true,
+              envDefaultLabel: envAcc?.label,
+              envDefaultNote: envAcc?.note,
+            },
+            true
+          );
+        } catch {
+          // non-fatal cloud mirror failure
+        }
+      }
       setNotice(`Đã chỉ định "${acc.label}" làm Chỉ huy trưởng (Gemini Chairman).`);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Lỗi đổi Chỉ huy trưởng.');
@@ -204,15 +393,36 @@ export const GeminiApiSettingsTab: React.FC = () => {
     setBusyAction(`rename:${id}`);
     setErrorMsg('');
     try {
+      const nextLabel = editLabel.trim();
+      const nextNote = editNote.trim();
       const res = await fetch(`/api/gemini-accounts/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: editLabel.trim(), note: editNote.trim() }),
+        body: JSON.stringify({ label: nextLabel, note: nextNote }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Không thể lưu tên tài khoản.');
       setAccounts(data.accounts || []);
       setSummary(data.summary || null);
+
+      if (cloudUser?.emailVerified) {
+        try {
+          const target = (data.accounts || []).find((a: GeminiAccountPublic) => a.id === id);
+          if (target?.source === 'env') {
+            await saveGeminiPoolSettingsToCloud(cloudUser, {
+              chairmanAccountId: data.summary?.chairmanAccountId || 'gemini-env-default',
+              envDefaultEnabled: target.enabled,
+              envDefaultLabel: nextLabel,
+              envDefaultNote: nextNote,
+            });
+          } else {
+            await updateGeminiAccountInCloud(cloudUser, id, { label: nextLabel, note: nextNote });
+          }
+        } catch {
+          // non-fatal cloud mirror failure
+        }
+      }
+
       setEditingId(null);
       setNotice('Đã cập nhật thông tin tài khoản Gemini API.');
     } catch (err: any) {
@@ -234,6 +444,16 @@ export const GeminiApiSettingsTab: React.FC = () => {
       if (!res.ok) throw new Error(data?.error || 'Không thể xóa tài khoản.');
       setAccounts(data.accounts || []);
       setSummary(data.summary || null);
+      pendingCloudUploadsRef.current.delete(acc.id);
+
+      if (cloudUser?.emailVerified && acc.source !== 'env') {
+        try {
+          await deleteGeminiAccountFromCloud(cloudUser, acc.id);
+          setCloudSyncedCount((prev) => (prev !== null ? Math.max(0, prev - 1) : null));
+        } catch {
+          // non-fatal cloud mirror failure
+        }
+      }
       setNotice(`Đã xóa tài khoản "${acc.label}".`);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Lỗi xóa tài khoản.');
@@ -252,7 +472,7 @@ export const GeminiApiSettingsTab: React.FC = () => {
             <span>Quản lý Cụm API Gemini (Multi-Key &amp; Chỉ huy trưởng)</span>
           </div>
           <p className="text-slate-500 dark:text-slate-400 mt-1 max-w-2xl">
-            Thêm nhiều Gemini API Key để chạy song song, dự phòng hạn mức và bàn giao phiên lên Đám mây. Chọn 1 tài khoản làm Chỉ huy trưởng (Gemini Chairman) để điều phối các Gemini khác và AI Muse.
+            Thêm nhiều Gemini API Key để chạy song song, tự động dự phòng hạn mức và lưu trữ bền vững cho các phiên làm việc sau. Chọn 1 tài khoản làm Chỉ huy trưởng (Gemini Chairman) để điều phối các Gemini khác và AI Muse.
           </p>
         </div>
 
@@ -280,6 +500,57 @@ export const GeminiApiSettingsTab: React.FC = () => {
             <span>Làm mới</span>
           </button>
         </div>
+      </div>
+
+      {/* Cloud Persistence Banner (Server + Firestore Auto-Hydration) */}
+      <div
+        className={`rounded-xl border p-3.5 flex flex-wrap items-center justify-between gap-3 ${
+          cloudUser
+            ? 'bg-emerald-500/[0.06] border-emerald-500/30'
+            : 'bg-violet-500/[0.06] border-violet-400/35'
+        }`}
+      >
+        <div className="flex items-start gap-2.5 min-w-0">
+          {cloudUser ? (
+            <Cloud className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+          ) : (
+            <CloudOff className="w-4 h-4 text-violet-600 dark:text-violet-300 shrink-0 mt-0.5" />
+          )}
+          <div className="min-w-0">
+            <div className="font-bold text-slate-900 dark:text-white text-xs">
+              {cloudUser
+                ? `Đã bật lưu trữ bền vững trên Máy chủ & Đám mây (${cloudUser.email})`
+                : 'Bật lưu trữ bền vững trên Đám mây để phiên sau không cần thêm lại API Key'}
+            </div>
+            <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
+              {cloudUser
+                ? `Danh sách tài khoản Gemini API (${cloudSyncedCount ?? 0} khóa tùy chỉnh) được lưu riêng tư theo tài khoản Google và tự động nạp lại lên máy chủ mỗi khi mở phiên làm việc mới.`
+                : 'Dữ liệu thêm mới đang lưu trực tiếp trên máy chủ phiên hiện tại. Đăng nhập Google 1 lần để tự động lưu và khôi phục nguyên vẹn sau mỗi lần máy chủ khởi động lại.'}
+            </p>
+          </div>
+        </div>
+
+        {cloudUser ? (
+          <button
+            type="button"
+            disabled={cloudBusy}
+            onClick={() => void syncWithCloud(cloudUser, true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-[#131a35] border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 font-semibold text-xs hover:bg-emerald-500/10 transition cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+          >
+            {cloudBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            <span>Đồng bộ lên máy chủ</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={cloudBusy}
+            onClick={() => void handleEnableCloudSync()}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-semibold text-xs transition cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+          >
+            {cloudBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LogIn className="w-3.5 h-3.5" />}
+            <span>Bật đồng bộ Đám mây</span>
+          </button>
+        )}
       </div>
 
       {/* Summary Metrics Strip + Governance Rule */}

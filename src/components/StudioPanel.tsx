@@ -396,6 +396,28 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       ? 'muse2api_video'
       : studioDefaults.visualMode || 'muse2api_video'
   );
+  const resolvedTargetVideoEngine: 'muse2api' | 'gemini' | 'qwen' =
+    visualMode === 'muse2api_video'
+      ? 'muse2api'
+      : visualMode === 'qwen_video'
+      ? 'qwen'
+      : visualMode === 'gemini_omni'
+      ? 'gemini'
+      : sceneVideoEngine;
+  const optimalMaxClipSec = resolvedTargetVideoEngine === 'gemini' ? 8 : 10;
+  const engineClipBadgeLabel =
+    resolvedTargetVideoEngine === 'muse2api'
+      ? 'Tối ưu AI Muse ≤10s/cảnh'
+      : resolvedTargetVideoEngine === 'qwen'
+      ? 'Tối ưu AI Qwen ≤10s/cảnh'
+      : 'Tối ưu AI Video ~8s/cảnh';
+  const autoMatchedSceneCount = Math.max(1, Math.min(30, Math.ceil(targetDurationSec / optimalMaxClipSec)));
+  const effectiveSceneCount =
+    desiredSceneCount === 'auto'
+      ? autoMatchedSceneCount
+      : Math.max(1, Math.min(30, Math.round(Number(desiredSceneCount) || autoMatchedSceneCount)));
+  const effectiveAvgSceneSec = Math.max(4, Math.round(targetDurationSec / Math.max(1, effectiveSceneCount)));
+  const autoAvgSceneSec = Math.max(4, Math.round(targetDurationSec / Math.max(1, autoMatchedSceneCount)));
   const [brollSource, setBrollSource] = useState<BrollSourceId>(studioDefaults.brollSource || 'wikimedia');
 
   const [musicMode, setMusicMode] = useState<DerivativeMusicMode>('none');
@@ -1652,6 +1674,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           videoStyle,
           customStylePrompt: customStylePrompt.trim(),
           scriptMode,
+          targetVideoEngine: resolvedTargetVideoEngine,
           ideaCount: clampedCount,
           targetDurationSec,
           outputLanguage,
@@ -1807,7 +1830,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         : stylePreset
       : 'none';
 
-    const seriesTotalDurationSec = unifiedUnitCount * targetDurationSec;
     const isRunningIndependentBatch =
       !directFromSelectedIdea && (Boolean(batchIdeas) || scriptMode === 'independent_batch');
 
@@ -1833,14 +1855,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           videoStyle,
           customStylePrompt: customStylePrompt.trim(),
           aspectRatio,
-          targetDurationSec: scriptMode === 'series' ? seriesTotalDurationSec : targetDurationSec,
-          sceneDurationSec: scriptMode === 'series' ? targetDurationSec : undefined,
-          desiredSceneCount:
-            scriptMode === 'series'
-              ? unifiedUnitCount
-              : desiredSceneCount === 'auto'
-              ? undefined
-              : desiredSceneCount,
+          targetDurationSec,
+          desiredSceneCount: desiredSceneCount === 'auto' ? undefined : desiredSceneCount,
+          targetVideoEngine: resolvedTargetVideoEngine,
           outputLanguage,
           useProModel: aiProvider === 'gemini' && useProModel,
           characterSummary: charSummary,
@@ -2570,8 +2587,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           prompt: compiledPrompt,
           aspectRatio,
           durationSec: Math.min(
-            sceneVideoEngine === 'qwen' ? 10 : sceneVideoEngine === 'muse2api' ? 12 : 15,
-            Math.max(4, Math.round(sc.durationSec || 8))
+            sceneVideoEngine === 'qwen' || sceneVideoEngine === 'muse2api' ? 10 : 15,
+            Math.max(4, Math.round(sc.durationSec || (sceneVideoEngine === 'muse2api' ? 10 : 8)))
           ),
           videoStyle: activeStyle,
           customStylePrompt: customStylePrompt.trim(),
@@ -3276,7 +3293,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           >
             <div className="font-bold">Series liên hoàn</div>
             <div className="text-[11px] opacity-80">
-              1 kịch bản tổng thể – {unifiedUnitCount} phân cảnh liên tiếp
+              1 kịch bản tổng thể – {effectiveSceneCount} phân cảnh (~{effectiveAvgSceneSec}s/cảnh)
             </div>
           </button>
 
@@ -3302,7 +3319,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         {showScriptModeGuide && (
           <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20 text-[11px] space-y-1.5 text-slate-600 dark:text-slate-300">
             <p>
-              <strong className="text-violet-600 dark:text-violet-300">Series liên hoàn (1 kịch bản – {unifiedUnitCount} phân cảnh):</strong> AI viết <strong>01 kịch bản tổng thể duy nhất</strong> bám sát 100% ý tưởng gốc, rồi chia thành <strong>{unifiedUnitCount} phân cảnh liên tiếp</strong>, mỗi phân cảnh dài <strong>{targetDurationSec}s</strong> (tổng <strong>{unifiedTotalDurationSec}s</strong>), tình tiết nối tiếp logic xuyên suốt.
+              <strong className="text-violet-600 dark:text-violet-300">Series liên hoàn (1 kịch bản – {effectiveSceneCount} phân cảnh liên tiếp):</strong> AI viết <strong>01 kịch bản tổng thể dài {targetDurationSec}s</strong> bám sát 100% ý tưởng gốc, tự động chia nhỏ thành <strong>{effectiveSceneCount} phân cảnh (~{effectiveAvgSceneSec}s/cảnh)</strong> để AI tạo video dựng đủ thời lượng không bị cắt 10s, đồng thời tự thiết kế chuyển mạch hình ảnh &amp; mạch truyện liền mạch xuyên suốt.
             </p>
             <p>
               <strong className="text-cyan-600 dark:text-cyan-300">Lô nhiều video độc lập ({unifiedUnitCount} kịch bản độc lập):</strong> AI tạo <strong>{unifiedUnitCount} kịch bản riêng biệt</strong>, mỗi video dài <strong>{targetDurationSec}s</strong> (tổng lô <strong>{unifiedTotalDurationSec}s</strong>), cùng chủ đề &amp; mô-típ cốt lõi nhưng khác nhân vật, phương tiện, bối cảnh cụ thể, hành vi và diễn biến — không liên kết nối tiếp nhau.
@@ -3318,12 +3335,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             <Clock className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-300" />
             <span>
               {scriptMode === 'series'
-                ? 'Thời lượng video (mỗi phân cảnh):'
+                ? 'Thời lượng tổng video Series:'
                 : 'Thời lượng video (mỗi kịch bản độc lập):'}
             </span>
           </span>
           <span className="text-[10px] font-mono text-cyan-700 dark:text-cyan-300">
-            {targetDurationSec}s / {scriptMode === 'series' ? 'phân cảnh' : 'video'}
+            {scriptMode === 'series'
+              ? `${targetDurationSec}s (~${effectiveSceneCount} cảnh × ~${effectiveAvgSceneSec}s)`
+              : `${targetDurationSec}s / video`}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-xl bg-slate-50 dark:bg-[#0c1021] border border-slate-200 dark:border-slate-400/20">
@@ -3396,17 +3415,17 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
             <span className="font-bold text-slate-800 dark:text-white">
               {scriptMode === 'series'
-                ? `Series liên hoàn: 01 kịch bản · ${unifiedUnitCount} phân cảnh × ${targetDurationSec}s`
+                ? `Series liên hoàn: 01 kịch bản · ${effectiveSceneCount} phân cảnh (~${effectiveAvgSceneSec}s/cảnh)`
                 : `Lô độc lập: ${unifiedUnitCount} kịch bản riêng × ${targetDurationSec}s`}
             </span>
             <span className="px-2 py-0.5 rounded bg-violet-500/15 text-violet-700 dark:text-violet-200 border border-violet-400/30 font-mono font-bold text-[10px]">
-              Tổng: {unifiedTotalDurationSec}s
+              Tổng: {scriptMode === 'series' ? `${targetDurationSec}s` : `${unifiedTotalDurationSec}s`}
             </span>
           </div>
           <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
             {scriptMode === 'series'
-              ? `1 câu chuyện xuyên suốt bám sát ý tưởng gốc, chia thành ${unifiedUnitCount} phân cảnh liên tiếp (Phân cảnh 01 → ${String(unifiedUnitCount).padStart(2, '0')}), mỗi phân cảnh dài đúng ${targetDurationSec}s.`
-              : `${unifiedUnitCount} câu chuyện độc lập phái sinh cùng chủ đề & mô-típ cốt lõi, mỗi video dài đúng ${targetDurationSec}s (không nối tiếp tình tiết giữa các video).`}
+              ? `1 câu chuyện xuyên suốt dài ${targetDurationSec}s, tự động chia thành ${effectiveSceneCount} phân cảnh liên tiếp (Phân cảnh 01 → ${String(effectiveSceneCount).padStart(2, '0')}, ~${effectiveAvgSceneSec}s/cảnh · ${engineClipBadgeLabel}). AI biên kịch tự nối chuyển mạch hình ảnh & giữ đồng nhất mạch truyện xuyên suốt.`
+              : `${unifiedUnitCount} câu chuyện độc lập phái sinh cùng chủ đề & mô-típ cốt lõi, mỗi video dài đúng ${targetDurationSec}s (~${effectiveSceneCount} phân cảnh/video · ${engineClipBadgeLabel}, không nối tiếp tình tiết giữa các video).`}
           </p>
         </div>
       </div>
@@ -3466,8 +3485,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               </span>
               <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-400/30">
                 {scriptMode === 'independent_batch'
-                  ? `Bấm từng ý tưởng tạo ngay 1 kịch bản (${targetDurationSec}s) · không tạo lại ý tưởng`
-                  : `Bấm từng ý tưởng tạo 01 kịch bản · ${unifiedUnitCount} phân cảnh × ${targetDurationSec}s = ${unifiedTotalDurationSec}s`}
+                  ? `Bấm từng ý tưởng tạo ngay 1 kịch bản (${targetDurationSec}s · ${effectiveSceneCount} cảnh) · không tạo lại ý tưởng`
+                  : `Bấm từng ý tưởng tạo 01 kịch bản Series · ${effectiveSceneCount} phân cảnh (~${effectiveAvgSceneSec}s/cảnh · tổng ${targetDurationSec}s)`}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -3597,8 +3616,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
                             <span>
                               {scriptMode === 'independent_batch'
-                                ? `Đang tạo prompt kịch bản (${targetDurationSec}s · ${learningElapsedSec}s)...`
-                                : `Đang tạo prompt kịch bản (${unifiedUnitCount} cảnh × ${targetDurationSec}s · ${learningElapsedSec}s)...`}
+                                ? `Đang tạo prompt kịch bản (${targetDurationSec}s · ${effectiveSceneCount} cảnh · ${learningElapsedSec}s)...`
+                                : `Đang tạo prompt Series (${effectiveSceneCount} cảnh × ~${effectiveAvgSceneSec}s · ${learningElapsedSec}s)...`}
                             </span>
                           </>
                         ) : (
@@ -5327,43 +5346,37 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     </select>
                   </label>
 
-                  {scriptMode === 'series' ? (
-                    <div className="space-y-1">
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                        Số phân cảnh Series (đồng bộ tự động)
-                      </span>
-                      <div className="h-9 px-3 flex items-center justify-between gap-2 text-xs bg-violet-500/10 border border-violet-400/35 rounded-xl text-violet-800 dark:text-violet-200 font-semibold">
-                        <span className="truncate">
-                          {unifiedUnitCount} phân cảnh × {targetDurationSec}s
-                        </span>
-                        <span className="text-[10px] font-mono shrink-0">
-                          Tổng {unifiedTotalDurationSec}s
-                        </span>
-                      </div>
-                    </div>
-                  ) : (
-                    <label className="space-y-1">
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                        Số cảnh trong mỗi video ({targetDurationSec}s)
-                      </span>
-                      <select
-                        value={String(desiredSceneCount)}
-                        onChange={(e) => setDesiredSceneCount(e.target.value === 'auto' ? 'auto' : Number(e.target.value))}
-                        className={inputCls}
-                      >
-                        <option value="auto">Tự động khớp {targetDurationSec}s (Khuyên dùng)</option>
-                        <option value="1">1 phân cảnh ({targetDurationSec}s)</option>
-                        <option value="2">2 phân cảnh</option>
-                        <option value="3">3 phân cảnh</option>
-                        <option value="4">4 phân cảnh</option>
-                        <option value="5">5 phân cảnh</option>
-                        <option value="6">6 phân cảnh</option>
-                        <option value="8">8 phân cảnh</option>
-                        <option value="10">10 phân cảnh</option>
-                        <option value="12">12 phân cảnh</option>
-                      </select>
-                    </label>
-                  )}
+                  <label className="space-y-1">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {scriptMode === 'series'
+                        ? `Số phân cảnh Series (${targetDurationSec}s · ${engineClipBadgeLabel})`
+                        : `Số cảnh mỗi video (${targetDurationSec}s · ${engineClipBadgeLabel})`}
+                    </span>
+                    <select
+                      value={String(desiredSceneCount)}
+                      onChange={(e) => setDesiredSceneCount(e.target.value === 'auto' ? 'auto' : Number(e.target.value))}
+                      className={inputCls}
+                    >
+                      <option value="auto">
+                        Tự động khớp {targetDurationSec}s ({autoMatchedSceneCount} cảnh × ~{autoAvgSceneSec}s · {engineClipBadgeLabel})
+                      </option>
+                      {[1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30].map((cnt) => {
+                        const secPerScene = Math.max(3, Math.round(targetDurationSec / cnt));
+                        const exceedsLimit = secPerScene > optimalMaxClipSec;
+                        return (
+                          <option key={cnt} value={String(cnt)}>
+                            {cnt} phân cảnh (~{secPerScene}s/cảnh
+                            {exceedsLimit
+                              ? resolvedTargetVideoEngine === 'muse2api'
+                                ? ' · vượt 10s AI Muse'
+                                : ` · vượt ${optimalMaxClipSec}s/clip`
+                              : ''}
+                            )
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
 
                   <div className="space-y-1">
                     <div className="flex items-center justify-between">
@@ -6102,8 +6115,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               <span className="font-semibold text-slate-900 dark:text-white">Tóm tắt Bước 1:</span>{' '}
               {productionFormat === 'narration_story' ? 'Phim thuyết minh kể chuyện' : 'Phim có lời thoại'} ·{' '}
               {scriptMode === 'independent_batch'
-                ? `${unifiedUnitCount} kịch bản độc lập × ${targetDurationSec}s (tổng ${unifiedTotalDurationSec}s)`
-                : `1 kịch bản Series · ${unifiedUnitCount} phân cảnh × ${targetDurationSec}s (tổng ${unifiedTotalDurationSec}s)`}{' '}
+                ? `${unifiedUnitCount} kịch bản độc lập × ${targetDurationSec}s (~${effectiveSceneCount} cảnh/video · tổng ${unifiedTotalDurationSec}s)`
+                : `1 kịch bản Series · ${effectiveSceneCount} phân cảnh (~${effectiveAvgSceneSec}s/cảnh · tổng ${targetDurationSec}s)`}{' '}
               · {aspectRatio} ·{' '}
               {voiceMode === 'none' ? 'Không lồng tiếng' : voiceMode === 'offline_system' ? 'VieNeu Offline' : 'AI Voice'}
             </span>
@@ -6153,10 +6166,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     {isLearning
                       ? scriptMode === 'independent_batch'
                         ? `Đang sáng tạo ${unifiedUnitCount} kịch bản (${learningElapsedSec}s)...`
-                        : `AI đang lên 1 kịch bản · ${unifiedUnitCount} phân cảnh (${learningElapsedSec}s)...`
+                        : `AI đang lên 1 kịch bản · ${effectiveSceneCount} phân cảnh (${learningElapsedSec}s)...`
                       : scriptMode === 'independent_batch'
                       ? `AI Lên ${unifiedUnitCount} Kịch Bản Độc Lập & Sang Bước 2`
-                      : `AI Lên Kịch Bản (${unifiedUnitCount} phân cảnh) & Sang Bước 2`}
+                      : `AI Lên Kịch Bản (${effectiveSceneCount} phân cảnh) & Sang Bước 2`}
                   </span>
                   {!isLearning && <ArrowRight className="w-4 h-4" />}
                 </button>
@@ -6172,10 +6185,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     {isLearning
                       ? scriptMode === 'independent_batch'
                         ? `Đang tạo ${unifiedUnitCount} kịch bản độc lập (${learningElapsedSec}s)...`
-                        : `Đang tạo 1 kịch bản · ${unifiedUnitCount} phân cảnh (${learningElapsedSec}s)...`
+                        : `Đang tạo 1 kịch bản · ${effectiveSceneCount} phân cảnh (${learningElapsedSec}s)...`
                       : scriptMode === 'independent_batch'
                       ? `Tạo ${unifiedUnitCount} prompt kịch bản độc lập từ ý tưởng gốc`
-                      : `Tạo prompt kịch bản (${unifiedUnitCount} phân cảnh × ${targetDurationSec}s)`}
+                      : `Tạo prompt kịch bản (${effectiveSceneCount} phân cảnh · ~${effectiveAvgSceneSec}s/cảnh)`}
                   </span>
                   {!isLearning && <ArrowRight className="w-4 h-4" />}
                 </button>

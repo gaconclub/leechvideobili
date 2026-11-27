@@ -1,0 +1,179 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private owner profile document acting as the Master Gate root for a user's persisted server configurations.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the owner."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "Verified Google account email of the owner."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last profile update."
+        }
+      },
+      "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "GeminiAccountVault": {
+      "title": "GeminiAccountVault",
+      "description": "Persisted Gemini API account entry owned privately by the authenticated user and automatically hydrated onto the server.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique account identifier matching the document ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the owning user."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Human-readable name for the Gemini API account."
+        },
+        "apiKey": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 256,
+          "description": "Gemini API key synced privately to the server Gemini pool."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this API account is active in the Gemini pool."
+        },
+        "isChairman": {
+          "type": "boolean",
+          "description": "Whether this API account is currently designated as the Gemini Chairman."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional quota or billing note."
+        },
+        "preferredModel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Preferred Gemini model name."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the account was added."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the account was last modified."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "label",
+        "apiKey",
+        "enabled",
+        "isChairman",
+        "note",
+        "preferredModel",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GeminiPoolSettings": {
+      "title": "GeminiPoolSettings",
+      "description": "Owner-specific Gemini pool governance settings (Chairman ID and default system key state).",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the owning user."
+        },
+        "chairmanAccountId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Account ID currently selected as Gemini Chairman."
+        },
+        "envDefaultEnabled": {
+          "type": "boolean",
+          "description": "Whether the built-in server GEMINI_API_KEY is enabled."
+        },
+        "envDefaultLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Display label for the built-in system Gemini account."
+        },
+        "envDefaultNote": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional note for the built-in system Gemini account."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when pool settings were first saved."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when pool settings were last modified."
+        }
+      },
+      "required": [
+        "ownerId",
+        "chairmanAccountId",
+        "envDefaultEnabled",
+        "envDefaultLabel",
+        "envDefaultNote",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private owner root profile document; acts as Master Gate for user subcollections."
+    },
+    "/users/{userId}/geminiAccounts/{accountId}": {
+      "schema": { "$ref": "#/entities/GeminiAccountVault" },
+      "description": "Owner-private vault of persisted Gemini API accounts synchronized to the backend server pool."
+    },
+    "/users/{userId}/poolSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/GeminiPoolSettings" },
+      "description": "Owner-private Gemini pool settings document (settingId = 'gemini')."
+    }
+  }
+}

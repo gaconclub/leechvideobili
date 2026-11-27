@@ -99,6 +99,7 @@ import {
   hasAnyEnabledGeminiAccount,
   listGeminiAccountsPublic,
   setChairmanGeminiAccount,
+  syncGeminiAccountsFromCloud,
   testGeminiAccountConnection,
   updateGeminiAccount,
 } from './server/geminiPool';
@@ -5918,6 +5919,7 @@ async function startServer() {
         characterRefsMeta = [],
         allowFreeCostumeChange = false,
         aiProvider = 'gemini',
+        targetVideoEngine = 'muse2api',
         useProModel = false,
       } = (req.body || {}) as {
         seedIdea?: string;
@@ -5940,6 +5942,7 @@ async function startServer() {
         }[];
         allowFreeCostumeChange?: boolean;
         aiProvider?: AiProviderId;
+        targetVideoEngine?: 'muse2api' | 'gemini' | 'qwen';
         useProModel?: boolean;
       };
 
@@ -5951,6 +5954,8 @@ async function startServer() {
         aiProvider === 'alibaba'
           ? aiProvider
           : 'gemini';
+      const resolvedTargetVideoEngine: 'muse2api' | 'gemini' | 'qwen' =
+        targetVideoEngine === 'gemini' || targetVideoEngine === 'qwen' ? targetVideoEngine : 'muse2api';
 
       const clampedIdeaCount = Math.max(1, Math.min(15, Math.round(Number(ideaCount || 3))));
       const result = await expandStudioIdeaWithAi({
@@ -5959,6 +5964,7 @@ async function startServer() {
         videoStyle,
         customStylePrompt: String(customStylePrompt || ''),
         scriptMode: scriptMode === 'independent_batch' ? 'independent_batch' : 'series',
+        targetVideoEngine: resolvedTargetVideoEngine,
         ideaCount: clampedIdeaCount,
         targetDurationSec: Number(targetDurationSec || 60),
         outputLanguage,
@@ -6082,6 +6088,7 @@ async function startServer() {
         selectedIdeaTitle = '',
         prePlannedIdeas,
         aiProvider = 'gemini',
+        targetVideoEngine = 'muse2api',
       } = (req.body || {}) as {
         mode?: StudioCreationMode;
         scriptMode?: StudioScriptMode;
@@ -6089,6 +6096,7 @@ async function startServer() {
         videoCount?: number;
         ideaCount?: number;
         perVideoDurations?: number[];
+        targetVideoEngine?: 'muse2api' | 'gemini' | 'qwen';
         ideaPrompt?: string;
         query?: string;
         videos?: DerivativeSourceInput[];
@@ -6209,6 +6217,8 @@ async function startServer() {
           enableVoiceover: enableVoiceover !== false,
           allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
           aiProvider: validProvider,
+          targetVideoEngine:
+            targetVideoEngine === 'gemini' || targetVideoEngine === 'qwen' ? targetVideoEngine : 'muse2api',
           prePlannedIdeas: cleanPrePlanned,
         });
         void syncStudioDirectiveToCommandCenter({
@@ -6250,15 +6260,16 @@ async function startServer() {
         aspectRatio: resolvedAspectRatio,
         targetDurationSec: typeof targetDurationSec === 'number' ? targetDurationSec : undefined,
         sceneDurationSec:
-          resolvedScriptMode === 'series' && typeof sceneDurationSec === 'number' && Number.isFinite(sceneDurationSec)
-            ? Math.max(5, Math.min(300, Math.round(sceneDurationSec)))
+          typeof sceneDurationSec === 'number' &&
+          Number.isFinite(sceneDurationSec) &&
+          sceneDurationSec >= 5 &&
+          sceneDurationSec <= 10
+            ? Math.round(sceneDurationSec)
             : undefined,
         targetDuration: targetDuration === 'medium' ? 'medium' : 'short',
         desiredSceneCount:
-          typeof desiredSceneCount === 'number'
-            ? desiredSceneCount
-            : resolvedScriptMode === 'series' && typeof ideaCount === 'number' && Number.isFinite(ideaCount)
-            ? Math.max(1, Math.min(15, Math.round(ideaCount)))
+          typeof desiredSceneCount === 'number' && Number.isFinite(desiredSceneCount) && desiredSceneCount >= 1
+            ? Math.max(1, Math.min(30, Math.round(desiredSceneCount)))
             : undefined,
         outputLanguage,
         useProModel: Boolean(useProModel),
@@ -6272,6 +6283,8 @@ async function startServer() {
         customInstruction: String(customInstruction || ''),
         enableVoiceover: enableVoiceover !== false,
         allowFreeCostumeChange: Boolean(allowFreeCostumeChange),
+        targetVideoEngine:
+          targetVideoEngine === 'gemini' || targetVideoEngine === 'qwen' ? targetVideoEngine : 'muse2api',
         aiProvider: validProvider,
       });
 
@@ -6892,6 +6905,22 @@ async function startServer() {
       });
     } catch (err: any) {
       res.status(400).json({ error: err?.message || 'Không thể đổi Chỉ huy trưởng Gemini.' });
+    }
+  });
+
+  app.post('/api/gemini-accounts/sync', (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const synced = syncGeminiAccountsFromCloud({
+        accounts: Array.isArray(body.accounts) ? body.accounts : [],
+        chairmanAccountId: typeof body.chairmanAccountId === 'string' ? body.chairmanAccountId : undefined,
+        envDefaultEnabled: typeof body.envDefaultEnabled === 'boolean' ? body.envDefaultEnabled : undefined,
+        envDefaultLabel: typeof body.envDefaultLabel === 'string' ? body.envDefaultLabel : undefined,
+        envDefaultNote: typeof body.envDefaultNote === 'string' ? body.envDefaultNote : undefined,
+      });
+      res.json(synced);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Không thể đồng bộ cụm API Gemini lên máy chủ.' });
     }
   });
 
