@@ -211,6 +211,219 @@ export function getGeminiAccountSecretById(accountId?: string): { id: string; la
   };
 }
 
+export function isGeminiKeyExhaustedOrAuthError(err: any): boolean {
+  const status = Number(err?.status ?? err?.code ?? 0);
+  const raw = String(err?.message || err || '').toLowerCase();
+  if (status === 429 || status === 401 || status === 403) return true;
+  return (
+    raw.includes('429') ||
+    raw.includes('resource_exhausted') ||
+    raw.includes('quota') ||
+    raw.includes('rate limit') ||
+    raw.includes('rate_limit') ||
+    raw.includes('exceeded') ||
+    raw.includes('hạn mức') ||
+    raw.includes('hết lượt') ||
+    raw.includes('api_key_invalid') ||
+    raw.includes('api key not valid') ||
+    raw.includes('permission_denied') ||
+    raw.includes('401') ||
+    raw.includes('403')
+  );
+}
+
+export function listOrderedGeminiAccountsForFailover(opts?: {
+  preferredAccountId?: string;
+}): {
+  id: string;
+  label: string;
+  apiKey: string;
+  isChairman: boolean;
+  status: GeminiAccountStatus;
+  errorCount: number;
+}[] {
+  const chairmanId = resolveEffectiveChairmanId();
+  const rawCandidates: {
+    id: string;
+    label: string;
+    apiKey: string;
+    isChairman: boolean;
+    status: GeminiAccountStatus;
+    errorCount: number;
+  }[] = [];
+
+  if (hasEnvDefaultKey() && poolStore.envDefaultEnabled) {
+    rawCandidates.push({
+      id: ENV_DEFAULT_GEMINI_ACCOUNT_ID,
+      label: poolStore.envDefaultLabel || 'Gemini Hệ thống (Mặc định)',
+      apiKey: process.env.GEMINI_API_KEY!.trim(),
+      isChairman: chairmanId === ENV_DEFAULT_GEMINI_ACCOUNT_ID,
+      status: poolStore.envDefaultStatus || 'untested',
+      errorCount: poolStore.envDefaultErrorCount || 0,
+    });
+  }
+  for (const acc of poolStore.accounts) {
+    if (acc.enabled && acc.apiKey.trim()) {
+      rawCandidates.push({
+        id: acc.id,
+        label: acc.label,
+        apiKey: acc.apiKey.trim(),
+        isChairman: chairmanId === acc.id,
+        status: acc.status || 'untested',
+        errorCount: acc.errorCount || 0,
+      });
+    }
+  }
+
+  // Deduplicate by apiKey, keeping preferred/chairman copy if duplicated
+  const byKey = new Map<string, (typeof rawCandidates)[number]>();
+  for (const c of rawCandidates) {
+    const existing = byKey.get(c.apiKey);
+    if (!existing || c.id === opts?.preferredAccountId || (c.isChairman && !existing.isChairman)) {
+      byKey.set(c.apiKey, c);
+    }
+  }
+  const unique = Array.from(byKey.values());
+  const priorityId = opts?.preferredAccountId || chairmanId;
+
+  const rank = (c: (typeof unique)[number]): number => {
+    const isHealthy = c.status === 'healthy' || c.status === 'untested';
+    if (c.id === priorityId && isHealthy) return 0;
+    if (c.status === 'healthy') return 1;
+    if (c.status === 'untested') return 2;
+    if (c.status === 'error') return 3;
+    if (c.status === 'quota_exceeded') return 4;
+    return 5; // auth_error last
+  };
+
+  unique.sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    if (a.isChairman !== b.isChairman) return a.isChairman ? -1 : 1;
+    return a.errorCount - b.errorCount;
+  });
+
+  return unique;
+}
+
+export async function executeWithGeminiKeyFailover<T>(
+  runner: (ctx: {
+    ai: GoogleGenAI;
+    account: { id: string; label: string; apiKey: string };
+  }) => Promise<T>,
+  opts?: {
+    apiVersion?: 'v1' | 'v1beta';
+    preferredAccountId?: string;
+    apiKeyOverride?: string;
+    autoPromoteOnFailover?: boolean;
+    label?: string;
+  }
+): Promise<{
+  result: T;
+  account: { id: string; label: string; apiKey: string };
+  switchedFromLabel?: string;
+  attemptsCount: number;
+}> {
+  const overrideKey = opts?.apiKeyOverride?.trim();
+  if (overrideKey) {
+    const ai = new GoogleGenAI({
+      apiKey: overrideKey,
+      ...(opts?.apiVersion ? { apiVersion: opts.apiVersion } : {}),
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    });
+    const result = await runner({
+      ai,
+      account: { id: 'override', label: 'API Key tùy chỉnh', apiKey: overrideKey },
+    });
+    return {
+      result,
+      account: { id: 'override', label: 'API Key tùy chỉnh', apiKey: overrideKey },
+      attemptsCount: 1,
+    };
+  }
+
+  const candidates = listOrderedGeminiAccountsForFailover({
+    preferredAccountId: opts?.preferredAccountId,
+  });
+  if (candidates.length === 0) {
+    throw new Error(
+      'Chưa phát hiện tài khoản Gemini API khả dụng trên máy chủ. Hãy thêm API Key trong Cài đặt > Kết nối API Gemini hoặc Settings > Secrets.'
+    );
+  }
+
+  const failedAccounts: { id: string; label: string; error: string }[] = [];
+  let lastQuotaOrAuthErr: any = null;
+
+  for (let i = 0; i < candidates.length; i += 1) {
+    const acc = candidates[i];
+    const ai = new GoogleGenAI({
+      apiKey: acc.apiKey,
+      ...(opts?.apiVersion ? { apiVersion: opts.apiVersion } : {}),
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    });
+    const startedAt = Date.now();
+    try {
+      const result = await runner({
+        ai,
+        account: { id: acc.id, label: acc.label, apiKey: acc.apiKey },
+      });
+      const latencyMs = Date.now() - startedAt;
+      recordGeminiAccountUsage(acc.id, true, { latencyMs });
+
+      let switchedFromLabel: string | undefined;
+      if (failedAccounts.length > 0) {
+        switchedFromLabel = failedAccounts[0].label;
+        if (opts?.autoPromoteOnFailover !== false) {
+          try {
+            setChairmanGeminiAccount(acc.id);
+          } catch {
+            // non-fatal if account cannot be promoted
+          }
+        }
+        console.log(
+          `[Gemini Pool Failover] "${switchedFromLabel}" hết lượt/lỗi -> Đã tự động kích hoạt key "${acc.label}" (${opts?.label || 'AI viết kịch bản'}).`
+        );
+      }
+
+      return {
+        result,
+        account: { id: acc.id, label: acc.label, apiKey: acc.apiKey },
+        switchedFromLabel,
+        attemptsCount: i + 1,
+      };
+    } catch (err: any) {
+      const latencyMs = Date.now() - startedAt;
+      if (isGeminiKeyExhaustedOrAuthError(err)) {
+        const msg = String(err?.message || err || 'Hết lượt sử dụng (429)');
+        recordGeminiAccountUsage(acc.id, false, { latencyMs, errorMsg: msg });
+        failedAccounts.push({ id: acc.id, label: acc.label, error: msg });
+        lastQuotaOrAuthErr = err;
+        if (i < candidates.length - 1) {
+          console.warn(
+            `[Gemini Pool Failover] Key "${acc.label}" chạm hạn mức/lỗi (${msg.slice(0, 100)}) -> Tự động chuyển sang key tiếp theo "${candidates[i + 1].label}"...`
+          );
+          continue;
+        }
+        break;
+      }
+      throw err;
+    }
+  }
+
+  if (failedAccounts.length > 1) {
+    const triedLabels = failedAccounts.map((f) => f.label).join(', ');
+    const exhaustedErr: any = new Error(
+      `Đã tự động thử luân phiên toàn bộ ${failedAccounts.length} API Key trong Cụm API Gemini (${triedLabels}) nhưng tất cả đều chạm hạn mức (429 RESOURCE_EXHAUSTED) hoặc không hợp lệ. Vui lòng thêm key mới trong Cài đặt > Kết nối API Gemini.`
+    );
+    exhaustedErr.status = 429;
+    exhaustedErr.cause = lastQuotaOrAuthErr;
+    throw exhaustedErr;
+  }
+
+  throw lastQuotaOrAuthErr;
+}
+
 export function resolveChairmanGeminiAccount(overrideChairmanId?: string): {
   id: string;
   label: string;
@@ -219,25 +432,15 @@ export function resolveChairmanGeminiAccount(overrideChairmanId?: string): {
   const preferred = getGeminiAccountSecretById(overrideChairmanId);
   if (preferred) return preferred;
 
+  // Prefer the ordered failover list so if current Chairman is quota_exceeded/auth_error, a healthy enabled key is returned automatically
+  const ordered = listOrderedGeminiAccountsForFailover();
+  if (ordered.length > 0) {
+    const first = ordered[0];
+    return { id: first.id, label: first.label, apiKey: first.apiKey };
+  }
+
   const currentChairman = getGeminiAccountSecretById(resolveEffectiveChairmanId());
   if (currentChairman) return currentChairman;
-
-  // Fallback to any enabled account
-  if (hasEnvDefaultKey() && poolStore.envDefaultEnabled) {
-    return {
-      id: ENV_DEFAULT_GEMINI_ACCOUNT_ID,
-      label: poolStore.envDefaultLabel || 'Gemini Hệ thống (Mặc định)',
-      apiKey: process.env.GEMINI_API_KEY!.trim(),
-    };
-  }
-  const firstCustom = poolStore.accounts.find((a) => a.enabled && a.apiKey.trim());
-  if (firstCustom) {
-    return {
-      id: firstCustom.id,
-      label: firstCustom.label,
-      apiKey: firstCustom.apiKey.trim(),
-    };
-  }
   return null;
 }
 

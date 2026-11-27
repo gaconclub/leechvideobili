@@ -468,7 +468,15 @@ export interface LearnedVideoStyle {
 
 export interface ServerCapabilitiesStatus {
   aiProviders: {
-    gemini: { configured: boolean; model: string; ttsModel: string; source: 'env' | 'none' };
+    gemini: {
+      configured: boolean;
+      model: string;
+      ttsModel: string;
+      accountsCount?: number;
+      healthyAccounts?: number;
+      activeChairmanLabel?: string;
+      source: 'pool' | 'env' | 'none';
+    };
     openai: { configured: boolean; model: string; source: 'env' | 'none' };
     meta: { configured: boolean; model: string; baseUrl: string; source: 'env' | 'none' };
     muse2api: {

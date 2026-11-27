@@ -96,6 +96,7 @@ import {
   addGeminiAccount,
   deleteGeminiAccount,
   getGeminiPoolSummary,
+  hasAnyEnabledGeminiAccount,
   listGeminiAccountsPublic,
   setChairmanGeminiAccount,
   testGeminiAccountConnection,
@@ -5090,13 +5091,19 @@ async function startServer() {
     const offlineTtsCheck = await detectOfflineTtsEngine();
     const muse2apiStatus = await getMuse2ApiStatus().catch(() => null);
 
+    const geminiPool = getGeminiPoolSummary();
+    const geminiConfigured = hasAnyEnabledGeminiAccount() || Boolean(process.env.GEMINI_API_KEY?.trim());
+
     res.json({
       aiProviders: {
         gemini: {
-          configured: Boolean(process.env.GEMINI_API_KEY?.trim()),
+          configured: geminiConfigured,
           model: 'gemini-4-hydrogen',
           ttsModel: 'gemini-3.8-flash-lite-tts',
-          source: process.env.GEMINI_API_KEY?.trim() ? 'env' : 'none',
+          accountsCount: geminiPool.enabled,
+          healthyAccounts: geminiPool.healthy,
+          activeChairmanLabel: geminiPool.chairmanLabel,
+          source: geminiPool.total > 0 ? 'pool' : process.env.GEMINI_API_KEY?.trim() ? 'env' : 'none',
         },
         openai: {
           configured: Boolean(process.env.OPENAI_API_KEY?.trim()),
