@@ -297,7 +297,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [showScriptModeGuide, setShowScriptModeGuide] = useState(false);
   const [desiredSceneCount, setDesiredSceneCount] = useState<number | 'auto'>('auto');
   const [customInstruction, setCustomInstruction] = useState('');
-  const [activeStudioStep, setActiveStudioStep] = useState<1 | 2 | 3>(1);
+  const [activeStudioStep, setActiveStudioStep] = useState<1 | 2>(1);
   const [sourceInputTab, setSourceInputTab] = useState<'list' | 'library' | 'search'>('list');
   const [configTab, setConfigTab] = useState<'script' | 'media' | 'audio'>('script');
   const [showDraftBible, setShowDraftBible] = useState(false);
@@ -583,7 +583,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     const found = projectProfiles.find((p) => p.id === profileId);
     if (!found) return;
     setProjectNameInput(found.name);
-    if (found.videoStyle) setVideoStyle(found.videoStyle);
+    const normalizedProjectStyle: StudioVideoStyle | undefined =
+      found.videoStyle === 'cinematic_filmmaking' ? 'cinematic' : found.videoStyle;
+    if (normalizedProjectStyle) setVideoStyle(normalizedProjectStyle);
     setCharacterBibleDraft(found.characterBible || '');
     setSettingBibleDraft(found.settingBible || '');
     setVisualStyleBibleDraft(found.visualStyleBible || '');
@@ -594,7 +596,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     if (blueprint) {
       setBlueprint({
         ...blueprint,
-        videoStyle: found.videoStyle || blueprint.videoStyle,
+        videoStyle: normalizedProjectStyle || blueprint.videoStyle,
         characterBible: found.characterBible || blueprint.characterBible,
         settingBible: found.settingBible || blueprint.settingBible,
         visualStyleBible: found.visualStyleBible || blueprint.visualStyleBible,
@@ -3021,12 +3023,10 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       const hasMedia = blueprint.scenes.some((s) => Boolean(s.sceneImageDataUrl || s.omniClipAssetId));
       if (!hasMedia) {
         setGenError('Chế độ Tạo Video Phái Sinh cần ít nhất 1 video nguồn hoặc ảnh/clip phân cảnh.');
-        setActiveStudioStep(3);
         return;
       }
     }
 
-    setActiveStudioStep(3);
     setIsGeneratingFinal(true);
     setGenError('');
     try {
@@ -3138,11 +3138,9 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     if (blueprints.length <= 1 || isGeneratingFinal || isBatchRenderingAll) return;
     if (studioMode === 'derivative' && sources.length === 0) {
       setGenError('Cần ít nhất 1 video nguồn tham chiếu hoặc ảnh/clip phân cảnh để dựng hàng loạt.');
-      setActiveStudioStep(3);
       return;
     }
 
-    setActiveStudioStep(3);
     batchRenderAbortRef.current = false;
     setIsBatchRenderingAll(true);
     setIsGeneratingFinal(true);
@@ -3733,8 +3731,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           <p className="text-[11px] text-emerald-600 dark:text-emerald-300 font-medium">{projectStatusMsg}</p>
         )}
 
-        {/* True 3-Step Workspace Stepper */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 border-t border-slate-200/80 dark:border-slate-400/15 text-xs">
+        {/* 2-Step Workspace Stepper */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-slate-200/80 dark:border-slate-400/15 text-xs">
           <button
             type="button"
             onClick={() => setActiveStudioStep(1)}
@@ -3792,38 +3790,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             </div>
             <span className="text-[11px] font-medium text-cyan-600 dark:text-cyan-300 shrink-0">
               {blueprint ? `${blueprint.scenes.length} cảnh` : 'Chưa tạo'}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveStudioStep(3)}
-            className={`text-left rounded-xl px-3.5 py-2.5 border transition cursor-pointer flex items-center justify-between gap-2 ${
-              activeStudioStep === 3
-                ? 'bg-emerald-500/15 border-emerald-400/50 text-slate-900 dark:text-white shadow-sm'
-                : 'bg-slate-50/80 dark:bg-[#0c1021]/70 border-slate-200 dark:border-slate-400/15 text-slate-600 dark:text-slate-300 hover:border-emerald-400/35'
-            }`}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className={`w-5 h-5 rounded-full text-[11px] font-bold flex items-center justify-center shrink-0 ${
-                  activeStudioStep === 3
-                    ? 'bg-emerald-500 text-slate-950'
-                    : 'bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-slate-300'
-                }`}
-              >
-                3
-              </span>
-              <span className="font-bold truncate">Dựng Lô &amp; Xuất MP4</span>
-            </div>
-            <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-300 shrink-0">
-              {job?.status === 'completed'
-                ? 'Đã xong'
-                : job
-                ? `${job.progress}%`
-                : blueprint
-                ? 'Sẵn sàng'
-                : 'Chờ bước 2'}
             </span>
           </button>
         </div>
@@ -5592,44 +5558,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                   );
                 })()}
 
-                {/* Dedicated Skill Option: Phong cách quay phim điện ảnh */}
-                <div
-                  className={`rounded-xl border p-3 transition ${
-                    videoStyle === 'cinematic_filmmaking'
-                      ? 'bg-gradient-to-r from-amber-500/12 via-violet-500/10 to-cyan-500/10 border-amber-400/50 dark:border-amber-400/45'
-                      : 'bg-slate-50/90 dark:bg-[#0c1021]/80 border-slate-200 dark:border-slate-400/20'
-                  }`}
-                >
-                  <label className="flex items-start justify-between gap-3 cursor-pointer select-none">
-                    <div className="space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Clapperboard className="w-4 h-4 text-amber-500 dark:text-amber-300 shrink-0" />
-                        <span className="text-xs font-bold text-slate-900 dark:text-white">
-                          Sử dụng phong cách dựng phim điện ảnh
-                        </span>
-                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-400/30">
-                          Skill: Phong cách quay phim điện ảnh
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                        Áp dụng ngữ pháp dựng phim nhịp động từ video mẫu: khung hình xuyên tiền cảnh 3 lớp, góc thấp uy quyền, cắt nhịp Macro mắt/bàn tay, Two-shot xóa phông, ánh sáng viền &amp; quỹ đạo Orbit mượt mà.
-                      </p>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={videoStyle === 'cinematic_filmmaking'}
-                      onChange={(e) => {
-                        const nextStyle: StudioVideoStyle = e.target.checked ? 'cinematic_filmmaking' : 'cinematic';
-                        setVideoStyle(nextStyle);
-                        if (blueprint) {
-                          setBlueprint({ ...blueprint, videoStyle: nextStyle });
-                        }
-                      }}
-                      className="mt-0.5 w-4 h-4 rounded accent-amber-500 cursor-pointer shrink-0"
-                    />
-                  </label>
-                </div>
-
                 <div className="space-y-2">
                   <input
                     type="text"
@@ -6419,7 +6347,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     type="button"
                     disabled={isDispatchingToCommandCenter}
                     onClick={() => void handleDispatchToCommandCenter()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-semibold cursor-pointer whitespace-nowrap"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold cursor-pointer whitespace-nowrap shadow-sm"
                   >
                     {isDispatchingToCommandCenter ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -6427,13 +6355,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                       <Clapperboard className="w-3.5 h-3.5" />
                     )}
                     <span>Đẩy sang Trung Tâm Điều Phối AI</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveStudioStep(3)}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer"
-                  >
-                    <span>Dựng &amp; Xuất MP4</span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -7146,511 +7067,6 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             </div>
           </div>
         )}
-      </section>
-
-      {/* ================================================================= */}
-      {/* BƯỚC 3: DỰNG LÔ, TIẾN TRÌNH FFMPEG & XUẤT VIDEO MP4                */}
-      {/* ================================================================= */}
-      <section className={activeStudioStep === 3 ? 'space-y-4' : 'hidden'}>
-        <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 dark:border-slate-400/15 pb-3.5">
-            <div>
-              <h2 className="font-display text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-                Dựng Video Hoàn Chỉnh &amp; Xuất MP4 (FFmpeg)
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                {blueprint
-                  ? `${blueprint.derivativeTitle} · ${blueprint.scenes.length} phân cảnh · ${aspectRatio} · ${
-                      voiceMode === 'none' ? 'Không lồng tiếng' : voiceMode === 'offline_system' ? 'VieNeu Offline' : 'AI Voice'
-                    }`
-                  : 'Chưa có kịch bản — hãy tạo kịch bản ở Bước 1 & 2 trước khi xuất.'}
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveStudioStep(blueprint ? 2 : 1)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl cursor-pointer"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span>{blueprint ? 'Quay lại sửa phân cảnh' : 'Về Bước 1'}</span>
-              </button>
-
-              {blueprints.length > 1 && (
-                <button
-                  type="button"
-                  disabled={isGeneratingFinal || isBatchRenderingAll}
-                  onClick={handleBatchRenderAllVideos}
-                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold text-cyan-700 dark:text-cyan-200 bg-cyan-500/15 border border-cyan-500/35 hover:bg-cyan-500/25 rounded-xl transition disabled:opacity-50 cursor-pointer"
-                >
-                  {isBatchRenderingAll ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListVideo className="w-4 h-4" />}
-                  <span>
-                    {isBatchRenderingAll ? 'Đang dựng hàng loạt...' : `Dựng Hàng Loạt ${blueprints.length} Video`}
-                  </span>
-                </button>
-              )}
-
-              <button
-                type="button"
-                disabled={!blueprint || isDispatchingToCommandCenter}
-                onClick={() => void handleDispatchToCommandCenter()}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-violet-700 dark:text-violet-200 bg-violet-500/15 border border-violet-500/35 hover:bg-violet-500/25 rounded-xl transition disabled:opacity-45 cursor-pointer whitespace-nowrap"
-              >
-                {isDispatchingToCommandCenter ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Clapperboard className="w-3.5 h-3.5" />
-                )}
-                <span>Đẩy sang Trung Tâm Điều Phối AI</span>
-              </button>
-
-              <button
-                id="btn-studio-render-primary"
-                type="button"
-                disabled={!blueprint || isGeneratingFinal}
-                onClick={handleRenderFinalVideo}
-                className="inline-flex items-center gap-2 px-5 py-2.5 text-xs sm:text-sm font-extrabold text-white bg-gradient-to-r from-violet-600 via-indigo-600 to-emerald-500 hover:brightness-110 rounded-xl shadow-lg shadow-violet-600/25 transition disabled:opacity-50 whitespace-nowrap cursor-pointer"
-              >
-                {isGeneratingFinal && !isBatchRenderingAll ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Play className="w-4 h-4" />
-                )}
-                <span>
-                  {isGeneratingFinal && !isBatchRenderingAll
-                    ? 'Đang dựng Video...'
-                    : blueprints.length > 1
-                    ? `Dựng Video #${activeBatchIndex + 1} (.MP4)`
-                    : 'Dựng & Xuất Video (.MP4)'}
-                </span>
-              </button>
-            </div>
-          </div>
-
-          {/* Batch Queue Overview (if >1 independent video) */}
-          {blueprints.length > 1 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-              {blueprints.map((bpItem, idx) => {
-                const itemJob = jobsByKey[`${studioMode}:${idx}`];
-                const isActive = idx === activeBatchIndex;
-                return (
-                  <button
-                    key={`${bpItem.derivativeTitle}_${idx}`}
-                    type="button"
-                    onClick={() => setActiveBatchIndex(idx)}
-                    className={`text-left p-3 rounded-xl border transition cursor-pointer space-y-1 ${
-                      isActive
-                        ? 'bg-violet-500/15 border-violet-400/50'
-                        : 'bg-slate-50/80 dark:bg-[#0c1021]/80 border-slate-200 dark:border-slate-400/20'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between text-[11px] font-mono">
-                      <span className="font-bold text-cyan-600 dark:text-cyan-300">Video {String(idx + 1).padStart(2, '0')}</span>
-                      <span className="text-slate-500">{bpItem.scenes.length} cảnh</span>
-                    </div>
-                    <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                      {bpItem.derivativeTitle}
-                    </div>
-                    <div className="text-[11px]">
-                      {itemJob?.status === 'completed' ? (
-                        <span className="text-emerald-600 dark:text-emerald-300 font-semibold">✓ Đã xuất MP4</span>
-                      ) : itemJob?.status === 'partial_error' ? (
-                        <span className="text-amber-600 dark:text-amber-300 font-semibold">⚠ Có phân cảnh lỗi</span>
-                      ) : itemJob?.status === 'error' ? (
-                        <span className="text-rose-500">✕ Lỗi dựng</span>
-                      ) : itemJob ? (
-                        <span className="text-cyan-600 dark:text-cyan-300">Đang dựng {itemJob.progress}%</span>
-                      ) : (
-                        <span className="text-slate-400">Chờ dựng</span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Export Status & Progress Bar + Per-Scene Progress Tracker + Preview Player */}
-          <div className="rounded-2xl bg-slate-50/90 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/20 p-4 space-y-4">
-            <div className="space-y-2.5">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <span className="text-slate-700 dark:text-slate-200 font-medium">
-                  {!blueprint
-                    ? 'Sẵn sàng xử lý luồng dựng video & ghép âm thanh bằng FFmpeg.'
-                    : batchRenderStatusText
-                    ? batchRenderStatusText
-                    : job?.stepLabel
-                    ? job.stepLabel
-                    : `Sẵn sàng dựng ${blueprint.scenes.length} phân cảnh (${aspectRatio}) chất lượng 1080p HD.`}
-                </span>
-                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
-                  {job ? `${job.progress}%` : '0%'}
-                </span>
-              </div>
-
-              <div className="w-full h-2.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                <div
-                  className={`h-full transition-all duration-300 ${
-                    job?.status === 'error'
-                      ? 'bg-rose-500'
-                      : job?.status === 'partial_error'
-                      ? 'bg-amber-500'
-                      : job?.status === 'completed'
-                      ? 'bg-emerald-500'
-                      : 'bg-gradient-to-r from-violet-500 via-cyan-400 to-emerald-400'
-                  }`}
-                  style={{ width: `${job ? Math.min(100, Math.max(4, job.progress)) : 0}%` }}
-                />
-              </div>
-            </div>
-
-            {genError && (
-              <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{genError}</span>
-              </div>
-            )}
-
-            {/* Per-Scene Live Progress & Recovery Controls */}
-            {blueprint && blueprint.scenes.length > 0 && (() => {
-              const displayScenes: DerivativeSceneProgress[] =
-                job?.scenes && job.scenes.length > 0
-                  ? job.scenes
-                  : blueprint.scenes.map((sc, i) => ({
-                      sceneIndex: i,
-                      sceneNumber: sc.sceneIndex || i + 1,
-                      sceneTitle: sc.sceneTitle || `Phân cảnh #${i + 1}`,
-                      progress: sc.omniClipAssetId ? 70 : sc.sceneImageDataUrl ? 25 : 0,
-                      status: 'pending',
-                      stageLabel: sc.omniClipAssetId
-                        ? 'Đã có video sẵn ở Bước 2 — sẽ dùng thẳng khi ghép MP4'
-                        : sc.sceneImageDataUrl
-                        ? 'Đã có ảnh từ Bước 2 — sẽ dùng thẳng để tạo video (không tạo lại ảnh)'
-                        : 'Chưa có ảnh Bước 2 — sẽ khởi tạo khi bấm Dựng & Xuất MP4',
-                      imageStatus: sc.sceneImageDataUrl ? 'reused' : 'pending',
-                      imageSource: sc.sceneImageDataUrl ? 'step2_reused' : 'none',
-                      videoStatus: sc.omniClipAssetId ? 'reused' : 'pending',
-                      videoAssetId: sc.omniClipAssetId,
-                      videoPreviewUrl: sc.omniClipPreviewUrl,
-                      audioStatus: 'pending',
-                      renderStatus: 'pending',
-                      updatedAt: 0,
-                    }));
-
-              const reusedImgCount = displayScenes.filter(
-                (s) => s.imageSource === 'step2_reused' || s.imageStatus === 'reused'
-              ).length;
-              const errorSceneCount = displayScenes.filter((s) => s.status === 'error').length;
-              const doneSceneCount = displayScenes.filter((s) => s.status === 'completed').length;
-              const canOperateScenes = Boolean(job?.jobId) && !isGeneratingFinal && !isBatchRenderingAll;
-
-              const stageBadgeCls = (st: DerivativeSceneProgress['imageStatus']) => {
-                if (st === 'reused')
-                  return 'text-cyan-700 dark:text-cyan-300 bg-cyan-500/12 border-cyan-500/30';
-                if (st === 'completed')
-                  return 'text-emerald-700 dark:text-emerald-300 bg-emerald-500/12 border-emerald-500/30';
-                if (st === 'running')
-                  return 'text-violet-700 dark:text-violet-300 bg-violet-500/15 border-violet-500/35';
-                if (st === 'error')
-                  return 'text-rose-700 dark:text-rose-300 bg-rose-500/15 border-rose-500/35';
-                return 'text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-white/5 border-slate-300/60 dark:border-white/10';
-              };
-
-              const imageStageText = (sp: DerivativeSceneProgress) => {
-                if (sp.imageStatus === 'reused') return 'Ảnh: Dùng sẵn Bước 2';
-                if (sp.imageStatus === 'completed') return 'Ảnh: Đã tạo xong';
-                if (sp.imageStatus === 'running') return 'Ảnh: Đang tạo...';
-                if (sp.imageStatus === 'error') return 'Ảnh: Lỗi';
-                return 'Ảnh: Chờ';
-              };
-
-              const videoStageText = (sp: DerivativeSceneProgress) => {
-                if (sp.videoStatus === 'reused') return 'Video: Dùng sẵn';
-                if (sp.videoStatus === 'completed') return 'Video: Đã xong';
-                if (sp.videoStatus === 'running') return 'Video: Đang tạo...';
-                if (sp.videoStatus === 'error') return 'Video: Lỗi';
-                return 'Video: Chờ';
-              };
-
-              return (
-                <div className="space-y-3 pt-1">
-                  <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200/80 dark:border-slate-400/15">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs font-bold text-slate-900 dark:text-white">
-                        Tiến trình từng phân cảnh ({doneSceneCount}/{displayScenes.length} hoàn tất)
-                      </span>
-                      {reusedImgCount > 0 && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-md bg-cyan-500/12 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30">
-                          <ImageIcon className="w-3 h-3" />
-                          <span>{reusedImgCount}/{displayScenes.length} cảnh dùng thẳng ảnh Bước 2</span>
-                        </span>
-                      )}
-                      {errorSceneCount > 0 && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/35">
-                          <AlertCircle className="w-3 h-3" />
-                          <span>{errorSceneCount} phân cảnh lỗi</span>
-                        </span>
-                      )}
-                    </div>
-
-                    {job?.jobId && (job.status === 'partial_error' || job.status === 'error') && (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          disabled={isGeneratingFinal || isResumingRenderJob || Boolean(retryingRenderSceneKey)}
-                          onClick={() => void handleResumeRenderJob(false)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-white bg-violet-600 hover:bg-violet-500 rounded-lg transition disabled:opacity-50 cursor-pointer"
-                        >
-                          {isResumingRenderJob ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <RefreshCw className="w-3.5 h-3.5" />
-                          )}
-                          <span>Khởi tạo lại tiến trình &amp; Xuất MP4</span>
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isGeneratingFinal || isResumingRenderJob || Boolean(retryingRenderSceneKey)}
-                          onClick={() => void handleResumeRenderJob(true)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-amber-800 dark:text-amber-200 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 rounded-lg transition disabled:opacity-50 cursor-pointer"
-                        >
-                          <Play className="w-3.5 h-3.5" />
-                          <span>Bỏ qua cảnh lỗi &amp; Ghép MP4 ngay</span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-1">
-                    {displayScenes.map((sp, idx) => {
-                      const bpScene = blueprint.scenes[idx];
-                      const thumbSrc = sp.imagePreviewUrl || bpScene?.sceneImageDataUrl || '';
-                      const isRowRetryingImage = retryingRenderSceneKey === `${job?.jobId}:${idx}:image`;
-                      const isRowRetryingVideo = retryingRenderSceneKey === `${job?.jobId}:${idx}:video`;
-                      const isRowRetryingFull = retryingRenderSceneKey === `${job?.jobId}:${idx}:full`;
-                      const isRowBusy =
-                        sp.status === 'running' || isRowRetryingImage || isRowRetryingVideo || isRowRetryingFull;
-                      const showActionRow =
-                        Boolean(job?.jobId) &&
-                        (sp.status === 'error' ||
-                          job?.status === 'partial_error' ||
-                          job?.status === 'error' ||
-                          job?.status === 'completed');
-
-                      return (
-                        <div
-                          key={`render_scene_${idx}`}
-                          className={`rounded-xl border p-3 space-y-2 transition ${
-                            sp.status === 'error'
-                              ? 'bg-rose-500/[0.06] border-rose-500/35'
-                              : sp.status === 'running'
-                              ? 'bg-violet-500/[0.06] border-violet-400/40'
-                              : sp.status === 'completed'
-                              ? 'bg-emerald-500/[0.04] border-emerald-500/25'
-                              : 'bg-white/70 dark:bg-[#080b18]/70 border-slate-200/80 dark:border-slate-400/15'
-                          }`}
-                        >
-                          <div className="flex items-start gap-3">
-                            <div className="w-16 h-10 rounded-lg overflow-hidden shrink-0 bg-slate-200/80 dark:bg-slate-800/80 border border-slate-300/60 dark:border-white/10 flex items-center justify-center">
-                              {thumbSrc ? (
-                                <img
-                                  src={thumbSrc}
-                                  alt={`Cảnh #${sp.sceneNumber}`}
-                                  className="w-full h-full object-cover"
-                                />
-                              ) : (
-                                <ImageIcon className="w-4 h-4 text-slate-400" />
-                              )}
-                            </div>
-
-                            <div className="min-w-0 flex-1 space-y-1.5">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  {sp.status === 'running' || isRowBusy ? (
-                                    <Loader2 className="w-3.5 h-3.5 text-violet-500 animate-spin shrink-0" />
-                                  ) : sp.status === 'completed' ? (
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                                  ) : sp.status === 'error' ? (
-                                    <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-                                  ) : (
-                                    <Film className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                                  )}
-                                  <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                                    Phân cảnh #{String(sp.sceneNumber).padStart(2, '0')} · {sp.sceneTitle}
-                                  </span>
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <span
-                                    className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border ${stageBadgeCls(
-                                      sp.imageStatus
-                                    )}`}
-                                  >
-                                    {imageStageText(sp)}
-                                  </span>
-                                  <span
-                                    className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border ${stageBadgeCls(
-                                      sp.videoStatus
-                                    )}`}
-                                  >
-                                    {videoStageText(sp)}
-                                  </span>
-                                  <span className="text-[11px] font-mono font-bold tabular-nums text-slate-700 dark:text-slate-200 ml-1">
-                                    {sp.progress}%
-                                  </span>
-                                </div>
-                              </div>
-
-                              {/* Per-scene Progress Bar */}
-                              <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                                <div
-                                  className={`h-full transition-all duration-300 ${
-                                    sp.status === 'error'
-                                      ? 'bg-rose-500'
-                                      : sp.status === 'completed'
-                                      ? 'bg-emerald-500'
-                                      : sp.status === 'running'
-                                      ? 'bg-gradient-to-r from-violet-500 via-cyan-400 to-emerald-400'
-                                      : sp.imageStatus === 'reused' || sp.videoStatus === 'reused'
-                                      ? 'bg-cyan-500/75'
-                                      : 'bg-slate-400/60'
-                                  }`}
-                                  style={{ width: `${Math.min(100, Math.max(sp.progress > 0 ? 6 : 0, sp.progress))}%` }}
-                                />
-                              </div>
-
-                              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                                <span
-                                  className={
-                                    sp.status === 'error'
-                                      ? 'text-rose-600 dark:text-rose-300 font-semibold'
-                                      : 'text-slate-600 dark:text-slate-300'
-                                  }
-                                >
-                                  {sp.stageLabel}
-                                </span>
-                                {sp.videoPreviewUrl && (
-                                  <a
-                                    href={sp.videoPreviewUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-[10px] font-semibold text-cyan-600 dark:text-cyan-300 hover:underline"
-                                  >
-                                    Xem clip phân cảnh ↗
-                                  </a>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Inline Error Banner IMMEDIATELY underneath scene progress bar */}
-                          {sp.error && (
-                            <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-rose-500/12 border border-rose-500/35 text-[11px] text-rose-700 dark:text-rose-200">
-                              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-rose-500" />
-                              <div className="space-y-0.5 break-words">
-                                <div className="font-bold">
-                                  Lỗi tại bước{' '}
-                                  {sp.failedStage === 'image'
-                                    ? 'Tạo ảnh phân cảnh'
-                                    : sp.failedStage === 'video'
-                                    ? 'Tạo video phân cảnh'
-                                    : sp.failedStage === 'render'
-                                    ? 'Dựng FFmpeg'
-                                    : 'Xử lý phân cảnh'}
-                                  :
-                                </div>
-                                <div>{sp.error}</div>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Per-Scene Recovery Controls */}
-                          {showActionRow && (
-                            <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200/70 dark:border-slate-400/10">
-                              <button
-                                type="button"
-                                disabled={!canOperateScenes || Boolean(retryingRenderSceneKey)}
-                                onClick={() => void handleRetryRenderScene(idx, 'image')}
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-800 dark:text-cyan-200 bg-cyan-500/12 hover:bg-cyan-500/22 border border-cyan-500/30 rounded-lg transition disabled:opacity-45 cursor-pointer"
-                              >
-                                {isRowRetryingImage ? (
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                ) : (
-                                  <ImageIcon className="w-3 h-3" />
-                                )}
-                                <span>Tạo lại ảnh phân cảnh</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                disabled={!canOperateScenes || Boolean(retryingRenderSceneKey)}
-                                onClick={() => void handleRetryRenderScene(idx, 'video')}
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-violet-800 dark:text-violet-200 bg-violet-500/12 hover:bg-violet-500/22 border border-violet-500/30 rounded-lg transition disabled:opacity-45 cursor-pointer"
-                              >
-                                {isRowRetryingVideo ? (
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                ) : (
-                                  <Film className="w-3 h-3" />
-                                )}
-                                <span>Tạo lại video</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                disabled={!canOperateScenes || Boolean(retryingRenderSceneKey)}
-                                onClick={() => void handleRetryRenderScene(idx, 'full')}
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 dark:text-amber-200 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 rounded-lg transition disabled:opacity-45 cursor-pointer"
-                              >
-                                {isRowRetryingFull ? (
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                ) : (
-                                  <RotateCcw className="w-3 h-3" />
-                                )}
-                                <span>Khởi tạo lại tiến trình</span>
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {job?.warnings && job.warnings.length > 0 && (
-              <ul className="space-y-1 text-[11px] text-amber-700 dark:text-amber-300 list-disc pl-4">
-                {job.warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            )}
-
-            {job?.status === 'completed' && job.jobId && (
-              <div className="space-y-3 pt-2">
-                <video
-                  controls
-                  src={`/api/derivative/jobs/${job.jobId}/file`}
-                  className="w-full max-h-[440px] rounded-xl bg-black"
-                />
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-xs font-mono tabular-nums text-slate-600 dark:text-slate-300">
-                    {job.fileName} · {job.resolution} · {job.durationSec}s · {job.fileSize ? formatBytes(job.fileSize) : ''}
-                  </div>
-                  <a
-                    href={`/api/derivative/jobs/${job.jobId}/file?download=1`}
-                    download={job.fileName || 'studio_video.mp4'}
-                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold text-slate-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition whitespace-nowrap shadow"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>Tải Video MP4 Về Máy</span>
-                  </a>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
       </section>
 
       <LearnStyleModal

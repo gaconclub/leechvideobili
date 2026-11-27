@@ -265,12 +265,6 @@ export const VIDEO_STYLE_OPTIONS: {
     shotDefault: 'Quay điện ảnh 35mm anamorphic, chiều sâu trường ảnh sâu',
   },
   {
-    value: 'cinematic_filmmaking',
-    label: 'Phong cách quay phim điện ảnh (Skill riêng)',
-    desc: 'Khung hình xuyên tiền cảnh 3 lớp, góc thấp uy quyền, cắt nhịp Macro mắt/bàn tay, Two-shot xóa phông & Orbit mượt',
-    shotDefault: 'Quay & dựng phim điện ảnh nhịp động: xuyên tiền cảnh 3 lớp, góc thấp power-shot, macro mắt/chi tiết & Steadicam orbit',
-  },
-  {
     value: 'anime',
     label: 'Anime',
     desc: 'Hoạt hình Nhật Bản 2D sắc nét, màu rực rỡ, giữ chuẩn tạo hình',

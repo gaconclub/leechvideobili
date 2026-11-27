@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.37",
+    "version": "1.0.38",
     "date": "27/11/2026",
-    "title": "feat(ai): implement Gemini API key failover logic",
+    "title": "refactor: consolidate cinematic studio styles",
     "changes": [
-      "feat(ai): implement Gemini API key failover logic"
+      "refactor: consolidate cinematic studio styles"
     ]
   },
   {
