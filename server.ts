@@ -6761,6 +6761,7 @@ async function startServer() {
             aspectRatio: body.aspectRatio,
             videoStyle: body.videoStyle,
             allowFreeCostumeChange: body.allowFreeCostumeChange,
+            productionFormat: body.productionFormat,
             visualBible: body.visualBible,
             settingBible: body.settingBible,
             costumeBible: body.costumeBible,
@@ -6768,6 +6769,7 @@ async function startServer() {
             characterRefs: body.characterRefs,
             blueprint: body.blueprint,
             sourceAction: 'studio_dispatch',
+            voiceConfig: body.voiceConfig,
             musicConfig: body.musicConfig,
           },
           googleToken

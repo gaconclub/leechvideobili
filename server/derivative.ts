@@ -11,7 +11,12 @@ import {
   generateVideoBufferViaMuse2Api,
   getMuse2ApiStatus,
 } from './muse2api';
-import { resolveChairmanGeminiAccount } from './geminiPool';
+import {
+  hasAnyEnabledGeminiAccount,
+  listHealthyGeminiWorkerAccounts,
+  recordGeminiAccountUsage,
+  resolveChairmanGeminiAccount,
+} from './geminiPool';
 import {
   callXingchiCompletion,
   generateImageWithXingchi,
@@ -7582,6 +7587,41 @@ export function buildNorthernVietnameseTtsStyle(baseStyle?: string, characterNam
   return parts.join(' ');
 }
 
+interface TtsCandidateKey {
+  accountId?: string;
+  label: string;
+  apiKey: string;
+}
+
+function collectGeminiTtsCandidateKeys(): TtsCandidateKey[] {
+  const keys: TtsCandidateKey[] = [];
+  const seen = new Set<string>();
+  const add = (apiKeyRaw: string | undefined, label: string, accountId?: string) => {
+    const apiKey = String(apiKeyRaw || '').trim();
+    if (!apiKey || seen.has(apiKey)) return;
+    seen.add(apiKey);
+    keys.push({ accountId, label, apiKey });
+  };
+
+  for (const acc of listHealthyGeminiWorkerAccounts({ includeChairman: true })) {
+    add(acc.apiKey, acc.label || acc.id, acc.id);
+  }
+  const chairman = resolveChairmanGeminiAccount();
+  if (chairman?.apiKey) {
+    add(chairman.apiKey, chairman.label || 'Gemini Chủ tịch', chairman.id);
+  }
+  add(process.env.GEMINI_API_KEY, 'ENV GEMINI_API_KEY');
+  return keys;
+}
+
+export function hasAnyGeminiTtsKey(): boolean {
+  return (
+    hasAnyEnabledGeminiAccount() ||
+    Boolean(resolveChairmanGeminiAccount()?.apiKey?.trim()) ||
+    Boolean(process.env.GEMINI_API_KEY?.trim())
+  );
+}
+
 export async function synthesizeGeminiVoicePreview(params: {
   text: string;
   voice?: string;
@@ -7592,10 +7632,9 @@ export async function synthesizeGeminiVoicePreview(params: {
   if (!cleanText) {
     throw new Error('Nội dung đọc thử trống.');
   }
-  if (!process.env.GEMINI_API_KEY?.trim()) {
-    throw new Error('Chưa cấu hình GEMINI_API_KEY để tổng hợp giọng đọc thử Gemini.');
+  if (!hasAnyGeminiTtsKey()) {
+    throw new Error('Chưa cấu hình GEMINI_API_KEY hoặc tài khoản Gemini Pool để tổng hợp giọng đọc thử Gemini.');
   }
-  const ai = getGeminiClient();
   const voiceId = sanitizeGeminiVoiceId(params.voice);
   const lockedStyle = buildNorthernVietnameseTtsStyle(
     params.voiceStyle || 'Clear, expressive Northern Vietnamese voice',
@@ -7603,7 +7642,7 @@ export async function synthesizeGeminiVoicePreview(params: {
   );
   const tmpWav = path.join(os.tmpdir(), `gemini_tts_preview_${Date.now()}_${crypto.randomBytes(3).toString('hex')}.wav`);
   try {
-    const result = await synthesizeSceneVoiceWavWithDetail(ai, cleanText, voiceId, lockedStyle, tmpWav);
+    const result = await synthesizeSceneVoiceWavWithDetail(null, cleanText, voiceId, lockedStyle, tmpWav);
     if (!result.ok || !fs.existsSync(tmpWav)) {
       throw new Error(result.error || `Gemini TTS không trả về âm thanh cho giọng ${voiceId}.`);
     }
@@ -7614,7 +7653,7 @@ export async function synthesizeGeminiVoicePreview(params: {
 }
 
 async function synthesizeSceneVoiceWav(
-  ai: GoogleGenAI,
+  ai: GoogleGenAI | null,
   text: string,
   voice: Exclude<DerivativeVoiceId, 'none'>,
   stylePrompt: string,
@@ -7652,105 +7691,54 @@ function ensureWavBuffer(rawBuf: Buffer, mimeType?: string): Buffer {
 }
 
 async function synthesizeSceneVoiceWavWithDetail(
-  ai: GoogleGenAI,
+  _ai: GoogleGenAI | null,
   text: string,
   voice: Exclude<DerivativeVoiceId, 'none'>,
   stylePrompt: string,
   outWavPath: string
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; engineUsed?: string }> {
   const cleanText = text.trim();
   if (!cleanText) return { ok: false, error: 'Nội dung đọc trống.' };
+
+  const candidateKeys = collectGeminiTtsCandidateKeys();
+  if (candidateKeys.length === 0) {
+    return {
+      ok: false,
+      error: 'Chưa cấu hình GEMINI_API_KEY hoặc tài khoản Gemini Pool để tạo giọng đọc AI.',
+    };
+  }
 
   const resolvedVoice = sanitizeGeminiVoiceId(voice);
   const lockedStyle = stylePrompt.includes('Northern Vietnamese')
     ? stylePrompt
     : buildNorthernVietnameseTtsStyle(stylePrompt);
-  const ttsModels = ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'];
   const voicesToTry: Exclude<DerivativeVoiceId, 'none'>[] =
     resolvedVoice === 'Kore' ? ['Kore'] : [resolvedVoice, 'Kore'];
+  const generateContentModels = [
+    'gemini-3.8-flash-lite-tts',
+    'gemini-3.8-flash-tts',
+    'gemini-2.5-flash-preview-tts',
+  ];
+  const interactionModels = ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'];
 
   let lastError = '';
-  let sawModelNotFound = false;
 
-  // Interactions API TTS models (gemini-3.8-*-tts) require v1beta under @google/genai 3.x
-  let interactionsClient: GoogleGenAI = ai;
-  try {
-    interactionsClient = getGeminiBetaClient();
-  } catch {
-    interactionsClient = ai;
-  }
-
-  for (const tryVoice of voicesToTry) {
-    for (const ttsModel of ttsModels) {
-      try {
-        const interaction = await retryWithGeminiBackoff(
-          () =>
-            interactionsClient.interactions.create({
-              model: ttsModel,
-              input: [
-                {
-                  type: 'text',
-                  text: cleanText,
-                  annotations: [
-                    {
-                      type: 'speech_metadata',
-                      style: lockedStyle,
-                    },
-                  ],
-                },
-              ],
-              response_format: { type: 'audio' },
-              generation_config: {
-                speech_config: [{ voice: tryVoice }],
-              },
-            }),
-          [1200, 2600]
-        );
-
-        const audio = interaction.output_audio;
-        if (audio?.data) {
-          const wav = ensureWavBuffer(Buffer.from(audio.data, 'base64'), audio.mime_type);
-          fs.writeFileSync(outWavPath, wav);
-          return { ok: true };
-        }
-      } catch (err: any) {
-        const msg = String(err?.message || err || '');
-        lastError = formatGeminiError(err);
-        if (msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID') || msg.includes('403')) {
-          throw new Error(lastError);
-        }
-        if (msg.includes('404') || /not found/i.test(msg)) {
-          sawModelNotFound = true;
-          continue;
-        }
-        const isVoiceRejection = /voice|speech_config|invalid/i.test(msg) && msg.includes('400');
-        if (isVoiceRejection) {
-          break;
-        }
-        if (!isTransientGemini503Error(err)) {
-          break;
-        }
-      }
-    }
-    if (sawModelNotFound) break;
-  }
-
-  // Fallback via v1beta generateContent (supports gemini-3.8-*-tts and public gemini-2.5-flash-preview-tts)
-  const apiKey = (resolveChairmanGeminiAccount()?.apiKey || process.env.GEMINI_API_KEY || '').trim();
-  if (apiKey) {
+  for (const keyEntry of candidateKeys) {
     const aiBeta = new GoogleGenAI({
-      apiKey,
+      apiKey: keyEntry.apiKey,
       apiVersion: 'v1beta',
       httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
     });
-    const betaModels = ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'gemini-2.5-flash-preview-tts'];
+    let keyFatal = false;
+
+    // 1. Primary path: unary generateContent (returns complete WAV directly on gemini-3.8-*-tts)
     for (const tryVoice of voicesToTry) {
-      for (const betaModel of betaModels) {
+      if (keyFatal) break;
+      for (const betaModel of generateContentModels) {
         try {
-          const directivePrompt =
-            betaModel.startsWith('gemini-2.5')
-              ? `Read the following text aloud strictly with an authentic Northern Vietnamese (Hà Nội / miền Bắc Việt Nam) accent, standard Hanoi pronunciation and tones, natural cadence (${lockedStyle}):\n"${cleanText}"`
-              : cleanText;
+          const directivePrompt = betaModel.startsWith('gemini-2.5')
+            ? `Read the following text aloud strictly with an authentic Northern Vietnamese (Hà Nội / miền Bắc Việt Nam) accent, standard Hanoi pronunciation and tones, natural cadence (${lockedStyle}):\n"${cleanText}"`
+            : cleanText;
           const response = await retryWithGeminiBackoff(
             () =>
               aiBeta.models.generateContent({
@@ -7777,20 +7765,32 @@ async function synthesizeSceneVoiceWavWithDetail(
                   },
                 },
               }),
-            [1200, 2600]
+            [1000, 2200]
           );
           const part = response.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData?.data);
           const b64 = part?.inlineData?.data;
           if (b64) {
             const wav = ensureWavBuffer(Buffer.from(b64, 'base64'), part?.inlineData?.mimeType);
-            fs.writeFileSync(outWavPath, wav);
-            return { ok: true };
+            if (wav.length > 44) {
+              fs.writeFileSync(outWavPath, wav);
+              if (keyEntry.accountId) recordGeminiAccountUsage(keyEntry.accountId, true);
+              return { ok: true, engineUsed: `Gemini TTS (${betaModel} · ${tryVoice})` };
+            }
           }
         } catch (err: any) {
           const msg = String(err?.message || err || '');
           lastError = formatGeminiError(err);
-          if (msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID') || msg.includes('403')) {
-            throw new Error(lastError);
+          if (
+            msg.includes('PERMISSION_DENIED') ||
+            msg.includes('API_KEY_INVALID') ||
+            msg.includes('RESOURCE_EXHAUSTED') ||
+            msg.includes('403') ||
+            msg.includes('401') ||
+            msg.includes('429')
+          ) {
+            if (keyEntry.accountId) recordGeminiAccountUsage(keyEntry.accountId, false, { errorMsg: lastError });
+            keyFatal = true;
+            break;
           }
           if (msg.includes('404') || /not found/i.test(msg)) {
             continue;
@@ -7802,9 +7802,158 @@ async function synthesizeSceneVoiceWavWithDetail(
         }
       }
     }
+
+    if (keyFatal) continue;
+
+    // 2. Secondary path: Interactions API for gemini-3.8-*-tts
+    for (const tryVoice of voicesToTry) {
+      if (keyFatal) break;
+      for (const ttsModel of interactionModels) {
+        try {
+          const interaction = await retryWithGeminiBackoff(
+            () =>
+              aiBeta.interactions.create({
+                model: ttsModel,
+                input: [
+                  {
+                    type: 'text',
+                    text: cleanText,
+                    annotations: [
+                      {
+                        type: 'speech_metadata',
+                        style: lockedStyle,
+                      },
+                    ],
+                  },
+                ],
+                response_format: { type: 'audio' },
+                generation_config: {
+                  speech_config: [{ voice: tryVoice }],
+                },
+              }),
+            [1000, 2200]
+          );
+
+          const audio = interaction.output_audio;
+          if (audio?.data) {
+            const wav = ensureWavBuffer(Buffer.from(audio.data, 'base64'), audio.mime_type);
+            if (wav.length > 44) {
+              fs.writeFileSync(outWavPath, wav);
+              if (keyEntry.accountId) recordGeminiAccountUsage(keyEntry.accountId, true);
+              return { ok: true, engineUsed: `Gemini TTS (${ttsModel} · ${tryVoice})` };
+            }
+          }
+        } catch (err: any) {
+          const msg = String(err?.message || err || '');
+          lastError = formatGeminiError(err);
+          if (
+            msg.includes('PERMISSION_DENIED') ||
+            msg.includes('API_KEY_INVALID') ||
+            msg.includes('RESOURCE_EXHAUSTED') ||
+            msg.includes('403') ||
+            msg.includes('401') ||
+            msg.includes('429')
+          ) {
+            if (keyEntry.accountId) recordGeminiAccountUsage(keyEntry.accountId, false, { errorMsg: lastError });
+            keyFatal = true;
+            break;
+          }
+          if (msg.includes('404') || /not found/i.test(msg)) {
+            continue;
+          }
+          const isVoiceRejection = /voice|speech_config|invalid/i.test(msg) && msg.includes('400');
+          if (isVoiceRejection) {
+            break;
+          }
+          if (!isTransientGemini503Error(err)) {
+            break;
+          }
+        }
+      }
+    }
   }
 
-  return { ok: false, error: lastError };
+  return { ok: false, error: lastError || 'Không thể tổng hợp giọng đọc Gemini TTS.' };
+}
+
+export async function synthesizeNarrationAudioForText(params: {
+  text: string;
+  outWavPath: string;
+  mode?: 'ai_online' | 'offline_system';
+  voice?: DerivativeVoiceId | string;
+  voiceStyle?: string;
+  offlineVoice?: string;
+  characterName?: string;
+}): Promise<{ ok: boolean; engineUsed?: string; error?: string; fellBackTo?: 'ai_online' | 'offline_system' }> {
+  const cleanText = String(params.text || '').replace(/\s+/g, ' ').trim();
+  if (!cleanText) {
+    return { ok: false, error: 'Nội dung lời thoại trống.' };
+  }
+  const mode: 'ai_online' | 'offline_system' = params.mode === 'offline_system' ? 'offline_system' : 'ai_online';
+  const voiceId = sanitizeGeminiVoiceId(params.voice === 'none' ? 'Kore' : params.voice);
+  const lockedStyle = buildNorthernVietnameseTtsStyle(
+    params.voiceStyle || 'Clear, engaging Northern Vietnamese storyteller narrator with natural pacing',
+    params.characterName
+  );
+  const offlineEngine = await detectOfflineTtsEngine();
+  const hasOnline = hasAnyGeminiTtsKey();
+  const errors: string[] = [];
+
+  if (mode === 'offline_system') {
+    if (offlineEngine.available) {
+      try {
+        const ok = await synthesizeOfflineVoiceWav(cleanText, params.outWavPath, params.offlineVoice || voiceId);
+        if (ok && fs.existsSync(params.outWavPath) && fs.statSync(params.outWavPath).size > 44) {
+          return { ok: true, engineUsed: offlineEngine.engine || 'Offline TTS' };
+        }
+      } catch (err: any) {
+        errors.push(`Offline TTS: ${err?.message || String(err)}`);
+      }
+    } else {
+      errors.push('Offline TTS (VieNeu-TTS) chưa cài đặt trên máy chủ.');
+    }
+
+    if (hasOnline) {
+      const onlineRes = await synthesizeSceneVoiceWavWithDetail(null, cleanText, voiceId, lockedStyle, params.outWavPath);
+      if (onlineRes.ok && fs.existsSync(params.outWavPath) && fs.statSync(params.outWavPath).size > 44) {
+        return {
+          ok: true,
+          engineUsed: onlineRes.engineUsed || 'Gemini AI TTS',
+          fellBackTo: 'ai_online',
+        };
+      }
+      if (onlineRes.error) errors.push(`Gemini TTS: ${onlineRes.error}`);
+    }
+    return { ok: false, error: errors.join(' | ') || 'Không thể tổng hợp giọng đọc.' };
+  }
+
+  // mode === 'ai_online'
+  if (hasOnline) {
+    const onlineRes = await synthesizeSceneVoiceWavWithDetail(null, cleanText, voiceId, lockedStyle, params.outWavPath);
+    if (onlineRes.ok && fs.existsSync(params.outWavPath) && fs.statSync(params.outWavPath).size > 44) {
+      return { ok: true, engineUsed: onlineRes.engineUsed || 'Gemini AI TTS' };
+    }
+    if (onlineRes.error) errors.push(`Gemini TTS: ${onlineRes.error}`);
+  } else {
+    errors.push('Chưa cấu hình GEMINI_API_KEY hoặc tài khoản Gemini Pool.');
+  }
+
+  if (offlineEngine.available) {
+    try {
+      const ok = await synthesizeOfflineVoiceWav(cleanText, params.outWavPath, params.offlineVoice || voiceId);
+      if (ok && fs.existsSync(params.outWavPath) && fs.statSync(params.outWavPath).size > 44) {
+        return {
+          ok: true,
+          engineUsed: offlineEngine.engine || 'Offline TTS',
+          fellBackTo: 'offline_system',
+        };
+      }
+    } catch (err: any) {
+      errors.push(`Offline TTS: ${err?.message || String(err)}`);
+    }
+  }
+
+  return { ok: false, error: errors.join(' | ') || 'Không thể tổng hợp giọng đọc.' };
 }
 
 function formatAssTime(sec: number): string {
@@ -8505,10 +8654,14 @@ async function runDerivativePipeline(
     const segs: VoiceSegmentSpec[] = [];
     const dialogueRaw = String(sc.dialogue || '').trim();
     const narrationRaw = String(sc.narration || '').trim();
+    const captionRaw = String(sc.onScreenText || (sc as any).caption || '').trim();
 
     if (productionFormat === 'narration_story') {
       // Narration Story Mode: single unified narrator voice across the entire video
-      const spokenText = narrationRaw || (hasNativeLipSyncAudio ? '' : dialogueRaw.replace(/^[^:：]{1,36}[:：]\s*/gm, '').trim());
+      const spokenText =
+        narrationRaw ||
+        (hasNativeLipSyncAudio ? '' : dialogueRaw.replace(/^[^:：]{1,36}[:：]\s*/gm, '').trim()) ||
+        captionRaw;
       if (spokenText) {
         segs.push(buildNarratorVoiceSegment(spokenText, fallbackMode));
       }
@@ -8601,6 +8754,9 @@ async function runDerivativePipeline(
           segs.push(buildNarratorVoiceSegment(narrationRaw, fallbackMode));
         }
       }
+    }
+    if (segs.length === 0 && captionRaw) {
+      segs.push(buildNarratorVoiceSegment(captionRaw, fallbackMode));
     }
     return segs;
   };
@@ -8973,25 +9129,15 @@ async function runDerivativePipeline(
     const offlineEngine = await detectOfflineTtsEngine();
     const defaultMode: 'ai_online' | 'offline_system' =
       effectiveVoiceMode === 'offline_system' ? 'offline_system' : 'ai_online';
-    const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY?.trim());
-    const aiClient = hasGeminiKey ? getGeminiClient() : null;
 
     job.stepLabel = hasPerCharAudio
       ? `Đang tổng hợp giọng đọc đồng bộ từng nhân vật (0/${scenes.length} cảnh)...`
       : defaultMode === 'offline_system' && offlineEngine.engineId === 'vieneu'
       ? `Đang tổng hợp giọng tiếng Việt VieNeu-TTS (0/${scenes.length} cảnh)...`
-      : `Đang tạo giọng đọc (0/${scenes.length} cảnh)...`;
+      : `Đang tạo giọng đọc thuyết minh (0/${scenes.length} cảnh)...`;
 
-    // Pre-build segments per scene — skip duplicating dialogue TTS when Omni/Muse clip already carries lip-synced speech
-    const sceneSegments = scenes.map((sc, idx) => {
-      const omniClip = sceneOmniVideos.get(idx);
-      const hasNativeLipSync = Boolean(
-        omniClip?.hasAudio &&
-          productionFormat === 'dialogue_film' &&
-          String(sc.dialogue || '').trim()
-      );
-      return buildSceneVoiceSegments(sc, defaultMode, hasNativeLipSync);
-    });
+    // Always synthesize script narration & dialogue (AI video clips typically carry ambient SFX/music, not Vietnamese voiceover)
+    const sceneSegments = scenes.map((sc) => buildSceneVoiceSegments(sc, defaultMode, false));
 
     // Batch VieNeu segments cleanly when no Gemini mixing needed or for all offline_system segments
     const offlineBatchList: { key: string; sceneIdx: number; segIdx: number; text: string; out: string; voice?: string }[] = [];
@@ -9014,7 +9160,6 @@ async function runDerivativePipeline(
 
     const offlineBatchDone = new Set<string>();
     if (offlineBatchList.length > 0 && offlineEngine.engineId === 'vieneu') {
-      // Group by voice ID so each character gets their exact VieNeu voice
       const byVoice = new Map<string, typeof offlineBatchList>();
       for (const item of offlineBatchList) {
         const vk = item.voice || params.offlineVoice || '';
@@ -9039,6 +9184,9 @@ async function runDerivativePipeline(
       }
     }
 
+    let fallbackWarnedOnline = false;
+    let fallbackWarnedOffline = false;
+
     for (let i = 0; i < scenes.length; i += 1) {
       const segs = sceneSegments[i];
       if (segs.length === 0) {
@@ -9048,25 +9196,39 @@ async function runDerivativePipeline(
 
       touchScene(i, {
         audioStatus: 'running',
-        stageLabel: 'Đang tổng hợp giọng đọc cho phân cảnh...',
+        stageLabel: 'Đang tổng hợp giọng đọc thuyết minh cho phân cảnh...',
       });
 
       const producedSegFiles: string[] = [];
+      let lastSegErr = '';
       for (let g = 0; g < segs.length; g += 1) {
         const seg = segs[g];
         const segWav = path.join(job.workDir, `voice_${i}_seg_${g}.wav`);
-        let ok = offlineBatchDone.has(`${i}:${g}`) && fs.existsSync(segWav);
+        let ok = offlineBatchDone.has(`${i}:${g}`) && fs.existsSync(segWav) && fs.statSync(segWav).size > 44;
 
-        if (!ok && seg.mode === 'ai_online' && aiClient && voice !== 'none') {
-          ok = await synthesizeSceneVoiceWav(aiClient, seg.text, seg.voiceId, seg.voiceStyle, segWav);
-        }
-        if (!ok && offlineEngine.available) {
-          ok = await synthesizeOfflineVoiceWav(seg.text, segWav, seg.offlineVoice || params.offlineVoice || seg.voiceId);
-          if (ok && seg.mode === 'ai_online') {
-            job.warnings.push(`Cảnh ${i + 1}: Gemini TTS tạm bận, đã tự chuyển sang giọng Offline (${offlineEngine.engine}).`);
+        if (!ok) {
+          const synth = await synthesizeNarrationAudioForText({
+            text: seg.text,
+            outWavPath: segWav,
+            mode: seg.mode,
+            voice: seg.voiceId,
+            voiceStyle: seg.voiceStyle,
+            offlineVoice: seg.offlineVoice || params.offlineVoice || seg.voiceId,
+          });
+          ok = synth.ok;
+          if (!ok && synth.error) {
+            lastSegErr = synth.error;
+          }
+          if (ok && synth.fellBackTo === 'ai_online' && !fallbackWarnedOnline) {
+            fallbackWarnedOnline = true;
+            job.warnings.push('Giọng đọc Offline chưa sẵn sàng — đã tự động chuyển sang Gemini AI Voice để đảm bảo video có thuyết minh.');
+          }
+          if (ok && synth.fellBackTo === 'offline_system' && !fallbackWarnedOffline) {
+            fallbackWarnedOffline = true;
+            job.warnings.push(`Gemini TTS tạm bận — đã tự chuyển sang giọng Offline (${offlineEngine.engine}).`);
           }
         }
-        if (ok && fs.existsSync(segWav)) {
+        if (ok && fs.existsSync(segWav) && fs.statSync(segWav).size > 44) {
           producedSegFiles.push(segWav);
         }
       }
@@ -9092,7 +9254,7 @@ async function runDerivativePipeline(
         }
       }
 
-      if (fs.existsSync(finalSceneWav)) {
+      if (fs.existsSync(finalSceneWav) && fs.statSync(finalSceneWav).size > 44) {
         sceneAudioPaths[i] = finalSceneWav;
         const audioDur = await probeDurationSeconds(finalSceneWav, job.workDir);
         if (audioDur > 0.5) {
@@ -9103,8 +9265,10 @@ async function runDerivativePipeline(
           progress: Math.max(job.scenes[i]?.progress || 0, 80),
         });
       } else {
-        touchScene(i, { audioStatus: 'skipped' });
-        job.warnings.push(`Cảnh ${i + 1}: Không tạo được giọng đọc, giữ nhạc/nền tĩnh cho cảnh này.`);
+        touchScene(i, { audioStatus: 'error' });
+        job.warnings.push(
+          `Cảnh ${i + 1}: Không tạo được giọng đọc thuyết minh${lastSegErr ? ` (${lastSegErr.slice(0, 180)})` : ''}.`
+        );
       }
 
       job.stepLabel = `Đã xử lý giọng đọc (${i + 1}/${scenes.length} cảnh)...`;
@@ -9425,7 +9589,7 @@ async function runDerivativePipeline(
           '-i',
           path.basename(audioWav),
           '-filter_complex',
-          `${canvasFilter};[0:a]aresample=44100,apad,volume=1.0[aclip];[1:a]aresample=44100,apad,volume=1.15[anarr];[aclip][anarr]amix=inputs=2:duration=longest:dropout_transition=0.2[aout]`,
+          `${canvasFilter};[0:a]aresample=44100,apad,volume=0.18[aclip];[1:a]aresample=44100,apad,volume=1.35[anarr];[aclip][anarr]amix=inputs=2:duration=longest:dropout_transition=0.2:normalize=0[aout]`,
           '-map',
           '[vout]',
           '-map',
@@ -9476,14 +9640,14 @@ async function runDerivativePipeline(
           '160k',
           path.basename(outScenePath),
         ];
-      } else if (audioWav && keepSourceAudio && !srcVideo.isBroll) {
+      } else if (audioWav && keepSourceAudio && !srcVideo.isBroll && (await probeHasAudioStream(srcVideo.path, job.workDir))) {
         args = [
           '-y',
           ...inputArgs,
           '-i',
           path.basename(audioWav),
           '-filter_complex',
-          `${canvasFilter};[0:a]aresample=44100,volume=0.12[abg];[1:a]aresample=44100,volume=1.35[avoice];[abg][avoice]amix=inputs=2:duration=longest:dropout_transition=0.2[aout]`,
+          `${canvasFilter};[0:a]aresample=44100,apad,volume=0.15[abg];[1:a]aresample=44100,apad,volume=1.35[avoice];[abg][avoice]amix=inputs=2:duration=longest:dropout_transition=0.2:normalize=0[aout]`,
           '-map',
           '[vout]',
           '-map',

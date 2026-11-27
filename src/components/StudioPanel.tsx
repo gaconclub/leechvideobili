@@ -2065,6 +2065,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
               settingBible: bp.settingBible ?? settingBibleDraft.trim(),
               costumeBible: bp.costumeBible ?? costumeBibleDraft.trim(),
               continuityBible: bp.continuityBible ?? continuityBibleDraft.trim(),
+              voiceConfig: {
+                enableVoiceover: voiceMode !== 'none',
+                voiceMode,
+                voice: voiceMode === 'ai_online' ? voice : 'Kore',
+                voiceStyle: VOICE_OPTIONS.find((v) => v.value === voice)?.style || '',
+                offlineVoice: voiceMode === 'offline_system' ? offlineVoice : undefined,
+                productionFormat: bp.productionFormat || productionFormat,
+              },
               musicConfig: {
                 musicMode,
                 musicStyle,
@@ -2182,6 +2190,14 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
           settingBible: effectiveBlueprint?.settingBible ?? settingBibleDraft.trim(),
           costumeBible: effectiveBlueprint?.costumeBible ?? costumeBibleDraft.trim(),
           continuityBible: effectiveBlueprint?.continuityBible ?? continuityBibleDraft.trim(),
+          voiceConfig: {
+            enableVoiceover: voiceMode !== 'none',
+            voiceMode,
+            voice: voiceMode === 'ai_online' ? voice : 'Kore',
+            voiceStyle: VOICE_OPTIONS.find((v) => v.value === voice)?.style || '',
+            offlineVoice: voiceMode === 'offline_system' ? offlineVoice : undefined,
+            productionFormat: effectiveBlueprint?.productionFormat || productionFormat,
+          },
           musicConfig: {
             musicMode,
             musicStyle,

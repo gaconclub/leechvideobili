@@ -123,6 +123,15 @@ export type CoordinationSessionStatus =
   | 'CO_LOI'
   | 'TAM_DUNG';
 
+export interface CoordinationVoiceConfig {
+  enableVoiceover: boolean;
+  voiceMode: 'none' | 'ai_online' | 'offline_system';
+  voice?: string;
+  voiceStyle?: string;
+  offlineVoice?: string;
+  productionFormat?: 'dialogue_film' | 'narration_story';
+}
+
 export interface CoordinationSession {
   sessionId: string;
   title: string;
@@ -150,6 +159,7 @@ export interface CoordinationSession {
   lastSheetsSyncAt?: number;
   lastError?: string;
   parallelDispatchSummary?: string;
+  voiceConfig?: CoordinationVoiceConfig;
   musicConfig?: {
     musicMode: 'none' | 'auto_adaptive' | 'ai_lyria' | 'public_free' | 'uploaded';
     musicStyle?: string;
