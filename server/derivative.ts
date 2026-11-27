@@ -2681,24 +2681,28 @@ export interface ExpandedCreativeIdeaItem {
   suggestedSetting?: string;
 }
 
+export type StudioTargetVideoEngine = 'muse2api' | 'gemini' | 'qwen';
+
+function resolveOptimalMaxClipSec(targetVideoEngine?: StudioTargetVideoEngine): number {
+  if (targetVideoEngine === 'gemini') return 8;
+  // AI Muse (muse-video) & Qwen support up to 10s/clip — pack scenes at ~9-10s (<=10s)
+  // to maximize continuity and minimize extra clip cuts/API calls without exceeding 10s.
+  return 10;
+}
+
 function resolveDesiredSceneCount(
   desiredTotalSec: number,
   explicitSceneCount?: number,
-  _scriptMode: StudioScriptMode = 'series'
+  _scriptMode: StudioScriptMode = 'series',
+  targetVideoEngine: StudioTargetVideoEngine = 'muse2api'
 ): number {
   if (typeof explicitSceneCount === 'number' && Number.isFinite(explicitSceneCount) && explicitSceneCount >= 1) {
-    return Math.max(1, Math.min(24, Math.round(explicitSceneCount)));
+    return Math.max(1, Math.min(30, Math.round(explicitSceneCount)));
   }
-  // 1 setting = configured duration naturally (e.g. 10s -> 1 single 10s scene, not fragmented 3-4s clips)
-  if (desiredTotalSec <= 15) return 1;
-  if (desiredTotalSec <= 25) return 2;
-  if (desiredTotalSec <= 35) return 3;
-  if (desiredTotalSec <= 45) return 4;
-  if (desiredTotalSec <= 75) return 6;
-  if (desiredTotalSec <= 135) return 10;
-  if (desiredTotalSec <= 210) return 12;
-  if (desiredTotalSec <= 360) return 16;
-  return 20;
+  const safeSec = Math.max(5, Math.round(Number(desiredTotalSec) || 30));
+  const maxClipSec = resolveOptimalMaxClipSec(targetVideoEngine);
+  if (safeSec <= maxClipSec) return 1;
+  return Math.max(2, Math.min(30, Math.ceil(safeSec / maxClipSec)));
 }
 
 export async function expandStudioIdeaWithAi(params: {
@@ -2707,6 +2711,7 @@ export async function expandStudioIdeaWithAi(params: {
   videoStyle?: StudioVideoStyle;
   customStylePrompt?: string;
   scriptMode?: StudioScriptMode;
+  targetVideoEngine?: StudioTargetVideoEngine;
   ideaCount?: number;
   targetDurationSec?: number;
   outputLanguage?: DerivativeOutputLanguage;
@@ -2754,10 +2759,22 @@ export async function expandStudioIdeaWithAi(params: {
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
   const durationSec = Math.max(10, Math.min(900, Math.round(Number(params.targetDurationSec || 60))));
   const totalCombinedSec = ideaCount * durationSec;
+  const resolvedVideoEngine: StudioTargetVideoEngine =
+    params.targetVideoEngine === 'gemini' || params.targetVideoEngine === 'qwen'
+      ? params.targetVideoEngine
+      : 'muse2api';
+  const autoSeriesScenes = resolveDesiredSceneCount(durationSec, undefined, 'series', resolvedVideoEngine);
+  const autoSeriesAvgSec = Math.max(4, Math.round(durationSec / Math.max(1, autoSeriesScenes)));
+  const engineLimitNote =
+    resolvedVideoEngine === 'muse2api'
+      ? 'tối ưu AI Muse tối đa 10s/cảnh'
+      : resolvedVideoEngine === 'qwen'
+      ? 'tối ưu AI Qwen tối đa 10s/cảnh'
+      : 'tối ưu AI Video ~8s/cảnh';
   const modeLabel =
     params.scriptMode === 'independent_batch'
       ? `Lô nhiều video độc lập (${ideaCount} kịch bản độc lập phái sinh cùng mô-típ gốc, mỗi video ${durationSec}s, tổng lô ${totalCombinedSec}s)`
-      : `Series liên hoàn (1 kịch bản tổng thể chia thành ${ideaCount} phân cảnh liên tiếp, mỗi phân cảnh ${durationSec}s, tổng video ${totalCombinedSec}s)`;
+      : `Series liên hoàn (01 kịch bản tổng thể dài ${durationSec}s, tự động chia nhỏ thành ${autoSeriesScenes} phân cảnh liên tiếp ~${autoSeriesAvgSec}s/cảnh — ${engineLimitNote}, chuyển mạch liền mạch)`;
 
   const expandPrompt = `Bạn là Giám đốc Sáng tạo & Biên kịch Bối cảnh Video AI chuyên nghiệp.
 NHIỆM VỤ: Từ "Tóm tắt ý tưởng ban đầu" của người dùng, hãy sáng tạo ĐÚNG ${ideaCount} Ý TƯỞNG RIÊNG BIỆT, RÕ RÀNG, HẤP DẪN để người dùng chọn 1 ý tưởng bất kỳ và chuyển thẳng thành prompt kịch bản hoàn chỉnh.
@@ -2769,7 +2786,7 @@ ${params.settingHint?.trim() ? `- Gợi ý bối cảnh từ người dùng: "${
 ${params.characterSummary?.trim() ? `- Danh sách tên nhân vật tham chiếu (CHỈ gọi đúng tên, KHÔNG mô tả lại ngoại hình/trang phục chính): ${params.characterSummary.trim()}` : ''}
 - Phong cách quay & hình ảnh: ${styleMeta.labelVi} (${styleMeta.visualToneVi})
 - Hình thức triển khai dự kiến: ${modeLabel}
-- Thời lượng dự kiến: ${params.scriptMode === 'independent_batch' ? `${durationSec} giây / video độc lập` : `${durationSec} giây / phân cảnh (tổng ${totalCombinedSec} giây cho ${ideaCount} phân cảnh liên tiếp)`}
+- Thời lượng dự kiến: ${params.scriptMode === 'independent_batch' ? `${durationSec} giây / video độc lập` : `Tổng ${durationSec} giây cho 01 video Series (${autoSeriesScenes} phân cảnh liên hoàn, ~${autoSeriesAvgSec} giây/phân cảnh)`}
 - Ngôn ngữ đầu ra: ${OUTPUT_LANG_LABELS[outputLang]}
 ${CREATIVE_CONTEXT_CHARACTER_BOUNDARY_RULES}
 ${lockRulesText ? `\n${lockRulesText}` : ''}
@@ -3461,11 +3478,16 @@ export async function learnVideosAndCreateBlueprint(params: {
   preserveExactIdea?: boolean;
   selectedIdeaTitle?: string;
   aiProvider?: AiProviderId;
+  targetVideoEngine?: StudioTargetVideoEngine;
   preGatheredContexts?: EnrichedVideoContext[];
   conceptOverride?: IndependentConceptOverride;
 }): Promise<DerivativeBlueprint> {
   const studioMode: StudioCreationMode = params.mode === 'creative' ? 'creative' : 'derivative';
   const scriptMode: StudioScriptMode = params.scriptMode === 'independent_batch' ? 'independent_batch' : 'series';
+  const targetVideoEngine: StudioTargetVideoEngine =
+    params.targetVideoEngine === 'gemini' || params.targetVideoEngine === 'qwen'
+      ? params.targetVideoEngine
+      : 'muse2api';
   const productionFormat: StudioProductionFormat =
     params.productionFormat === 'narration_story' ? 'narration_story' : 'dialogue_film';
   const allowFreeCostumeChange = params.allowFreeCostumeChange === true;
@@ -3517,25 +3539,32 @@ export async function learnVideosAndCreateBlueprint(params: {
   const lockedSceneDur =
     !params.conceptOverride &&
     scriptMode === 'series' &&
+    typeof params.desiredSceneCount === 'number' &&
+    Number.isFinite(params.desiredSceneCount) &&
+    params.desiredSceneCount >= 1 &&
     typeof params.sceneDurationSec === 'number' &&
     Number.isFinite(params.sceneDurationSec) &&
-    params.sceneDurationSec >= 5
-      ? Math.max(5, Math.min(300, Math.round(params.sceneDurationSec)))
+    params.sceneDurationSec >= 5 &&
+    params.sceneDurationSec <= 10
+      ? Math.max(5, Math.min(10, Math.round(params.sceneDurationSec)))
       : null;
 
   const desiredScenes = resolveDesiredSceneCount(
-    Math.max(10, Math.min(3600, Math.round(rawSec))),
+    Math.max(10, Math.min(900, Math.round(rawSec))),
     params.desiredSceneCount,
-    params.conceptOverride ? 'independent_batch' : scriptMode
+    params.conceptOverride ? 'independent_batch' : scriptMode,
+    targetVideoEngine
   );
 
   const desiredTotalSec = lockedSceneDur
-    ? Math.max(10, Math.min(3600, lockedSceneDur * desiredScenes))
+    ? Math.max(10, Math.min(900, lockedSceneDur * desiredScenes))
     : Math.max(10, Math.min(900, Math.round(rawSec)));
 
+  const maxRecommendedClipSec = resolveOptimalMaxClipSec(targetVideoEngine);
   const avgSceneDur = lockedSceneDur
     ? lockedSceneDur
-    : Math.max(4, Math.min(120, Math.round(desiredTotalSec / desiredScenes)));
+    : Math.max(4, Math.min(60, Math.round(desiredTotalSec / desiredScenes)));
+  const enforceMuseMax10 = targetVideoEngine === 'muse2api' && avgSceneDur <= 10;
   const wordsMin = Math.max(6, Math.min(160, Math.round(avgSceneDur * 1.8)));
   const wordsMax = Math.max(wordsMin + 5, Math.min(210, Math.round(avgSceneDur * 2.5)));
   const outputLang: DerivativeOutputLanguage = params.outputLanguage || 'vi';
@@ -3637,15 +3666,16 @@ NGUYÊN TẮC BẮT BUỘC:
 - Giữ nguyên 100% ý tưởng mà người dùng vừa bấm chọn — TUYỆT ĐỐI KHÔNG sáng tạo lại ý tưởng mới hay đổi sang cốt truyện khác.
 - Chuyển hóa chính xác ý tưởng này thành 01 kịch bản hoàn chỉnh dài ĐÚNG ${desiredTotalSec} giây (${desiredScenes} phân cảnh, tổng durationSec = ${desiredTotalSec}s) với mở đầu, diễn biến và điểm nhấn trọn vẹn.
 - Nhân vật chính, ngoại hình, trang phục và đặc điểm nhận dạng PHẢI duy trì đồng nhất 100%.`
-    : `CHẾ ĐỘ KỊCH BẢN: SERIES LIÊN HOÀN — 01 KỊCH BẢN TỔNG THỂ DUY NHẤT CHIA THÀNH ĐÚNG ${desiredScenes} PHÂN CẢNH LIÊN TIẾP (MỖI PHÂN CẢNH DÀI ĐÚNG ${avgSceneDur} GIÂY · TỔNG THỜI LƯỢNG ${desiredTotalSec} GIÂY).
-NGUYÊN TẮC KIẾN TRÚC BẮT BUỘC:
-- QUY TRÌNH 2 BƯỚC NỘI BỘ: Trước hết xây dựng 01 kịch bản tổng thể duy nhất bám sát 100% ý tưởng gốc (KHÔNG tạo lại ý tưởng khác, KHÔNG chia thành nhiều câu chuyện rời rạc); sau đó phân bổ kịch bản đó thành ĐÚNG ${desiredScenes} phân cảnh liên tiếp đánh số 1..${desiredScenes}.
-- MỖI PHÂN CẢNH BẮT BUỘC CÓ durationSec = ${avgSceneDur} giây → TỔNG THỜI LƯỢNG VIDEO = ${desiredScenes} × ${avgSceneDur}s = ${desiredTotalSec} giây.
-- LIÊN KẾT NỘI DUNG XUYÊN SUỐT:
-  + Phân cảnh 01 (${avgSceneDur}s): Mở đầu câu chuyện, giới thiệu nhân vật và tình huống gốc.
-  ${desiredScenes > 2 ? `+ Các phân cảnh giữa (02 → ${String(desiredScenes - 1).padStart(2, '0')}, mỗi cảnh ${avgSceneDur}s): Tiếp nối trực tiếp sự kiện ở phân cảnh liền trước, phát triển và đẩy cao tình huống logic.` : ''}
-  ${desiredScenes >= 2 ? `+ Phân cảnh ${String(desiredScenes).padStart(2, '0')} (${avgSceneDur}s): Tiếp nối trực tiếp phân cảnh trước đó, tạo cao trào hoặc kết thúc trọn vẹn câu chuyện.` : ''}
-- Nhân vật chính, ngoại hình, trang phục và đặc điểm nhận dạng PHẢI duy trì đồng nhất 100% xuyên suốt cả ${desiredScenes} phân cảnh.`;
+    : `CHẾ ĐỘ KỊCH BẢN: SERIES LIÊN HOÀN — 01 KỊCH BẢN TỔNG THỂ DUY NHẤT CHIA NHỎ THÀNH ĐÚNG ${desiredScenes} PHÂN CẢNH LIÊN TIẾP (~${avgSceneDur} GIÂY/PHÂN CẢNH · TỔNG THỜI LƯỢNG ${desiredTotalSec} GIÂY).
+NGUYÊN TẮC KIẾN TRÚC & CHUYỂN MẠCH VIDEO BẮT BUỘC:
+- QUY TRÌNH 2 BƯỚC NỘI BỘ: Trước hết xây dựng 01 kịch bản tổng thể duy nhất dài ${desiredTotalSec}s bám sát 100% ý tưởng gốc (KHÔNG tạo lại ý tưởng khác, KHÔNG chia thành nhiều câu chuyện rời rạc); sau đó chia nhỏ mạch truyện đó thành ĐÚNG ${desiredScenes} phân cảnh liên tiếp đánh số 1..${desiredScenes}, mỗi phân cảnh gọn gàng khoảng ${avgSceneDur} giây (tối ưu cho AI tạo video 5–10s/clip không bị cắt cụt).
+- TUYỆT ĐỐI KHÔNG gộp toàn bộ câu chuyện dài vào 1 prompt duy nhất. Mỗi phân cảnh chỉ mô tả ĐÚNG lát cắt hành động/lời thoại diễn ra trong ~${avgSceneDur}s của riêng cảnh đó; tổng durationSec cả ${desiredScenes} cảnh = ${desiredTotalSec} giây.
+- QUY TẮC CHUYỂN MẠCH VIDEO & GIỮ ĐỒNG NHẤT MẠCH TRUYỆN XUYÊN SUỐT:
+  + Phân cảnh 01 (~${avgSceneDur}s): Mở đầu câu chuyện trực diện, thiết lập nhân vật, bối cảnh và tình huống gốc; kết thúc bằng một khoảnh khắc/hành động mở đà rõ ràng trong "sceneEndState".
+  ${desiredScenes > 2 ? `+ Các phân cảnh giữa (02 → ${String(desiredScenes - 1).padStart(2, '0')}, mỗi cảnh ~${avgSceneDur}s): BẮT BUỘC nối tiếp trực tiếp từ trạng thái cuối ("sceneEndState") của phân cảnh liền trước — giữ khớp tư thế, ánh nhìn, hướng di chuyển, hướng chuyển động camera (match-cut / action continuity), ánh sáng và không gian để khi ghép các clip video lại tạo thành mạch phim liền mạch tự nhiên.` : ''}
+  ${desiredScenes >= 2 ? `+ Phân cảnh ${String(desiredScenes).padStart(2, '0')} (~${avgSceneDur}s): Bắt nhịp ngay từ trạng thái cuối của phân cảnh ${String(desiredScenes - 1).padStart(2, '0')}, đẩy lên cao trào hoặc kết thúc trọn vẹn cảm xúc câu chuyện.` : ''}
+- Ở MỖI PHÂN CẢNH: điền thật cụ thể trường "continuityNote" (nêu rõ cách chuyển mạch hình ảnh/hành động nối từ cảnh trước sang cảnh này) và "sceneEndState" (trạng thái khung hình cuối cùng làm điểm tựa nối sang cảnh kế tiếp).
+- Nhân vật chính, ngoại hình, trang phục, bối cảnh chủ đạo và tông màu ánh sáng PHẢI duy trì đồng nhất 100% xuyên suốt cả ${desiredScenes} phân cảnh.`;
 
   const narrativeStyleDirective =
     activeStylePreset === 'none'
@@ -3735,9 +3765,21 @@ Tùy chọn Lồng tiếng (Voiceover): ${
       : 'TẮT LỒNG TIẾNG — BẮT BUỘC đặt "narration": "" (chuỗi rỗng) cho TẤT CẢ mọi phân cảnh, KHÔNG tạo dữ liệu giọng thuyết minh thừa; tập trung diễn đạt qua hình ảnh, hành động, lời thoại nhân vật (nếu có) và phụ đề ngắn.'
   }
 Tổng thời lượng mục tiêu BẮT BUỘC: ĐÚNG ${targetMinutesLabel} chia thành ĐÚNG ${desiredScenes} phân cảnh đánh số lần lượt 1..${desiredScenes} (${lockedSceneDur ? `mỗi phân cảnh BẮT BUỘC dài ĐÚNG ${lockedSceneDur}s` : `trung bình ~${avgSceneDur}s/cảnh`}).
-QUY TẮC THỜI LƯỢNG & BỐI CẢNH:
-- Mỗi phân cảnh PHẢI có thời lượng ${lockedSceneDur ? `CHÍNH XÁC ${lockedSceneDur} giây` : `tương ứng trọn vẹn ~${avgSceneDur}s/cảnh`}. Nếu thiết lập 10 giây và tạo 1 phân cảnh thì viết 1 phân cảnh duy nhất dài 10 giây với hành động liên tục theo thời gian thực, TUYỆT ĐỐI KHÔNG tự ý xé lẻ thành nhiều đoạn vụn 3-4 giây.
+QUY TẮC THỜI LƯỢNG, CHIA PHÂN CẢNH & CHUYỂN MẠCH:
+- Mỗi phân cảnh PHẢI có thời lượng ${
+    lockedSceneDur
+      ? `CHÍNH XÁC ${lockedSceneDur} giây`
+      : enforceMuseMax10
+      ? `tối ưu trong khoảng 6–10 giây (mục tiêu ~${avgSceneDur}s/cảnh, TUYỆT ĐỐI KHÔNG vượt quá 10 giây vì AI Muse tạo tối đa 10s/clip)`
+      : `khoảng ~${avgSceneDur} giây (tối ưu trong ngưỡng 5–${maxRecommendedClipSec} giây/cảnh để AI tạo video render đầy đủ không bị cắt cụt)`
+  }. TUYỆT ĐỐI KHÔNG gộp toàn bộ video dài vào 1 phân cảnh duy nhất.
 - Tổng "durationSec" của tất cả ${desiredScenes} phân cảnh cộng lại BẮT BUỘC bằng ĐÚNG ${desiredTotalSec} giây.
+${
+  targetVideoEngine === 'muse2api'
+    ? `- TỐI ƯU RIÊNG CHO AI MUSE (GIỚI HẠN TỐI ĐA 10 GIÂY/CLIP): Thiết kế nhịp cảnh, lời thoại/thuyết minh và "videoTimeline" của từng cảnh gói gọn trọn vẹn trong ≤${Math.min(10, avgSceneDur)}s (nhịp đầu nối mượt từ "sceneEndState" cảnh trước → nhịp giữa hành động/thoại chính → nhịp cuối chốt khung hình & mở đà "sceneEndState" cho cảnh sau) để AI Muse dựng đủ 100% diễn biến trong 1 clip duy nhất.`
+    : ''
+}
+- Mỗi phân cảnh kế tiếp PHẢI kế thừa mượt mà điểm kết ("sceneEndState") của phân cảnh ngay trước nó qua "continuityNote" để giữ mạch câu chuyện và chuyển mạch video đồng nhất 100%.
 ${params.characterSummary?.trim() ? `DANH SÁCH NHÂN VẬT THAM CHIẾU ĐÃ KHÓA (BẮT BUỘC dùng ĐÚNG tên nhân vật dưới đây trong "charactersInScene", "dialogue", "characterVoiceProfiles", "imagePrompt" và "videoPrompt" để hệ thống ánh xạ đúng ảnh & giọng nói):\n${params.characterSummary.trim()}\nQUY TẮC GIỌNG NÓI NHÂN VẬT: Tất cả nhân vật dùng giọng đọc tiếng Việt chuẩn miền Bắc Việt Nam (Hà Nội) — lựa chọn cao độ & âm sắc đúng theo ĐỘ TUỔI và GIỚI TÍNH từng nhân vật, giữ nhất quán xuyên suốt.` : ''}
 ${lockedProjectAnchors ? `\nHỒ SƠ DỰ ÁN ĐÃ KHÓA (BẮT BUỘC GIỮ NGUYÊN ĐỒNG BỘ):\n${lockedProjectAnchors}` : ''}
 ${referenceLockRulesBlock ? `\n${referenceLockRulesBlock}` : ''}
@@ -4116,7 +4158,7 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
           const candidateParsed = parseAiBlueprintJsonSafe(rawText);
           const candidateScenes = Array.isArray(candidateParsed?.scenes) ? candidateParsed.scenes : [];
           if (
-            (candidateScenes.length === 0 || (desiredScenes >= 3 && candidateScenes.length <= 1)) &&
+            (candidateScenes.length === 0 || (desiredScenes >= 2 && candidateScenes.length <= 1)) &&
             !isLastCandidate
           ) {
             lastGeminiErr = new Error('AI trả về kịch bản chưa đủ số phân cảnh.');
@@ -4186,17 +4228,22 @@ BẮT BUỘC mảng "scenes" có ĐÚNG ${desiredScenes} phân cảnh đánh s�
     const continuityBible = String(parsed?.continuityBible || params.continuityBible || '').trim();
 
     const rawScenes: any[] = Array.isArray(parsed?.scenes) ? parsed.scenes : [];
-    const targetSliceCount = lockedSceneDur ? desiredScenes : Math.min(24, Math.max(rawScenes.length, desiredScenes));
+    const targetSliceCount = lockedSceneDur ? desiredScenes : Math.min(30, Math.max(rawScenes.length, desiredScenes));
     const scenes: DerivativeScene[] = rawScenes.slice(0, targetSliceCount).map((sc, i) => {
       const idx =
         contexts.length > 0
           ? Math.max(0, Math.min(contexts.length - 1, Math.round(Number(sc?.sourceVideoIndex ?? i % contexts.length))))
           : 0;
+      const rawSceneDur = Number(sc?.durationSec || avgSceneDur);
       const dur = lockedSceneDur
         ? lockedSceneDur
         : desiredScenes === 1
-        ? desiredTotalSec
-        : Math.max(2, Math.min(120, Number(sc?.durationSec || avgSceneDur)));
+        ? enforceMuseMax10
+          ? Math.min(10, desiredTotalSec)
+          : desiredTotalSec
+        : enforceMuseMax10
+        ? Math.max(4, Math.min(10, Math.round(rawSceneDur)))
+        : Math.max(2, Math.min(120, Math.round(rawSceneDur)));
       const startPct = Math.max(0, Math.min(80, Math.round(Number(sc?.sourceStartPercent ?? (i * 18) % 70))));
       const sceneTitle = String(sc?.sceneTitle || sc?.onScreenText || `Phân cảnh ${i + 1}`).trim();
       const sceneSummary = String(sc?.sceneSummary || sc?.actionDetail || '').trim();
@@ -4811,6 +4858,7 @@ export async function learnAndCreateIndependentBatch(params: {
   enableVoiceover?: boolean;
   allowFreeCostumeChange?: boolean;
   aiProvider?: AiProviderId;
+  targetVideoEngine?: StudioTargetVideoEngine;
   prePlannedIdeas?: {
     title: string;
     summary?: string;
@@ -4964,6 +5012,7 @@ export async function learnAndCreateIndependentBatch(params: {
           enableVoiceover: params.enableVoiceover,
           allowFreeCostumeChange,
           aiProvider: provider,
+          targetVideoEngine: params.targetVideoEngine,
           preGatheredContexts: contexts,
           conceptOverride: {
             title: concept.title,
@@ -6250,7 +6299,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
     const { buffer, mimeType, ext } = await generateVideoBufferViaMuse2Api({
       prompt: promptText,
       aspectRatio: params.aspectRatio === '9:16' ? '9:16' : '16:9',
-      durationSec: Math.min(12, clampedDur),
+      durationSec: Math.min(10, clampedDur),
       referenceImageDataUrl: museRefList[0],
       referenceImages: museRefList,
       accountId: params.museAccountId,
@@ -6263,7 +6312,7 @@ export async function generateSceneVideoWithOmniFlash(params: {
       probeDurationSeconds(outPath, STUDIO_ASSETS_DIR),
       probeHasAudioStream(outPath, STUDIO_ASSETS_DIR),
     ]);
-    const finalDur = probedDur || Math.min(12, clampedDur);
+    const finalDur = probedDur || Math.min(10, clampedDur);
 
     studioAssets.set(assetId, {
       assetId,
@@ -9068,7 +9117,7 @@ async function runDerivativePipeline(
               engine: useQwenVideo ? 'qwen' : useMuseVideo ? 'muse2api' : 'gemini',
               prompt: consistentPrompt,
               aspectRatio: blueprint.aspectRatio,
-              durationSec: Math.min(useQwenVideo ? 10 : useMuseVideo ? 12 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
+              durationSec: Math.min(useQwenVideo || useMuseVideo ? 10 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
               videoStyle: blueprint.videoStyle,
               customStylePrompt: customStyleHint,
               characterBible: blueprint.characterBible,
@@ -10355,7 +10404,7 @@ export async function retryDerivativeJobScene(
         engine: videoEngine,
         prompt: consistentPrompt,
         aspectRatio: blueprint.aspectRatio,
-        durationSec: Math.min(useQwenVideo ? 10 : useMuseVideo ? 12 : 15, Math.max(4, Math.round(targetDur))),
+        durationSec: Math.min(useQwenVideo || useMuseVideo ? 10 : 15, Math.max(4, Math.round(targetDur))),
         videoStyle: blueprint.videoStyle,
         customStylePrompt: customStyleHint,
         characterBible: blueprint.characterBible,

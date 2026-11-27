@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.39",
+    "version": "1.0.40",
     "date": "27/11/2026",
-    "title": "refactor: update Gemini models and cleanup pool logic",
+    "title": "feat(studio): add multi-engine support and cloud sync",
     "changes": [
-      "refactor: update Gemini models and cleanup pool logic"
+      "feat(studio): add multi-engine support and cloud sync"
     ]
   },
   {

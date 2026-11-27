@@ -973,7 +973,7 @@ export async function generateVideoBufferViaMuse2Api(params: {
 }): Promise<{ buffer: Buffer; mimeType: string; ext: string; taskId?: string; accountUsed?: string }> {
   const cfg = resolveMuse2ApiConfig();
   const effectiveTimeout = Math.max(90, params.timeoutSec || cfg.videoTimeoutSec);
-  const clampedDur = Math.max(3, Math.min(12, Math.round(params.durationSec || 6)));
+  const clampedDur = Math.max(4, Math.min(10, Math.round(params.durationSec || 10)));
   const cleanAcc = params.accountId && params.accountId !== 'auto' ? params.accountId.trim() : '';
   const combinedRefs = Array.from(
     new Set(

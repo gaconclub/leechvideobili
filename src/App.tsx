@@ -38,6 +38,8 @@ import {
 } from './utils/cookies';
 import { formatSpeed } from './utils/formatters';
 import { APP_VERSION } from './version';
+import { onFirebaseUserChanged } from './lib/firebaseFirestore';
+import { hydrateServerGeminiPoolFromCloud } from './lib/geminiAccountCloudSync';
 
 async function parseJsonSafe<T = any>(res: Response): Promise<T> {
   const text = await res.text();
@@ -328,6 +330,29 @@ export default function App() {
 
   useEffect(() => {
     fetchCapabilities();
+  }, [fetchCapabilities]);
+
+  const hydratedCloudUidRef = useRef<string | null>(null);
+  useEffect(() => {
+    const unsub = onFirebaseUserChanged((user) => {
+      if (!user || !user.emailVerified) {
+        hydratedCloudUidRef.current = null;
+        return;
+      }
+      if (hydratedCloudUidRef.current === user.uid) return;
+      hydratedCloudUidRef.current = user.uid;
+      void hydrateServerGeminiPoolFromCloud(user)
+        .then((res) => {
+          if (res.syncedCount > 0) {
+            void fetchCapabilities();
+            window.dispatchEvent(new CustomEvent('gemini-pool-synced', { detail: res }));
+          }
+        })
+        .catch(() => {
+          // non-fatal background cloud sync failure
+        });
+    });
+    return () => unsub();
   }, [fetchCapabilities]);
 
   const checkSystemUpdate = useCallback(async () => {

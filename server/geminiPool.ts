@@ -71,31 +71,91 @@ function ensureDataDir(): void {
   }
 }
 
+function parseEnvExtraGeminiKeys(): { label: string; apiKey: string }[] {
+  const raw = String(process.env.GEMINI_API_KEYS || '').trim();
+  if (!raw) return [];
+  const results: { label: string; apiKey: string }[] = [];
+  try {
+    if (raw.startsWith('[')) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((item, idx) => {
+          if (typeof item === 'string' && item.trim().length >= 16) {
+            results.push({ label: `Gemini Secret #${idx + 1}`, apiKey: item.trim() });
+          } else if (item && typeof item === 'object' && typeof item.apiKey === 'string' && item.apiKey.trim().length >= 16) {
+            results.push({
+              label: String(item.label || `Gemini Secret #${idx + 1}`).trim().slice(0, 120),
+              apiKey: item.apiKey.trim(),
+            });
+          }
+        });
+        return results;
+      }
+    }
+  } catch {
+    // fall back to comma/newline separated parsing
+  }
+  const parts = raw
+    .split(/[\n,;]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 16);
+  parts.forEach((k, idx) => {
+    results.push({ label: `Gemini Secret #${idx + 1}`, apiKey: k });
+  });
+  return results;
+}
+
 function loadPoolStore(): GeminiPoolStoreFile {
+  let merged: GeminiPoolStoreFile = createDefaultStore();
   try {
     ensureDataDir();
-    if (!fs.existsSync(STORE_FILE)) {
-      return createDefaultStore();
+    if (fs.existsSync(STORE_FILE)) {
+      const raw = fs.readFileSync(STORE_FILE, 'utf8');
+      const parsed = JSON.parse(raw) as Partial<GeminiPoolStoreFile>;
+      merged = {
+        ...merged,
+        ...parsed,
+        accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [],
+      };
     }
-    const raw = fs.readFileSync(STORE_FILE, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<GeminiPoolStoreFile>;
-    const base = createDefaultStore();
-    const merged: GeminiPoolStoreFile = {
-      ...base,
-      ...parsed,
-      accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [],
-    };
-    return merged;
   } catch {
-    return createDefaultStore();
+    merged = createDefaultStore();
   }
+
+  // Merge any extra server-level GEMINI_API_KEYS env entries without duplicating existing keys
+  const extraKeys = parseEnvExtraGeminiKeys();
+  const envDefaultKey = process.env.GEMINI_API_KEY?.trim() || '';
+  for (const extra of extraKeys) {
+    if (extra.apiKey === envDefaultKey) continue;
+    const exists = merged.accounts.some((a) => a.apiKey.trim() === extra.apiKey);
+    if (!exists) {
+      const hashId = crypto.createHash('sha256').update(extra.apiKey).digest('hex').slice(0, 10);
+      merged.accounts.push({
+        id: `gem_env_${hashId}`,
+        label: extra.label,
+        apiKey: extra.apiKey,
+        enabled: true,
+        isChairman: false,
+        note: 'Nạp tự động từ GEMINI_API_KEYS trên máy chủ',
+        preferredModel: 'gemini-4-hydrogen',
+        status: 'untested',
+        requestsCount: 0,
+        successCount: 0,
+        errorCount: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    }
+  }
+
+  return merged;
 }
 
 function savePoolStore(): void {
   try {
     ensureDataDir();
     const tmp = `${STORE_FILE}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(poolStore, null, 2), 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(poolStore, null, 2), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, STORE_FILE);
   } catch {
     // non-fatal persistence failure
@@ -834,6 +894,119 @@ export async function testGeminiAccountConnection(id: string): Promise<{
       message: friendly,
     };
   }
+}
+
+export interface CloudSyncGeminiAccountInput {
+  id?: string;
+  label: string;
+  apiKey: string;
+  enabled?: boolean;
+  isChairman?: boolean;
+  note?: string;
+  preferredModel?: string;
+}
+
+export function syncGeminiAccountsFromCloud(payload: {
+  accounts?: CloudSyncGeminiAccountInput[];
+  chairmanAccountId?: string;
+  envDefaultEnabled?: boolean;
+  envDefaultLabel?: string;
+  envDefaultNote?: string;
+}): {
+  syncedCount: number;
+  addedCount: number;
+  accounts: GeminiAccountPublic[];
+  summary: ReturnType<typeof getGeminiPoolSummary>;
+} {
+  const incomingList = Array.isArray(payload.accounts) ? payload.accounts.slice(0, 50) : [];
+  const validIdRegex = /^[a-zA-Z0-9_-]{1,128}$/;
+  const now = Date.now();
+  let addedCount = 0;
+  let syncedCount = 0;
+
+  for (const item of incomingList) {
+    if (!item || typeof item !== 'object') continue;
+    const label = String(item.label || '').trim().slice(0, 120);
+    const apiKey = String(item.apiKey || '').trim();
+    if (!label || apiKey.length < 16 || apiKey.length > 256) continue;
+
+    const preferredModel = String(item.preferredModel || 'gemini-4-hydrogen').trim().slice(0, 80) || 'gemini-4-hydrogen';
+    const note = typeof item.note === 'string' && item.note.trim() ? item.note.trim().slice(0, 300) : undefined;
+    const enabled = typeof item.enabled === 'boolean' ? item.enabled : true;
+    const cleanId =
+      typeof item.id === 'string' && validIdRegex.test(item.id.trim())
+        ? item.id.trim()
+        : `gem_${now}_${crypto.randomBytes(2).toString('hex')}`;
+
+    const existing = poolStore.accounts.find(
+      (a) => a.id === cleanId || a.apiKey.trim() === apiKey
+    );
+
+    if (existing) {
+      existing.label = label;
+      existing.apiKey = apiKey;
+      existing.enabled = enabled;
+      existing.note = note;
+      existing.preferredModel = preferredModel;
+      existing.updatedAt = now;
+      syncedCount += 1;
+    } else {
+      poolStore.accounts.push({
+        id: cleanId,
+        label,
+        apiKey,
+        enabled,
+        isChairman: item.isChairman === true,
+        note,
+        preferredModel,
+        status: 'untested',
+        requestsCount: 0,
+        successCount: 0,
+        errorCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+      addedCount += 1;
+      syncedCount += 1;
+    }
+  }
+
+  if (typeof payload.envDefaultEnabled === 'boolean') {
+    poolStore.envDefaultEnabled = payload.envDefaultEnabled;
+  }
+  if (typeof payload.envDefaultLabel === 'string' && payload.envDefaultLabel.trim()) {
+    poolStore.envDefaultLabel = payload.envDefaultLabel.trim().slice(0, 120);
+  }
+  if (typeof payload.envDefaultNote === 'string') {
+    poolStore.envDefaultNote = payload.envDefaultNote.trim().slice(0, 300) || undefined;
+  }
+
+  const requestedChairman =
+    typeof payload.chairmanAccountId === 'string' && validIdRegex.test(payload.chairmanAccountId.trim())
+      ? payload.chairmanAccountId.trim()
+      : '';
+  if (requestedChairman) {
+    const exists =
+      (requestedChairman === ENV_DEFAULT_GEMINI_ACCOUNT_ID && hasEnvDefaultKey()) ||
+      poolStore.accounts.some((a) => a.id === requestedChairman);
+    if (exists) {
+      poolStore.chairmanAccountId = requestedChairman;
+    }
+  }
+
+  const effectiveChairman = resolveEffectiveChairmanId();
+  for (const a of poolStore.accounts) {
+    a.isChairman = a.id === effectiveChairman;
+  }
+
+  savePoolStore();
+
+  return {
+    syncedCount,
+    addedCount,
+    accounts: listGeminiAccountsPublic(),
+    summary: getGeminiPoolSummary(),
+  };
 }
 
 export function getGeminiPoolSummary(): {

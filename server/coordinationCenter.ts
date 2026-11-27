@@ -1544,7 +1544,13 @@ export async function createSessionFromStudio(
           sceneId: String(sc.id || `scene_${idx + 1}`),
           sceneIndex: Number(sc.sceneIndex || idx + 1),
           title: String(sc.title || `Phân cảnh ${idx + 1}`).trim(),
-          durationSec: Math.max(3, Math.min(15, Math.round(Number(sc.durationSec || 8)))),
+          durationSec: Math.max(
+            3,
+            Math.min(
+              videoSource === 'muse' || videoSource === 'qwen' ? 10 : 15,
+              Math.round(Number(sc.durationSec || (videoSource === 'muse' ? 10 : 8)))
+            )
+          ),
           narration: String(sc.narration || sc.voiceoverText || '').trim(),
           dialogue: String(sc.dialogue || '').trim(),
           charactersInScene: String(sc.charactersInScene || '').trim(),
@@ -1565,7 +1571,7 @@ export async function createSessionFromStudio(
             sceneId: 'scene_1',
             sceneIndex: 1,
             title: title,
-            durationSec: 8,
+            durationSec: videoSource === 'muse' ? 10 : 8,
             narration: scriptSummary,
             dialogue: '',
             charactersInScene: (payload.characterRefs || []).map((c) => c.name).filter(Boolean).join(', '),
@@ -2636,7 +2642,10 @@ export async function runSingleCoordinationTask(params: {
           vidRes = await generateSceneVideoWithOmniFlash({
             prompt: scene.videoPrompt || scene.actionDetail || scene.title,
             aspectRatio: session.aspectRatio,
-            durationSec: scene.durationSec,
+            durationSec:
+              lockedEngine === 'muse2api' || lockedEngine === 'qwen'
+                ? Math.max(4, Math.min(10, Math.round(scene.durationSec || 10)))
+                : scene.durationSec,
             engine: lockedEngine,
             videoStyle: session.videoStyle,
             characterBible: session.references
