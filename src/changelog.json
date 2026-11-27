@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.38",
+    "version": "1.0.39",
     "date": "27/11/2026",
-    "title": "refactor: consolidate cinematic studio styles",
+    "title": "refactor: update Gemini models and cleanup pool logic",
     "changes": [
-      "refactor: consolidate cinematic studio styles"
+      "refactor: update Gemini models and cleanup pool logic"
     ]
   },
   {

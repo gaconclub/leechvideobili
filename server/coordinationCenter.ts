@@ -34,8 +34,10 @@ import {
 import { getAlibabaModelStudioStatus } from './alibabaModelStudio';
 import { getMuse2ApiStatus, listHealthyMuse2ApiAccounts } from './muse2api';
 import {
+  executeWithGeminiKeyFailover,
   getGeminiPoolSummary,
   hasAnyEnabledGeminiAccount,
+  isGeminiKeyExhaustedOrAuthError,
   listHealthyGeminiWorkerAccounts,
   pickWorkerGeminiAccount,
   recordGeminiAccountUsage,
@@ -569,7 +571,7 @@ export async function checkAllAiReadiness(force = false): Promise<AiEngineReadin
       independentSource: 'gemini',
       status: hasEnabled ? 'ready' : 'unconfigured',
       latencyMs: Math.max(1, Date.now() - t0),
-      activeModel: 'gemini-3.1-flash-image / Veo & Omni',
+      activeModel: 'gemini-3.1-flash-lite-image / Veo & Omni',
       accountSummary: `${pool.enabled || (hasEnv ? 1 : 0)} khóa đang bật (${pool.healthy || (hasEnv ? 1 : 0)} khỏe)`,
       detail: hasEnabled
         ? 'Sẵn sàng chạy độc lập toàn bộ luồng tạo ảnh & video bằng Gemini.'
@@ -4094,20 +4096,14 @@ export async function postMeetingRoomMessage(params: {
   const telemetry = getActiveWorkerTelemetry();
   const telemetryLine = `Luồng đa nhiệm đang chạy: ${telemetry.activeSessionIds.length} phiên (${telemetry.activeSessionIds.join(', ') || 'không có'}) | Slot song song: Gemini ${telemetry.providerSlots.gemini.active}/${telemetry.providerSlots.gemini.limit}, Qwen ${telemetry.providerSlots.qwen.active}/${telemetry.providerSlots.qwen.limit}, Google Flow ${telemetry.providerSlots.google_flow.active}/${telemetry.providerSlots.google_flow.limit}, Muse ${telemetry.providerSlots.muse.active}/${telemetry.providerSlots.muse.limit}.`;
 
-  const workerAccount = pickWorkerGeminiAccount();
-  const apiKey = workerAccount?.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
+  const hasGeminiAccess = hasAnyEnabledGeminiAccount() || Boolean(process.env.GEMINI_API_KEY?.trim());
 
   let replyContent = '';
   let replyRole = 'Điều phối viên AI (Quyền thực thi trực tiếp)';
   const executedTools: string[] = [];
 
-  if (apiKey) {
+  if (hasGeminiAccess) {
     try {
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: { apiVersion: 'v1beta', headers: { 'User-Agent': 'aistudio-build' } },
-      });
-
       const systemInstruction = [
         'Bạn là ĐIỀU PHỐI VIÊN AI CẤP CAO có QUYỀN THỰC THI TRỰC TIẾP (Function Calling) trên Sổ Điều Phối trong "Phòng họp trực tiếp — Trung Tâm Điều Phối AI".',
         'Bạn KHÔNG còn là trợ lý chỉ-đọc nữa: bạn có 6 công cụ thực thi thật để thay đổi nguồn AI, chia tải đa luồng, kích hoạt chạy song song nhiều phiên cùng lúc, chạy lại tác vụ lỗi (vẫn giữ mốc Ảnh Bước 1 đã xong), tạo lại ảnh phân cảnh và tạm dừng phiên.',
@@ -4130,79 +4126,109 @@ export async function postMeetingRoomMessage(params: {
         .filter(Boolean)
         .join('\n');
 
-      const candidateModels = ['gemini-4-hydrogen', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
-      let lastModelErr: any = null;
+      const candidateModels = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
 
-      for (const modelName of candidateModels) {
-        try {
-          const contents: any[] = [{ role: 'user', parts: [{ text: initialUserPrompt }] }];
-          let finalText = '';
+      const { result: chatResult, account: usedAccount, switchedFromLabel } =
+        await executeWithGeminiKeyFailover(
+          async ({ ai }) => {
+            let lastModelErr: any = null;
 
-          for (let round = 0; round < 4; round += 1) {
-            const response = await ai.models.generateContent({
-              model: modelName,
-              contents,
-              config: {
-                systemInstruction,
-                tools: [{ functionDeclarations: COORDINATOR_TOOL_DECLARATIONS }],
-              },
-            });
+            for (const modelName of candidateModels) {
+              try {
+                const contents: any[] = [{ role: 'user', parts: [{ text: initialUserPrompt }] }];
+                let finalText = '';
 
-            const calls = response.functionCalls;
-            if (calls && calls.length > 0) {
-              const modelContent = response.candidates?.[0]?.content;
-              if (modelContent) {
-                contents.push(modelContent);
+                for (let round = 0; round < 4; round += 1) {
+                  const response = await ai.models.generateContent({
+                    model: modelName,
+                    contents,
+                    config: {
+                      systemInstruction,
+                      tools: [{ functionDeclarations: COORDINATOR_TOOL_DECLARATIONS }],
+                    },
+                  });
+
+                  const calls = response.functionCalls;
+                  if (calls && calls.length > 0) {
+                    const modelContent = response.candidates?.[0]?.content;
+                    if (modelContent) {
+                      contents.push(modelContent);
+                    }
+                    const responseParts: any[] = [];
+                    for (const call of calls) {
+                      const toolName = String(call.name || '');
+                      const toolArgs = (call.args && typeof call.args === 'object' ? call.args : {}) as Record<string, any>;
+                      const toolResult = await executeCoordinatorToolCall(toolName, toolArgs, params.googleToken);
+                      executedTools.push(toolName);
+                      responseParts.push({
+                        functionResponse: {
+                          id: call.id,
+                          name: toolName,
+                          response: { result: toolResult },
+                        },
+                      });
+                    }
+                    contents.push({ role: 'user', parts: responseParts });
+                    continue;
+                  }
+
+                  finalText = String(response.text || '').trim();
+                  break;
+                }
+
+                if (finalText) {
+                  return { finalText, modelName };
+                }
+              } catch (modelErr: any) {
+                lastModelErr = modelErr;
+                const msg = String(modelErr?.message || '');
+                const lower = msg.toLowerCase();
+                // Immediately fail over to another API key on auth/permission errors
+                if (
+                  lower.includes('api_key_invalid') ||
+                  lower.includes('401') ||
+                  lower.includes('403') ||
+                  lower.includes('permission_denied')
+                ) {
+                  throw modelErr;
+                }
+                const isRetryableOnNextModel =
+                  msg.includes('503') ||
+                  msg.includes('UNAVAILABLE') ||
+                  msg.includes('429') ||
+                  msg.includes('RESOURCE_EXHAUSTED') ||
+                  msg.includes('404') ||
+                  msg.includes('NOT_FOUND') ||
+                  lower.includes('high demand') ||
+                  lower.includes('overloaded');
+                if (!isRetryableOnNextModel && !isGeminiKeyExhaustedOrAuthError(modelErr)) {
+                  throw modelErr;
+                }
               }
-              const responseParts: any[] = [];
-              for (const call of calls) {
-                const toolName = String(call.name || '');
-                const toolArgs = (call.args && typeof call.args === 'object' ? call.args : {}) as Record<string, any>;
-                const toolResult = await executeCoordinatorToolCall(toolName, toolArgs, params.googleToken);
-                executedTools.push(toolName);
-                responseParts.push({
-                  functionResponse: {
-                    id: call.id,
-                    name: toolName,
-                    response: { result: toolResult },
-                  },
-                });
-              }
-              contents.push({ role: 'user', parts: responseParts });
-              continue;
             }
 
-            finalText = String(response.text || '').trim();
-            break;
+            if (lastModelErr) {
+              throw lastModelErr;
+            }
+            return { finalText: '', modelName: candidateModels[0] };
+          },
+          {
+            autoPromoteOnFailover: true,
+            label: 'Phòng họp Điều phối AI',
           }
+        );
 
-          if (finalText) {
-            replyContent = finalText;
-            replyRole =
-              executedTools.length > 0
-                ? `Điều phối viên AI (${modelName}) · Đã thực thi ${executedTools.length} lệnh`
-                : `Điều phối viên AI (${modelName})`;
-            break;
-          }
-        } catch (modelErr: any) {
-          lastModelErr = modelErr;
-          const msg = String(modelErr?.message || '');
-          const isRetryable =
-            msg.includes('503') ||
-            msg.includes('UNAVAILABLE') ||
-            msg.includes('429') ||
-            msg.includes('404') ||
-            msg.includes('NOT_FOUND') ||
-            msg.includes('high demand') ||
-            msg.includes('overloaded');
-          if (!isRetryable) throw modelErr;
-        }
-      }
-      if (!replyContent && lastModelErr) {
-        throw lastModelErr;
+      if (chatResult.finalText) {
+        replyContent = switchedFromLabel
+          ? `${chatResult.finalText}\n\n_(Hệ thống đã tự động chuyển từ khóa "${switchedFromLabel}" sang khóa "${usedAccount.label}")_`
+          : chatResult.finalText;
+        replyRole =
+          executedTools.length > 0
+            ? `Điều phối viên AI (${chatResult.modelName}) · Đã thực thi ${executedTools.length} lệnh`
+            : `Điều phối viên AI (${chatResult.modelName})`;
       }
     } catch (err: any) {
-      const errNote = String(err?.message || 'Lỗi kết nối Gemini').slice(0, 180);
+      const errNote = String(err?.message || 'Lỗi kết nối Gemini').slice(0, 220);
       replyRole = 'Báo cáo trực tiếp từ Sổ Điều Phối';
       replyContent = `${buildFactualLedgerReport(loadState(), session)}\n\n(Ghi chú: AI hội thoại Gemini tạm thời gặp lỗi: ${errNote})`;
     }

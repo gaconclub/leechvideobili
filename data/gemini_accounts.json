@@ -5,11 +5,11 @@
   "envDefaultLabel": "Gemini Hệ thống (Mặc định)",
   "envDefaultNote": "Tài khoản mặc định nạp từ cấu hình môi trường máy chủ",
   "envDefaultStatus": "healthy",
-  "envDefaultRequestsCount": 5,
-  "envDefaultSuccessCount": 4,
+  "envDefaultRequestsCount": 6,
+  "envDefaultSuccessCount": 5,
   "envDefaultErrorCount": 1,
   "accounts": [],
   "envDefaultQuotaStatus": "Khả dụng",
-  "envDefaultLastCheckedAt": 1795796501982,
-  "envDefaultLastLatencyMs": 4711
+  "envDefaultLastCheckedAt": 1795798682638,
+  "envDefaultLastLatencyMs": 2405
 }
