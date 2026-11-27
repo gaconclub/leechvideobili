@@ -1678,7 +1678,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                         ) : (
                           <Play className="w-4 h-4" />
                         )}
-                        <span>Chạy tuần tự theo Sổ Điều Phối</span>
+                        <span>Chạy đa tài khoản (Ảnh → Video ngay)</span>
                       </button>
                     ) : (
                       <button
@@ -1764,7 +1764,7 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Chạy đa luồng SONG SONG giữa các phiên theo từng nguồn AI (Gemini / Qwen / Google Flow / Muse). Một phiên gặp sự cố không chặn các phiên khác.
+                    Tự động chia các phân cảnh trong cùng kịch bản cho nhiều tài khoản sẵn sàng của nguồn AI đã chọn (mỗi tài khoản tạo Ảnh xong chuyển sang Video ngay lập tức) và chạy song song nhiều phiên độc lập.
                   </p>
                 </div>
 
@@ -1918,10 +1918,15 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                                   Bước {task.step}: {task.stepLabel}
                                 </span>
                               </div>
-                              <div className="text-[11px] text-slate-500 dark:text-slate-400 flex flex-wrap gap-x-2.5 gap-y-0.5">
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
                                 <span>
                                   AI: <strong className="text-slate-700 dark:text-slate-200">{task.assignedAiLabel}</strong>
                                 </span>
+                                {task.assignedAccountLabel && (
+                                  <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-violet-500/12 text-violet-700 dark:text-violet-300 border border-violet-500/25">
+                                    TK: {task.assignedAccountLabel}
+                                  </span>
+                                )}
                                 {task.completedAt && <span>Xong {fmtTime(task.completedAt)}</span>}
                               </div>
                               {task.resultSummary && (
@@ -2120,6 +2125,11 @@ export const CommandCenterPanel: React.FC<CommandCenterPanelProps> = ({
                                 <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
                                   {sess.scenes.length} phân cảnh · {sess.aspectRatio} · {sessDone}/{sess.tasks.length} tác vụ ({sessPct}%)
                                 </span>
+                                {sess.parallelDispatchSummary && (
+                                  <span className="px-2 py-0.5 text-[10px] font-semibold rounded border border-cyan-500/35 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300">
+                                    {sess.parallelDispatchSummary}
+                                  </span>
+                                )}
                                 {sess.musicConfig && sess.musicConfig.musicMode !== 'none' && (
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded border border-violet-400/35 bg-violet-500/10 text-violet-700 dark:text-violet-300">
                                     <Music className="w-2.5 h-2.5" />

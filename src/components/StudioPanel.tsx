@@ -38,6 +38,8 @@ import {
   Eye,
   Camera,
   Pencil,
+  RotateCcw,
+  RefreshCw,
 } from 'lucide-react';
 import {
   AiMusicStyleId,
@@ -51,6 +53,7 @@ import {
   DerivativeMusicMode,
   DerivativeOutputLanguage,
   DerivativeScene,
+  DerivativeSceneProgress,
   DerivativeStylePreset,
   DerivativeVisualMode,
   DerivativeVoiceId,
@@ -461,6 +464,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   const [isBatchRenderingAll, setIsBatchRenderingAll] = useState(false);
   const [batchRenderStatusText, setBatchRenderStatusText] = useState('');
   const [genError, setGenError] = useState('');
+  const [retryingRenderSceneKey, setRetryingRenderSceneKey] = useState<string | null>(null);
+  const [isResumingRenderJob, setIsResumingRenderJob] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
   const batchRenderAbortRef = useRef(false);
 
@@ -2816,9 +2821,87 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   };
 
   // Submit and wait for a single blueprint render job
+  const syncJobScenesToBlueprint = (
+    stData: DerivativeJobState,
+    targetMode: StudioCreationMode,
+    targetIdx: number,
+    explicitScenePatch?: { sceneIdx: number; sceneImageDataUrl?: string; videoAssetId?: string; videoPreviewUrl?: string }
+  ) => {
+    const jobScenes = stData.scenes;
+    if ((!jobScenes || jobScenes.length === 0) && !explicitScenePatch) return;
+    setBatchBlueprintsByMode((prevMap) => {
+      const list = prevMap[targetMode] || [];
+      const bp = list[targetIdx];
+      if (!bp) return prevMap;
+      let changed = false;
+      const nextScenes = bp.scenes.map((sc, idx) => {
+        const sp = jobScenes?.[idx];
+        const patch: Partial<DerivativeScene> = {};
+        if (sp?.videoAssetId && sp.videoAssetId !== sc.omniClipAssetId) {
+          patch.omniClipAssetId = sp.videoAssetId;
+          patch.omniClipPreviewUrl = sp.videoPreviewUrl || `/api/studio/assets/${sp.videoAssetId}`;
+        }
+        if (explicitScenePatch && explicitScenePatch.sceneIdx === idx) {
+          if (explicitScenePatch.sceneImageDataUrl) {
+            patch.sceneImageDataUrl = explicitScenePatch.sceneImageDataUrl;
+            patch.sceneImageSource = 'ai';
+          }
+          if (explicitScenePatch.videoAssetId) {
+            patch.omniClipAssetId = explicitScenePatch.videoAssetId;
+            patch.omniClipPreviewUrl =
+              explicitScenePatch.videoPreviewUrl || `/api/studio/assets/${explicitScenePatch.videoAssetId}`;
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          changed = true;
+          return { ...sc, ...patch };
+        }
+        return sc;
+      });
+      if (!changed) return prevMap;
+      const nextList = list.map((item, i) => (i === targetIdx ? { ...item, scenes: nextScenes } : item));
+      return { ...prevMap, [targetMode]: nextList };
+    });
+  };
+
+  const pollJobUntilSettled = (
+    jobId: string,
+    targetKey: string,
+    targetMode: StudioCreationMode,
+    targetIdx: number
+  ): Promise<DerivativeJobState> => {
+    return new Promise((resolve) => {
+      stopPolling();
+      const pollOnce = async () => {
+        try {
+          const stRes = await fetch(`/api/derivative/jobs/${jobId}`);
+          if (!stRes.ok) return;
+          const stData = await parseJsonSafe<DerivativeJobState>(stRes);
+          setJobForKey(targetKey, stData);
+          syncJobScenesToBlueprint(stData, targetMode, targetIdx);
+          if (
+            stData.status === 'completed' ||
+            stData.status === 'error' ||
+            stData.status === 'partial_error'
+          ) {
+            stopPolling();
+            resolve(stData);
+          }
+        } catch {
+          // ignore transient poll error
+        }
+      };
+      void pollOnce();
+      pollTimerRef.current = window.setInterval(() => {
+        void pollOnce();
+      }, 1400);
+    });
+  };
+
   const renderBlueprintAndAwait = async (
     targetBp: DerivativeBlueprint,
-    targetKey: string
+    targetKey: string,
+    targetIdx: number
   ): Promise<DerivativeJobState> => {
     const voiceObj = VOICE_OPTIONS.find((v) => v.value === voice);
     const activeMusicAssetId =
@@ -2828,10 +2911,31 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       jobId: '',
       status: 'queued',
       progress: 5,
+      visualMode,
       stepLabel:
         studioMode === 'creative'
           ? 'Đang gửi yêu cầu dựng video sáng tạo...'
           : 'Đang gửi yêu cầu dựng video phái sinh...',
+      scenes: targetBp.scenes.map((sc, i) => ({
+        sceneIndex: i,
+        sceneNumber: sc.sceneIndex || i + 1,
+        sceneTitle: sc.sceneTitle || `Phân cảnh #${i + 1}`,
+        progress: sc.omniClipAssetId ? 70 : sc.sceneImageDataUrl ? 25 : 5,
+        status: 'pending',
+        stageLabel: sc.omniClipAssetId
+          ? 'Đã có video sẵn — chờ dựng & ghép MP4'
+          : sc.sceneImageDataUrl
+          ? 'Đã có ảnh từ Bước 2 — chuyển thẳng sang tạo video'
+          : 'Đang chờ khởi tạo tiến trình...',
+        imageStatus: sc.sceneImageDataUrl ? 'reused' : 'pending',
+        imageSource: sc.sceneImageDataUrl ? 'step2_reused' : 'none',
+        videoStatus: sc.omniClipAssetId ? 'reused' : 'pending',
+        videoAssetId: sc.omniClipAssetId,
+        videoPreviewUrl: sc.omniClipPreviewUrl,
+        audioStatus: 'pending',
+        renderStatus: 'pending',
+        updatedAt: Date.now(),
+      })),
     });
 
     const res = await fetch('/api/derivative/generate', {
@@ -2885,29 +2989,13 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
         ytCookies,
       }),
     });
-    const data = await parseJsonSafe<{ jobId?: string; error?: string }>(res);
+    const data = await parseJsonSafe<DerivativeJobState & { error?: string }>(res);
     if (!res.ok || !data.jobId) {
       throw new Error(data.error || `HTTP ${res.status}`);
     }
 
-    const jobId = data.jobId;
-    return new Promise((resolve) => {
-      stopPolling();
-      pollTimerRef.current = window.setInterval(async () => {
-        try {
-          const stRes = await fetch(`/api/derivative/jobs/${jobId}`);
-          if (!stRes.ok) return;
-          const stData = await parseJsonSafe<DerivativeJobState>(stRes);
-          setJobForKey(targetKey, stData);
-          if (stData.status === 'completed' || stData.status === 'error') {
-            stopPolling();
-            resolve(stData);
-          }
-        } catch {
-          // ignore transient poll error
-        }
-      }, 1400);
-    });
+    setJobForKey(targetKey, data);
+    return pollJobUntilSettled(data.jobId, targetKey, studioMode, targetIdx);
   };
 
   // Final Render Pipeline for currently selected video
@@ -2926,13 +3014,105 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setIsGeneratingFinal(true);
     setGenError('');
     try {
-      const finalState = await renderBlueprintAndAwait(blueprint, activeJobKey);
-      if (finalState.status === 'error') {
-        setGenError(finalState.error || 'Tạo video thất bại.');
+      const finalState = await renderBlueprintAndAwait(blueprint, activeJobKey, activeBatchIndex);
+      if (finalState.status === 'error' || finalState.status === 'partial_error') {
+        setGenError(finalState.error || 'Một số phân cảnh gặp lỗi — hãy xử lý ngay ở danh sách tiến trình bên dưới.');
       }
     } catch (err: any) {
       setGenError(err?.message || 'Không thể khởi tạo tác vụ dựng video.');
     } finally {
+      setIsGeneratingFinal(false);
+    }
+  };
+
+  const handleRetryRenderScene = async (sceneIdx: number, action: 'image' | 'video' | 'full') => {
+    if (!job?.jobId) return;
+    const busyKey = `${job.jobId}:${sceneIdx}:${action}`;
+    setRetryingRenderSceneKey(busyKey);
+    setGenError('');
+    const resolvedImgEngine: 'gemini' | 'muse2api' | 'qwen' =
+      imageEngineMode === 'muse2api' ? 'muse2api' : imageEngineMode === 'qwen' ? 'qwen' : 'gemini';
+
+    // Optimistic UI feedback for that specific scene row
+    setJobForKey(activeJobKey, {
+      ...job,
+      scenes: (job.scenes || []).map((sp, i) =>
+        i === sceneIdx
+          ? {
+              ...sp,
+              status: 'running',
+              imageStatus: action === 'image' ? 'running' : sp.imageStatus,
+              videoStatus: action === 'video' || action === 'full' ? 'running' : sp.videoStatus,
+              error: undefined,
+              failedStage: undefined,
+              stageLabel:
+                action === 'image'
+                  ? 'Đang tạo lại ảnh phân cảnh...'
+                  : action === 'video'
+                  ? 'Đang tạo lại video từ ảnh phân cảnh...'
+                  : 'Đang khởi tạo lại tiến trình phân cảnh...',
+            }
+          : sp
+      ),
+    });
+
+    try {
+      const res = await fetch(`/api/derivative/jobs/${job.jobId}/scenes/${sceneIdx}/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, imageEngine: resolvedImgEngine }),
+      });
+      const data = await parseJsonSafe<{
+        ok?: boolean;
+        error?: string;
+        job?: DerivativeJobState;
+        sceneImageDataUrl?: string;
+        videoAssetId?: string;
+        videoPreviewUrl?: string;
+      }>(res);
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      if (data.job) {
+        setJobForKey(activeJobKey, data.job);
+        syncJobScenesToBlueprint(data.job, studioMode, activeBatchIndex, {
+          sceneIdx,
+          sceneImageDataUrl: data.sceneImageDataUrl,
+          videoAssetId: data.videoAssetId,
+          videoPreviewUrl: data.videoPreviewUrl,
+        });
+      }
+    } catch (err: any) {
+      setGenError(err?.message || `Không thể chạy lại phân cảnh #${sceneIdx + 1}.`);
+    } finally {
+      setRetryingRenderSceneKey(null);
+    }
+  };
+
+  const handleResumeRenderJob = async (allowFallbackOnError = false) => {
+    if (!job?.jobId || isGeneratingFinal || isResumingRenderJob) return;
+    setIsResumingRenderJob(true);
+    setIsGeneratingFinal(true);
+    setGenError('');
+    try {
+      const res = await fetch(`/api/derivative/jobs/${job.jobId}/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowFallbackOnError }),
+      });
+      const data = await parseJsonSafe<DerivativeJobState & { error?: string }>(res);
+      if (!res.ok || !data.jobId) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      setJobForKey(activeJobKey, data);
+      const finalState = await pollJobUntilSettled(data.jobId, activeJobKey, studioMode, activeBatchIndex);
+      if (finalState.status === 'error' || finalState.status === 'partial_error') {
+        setGenError(finalState.error || 'Một số phân cảnh vẫn còn lỗi — hãy kiểm tra trực tiếp ở từng phân cảnh bên dưới.');
+      }
+    } catch (err: any) {
+      setGenError(err?.message || 'Không thể khởi tạo lại tiến trình ghép MP4.');
+    } finally {
+      setIsResumingRenderJob(false);
       setIsGeneratingFinal(false);
     }
   };
@@ -2962,8 +3142,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       setActiveBatchIndex(idx);
       setBatchRenderStatusText(`Đang dựng Video ${idx + 1}/${blueprints.length}: ${bp.derivativeTitle}`);
       try {
-        const result = await renderBlueprintAndAwait(bp, key);
-        if (result.status === 'error') failed += 1;
+        const result = await renderBlueprintAndAwait(bp, key, idx);
+        if (result.status === 'error' || result.status === 'partial_error') failed += 1;
       } catch (err: any) {
         failed += 1;
         setJobForKey(key, {
@@ -2980,7 +3160,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     setIsBatchRenderingAll(false);
     setIsGeneratingFinal(false);
     if (failed > 0 && !batchRenderAbortRef.current) {
-      setGenError(`Hoàn tất dựng hàng loạt: có ${failed}/${blueprints.length} video gặp lỗi — bấm vào từng video để xem chi tiết.`);
+      setGenError(`Hoàn tất dựng hàng loạt: có ${failed}/${blueprints.length} video gặp lỗi — bấm vào từng video để xử lý riêng các phân cảnh lỗi.`);
     }
   };
 
@@ -7054,6 +7234,8 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
                     <div className="text-[11px]">
                       {itemJob?.status === 'completed' ? (
                         <span className="text-emerald-600 dark:text-emerald-300 font-semibold">✓ Đã xuất MP4</span>
+                      ) : itemJob?.status === 'partial_error' ? (
+                        <span className="text-amber-600 dark:text-amber-300 font-semibold">⚠ Có phân cảnh lỗi</span>
                       ) : itemJob?.status === 'error' ? (
                         <span className="text-rose-500">✕ Lỗi dựng</span>
                       ) : itemJob ? (
@@ -7068,42 +7250,353 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
             </div>
           )}
 
-          {/* Export Status & Progress Bar + Preview Player */}
-          <div className="rounded-2xl bg-slate-50/90 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/20 p-4 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <span className="text-slate-600 dark:text-slate-300 font-medium">
-                {!blueprint
-                  ? 'Sẵn sàng xử lý luồng dựng video & ghép âm thanh bằng FFmpeg.'
-                  : batchRenderStatusText
-                  ? batchRenderStatusText
-                  : job?.stepLabel
-                  ? job.stepLabel
-                  : `Sẵn sàng dựng ${blueprint.scenes.length} phân cảnh (${aspectRatio}) chất lượng 1080p HD.`}
-              </span>
-              <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
-                {job ? `${job.progress}%` : '0%'}
-              </span>
-            </div>
+          {/* Export Status & Progress Bar + Per-Scene Progress Tracker + Preview Player */}
+          <div className="rounded-2xl bg-slate-50/90 dark:bg-[#0c1021]/90 border border-slate-200 dark:border-slate-400/20 p-4 space-y-4">
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span className="text-slate-700 dark:text-slate-200 font-medium">
+                  {!blueprint
+                    ? 'Sẵn sàng xử lý luồng dựng video & ghép âm thanh bằng FFmpeg.'
+                    : batchRenderStatusText
+                    ? batchRenderStatusText
+                    : job?.stepLabel
+                    ? job.stepLabel
+                    : `Sẵn sàng dựng ${blueprint.scenes.length} phân cảnh (${aspectRatio}) chất lượng 1080p HD.`}
+                </span>
+                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  {job ? `${job.progress}%` : '0%'}
+                </span>
+              </div>
 
-            <div className="w-full h-2.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-              <div
-                className={`h-full transition-all duration-300 ${
-                  job?.status === 'error'
-                    ? 'bg-rose-500'
-                    : job?.status === 'completed'
-                    ? 'bg-emerald-500'
-                    : 'bg-gradient-to-r from-violet-500 via-cyan-400 to-emerald-400'
-                }`}
-                style={{ width: `${job ? Math.min(100, Math.max(4, job.progress)) : 0}%` }}
-              />
+              <div className="w-full h-2.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-300 ${
+                    job?.status === 'error'
+                      ? 'bg-rose-500'
+                      : job?.status === 'partial_error'
+                      ? 'bg-amber-500'
+                      : job?.status === 'completed'
+                      ? 'bg-emerald-500'
+                      : 'bg-gradient-to-r from-violet-500 via-cyan-400 to-emerald-400'
+                  }`}
+                  style={{ width: `${job ? Math.min(100, Math.max(4, job.progress)) : 0}%` }}
+                />
+              </div>
             </div>
 
             {genError && (
-              <div className="flex items-start gap-2 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
+              <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>{genError}</span>
               </div>
             )}
+
+            {/* Per-Scene Live Progress & Recovery Controls */}
+            {blueprint && blueprint.scenes.length > 0 && (() => {
+              const displayScenes: DerivativeSceneProgress[] =
+                job?.scenes && job.scenes.length > 0
+                  ? job.scenes
+                  : blueprint.scenes.map((sc, i) => ({
+                      sceneIndex: i,
+                      sceneNumber: sc.sceneIndex || i + 1,
+                      sceneTitle: sc.sceneTitle || `Phân cảnh #${i + 1}`,
+                      progress: sc.omniClipAssetId ? 70 : sc.sceneImageDataUrl ? 25 : 0,
+                      status: 'pending',
+                      stageLabel: sc.omniClipAssetId
+                        ? 'Đã có video sẵn ở Bước 2 — sẽ dùng thẳng khi ghép MP4'
+                        : sc.sceneImageDataUrl
+                        ? 'Đã có ảnh từ Bước 2 — sẽ dùng thẳng để tạo video (không tạo lại ảnh)'
+                        : 'Chưa có ảnh Bước 2 — sẽ khởi tạo khi bấm Dựng & Xuất MP4',
+                      imageStatus: sc.sceneImageDataUrl ? 'reused' : 'pending',
+                      imageSource: sc.sceneImageDataUrl ? 'step2_reused' : 'none',
+                      videoStatus: sc.omniClipAssetId ? 'reused' : 'pending',
+                      videoAssetId: sc.omniClipAssetId,
+                      videoPreviewUrl: sc.omniClipPreviewUrl,
+                      audioStatus: 'pending',
+                      renderStatus: 'pending',
+                      updatedAt: 0,
+                    }));
+
+              const reusedImgCount = displayScenes.filter(
+                (s) => s.imageSource === 'step2_reused' || s.imageStatus === 'reused'
+              ).length;
+              const errorSceneCount = displayScenes.filter((s) => s.status === 'error').length;
+              const doneSceneCount = displayScenes.filter((s) => s.status === 'completed').length;
+              const canOperateScenes = Boolean(job?.jobId) && !isGeneratingFinal && !isBatchRenderingAll;
+
+              const stageBadgeCls = (st: DerivativeSceneProgress['imageStatus']) => {
+                if (st === 'reused')
+                  return 'text-cyan-700 dark:text-cyan-300 bg-cyan-500/12 border-cyan-500/30';
+                if (st === 'completed')
+                  return 'text-emerald-700 dark:text-emerald-300 bg-emerald-500/12 border-emerald-500/30';
+                if (st === 'running')
+                  return 'text-violet-700 dark:text-violet-300 bg-violet-500/15 border-violet-500/35';
+                if (st === 'error')
+                  return 'text-rose-700 dark:text-rose-300 bg-rose-500/15 border-rose-500/35';
+                return 'text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-white/5 border-slate-300/60 dark:border-white/10';
+              };
+
+              const imageStageText = (sp: DerivativeSceneProgress) => {
+                if (sp.imageStatus === 'reused') return 'Ảnh: Dùng sẵn Bước 2';
+                if (sp.imageStatus === 'completed') return 'Ảnh: Đã tạo xong';
+                if (sp.imageStatus === 'running') return 'Ảnh: Đang tạo...';
+                if (sp.imageStatus === 'error') return 'Ảnh: Lỗi';
+                return 'Ảnh: Chờ';
+              };
+
+              const videoStageText = (sp: DerivativeSceneProgress) => {
+                if (sp.videoStatus === 'reused') return 'Video: Dùng sẵn';
+                if (sp.videoStatus === 'completed') return 'Video: Đã xong';
+                if (sp.videoStatus === 'running') return 'Video: Đang tạo...';
+                if (sp.videoStatus === 'error') return 'Video: Lỗi';
+                return 'Video: Chờ';
+              };
+
+              return (
+                <div className="space-y-3 pt-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200/80 dark:border-slate-400/15">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-bold text-slate-900 dark:text-white">
+                        Tiến trình từng phân cảnh ({doneSceneCount}/{displayScenes.length} hoàn tất)
+                      </span>
+                      {reusedImgCount > 0 && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-md bg-cyan-500/12 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30">
+                          <ImageIcon className="w-3 h-3" />
+                          <span>{reusedImgCount}/{displayScenes.length} cảnh dùng thẳng ảnh Bước 2</span>
+                        </span>
+                      )}
+                      {errorSceneCount > 0 && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/35">
+                          <AlertCircle className="w-3 h-3" />
+                          <span>{errorSceneCount} phân cảnh lỗi</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {job?.jobId && (job.status === 'partial_error' || job.status === 'error') && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={isGeneratingFinal || isResumingRenderJob || Boolean(retryingRenderSceneKey)}
+                          onClick={() => void handleResumeRenderJob(false)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-white bg-violet-600 hover:bg-violet-500 rounded-lg transition disabled:opacity-50 cursor-pointer"
+                        >
+                          {isResumingRenderJob ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCw className="w-3.5 h-3.5" />
+                          )}
+                          <span>Khởi tạo lại tiến trình &amp; Xuất MP4</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isGeneratingFinal || isResumingRenderJob || Boolean(retryingRenderSceneKey)}
+                          onClick={() => void handleResumeRenderJob(true)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-amber-800 dark:text-amber-200 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 rounded-lg transition disabled:opacity-50 cursor-pointer"
+                        >
+                          <Play className="w-3.5 h-3.5" />
+                          <span>Bỏ qua cảnh lỗi &amp; Ghép MP4 ngay</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-1">
+                    {displayScenes.map((sp, idx) => {
+                      const bpScene = blueprint.scenes[idx];
+                      const thumbSrc = sp.imagePreviewUrl || bpScene?.sceneImageDataUrl || '';
+                      const isRowRetryingImage = retryingRenderSceneKey === `${job?.jobId}:${idx}:image`;
+                      const isRowRetryingVideo = retryingRenderSceneKey === `${job?.jobId}:${idx}:video`;
+                      const isRowRetryingFull = retryingRenderSceneKey === `${job?.jobId}:${idx}:full`;
+                      const isRowBusy =
+                        sp.status === 'running' || isRowRetryingImage || isRowRetryingVideo || isRowRetryingFull;
+                      const showActionRow =
+                        Boolean(job?.jobId) &&
+                        (sp.status === 'error' ||
+                          job?.status === 'partial_error' ||
+                          job?.status === 'error' ||
+                          job?.status === 'completed');
+
+                      return (
+                        <div
+                          key={`render_scene_${idx}`}
+                          className={`rounded-xl border p-3 space-y-2 transition ${
+                            sp.status === 'error'
+                              ? 'bg-rose-500/[0.06] border-rose-500/35'
+                              : sp.status === 'running'
+                              ? 'bg-violet-500/[0.06] border-violet-400/40'
+                              : sp.status === 'completed'
+                              ? 'bg-emerald-500/[0.04] border-emerald-500/25'
+                              : 'bg-white/70 dark:bg-[#080b18]/70 border-slate-200/80 dark:border-slate-400/15'
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="w-16 h-10 rounded-lg overflow-hidden shrink-0 bg-slate-200/80 dark:bg-slate-800/80 border border-slate-300/60 dark:border-white/10 flex items-center justify-center">
+                              {thumbSrc ? (
+                                <img
+                                  src={thumbSrc}
+                                  alt={`Cảnh #${sp.sceneNumber}`}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <ImageIcon className="w-4 h-4 text-slate-400" />
+                              )}
+                            </div>
+
+                            <div className="min-w-0 flex-1 space-y-1.5">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  {sp.status === 'running' || isRowBusy ? (
+                                    <Loader2 className="w-3.5 h-3.5 text-violet-500 animate-spin shrink-0" />
+                                  ) : sp.status === 'completed' ? (
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                  ) : sp.status === 'error' ? (
+                                    <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                                  ) : (
+                                    <Film className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                  )}
+                                  <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                    Phân cảnh #{String(sp.sceneNumber).padStart(2, '0')} · {sp.sceneTitle}
+                                  </span>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span
+                                    className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border ${stageBadgeCls(
+                                      sp.imageStatus
+                                    )}`}
+                                  >
+                                    {imageStageText(sp)}
+                                  </span>
+                                  <span
+                                    className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border ${stageBadgeCls(
+                                      sp.videoStatus
+                                    )}`}
+                                  >
+                                    {videoStageText(sp)}
+                                  </span>
+                                  <span className="text-[11px] font-mono font-bold tabular-nums text-slate-700 dark:text-slate-200 ml-1">
+                                    {sp.progress}%
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Per-scene Progress Bar */}
+                              <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                                <div
+                                  className={`h-full transition-all duration-300 ${
+                                    sp.status === 'error'
+                                      ? 'bg-rose-500'
+                                      : sp.status === 'completed'
+                                      ? 'bg-emerald-500'
+                                      : sp.status === 'running'
+                                      ? 'bg-gradient-to-r from-violet-500 via-cyan-400 to-emerald-400'
+                                      : sp.imageStatus === 'reused' || sp.videoStatus === 'reused'
+                                      ? 'bg-cyan-500/75'
+                                      : 'bg-slate-400/60'
+                                  }`}
+                                  style={{ width: `${Math.min(100, Math.max(sp.progress > 0 ? 6 : 0, sp.progress))}%` }}
+                                />
+                              </div>
+
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                <span
+                                  className={
+                                    sp.status === 'error'
+                                      ? 'text-rose-600 dark:text-rose-300 font-semibold'
+                                      : 'text-slate-600 dark:text-slate-300'
+                                  }
+                                >
+                                  {sp.stageLabel}
+                                </span>
+                                {sp.videoPreviewUrl && (
+                                  <a
+                                    href={sp.videoPreviewUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-[10px] font-semibold text-cyan-600 dark:text-cyan-300 hover:underline"
+                                  >
+                                    Xem clip phân cảnh ↗
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Inline Error Banner IMMEDIATELY underneath scene progress bar */}
+                          {sp.error && (
+                            <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-rose-500/12 border border-rose-500/35 text-[11px] text-rose-700 dark:text-rose-200">
+                              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-rose-500" />
+                              <div className="space-y-0.5 break-words">
+                                <div className="font-bold">
+                                  Lỗi tại bước{' '}
+                                  {sp.failedStage === 'image'
+                                    ? 'Tạo ảnh phân cảnh'
+                                    : sp.failedStage === 'video'
+                                    ? 'Tạo video phân cảnh'
+                                    : sp.failedStage === 'render'
+                                    ? 'Dựng FFmpeg'
+                                    : 'Xử lý phân cảnh'}
+                                  :
+                                </div>
+                                <div>{sp.error}</div>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Per-Scene Recovery Controls */}
+                          {showActionRow && (
+                            <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200/70 dark:border-slate-400/10">
+                              <button
+                                type="button"
+                                disabled={!canOperateScenes || Boolean(retryingRenderSceneKey)}
+                                onClick={() => void handleRetryRenderScene(idx, 'image')}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-800 dark:text-cyan-200 bg-cyan-500/12 hover:bg-cyan-500/22 border border-cyan-500/30 rounded-lg transition disabled:opacity-45 cursor-pointer"
+                              >
+                                {isRowRetryingImage ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <ImageIcon className="w-3 h-3" />
+                                )}
+                                <span>Tạo lại ảnh phân cảnh</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                disabled={!canOperateScenes || Boolean(retryingRenderSceneKey)}
+                                onClick={() => void handleRetryRenderScene(idx, 'video')}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-violet-800 dark:text-violet-200 bg-violet-500/12 hover:bg-violet-500/22 border border-violet-500/30 rounded-lg transition disabled:opacity-45 cursor-pointer"
+                              >
+                                {isRowRetryingVideo ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Film className="w-3 h-3" />
+                                )}
+                                <span>Tạo lại video</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                disabled={!canOperateScenes || Boolean(retryingRenderSceneKey)}
+                                onClick={() => void handleRetryRenderScene(idx, 'full')}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 dark:text-amber-200 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 rounded-lg transition disabled:opacity-45 cursor-pointer"
+                              >
+                                {isRowRetryingFull ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <RotateCcw className="w-3 h-3" />
+                                )}
+                                <span>Khởi tạo lại tiến trình</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {job?.warnings && job.warnings.length > 0 && (
               <ul className="space-y-1 text-[11px] text-amber-700 dark:text-amber-300 list-disc pl-4">

@@ -30,11 +30,13 @@ import {
   type StudioCharacterRefInput,
 } from './derivative';
 import { getAlibabaModelStudioStatus } from './alibabaModelStudio';
-import { getMuse2ApiStatus } from './muse2api';
+import { getMuse2ApiStatus, listHealthyMuse2ApiAccounts } from './muse2api';
 import {
   getGeminiPoolSummary,
   hasAnyEnabledGeminiAccount,
+  listHealthyGeminiWorkerAccounts,
   pickWorkerGeminiAccount,
+  recordGeminiAccountUsage,
 } from './geminiPool';
 import {
   claimNextFlowBridgeJob,
@@ -71,15 +73,33 @@ const activeTaskLocks = new Set<string>();
 const activeSessionRunners = new Set<string>();
 const pauseRequestedSessions = new Set<string>();
 
-// Independent per-provider parallel worker pools so multiple sessions execute concurrently
-// across Gemini (scaled by healthy keys), Qwen, Google Flow, and Muse without blocking each other.
+// Independent per-provider & per-account parallel worker pools so multiple scenes within a script
+// AND multiple sessions execute concurrently across all ready accounts (Gemini keys, Muse accounts, Qwen, Google Flow)
+// without overloading any single account.
+export interface ProviderAccountWorker {
+  source: IndependentVideoSource;
+  accountId: string;
+  accountLabel: string;
+  apiKey?: string;
+  museAccountId?: string;
+}
+
+let cachedMuseHealthyCount = 1;
+const busyAccountKeys = new Set<string>();
+const accountRoundRobinCursor: Record<IndependentVideoSource, number> = {
+  gemini: 0,
+  qwen: 0,
+  muse: 0,
+  google_flow: 0,
+};
+
 const providerActiveCounts: Record<IndependentVideoSource, number> = {
   gemini: 0,
   qwen: 0,
   muse: 0,
   google_flow: 0,
 };
-const providerWaiters: Record<IndependentVideoSource, Array<() => void>> = {
+const accountWaiters: Record<IndependentVideoSource, Array<() => void>> = {
   gemini: [],
   qwen: [],
   muse: [],
@@ -91,30 +111,136 @@ function getProviderConcurrencyLimit(source: IndependentVideoSource): number {
     try {
       const pool = getGeminiPoolSummary();
       const healthy = pool.healthy || pool.enabled || 1;
-      return Math.max(2, Math.min(6, healthy));
+      return Math.max(1, Math.min(8, healthy));
     } catch {
       return 2;
     }
   }
+  if (source === 'muse') {
+    return Math.max(1, Math.min(8, cachedMuseHealthyCount));
+  }
   if (source === 'qwen') return 2;
   if (source === 'google_flow') return 3;
-  return 1; // muse: 1 concurrent slot to avoid Muse2API browser queue overload
+  return 1;
 }
 
-async function withProviderSlot<T>(source: IndependentVideoSource, fn: () => Promise<T>): Promise<T> {
-  const limit = getProviderConcurrencyLimit(source);
-  if (providerActiveCounts[source] >= limit) {
+export async function resolveReadyWorkersForSource(
+  source: IndependentVideoSource
+): Promise<ProviderAccountWorker[]> {
+  if (source === 'gemini') {
+    const accounts = listHealthyGeminiWorkerAccounts({ includeChairman: true });
+    if (accounts.length > 0) {
+      return accounts.map((a) => ({
+        source: 'gemini',
+        accountId: a.id,
+        accountLabel: a.label,
+        apiKey: a.apiKey,
+      }));
+    }
+    const fallback = pickWorkerGeminiAccount();
+    if (fallback) {
+      return [
+        {
+          source: 'gemini',
+          accountId: fallback.id,
+          accountLabel: fallback.label,
+          apiKey: fallback.apiKey,
+        },
+      ];
+    }
+    return [{ source: 'gemini', accountId: 'gemini-default', accountLabel: 'Gemini Mặc định' }];
+  }
+
+  if (source === 'muse') {
+    const museAccounts = await listHealthyMuse2ApiAccounts();
+    if (museAccounts.length > 0) {
+      cachedMuseHealthyCount = Math.max(1, Math.min(8, museAccounts.length));
+      return museAccounts.map((a) => ({
+        source: 'muse',
+        accountId: a.id,
+        accountLabel: a.label,
+        museAccountId: a.id,
+      }));
+    }
+    cachedMuseHealthyCount = 1;
+    return [{ source: 'muse', accountId: 'muse-default', accountLabel: 'Muse2API Mặc định' }];
+  }
+
+  if (source === 'qwen') {
+    return [
+      { source: 'qwen', accountId: 'qwen-slot-1', accountLabel: 'Qwen Luồng #1' },
+      { source: 'qwen', accountId: 'qwen-slot-2', accountLabel: 'Qwen Luồng #2' },
+    ];
+  }
+
+  return [
+    { source: 'google_flow', accountId: 'flow-slot-1', accountLabel: 'Google Flow Luồng #1' },
+    { source: 'google_flow', accountId: 'flow-slot-2', accountLabel: 'Google Flow Luồng #2' },
+    { source: 'google_flow', accountId: 'flow-slot-3', accountLabel: 'Google Flow Luồng #3' },
+  ];
+}
+
+async function acquireDedicatedAccountWorker(
+  source: IndependentVideoSource,
+  shouldAbort?: () => boolean
+): Promise<ProviderAccountWorker | null> {
+  while (true) {
+    if (shouldAbort?.()) return null;
+    const workers = await resolveReadyWorkersForSource(source);
+    if (workers.length === 0) return null;
+
+    const startIdx = accountRoundRobinCursor[source] % workers.length;
+    let picked: ProviderAccountWorker | null = null;
+    for (let offset = 0; offset < workers.length; offset += 1) {
+      const cand = workers[(startIdx + offset) % workers.length];
+      const leaseKey = `${source}:${cand.accountId}`;
+      if (!busyAccountKeys.has(leaseKey)) {
+        picked = cand;
+        accountRoundRobinCursor[source] = (startIdx + offset + 1) % 1_000_000;
+        break;
+      }
+    }
+
+    if (picked) {
+      busyAccountKeys.add(`${source}:${picked.accountId}`);
+      providerActiveCounts[source] += 1;
+      return picked;
+    }
+
     await new Promise<void>((resolve) => {
-      providerWaiters[source].push(resolve);
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(fallbackTimer);
+        resolve();
+      };
+      const fallbackTimer = setTimeout(done, 1500);
+      accountWaiters[source].push(done);
     });
   }
-  providerActiveCounts[source] += 1;
+}
+
+function releaseDedicatedAccountWorker(worker: ProviderAccountWorker): void {
+  const leaseKey = `${worker.source}:${worker.accountId}`;
+  if (busyAccountKeys.delete(leaseKey)) {
+    providerActiveCounts[worker.source] = Math.max(0, providerActiveCounts[worker.source] - 1);
+  }
+  const nextAccWaiter = accountWaiters[worker.source].shift();
+  if (nextAccWaiter) nextAccWaiter();
+}
+
+async function withDedicatedAccountWorker<T>(
+  source: IndependentVideoSource,
+  fn: (worker: ProviderAccountWorker) => Promise<T>,
+  shouldAbort?: () => boolean
+): Promise<T | undefined> {
+  const worker = await acquireDedicatedAccountWorker(source, shouldAbort);
+  if (!worker) return undefined;
   try {
-    return await fn();
+    return await fn(worker);
   } finally {
-    providerActiveCounts[source] = Math.max(0, providerActiveCounts[source] - 1);
-    const next = providerWaiters[source].shift();
-    if (next) next();
+    releaseDedicatedAccountWorker(worker);
   }
 }
 
@@ -128,22 +254,22 @@ export function getActiveWorkerTelemetry(): {
       gemini: {
         active: providerActiveCounts.gemini,
         limit: getProviderConcurrencyLimit('gemini'),
-        waiting: providerWaiters.gemini.length,
+        waiting: accountWaiters.gemini.length,
       },
       qwen: {
         active: providerActiveCounts.qwen,
         limit: getProviderConcurrencyLimit('qwen'),
-        waiting: providerWaiters.qwen.length,
+        waiting: accountWaiters.qwen.length,
       },
       muse: {
         active: providerActiveCounts.muse,
         limit: getProviderConcurrencyLimit('muse'),
-        waiting: providerWaiters.muse.length,
+        waiting: accountWaiters.muse.length,
       },
       google_flow: {
         active: providerActiveCounts.google_flow,
         limit: getProviderConcurrencyLimit('google_flow'),
-        waiting: providerWaiters.google_flow.length,
+        waiting: accountWaiters.google_flow.length,
       },
     },
   };
@@ -501,6 +627,9 @@ export async function checkAllAiReadiness(force = false): Promise<AiEngineReadin
     const t0 = Date.now();
     const muse = await getMuse2ApiStatus(force);
     const latencyMs = Math.max(1, Date.now() - t0);
+    if (muse.ready) {
+      cachedMuseHealthyCount = Math.max(1, Math.min(8, muse.healthyAccounts || muse.accountsCount || 1));
+    }
     results.push({
       id: 'muse',
       name: 'Muse AI (Muse2API)',
@@ -2032,6 +2161,7 @@ export async function runSingleCoordinationTask(params: {
   sessionId: string;
   taskCode: string;
   googleToken?: string;
+  assignedWorker?: ProviderAccountWorker;
 }): Promise<CoordinationTaskRow> {
   const st = loadState();
   const session = st.sessions.find((s) => s.sessionId === params.sessionId);
@@ -2061,6 +2191,10 @@ export async function runSingleCoordinationTask(params: {
   task.status = 'DANG_LAM';
   task.startedAt = Date.now();
   task.errorReason = undefined;
+  if (params.assignedWorker) {
+    task.assignedAccountId = params.assignedWorker.accountId;
+    task.assignedAccountLabel = params.assignedWorker.accountLabel;
+  }
   if (previousStatus === 'LOI') {
     task.retryCount = (task.retryCount || 0) + 1;
   }
@@ -2069,14 +2203,18 @@ export async function runSingleCoordinationTask(params: {
   recomputeSessionStatus(session);
   saveState(true);
 
+  const workerTag = params.assignedWorker?.accountLabel
+    ? ` · Tài khoản: ${params.assignedWorker.accountLabel}`
+    : '';
+
   pushMeetingMessage({
     sessionId: session.sessionId,
     senderId: task.videoSourceLock,
     senderName: task.assignedAiLabel,
-    senderRole: `Bước ${task.step} · ${task.stepLabel}`,
+    senderRole: `Bước ${task.step} · ${task.stepLabel}${workerTag}`,
     kind: 'claim',
     taskCode: task.taskCode,
-    content: `[${task.taskCode}] Nhận nhiệm vụ từ bảng điều phối phiên ${session.sessionId} và nạp dữ liệu tham chiếu (${task.inputRefIds.join(', ') || 'không'}).`,
+    content: `[${task.taskCode}] Nhận nhiệm vụ từ bảng điều phối phiên ${session.sessionId}${workerTag} và nạp dữ liệu tham chiếu (${task.inputRefIds.join(', ') || 'không'}).`,
   });
 
   if (params.googleToken && st.workspace.spreadsheetId) {
@@ -2150,39 +2288,72 @@ export async function runSingleCoordinationTask(params: {
           muse: 'muse2api',
         };
         const lockedEngine = engineMap[task.videoSourceLock];
-        const geminiWorker = lockedEngine === 'gemini' ? pickWorkerGeminiAccount() : null;
+        const geminiWorker =
+          lockedEngine === 'gemini'
+            ? params.assignedWorker?.apiKey
+              ? {
+                  id: params.assignedWorker.accountId,
+                  label: params.assignedWorker.accountLabel,
+                  apiKey: params.assignedWorker.apiKey,
+                }
+              : pickWorkerGeminiAccount()
+            : null;
+        const museAccountId =
+          lockedEngine === 'muse2api' ? params.assignedWorker?.museAccountId : undefined;
+        const activeAccLabel =
+          params.assignedWorker?.accountLabel || geminiWorker?.label || undefined;
+        if (geminiWorker && !task.assignedAccountLabel) {
+          task.assignedAccountId = geminiWorker.id;
+          task.assignedAccountLabel = geminiWorker.label;
+        }
 
-        const imgRes = await generateStudioImage({
-          mode: 'scene',
-          prompt: scene.imagePrompt || scene.actionDetail || scene.title,
-          aspectRatio: session.aspectRatio,
-          quality: 'standard',
-          engine: lockedEngine,
-          videoStyle: session.videoStyle,
-          characterBible: session.references
-            .filter((r) => r.kind === 'character')
-            .map((r) => `${r.name}: ${r.detail}`)
-            .join('\n'),
-          settingBible: session.settingBible,
-          visualStyleBible: session.visualBible,
-          costumeBible: session.costumeBible,
-          continuityBible: session.continuityBible,
-          sceneIndex: scene.sceneIndex,
-          totalScenes: session.scenes.length,
-          sceneTitle: scene.title,
-          charactersInScene: scene.charactersInScene,
-          settingDetail: scene.settingDetail,
-          actionDetail: scene.actionDetail,
-          dialogue: scene.dialogue,
-          sceneSummary: scene.narration || scene.actionDetail,
-          costume: scene.costume,
-          cameraAngle: scene.cameraAngle,
-          vfxNotes: scene.vfxNotes,
-          selectedCharacterIds: scene.selectedCharacterIds,
-          characterRefs: charRefs,
-          geminiApiKey: geminiWorker?.apiKey,
-          allowFreeCostumeChange: session.allowFreeCostumeChange,
-        });
+        const tStart = Date.now();
+        let imgRes: Awaited<ReturnType<typeof generateStudioImage>>;
+        try {
+          imgRes = await generateStudioImage({
+            mode: 'scene',
+            prompt: scene.imagePrompt || scene.actionDetail || scene.title,
+            aspectRatio: session.aspectRatio,
+            quality: 'standard',
+            engine: lockedEngine,
+            videoStyle: session.videoStyle,
+            characterBible: session.references
+              .filter((r) => r.kind === 'character')
+              .map((r) => `${r.name}: ${r.detail}`)
+              .join('\n'),
+            settingBible: session.settingBible,
+            visualStyleBible: session.visualBible,
+            costumeBible: session.costumeBible,
+            continuityBible: session.continuityBible,
+            sceneIndex: scene.sceneIndex,
+            totalScenes: session.scenes.length,
+            sceneTitle: scene.title,
+            charactersInScene: scene.charactersInScene,
+            settingDetail: scene.settingDetail,
+            actionDetail: scene.actionDetail,
+            dialogue: scene.dialogue,
+            sceneSummary: scene.narration || scene.actionDetail,
+            costume: scene.costume,
+            cameraAngle: scene.cameraAngle,
+            vfxNotes: scene.vfxNotes,
+            selectedCharacterIds: scene.selectedCharacterIds,
+            characterRefs: charRefs,
+            museAccountId,
+            geminiApiKey: geminiWorker?.apiKey,
+            allowFreeCostumeChange: session.allowFreeCostumeChange,
+          });
+          if (lockedEngine === 'gemini' && geminiWorker?.id) {
+            recordGeminiAccountUsage(geminiWorker.id, true, { latencyMs: Date.now() - tStart });
+          }
+        } catch (imgErr: any) {
+          if (lockedEngine === 'gemini' && geminiWorker?.id) {
+            recordGeminiAccountUsage(geminiWorker.id, false, {
+              latencyMs: Date.now() - tStart,
+              errorMsg: String(imgErr?.message || imgErr || ''),
+            });
+          }
+          throw imgErr;
+        }
 
         const saved = saveBase64ImageArtifact(session.sessionId, `${task.taskCode}_keyframe`, imgRes.dataUrl);
         if (!saved) {
@@ -2190,7 +2361,9 @@ export async function runSingleCoordinationTask(params: {
         }
         task.localOutputFileName = saved.fileName;
         task.localOutputUrl = saved.localUrl;
-        task.resultSummary = `Đã tạo ảnh phân cảnh #${scene.sceneIndex} bằng ${imgRes.model} (độc lập · ${charRefs.length} ảnh nhân vật).`;
+        task.resultSummary = `Đã tạo ảnh phân cảnh #${scene.sceneIndex} bằng ${imgRes.model}${
+          activeAccLabel ? ` · TK: ${activeAccLabel}` : ''
+        } (${charRefs.length} ảnh nhân vật).`;
         task.status = 'HOAN_THANH';
         task.completedAt = Date.now();
         task.updatedAt = Date.now();
@@ -2233,48 +2406,81 @@ export async function runSingleCoordinationTask(params: {
           muse: 'muse2api',
         };
         const lockedEngine = engineMap[task.videoSourceLock];
-        const geminiWorker = lockedEngine === 'gemini' ? pickWorkerGeminiAccount() : null;
+        const geminiWorker =
+          lockedEngine === 'gemini'
+            ? params.assignedWorker?.apiKey
+              ? {
+                  id: params.assignedWorker.accountId,
+                  label: params.assignedWorker.accountLabel,
+                  apiKey: params.assignedWorker.apiKey,
+                }
+              : pickWorkerGeminiAccount()
+            : null;
+        const museAccountId =
+          lockedEngine === 'muse2api' ? params.assignedWorker?.museAccountId : undefined;
+        const activeAccLabel =
+          params.assignedWorker?.accountLabel || geminiWorker?.label || undefined;
+        if (geminiWorker && !task.assignedAccountLabel) {
+          task.assignedAccountId = geminiWorker.id;
+          task.assignedAccountLabel = geminiWorker.label;
+        }
 
-        const vidRes = await generateSceneVideoWithOmniFlash({
-          prompt: scene.videoPrompt || scene.actionDetail || scene.title,
-          aspectRatio: session.aspectRatio,
-          durationSec: scene.durationSec,
-          engine: lockedEngine,
-          videoStyle: session.videoStyle,
-          characterBible: session.references
-            .filter((r) => r.kind === 'character')
-            .map((r) => `${r.name}: ${r.detail}`)
-            .join('\n'),
-          settingBible: session.settingBible,
-          visualStyleBible: session.visualBible,
-          costumeBible: session.costumeBible,
-          continuityBible: session.continuityBible,
-          sceneIndex: scene.sceneIndex,
-          totalScenes: session.scenes.length,
-          sceneTitle: scene.title,
-          settingDetail: scene.settingDetail,
-          cameraMovement: scene.cameraMovement,
-          charactersInScene: scene.charactersInScene,
-          actionDetail: scene.actionDetail,
-          dialogue: scene.dialogue,
-          narration: scene.narration,
-          videoTimeline: scene.videoTimeline,
-          sceneSummary: scene.narration || scene.actionDetail,
-          costume: scene.costume,
-          cameraAngle: scene.cameraAngle,
-          vfxNotes: scene.vfxNotes,
-          selectedCharacterIds: scene.selectedCharacterIds,
-          sceneImageDataUrl: keyframeDataUrl,
-          characterRefs: charRefs,
-          geminiApiKey: geminiWorker?.apiKey,
-          allowFreeCostumeChange: session.allowFreeCostumeChange,
-          strictSingleFrameLock: true,
-          musicMode: session.musicConfig?.musicMode,
-          musicStyle: session.musicConfig?.musicStyle,
-          musicPrompt: session.musicConfig?.musicPrompt,
-          musicVolume: session.musicConfig?.musicVolume,
-          musicInstrumentalOnly: session.musicConfig?.instrumentalOnly,
-        });
+        const tStart = Date.now();
+        let vidRes: Awaited<ReturnType<typeof generateSceneVideoWithOmniFlash>>;
+        try {
+          vidRes = await generateSceneVideoWithOmniFlash({
+            prompt: scene.videoPrompt || scene.actionDetail || scene.title,
+            aspectRatio: session.aspectRatio,
+            durationSec: scene.durationSec,
+            engine: lockedEngine,
+            videoStyle: session.videoStyle,
+            characterBible: session.references
+              .filter((r) => r.kind === 'character')
+              .map((r) => `${r.name}: ${r.detail}`)
+              .join('\n'),
+            settingBible: session.settingBible,
+            visualStyleBible: session.visualBible,
+            costumeBible: session.costumeBible,
+            continuityBible: session.continuityBible,
+            sceneIndex: scene.sceneIndex,
+            totalScenes: session.scenes.length,
+            sceneTitle: scene.title,
+            settingDetail: scene.settingDetail,
+            cameraMovement: scene.cameraMovement,
+            charactersInScene: scene.charactersInScene,
+            actionDetail: scene.actionDetail,
+            dialogue: scene.dialogue,
+            narration: scene.narration,
+            videoTimeline: scene.videoTimeline,
+            sceneSummary: scene.narration || scene.actionDetail,
+            costume: scene.costume,
+            cameraAngle: scene.cameraAngle,
+            vfxNotes: scene.vfxNotes,
+            selectedCharacterIds: scene.selectedCharacterIds,
+            sceneImageDataUrl: keyframeDataUrl,
+            characterRefs: charRefs,
+            museAccountId,
+            geminiApiKey: geminiWorker?.apiKey,
+            allowFreeCostumeChange: session.allowFreeCostumeChange,
+            strictSingleFrameLock: true,
+            musicMode: session.musicConfig?.musicMode,
+            musicStyle: session.musicConfig?.musicStyle,
+            musicPrompt: session.musicConfig?.musicPrompt,
+            musicVolume: session.musicConfig?.musicVolume,
+            musicInstrumentalOnly: session.musicConfig?.instrumentalOnly,
+          });
+          if (lockedEngine === 'gemini' && geminiWorker?.id) {
+            recordGeminiAccountUsage(geminiWorker.id, true, { latencyMs: Date.now() - tStart });
+          }
+        } catch (vidErr: any) {
+          if (lockedEngine === 'gemini' && geminiWorker?.id) {
+            recordGeminiAccountUsage(geminiWorker.id, false, {
+              latencyMs: Date.now() - tStart,
+              errorMsg: String(vidErr?.message || vidErr || ''),
+            });
+          }
+          throw vidErr;
+        }
 
         const studioAsset = getStudioAsset(vidRes.assetId);
         if (!studioAsset || !fs.existsSync(studioAsset.filePath)) {
@@ -2287,7 +2493,9 @@ export async function runSingleCoordinationTask(params: {
         );
         task.localOutputFileName = savedVid.fileName;
         task.localOutputUrl = savedVid.localUrl;
-        task.resultSummary = `Đã tạo xong video Cảnh #${scene.sceneIndex} (${vidRes.durationSec}s) bằng ${vidRes.model} từ ${imgTask?.taskCode || 'ảnh phân cảnh'}.`;
+        task.resultSummary = `Đã tạo xong video Cảnh #${scene.sceneIndex} (${vidRes.durationSec}s) bằng ${vidRes.model}${
+          activeAccLabel ? ` · TK: ${activeAccLabel}` : ''
+        } từ ${imgTask?.taskCode || 'ảnh phân cảnh'}.`;
         task.status = 'HOAN_THANH';
         task.completedAt = Date.now();
         task.updatedAt = Date.now();
@@ -2410,6 +2618,52 @@ export async function startSessionSequentialRun(params: {
     return session;
   }
 
+  const readyWorkers = await resolveReadyWorkersForSource(session.videoSource);
+  const sortedScenes = [...session.scenes].sort((a, b) => a.sceneIndex - b.sceneIndex);
+
+  interface ScenePipelineJob {
+    sceneIndex: number;
+    imgTask?: CoordinationTaskRow;
+    vidTask?: CoordinationTaskRow;
+    source: IndependentVideoSource;
+  }
+
+  const pendingPipelines: ScenePipelineJob[] = [];
+  for (const sc of sortedScenes) {
+    const imgTask = session.tasks.find(
+      (t) => t.taskCode.includes('-IMG-') && (t.sceneId === sc.sceneId || t.sceneIndex === sc.sceneIndex)
+    );
+    const vidTask = session.tasks.find(
+      (t) => t.taskCode.includes('-VID-') && (t.sceneId === sc.sceneId || t.sceneIndex === sc.sceneIndex)
+    );
+    const needImg = Boolean(imgTask && imgTask.status === 'CHO_NHAN');
+    const needVidNow = Boolean(
+      vidTask &&
+        vidTask.status === 'CHO_NHAN' &&
+        (!imgTask || imgTask.status === 'HOAN_THANH' || imgTask.status === 'CHO_NHAN')
+    );
+    if (needImg || needVidNow) {
+      pendingPipelines.push({
+        sceneIndex: sc.sceneIndex,
+        imgTask,
+        vidTask,
+        source: (needImg ? imgTask?.videoSourceLock : vidTask?.videoSourceLock) || session.videoSource,
+      });
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(Math.max(1, readyWorkers.length), Math.max(1, pendingPipelines.length)));
+  const workerLabelsPreview = readyWorkers
+    .slice(0, 6)
+    .map((w) => w.accountLabel)
+    .join(', ');
+  session.parallelDispatchSummary =
+    pendingPipelines.length > 0
+      ? workerCount > 1
+        ? `Điều phối đa tài khoản (${workerCount}/${readyWorkers.length} TK sẵn sàng) · Ảnh → Video ngay`
+        : `Luồng trực tiếp (${readyWorkers[0]?.accountLabel || SOURCE_LABELS[session.videoSource]}) · Ảnh → Video ngay`
+      : undefined;
+
   activeSessionRunners.add(session.sessionId);
   session.status = 'DANG_CHAY';
   session.lastError = undefined;
@@ -2420,16 +2674,110 @@ export async function startSessionSequentialRun(params: {
     sessionId: session.sessionId,
     senderId: 'coordinator',
     senderName: 'Trung Tâm Điều Phối AI',
-    senderRole: 'Khởi động luồng sản xuất',
+    senderRole: workerCount > 1 ? `Điều phối đa tài khoản (${workerCount} luồng)` : 'Khởi động luồng sản xuất',
     kind: 'report',
-    content: `Bắt đầu chạy luồng phiên ${session.sessionId} ("${session.title}") theo Sổ Điều Phối. Nguồn khóa độc lập: ${SOURCE_LABELS[session.videoSource]}.`,
+    content:
+      workerCount > 1
+        ? `Bắt đầu phiên ${session.sessionId} ("${session.title}") trên nguồn ${SOURCE_LABELS[session.videoSource]}. Phát hiện ${readyWorkers.length} tài khoản sẵn sàng (${workerLabelsPreview}) → mở ${workerCount} luồng SONG SONG cho ${pendingPipelines.length} phân cảnh: mỗi tài khoản tạo Ảnh xong sẽ chuyển sang tạo Video ngay lập tức (không chờ các cảnh khác).`
+        : `Bắt đầu chạy luồng phiên ${session.sessionId} ("${session.title}") trên nguồn ${SOURCE_LABELS[session.videoSource]} (${workerLabelsPreview || '1 tài khoản'}): từng phân cảnh sẽ tạo Ảnh rồi chuyển sang tạo Video ngay lập tức.`,
   });
 
-  // Execute steps sequentially WITHIN this session while running in PARALLEL across other sessions,
-  // gated by per-provider concurrency slots so one failed/slow provider never blocks other providers.
+  // Execute scenes in PARALLEL across all ready accounts within the selected source.
+  // Each leased account handles a complete scene pipeline (Step 1 Image -> immediately Step 2 Video),
+  // then picks up the next pending scene without waiting for other scenes. Once all scenes finish, Step 3 FFmpeg runs.
   void (async () => {
     try {
-      while (!pauseRequestedSessions.has(session.sessionId)) {
+      const isPaused = () => pauseRequestedSessions.has(session.sessionId);
+
+      // Complete any legacy T01-REF task first
+      for (const refTask of session.tasks.filter((t) => t.taskCode.endsWith('-REF') && t.status === 'CHO_NHAN')) {
+        if (isPaused()) break;
+        await runSingleCoordinationTask({
+          sessionId: session.sessionId,
+          taskCode: refTask.taskCode,
+          googleToken: params.googleToken,
+        });
+      }
+
+      // Atomic scene queue shared across concurrent per-account workers
+      let nextSceneCursor = 0;
+
+      const runScenePipelineWorker = async () => {
+        while (!isPaused()) {
+          const myIdx = nextSceneCursor;
+          if (myIdx >= pendingPipelines.length) break;
+          nextSceneCursor += 1;
+
+          const item = pendingPipelines[myIdx];
+          const primarySource = item.imgTask?.status === 'CHO_NHAN'
+            ? item.imgTask.videoSourceLock
+            : item.vidTask?.videoSourceLock || item.source;
+
+          let deferredVidTask: CoordinationTaskRow | null = null;
+
+          await withDedicatedAccountWorker(
+            primarySource,
+            async (worker) => {
+              if (isPaused()) return;
+
+              // Step 1: Scene Image
+              if (item.imgTask && item.imgTask.status === 'CHO_NHAN') {
+                await runSingleCoordinationTask({
+                  sessionId: session.sessionId,
+                  taskCode: item.imgTask.taskCode,
+                  googleToken: params.googleToken,
+                  assignedWorker: worker,
+                });
+              }
+
+              if (isPaused()) return;
+
+              // Step 2: IMMEDIATELY transition to Scene Video right after Image completes (zero wait for other scenes!)
+              const imgReady = !item.imgTask || item.imgTask.status === 'HOAN_THANH';
+              if (imgReady && item.vidTask && item.vidTask.status === 'CHO_NHAN') {
+                if (item.vidTask.videoSourceLock === worker.source) {
+                  await runSingleCoordinationTask({
+                    sessionId: session.sessionId,
+                    taskCode: item.vidTask.taskCode,
+                    googleToken: params.googleToken,
+                    assignedWorker: worker,
+                  });
+                } else {
+                  deferredVidTask = item.vidTask;
+                }
+              }
+            },
+            isPaused
+          );
+
+          // If this scene's Video task was explicitly overridden to a different source than its Image, run it immediately on that source
+          if (deferredVidTask && !isPaused()) {
+            const vidTarget: CoordinationTaskRow = deferredVidTask;
+            await withDedicatedAccountWorker(
+              vidTarget.videoSourceLock,
+              async (vidWorker) => {
+                if (isPaused()) return;
+                if (vidTarget.status === 'CHO_NHAN') {
+                  await runSingleCoordinationTask({
+                    sessionId: session.sessionId,
+                    taskCode: vidTarget.taskCode,
+                    googleToken: params.googleToken,
+                    assignedWorker: vidWorker,
+                  });
+                }
+              },
+              isPaused
+            );
+          }
+        }
+      };
+
+      if (pendingPipelines.length > 0 && !isPaused()) {
+        await Promise.all(Array.from({ length: workerCount }, () => runScenePipelineWorker()));
+      }
+
+      // Step 3: Run any remaining runnable tasks (e.g., T03-FINAL FFmpeg assembly) once all scene videos are HOAN_THANH
+      while (!isPaused()) {
         const nextTask = session.tasks.find((t) => {
           if (t.status !== 'CHO_NHAN') return false;
           return t.dependsOnTaskCodes.every((depCode) => {
@@ -2442,14 +2790,19 @@ export async function startSessionSequentialRun(params: {
         const isMediaGenStep =
           nextTask.taskCode.includes('-IMG-') || nextTask.taskCode.includes('-VID-');
         if (isMediaGenStep) {
-          await withProviderSlot(nextTask.videoSourceLock, async () => {
-            if (pauseRequestedSessions.has(session.sessionId)) return;
-            await runSingleCoordinationTask({
-              sessionId: session.sessionId,
-              taskCode: nextTask.taskCode,
-              googleToken: params.googleToken,
-            });
-          });
+          await withDedicatedAccountWorker(
+            nextTask.videoSourceLock,
+            async (worker) => {
+              if (isPaused()) return;
+              await runSingleCoordinationTask({
+                sessionId: session.sessionId,
+                taskCode: nextTask.taskCode,
+                googleToken: params.googleToken,
+                assignedWorker: worker,
+              });
+            },
+            isPaused
+          );
         } else {
           await runSingleCoordinationTask({
             sessionId: session.sessionId,
@@ -2553,11 +2906,12 @@ export async function retryCoordinationTask(params: {
   } else {
     const isMediaGenStep = task.taskCode.includes('-IMG-') || task.taskCode.includes('-VID-');
     if (isMediaGenStep) {
-      await withProviderSlot(task.videoSourceLock, () =>
+      await withDedicatedAccountWorker(task.videoSourceLock, (worker) =>
         runSingleCoordinationTask({
           sessionId: session.sessionId,
           taskCode: task.taskCode,
           googleToken: params.googleToken,
+          assignedWorker: worker,
         })
       );
     } else {
@@ -2674,11 +3028,12 @@ export async function regenerateSceneImageAndContinue(params: {
   });
 
   if (params.autoResumeVideo === false) {
-    await withProviderSlot(imgTask.videoSourceLock, () =>
+    await withDedicatedAccountWorker(imgTask.videoSourceLock, (worker) =>
       runSingleCoordinationTask({
         sessionId: session.sessionId,
         taskCode: imgTask.taskCode,
         googleToken: params.googleToken,
+        assignedWorker: worker,
       })
     );
   } else {

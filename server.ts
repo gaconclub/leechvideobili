@@ -44,6 +44,8 @@ import {
   generateSceneVideoWithOmniFlash,
   generateStudioImage,
   generateStudioMusicWithLyria,
+  getDerivativeJobPublicView,
+  getDerivativeJobSceneImagePath,
   getStudioAsset,
   importRenderedJobAsLibraryAsset,
   initStudioChunkedUpload,
@@ -57,6 +59,8 @@ import {
   listStudioLibraryVideos,
   listStudioProjectProfiles,
   listVieNeuVoices,
+  resumeDerivativeJobPipeline,
+  retryDerivativeJobScene,
   saveStudioCharacterLibraryItem,
   saveStudioProjectProfile,
   saveUploadedStudioAudio,
@@ -6473,13 +6477,7 @@ async function startServer() {
         blueprint,
       }).catch(() => {});
 
-      res.json({
-        jobId: job.jobId,
-        status: job.status,
-        progress: job.progress,
-        stepLabel: job.stepLabel,
-        fileName: job.fileName,
-      });
+      res.json(getDerivativeJobPublicView(job));
     } catch (err: any) {
       console.error('Derivative generate error:', err);
       res.status(500).json({ error: err?.message || 'Không thể khởi tạo tác vụ tạo video phái sinh.' });
@@ -8053,18 +8051,61 @@ async function startServer() {
     if (!job) {
       return res.status(404).json({ error: 'Tác vụ video phái sinh không tồn tại hoặc đã hết hạn.' });
     }
-    res.json({
-      jobId: job.jobId,
-      status: job.status,
-      progress: job.progress,
-      stepLabel: job.stepLabel,
-      fileName: job.fileName,
-      fileSize: job.fileSize,
-      durationSec: job.durationSec,
-      resolution: job.resolution,
-      error: job.error,
-      warnings: job.warnings,
-    });
+    res.json(getDerivativeJobPublicView(job));
+  });
+
+  app.get('/api/derivative/jobs/:jobId/scene-image/:sceneIdx', (req, res) => {
+    const sceneIdx = Number.parseInt(req.params.sceneIdx, 10);
+    if (!Number.isInteger(sceneIdx) || sceneIdx < 0 || sceneIdx >= 48) {
+      return res.status(400).json({ error: 'Chỉ số phân cảnh không hợp lệ.' });
+    }
+    const imgPath = getDerivativeJobSceneImagePath(req.params.jobId, sceneIdx);
+    if (!imgPath) {
+      return res.status(404).json({ error: 'Chưa có ảnh cho phân cảnh này.' });
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(imgPath);
+  });
+
+  app.post('/api/derivative/jobs/:jobId/scenes/:sceneIdx/retry', async (req, res) => {
+    try {
+      const sceneIdx = Number.parseInt(req.params.sceneIdx, 10);
+      if (!Number.isInteger(sceneIdx) || sceneIdx < 0 || sceneIdx >= 48) {
+        return res.status(400).json({ error: 'Chỉ số phân cảnh không hợp lệ.' });
+      }
+      const rawAction = String(req.body?.action || 'full').trim();
+      const action: 'image' | 'video' | 'full' =
+        rawAction === 'image' || rawAction === 'video' ? rawAction : 'full';
+      const rawImgEngine = String(req.body?.imageEngine || '').trim();
+      const imageEngine =
+        rawImgEngine === 'gemini' ||
+        rawImgEngine === 'muse2api' ||
+        rawImgEngine === 'qwen' ||
+        rawImgEngine === 'xingchi'
+          ? rawImgEngine
+          : undefined;
+
+      const result = await retryDerivativeJobScene(req.params.jobId, sceneIdx, action, {
+        imageEngine,
+      });
+      res.json(result);
+    } catch (err: any) {
+      const msg = err?.message || 'Không thể chạy lại phân cảnh.';
+      const status = msg.includes('không tồn tại') ? 404 : 400;
+      res.status(status).json({ error: msg });
+    }
+  });
+
+  app.post('/api/derivative/jobs/:jobId/resume', (req, res) => {
+    try {
+      const allowFallbackOnError = req.body?.allowFallbackOnError === true;
+      const job = resumeDerivativeJobPipeline(req.params.jobId, { allowFallbackOnError });
+      res.json(getDerivativeJobPublicView(job));
+    } catch (err: any) {
+      const msg = err?.message || 'Không thể khởi tạo lại tiến trình ghép MP4.';
+      const status = msg.includes('không tồn tại') ? 404 : 400;
+      res.status(status).json({ error: msg });
+    }
   });
 
   app.get('/api/derivative/jobs/:jobId/file', (req, res) => {

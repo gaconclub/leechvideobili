@@ -945,6 +945,7 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                                 <div className="flex items-center justify-between gap-2 pt-1">
                                   <span className="text-[10px] text-slate-400 truncate">
                                     {imgTask.assignedAiLabel}
+                                    {imgTask.assignedAccountLabel ? ` · TK: ${imgTask.assignedAccountLabel}` : ''}
                                   </span>
                                   <button
                                     type="button"
@@ -1019,6 +1020,7 @@ export const ProductionMonitorPanel: React.FC<ProductionMonitorPanelProps> = ({
                                 <div className="flex items-center justify-between gap-2 pt-1">
                                   <span className="text-[10px] text-slate-400 truncate">
                                     {vidTask.assignedAiLabel}
+                                    {vidTask.assignedAccountLabel ? ` · TK: ${vidTask.assignedAccountLabel}` : ''}
                                   </span>
                                   <button
                                     type="button"
