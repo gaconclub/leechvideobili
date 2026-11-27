@@ -263,11 +263,49 @@ export interface DerivativeBlueprint {
   usedModel?: string;
 }
 
+export type DerivativeSceneStageStatus =
+  | 'pending'
+  | 'reused'
+  | 'running'
+  | 'completed'
+  | 'error'
+  | 'skipped';
+
+export interface DerivativeSceneProgress {
+  sceneIndex: number;
+  sceneNumber: number;
+  sceneTitle: string;
+  progress: number;
+  status: 'pending' | 'running' | 'completed' | 'error';
+  stageLabel: string;
+  imageStatus: DerivativeSceneStageStatus;
+  imageSource?: 'step2_reused' | 'generated' | 'none';
+  imagePreviewUrl?: string;
+  videoStatus: DerivativeSceneStageStatus;
+  videoAssetId?: string;
+  videoPreviewUrl?: string;
+  audioStatus: DerivativeSceneStageStatus;
+  renderStatus: DerivativeSceneStageStatus;
+  error?: string;
+  failedStage?: 'image' | 'video' | 'audio' | 'render';
+  updatedAt: number;
+}
+
 export interface DerivativeJobRecord {
   jobId: string;
-  status: 'queued' | 'learning' | 'downloading' | 'tts' | 'rendering' | 'completed' | 'error';
+  status:
+    | 'queued'
+    | 'learning'
+    | 'downloading'
+    | 'tts'
+    | 'rendering'
+    | 'partial_error'
+    | 'completed'
+    | 'error';
   progress: number;
   stepLabel: string;
+  visualMode?: DerivativeVisualMode;
+  scenes: DerivativeSceneProgress[];
   workDir: string;
   outputPath?: string;
   fileName?: string;
@@ -277,6 +315,8 @@ export interface DerivativeJobRecord {
   error?: string;
   warnings: string[];
   createdAt: number;
+  paramsSnapshot?: StartDerivativeJobParams;
+  isRunning?: boolean;
 }
 
 export interface StudioAssetRecord {
@@ -8029,6 +8069,141 @@ async function tryDownloadBrollStockClip(
   return { ok: false };
 }
 
+async function withHardTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} quá thời gian chờ (${Math.round(timeoutMs / 1000)}s).`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function resolveDefaultImageEngineForVisualMode(
+  visualMode: DerivativeVisualMode
+): 'gemini' | 'muse2api' | 'qwen' {
+  if (visualMode === 'muse2api_video') return 'muse2api';
+  if (visualMode === 'qwen_video') return 'qwen';
+  return 'gemini';
+}
+
+function saveSceneImageToWorkDir(workDir: string, sceneIdx: number, dataUrl: string): string | null {
+  const parsedImg = parseDataUrlToBuffer(dataUrl);
+  if (!parsedImg) return null;
+  const ext = parsedImg.mimeType.includes('png')
+    ? 'png'
+    : parsedImg.mimeType.includes('webp')
+    ? 'webp'
+    : 'jpg';
+  for (const oldExt of ['png', 'jpg', 'jpeg', 'webp']) {
+    if (oldExt !== ext) {
+      const oldPath = path.join(workDir, `scene_img_${sceneIdx}.${oldExt}`);
+      if (fs.existsSync(oldPath)) {
+        try {
+          fs.unlinkSync(oldPath);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+  const imgPath = path.join(workDir, `scene_img_${sceneIdx}.${ext}`);
+  fs.writeFileSync(imgPath, parsedImg.buffer);
+  return imgPath;
+}
+
+export function getDerivativeJobSceneImagePath(jobId: string, sceneIdx: number): string | null {
+  if (!jobId || !Number.isInteger(sceneIdx) || sceneIdx < 0 || sceneIdx >= 48) return null;
+  const job = derivativeJobs.get(jobId);
+  if (!job || !job.workDir) return null;
+  const baseDir = path.resolve(job.workDir);
+  for (const ext of ['png', 'jpg', 'jpeg', 'webp']) {
+    const candidate = path.resolve(baseDir, `scene_img_${sceneIdx}.${ext}`);
+    if (candidate.startsWith(baseDir + path.sep) && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+export function getDerivativeJobPublicView(job: DerivativeJobRecord) {
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    progress: job.progress,
+    stepLabel: job.stepLabel,
+    visualMode: job.visualMode,
+    scenes: job.scenes,
+    fileName: job.fileName,
+    fileSize: job.fileSize,
+    durationSec: job.durationSec,
+    resolution: job.resolution,
+    error: job.error,
+    warnings: job.warnings,
+  };
+}
+
+function initSceneProgressList(
+  jobId: string,
+  scenes: DerivativeScene[],
+  visualMode: DerivativeVisualMode,
+  workDir: string
+): DerivativeSceneProgress[] {
+  const now = Date.now();
+  return scenes.map((sc, i) => {
+    let hasStep2Img = false;
+    if (sc.sceneImageDataUrl) {
+      const saved = saveSceneImageToWorkDir(workDir, i, sc.sceneImageDataUrl);
+      hasStep2Img = Boolean(saved);
+    }
+    const existingVideoAsset = sc.omniClipAssetId ? getStudioAsset(sc.omniClipAssetId) : undefined;
+    const hasExistingVideo = Boolean(existingVideoAsset && fs.existsSync(existingVideoAsset.filePath));
+
+    let progress = 5;
+    let stageLabel = 'Chờ khởi tạo tiến trình...';
+    if (hasExistingVideo) {
+      progress = 70;
+      stageLabel = 'Đã có video sẵn — chờ dựng & ghép MP4';
+    } else if (hasStep2Img) {
+      progress = 25;
+      stageLabel =
+        visualMode === 'storyboard_motion'
+          ? 'Đã có ảnh Bước 2 — chờ dựng chuyển động MP4'
+          : 'Đã có ảnh từ Bước 2 — chuyển thẳng sang tạo video';
+    } else if (visualMode === 'storyboard_motion') {
+      stageLabel = 'Chờ tạo ảnh phân cảnh';
+    } else if (visualMode === 'gemini_omni' || visualMode === 'muse2api_video' || visualMode === 'qwen_video') {
+      stageLabel = 'Chờ tạo video phân cảnh';
+    } else {
+      stageLabel = 'Chờ trích xuất tư liệu nguồn';
+    }
+
+    return {
+      sceneIndex: i,
+      sceneNumber: sc.sceneIndex || i + 1,
+      sceneTitle: sc.sceneTitle || `Phân cảnh #${i + 1}`,
+      progress,
+      status: 'pending',
+      stageLabel,
+      imageStatus: hasStep2Img ? 'reused' : 'pending',
+      imageSource: hasStep2Img ? 'step2_reused' : 'none',
+      imagePreviewUrl: hasStep2Img ? `/api/derivative/jobs/${jobId}/scene-image/${i}?t=${now}` : undefined,
+      videoStatus: hasExistingVideo ? 'reused' : 'pending',
+      videoAssetId: hasExistingVideo ? sc.omniClipAssetId : undefined,
+      videoPreviewUrl: hasExistingVideo ? `/api/studio/assets/${sc.omniClipAssetId}` : undefined,
+      audioStatus: 'pending',
+      renderStatus: 'pending',
+      updatedAt: now,
+    };
+  });
+}
+
 export function startDerivativeVideoJob(params: StartDerivativeJobParams): DerivativeJobRecord {
   const jobId = `drv_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const workDir = path.join(DERIVATIVE_BASE_DIR, jobId);
@@ -8046,19 +8221,36 @@ export function startDerivativeVideoJob(params: StartDerivativeJobParams): Deriv
     .slice(0, 60) || 'GaConPro_Derivative';
   const fileName = `${safeTitle}_PhaiSinh.mp4`;
 
+  // Keep an isolated mutable copy of scenes so per-scene retries & resumes persist cleanly
+  const clonedScenes = params.blueprint.scenes.slice(0, 24).map((sc) => ({ ...sc }));
+  const snapshot: StartDerivativeJobParams = {
+    ...params,
+    blueprint: {
+      ...params.blueprint,
+      scenes: clonedScenes,
+    },
+  };
+
+  const initialScenes = initSceneProgressList(jobId, clonedScenes, params.visualMode, workDir);
+
   const job: DerivativeJobRecord = {
     jobId,
     status: 'queued',
     progress: 5,
     stepLabel: 'Đang khởi tạo tiến trình tạo video phái sinh...',
+    visualMode: params.visualMode,
+    scenes: initialScenes,
     workDir,
     fileName,
     warnings: [],
     createdAt: Date.now(),
+    paramsSnapshot: snapshot,
+    isRunning: false,
   };
   derivativeJobs.set(jobId, job);
 
-  void runDerivativePipeline(job, params).catch((err: any) => {
+  void runDerivativePipeline(job, snapshot).catch((err: any) => {
+    job.isRunning = false;
     job.status = 'error';
     job.error = formatGeminiError(err);
     job.stepLabel = 'Tạo video thất bại';
@@ -8067,13 +8259,29 @@ export function startDerivativeVideoJob(params: StartDerivativeJobParams): Deriv
   return job;
 }
 
-async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDerivativeJobParams): Promise<void> {
+async function runDerivativePipeline(
+  job: DerivativeJobRecord,
+  params: StartDerivativeJobParams,
+  opts?: { allowFallbackOnError?: boolean }
+): Promise<void> {
+  if (job.isRunning) return;
+  job.isRunning = true;
+  try {
+  const allowFallbackOnError = opts?.allowFallbackOnError === true;
   const { blueprint, visualMode, voice, keepSourceAudio, downloadSourceVideo } = params;
   const sources = Array.isArray(params.sources) ? params.sources : [];
   const scenes = blueprint.scenes.slice(0, 24);
   if (scenes.length === 0) {
     throw new Error('Kịch bản không có phân cảnh nào để dựng video.');
   }
+  if (!Array.isArray(job.scenes) || job.scenes.length !== scenes.length) {
+    job.scenes = initSceneProgressList(job.jobId, scenes, visualMode, job.workDir);
+  }
+  const touchScene = (idx: number, patch: Partial<DerivativeSceneProgress>) => {
+    const cur = job.scenes[idx];
+    if (!cur) return;
+    Object.assign(cur, patch, { updatedAt: Date.now() });
+  };
 
   const isVertical = blueprint.aspectRatio === '9:16';
   const isSquare = blueprint.aspectRatio === '1:1';
@@ -8414,16 +8622,21 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   job.progress = 8;
   job.stepLabel = 'Đang chuẩn bị tư liệu hình ảnh & clip phân cảnh AI...';
 
-  // Save per-scene custom/AI images and load existing Omni/Muse clips onto disk
+  // Step 1a: Reuse all existing Step 2 scene images & already-generated video clips (never regenerate Step 2 images!)
   for (let i = 0; i < scenes.length; i += 1) {
     const sc = scenes[i];
     if (sc.sceneImageDataUrl) {
-      const parsedImg = parseDataUrlToBuffer(sc.sceneImageDataUrl);
-      if (parsedImg) {
-        const ext = parsedImg.mimeType.includes('png') ? 'png' : 'jpg';
-        const imgPath = path.join(job.workDir, `scene_img_${i}.${ext}`);
-        fs.writeFileSync(imgPath, parsedImg.buffer);
+      const imgPath = saveSceneImageToWorkDir(job.workDir, i, sc.sceneImageDataUrl);
+      if (imgPath) {
         sceneCustomImages.set(i, imgPath);
+        const existingSp = job.scenes[i];
+        const nextSource = existingSp?.imageSource === 'generated' ? 'generated' : 'step2_reused';
+        touchScene(i, {
+          imageStatus: nextSource === 'generated' ? 'completed' : 'reused',
+          imageSource: nextSource,
+          imagePreviewUrl: `/api/derivative/jobs/${job.jobId}/scene-image/${i}?t=${Date.now()}`,
+          progress: Math.max(existingSp?.progress || 0, 25),
+        });
       }
     }
     if (sc.omniClipAssetId) {
@@ -8431,18 +8644,128 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       if (asset && fs.existsSync(asset.filePath)) {
         const hasAudio = await probeHasAudioStream(asset.filePath, job.workDir);
         sceneOmniVideos.set(i, { path: asset.filePath, duration: asset.durationSec || 8, hasAudio });
+        const existingSp = job.scenes[i];
+        touchScene(i, {
+          videoStatus: existingSp?.videoStatus === 'completed' ? 'completed' : 'reused',
+          videoAssetId: sc.omniClipAssetId,
+          videoPreviewUrl: `/api/studio/assets/${sc.omniClipAssetId}`,
+          progress: Math.max(existingSp?.progress || 0, 72),
+          stageLabel: 'Đã có video sẵn — chờ dựng & ghép MP4',
+        });
       }
     }
   }
 
-  // Generate missing AI video clips if visualMode === 'gemini_omni' | 'muse2api_video' | 'qwen_video'
+  // Step 1a-extra: In storyboard_motion mode, generate images ONLY for scenes that do NOT yet have a Step 2 image or video
+  if (visualMode === 'storyboard_motion') {
+    const imgEngine = resolveDefaultImageEngineForVisualMode(visualMode);
+    const customStyleHint = blueprint.videoStyle === 'custom' ? blueprint.visualStyleBible || '' : '';
+    const allowFreeCostumeChange = blueprint.allowFreeCostumeChange === true;
+    for (let i = 0; i < scenes.length; i += 1) {
+      const sc = scenes[i];
+      if (sceneCustomImages.has(i) || sceneOmniVideos.has(i)) {
+        touchScene(i, {
+          status: 'running',
+          progress: Math.max(job.scenes[i]?.progress || 0, 55),
+          stageLabel: sceneOmniVideos.has(i)
+            ? 'Đã có video sẵn — chờ dựng & ghép MP4'
+            : 'Dùng ảnh từ Bước 2 — chờ dựng chuyển động MP4',
+        });
+        continue;
+      }
+      job.stepLabel = `Đang tạo ảnh phân cảnh ${i + 1}/${scenes.length}...`;
+      job.progress = 10 + Math.round(((i + 1) / scenes.length) * 26);
+      touchScene(i, {
+        status: 'running',
+        imageStatus: 'running',
+        progress: 20,
+        error: undefined,
+        failedStage: undefined,
+        stageLabel: 'Đang tạo ảnh phân cảnh AI...',
+      });
+      try {
+        const consistentPrompt = compileConsistentScenePrompt({
+          scene: sc,
+          videoStyle: blueprint.videoStyle,
+          customStylePrompt: customStyleHint,
+          characterBible: blueprint.characterBible,
+          settingBible: blueprint.settingBible,
+          visualStyleBible: blueprint.visualStyleBible,
+          costumeBible: blueprint.costumeBible,
+          continuityBible: blueprint.continuityBible,
+          characterRefs: params.characterRefs,
+          enableVoiceover: effectiveVoiceMode !== 'none',
+          totalScenes: scenes.length,
+          mediaType: 'image',
+          allowFreeCostumeChange,
+        });
+        const imgRes = await withHardTimeout(
+          generateStudioImage({
+            mode: 'scene',
+            prompt: consistentPrompt,
+            aspectRatio: blueprint.aspectRatio,
+            engine: imgEngine,
+            videoStyle: blueprint.videoStyle,
+            customStylePrompt: customStyleHint,
+            characterBible: blueprint.characterBible,
+            settingBible: blueprint.settingBible,
+            visualStyleBible: blueprint.visualStyleBible,
+            costumeBible: blueprint.costumeBible,
+            continuityBible: blueprint.continuityBible,
+            sceneIndex: sc.sceneIndex || i + 1,
+            totalScenes: scenes.length,
+            sceneTitle: sc.sceneTitle,
+            charactersInScene: sc.charactersInScene,
+            settingDetail: sc.settingDetail,
+            actionDetail: sc.actionDetail,
+            dialogue: sc.dialogue,
+            sceneSummary: sc.sceneSummary,
+            costume: sc.costume,
+            cameraAngle: sc.cameraAngle,
+            vfxNotes: sc.vfxNotes,
+            selectedCharacterIds: sc.selectedCharacterIds,
+            characterRefs: params.characterRefs,
+            allowFreeCostumeChange,
+          }),
+          95_000,
+          `Tạo ảnh phân cảnh #${i + 1}`
+        );
+        sc.sceneImageDataUrl = imgRes.dataUrl;
+        sc.sceneImageSource = 'ai';
+        const savedPath = saveSceneImageToWorkDir(job.workDir, i, imgRes.dataUrl);
+        if (savedPath) sceneCustomImages.set(i, savedPath);
+        touchScene(i, {
+          status: 'running',
+          imageStatus: 'completed',
+          imageSource: 'generated',
+          imagePreviewUrl: `/api/derivative/jobs/${job.jobId}/scene-image/${i}?t=${Date.now()}`,
+          progress: 55,
+          error: undefined,
+          failedStage: undefined,
+          stageLabel: 'Đã tạo ảnh phân cảnh · chờ dựng chuyển động MP4',
+        });
+      } catch (imgErr: any) {
+        const errMsg = formatGeminiError(imgErr);
+        touchScene(i, {
+          status: 'error',
+          imageStatus: 'error',
+          failedStage: 'image',
+          error: errMsg,
+          stageLabel: 'Lỗi tạo ảnh phân cảnh',
+        });
+        job.warnings.push(`Phân cảnh #${i + 1}: Lỗi tạo ảnh (${errMsg}).`);
+      }
+    }
+  }
+
+  // Step 1b: Generate missing AI video clips if visualMode === 'gemini_omni' | 'muse2api_video' | 'qwen_video'
+  // Always reuse Step 2 scene images (both AI-generated and uploaded) directly as keyframes to generate video!
   if (visualMode === 'gemini_omni' || visualMode === 'muse2api_video' || visualMode === 'qwen_video') {
     const useMuseVideo = visualMode === 'muse2api_video';
     const useQwenVideo = visualMode === 'qwen_video';
-    const hasMissingScenes = scenes.some(
-      (sc, idx) => !sceneOmniVideos.has(idx) && !(sceneCustomImages.has(idx) && sc.sceneImageSource === 'uploaded')
-    );
+    const hasMissingScenes = scenes.some((_, idx) => !sceneOmniVideos.has(idx));
     let canGenerateWithSelectedEngine = true;
+    let engineUnavailableReason = '';
 
     if (useMuseVideo && hasMissingScenes) {
       const museStatus = await getMuse2ApiStatus().catch(() => null);
@@ -8453,8 +8776,9 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
           (!museStatus?.reachable
             ? 'Muse2API chưa bật hoặc không kết nối được tới dịch vụ'
             : 'Muse2API chưa có tài khoản muse.ai hợp lệ');
+        engineUnavailableReason = `Muse2API chưa sẵn sàng (${reason}).`;
         job.warnings.push(
-          `Chế độ ưu tiên Muse2API chưa sẵn sàng (${reason}). Hệ thống tự động dùng tư liệu video/ảnh dự phòng; hãy bật Muse2API trong Cài đặt để sinh clip muse-video.`
+          `Chế độ Muse2API chưa sẵn sàng (${reason}). Hãy kiểm tra Muse2API trong Cài đặt hoặc bỏ qua cảnh lỗi để dùng ảnh dự phòng.`
         );
       }
     }
@@ -8463,26 +8787,62 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       const alibabaStatus = getAlibabaModelStudioStatus();
       if (!alibabaStatus.configured) {
         canGenerateWithSelectedEngine = false;
-        job.warnings.push(
-          'Chế độ AI Qwen Video chưa sẵn sàng (chưa đặt khóa DASHSCOPE_API_KEY hoặc đang tắt trong Cài đặt). Hệ thống tự động dùng tư liệu video/ảnh dự phòng.'
-        );
+        engineUnavailableReason =
+          'AI Qwen Video chưa sẵn sàng (chưa đặt khóa DASHSCOPE_API_KEY hoặc đang tắt trong Cài đặt).';
+        job.warnings.push(engineUnavailableReason);
       }
     }
 
-    if (canGenerateWithSelectedEngine) {
+    if (!canGenerateWithSelectedEngine && !allowFallbackOnError) {
+      for (let i = 0; i < scenes.length; i += 1) {
+        if (sceneOmniVideos.has(i)) continue;
+        touchScene(i, {
+          status: 'error',
+          videoStatus: 'error',
+          failedStage: 'video',
+          error: engineUnavailableReason,
+          stageLabel: 'Nguồn tạo video chưa sẵn sàng',
+        });
+      }
+    } else if (canGenerateWithSelectedEngine) {
+      const engineLabel = useQwenVideo
+        ? 'AI Qwen (Alibaba Model Studio)'
+        : useMuseVideo
+        ? 'Muse2API (muse-video)'
+        : 'Gemini Omni Flash';
+      const sceneVideoTimeoutMs = useMuseVideo ? 240_000 : 180_000;
+
       for (let i = 0; i < scenes.length; i += 1) {
         const sc = scenes[i];
-        if (sceneOmniVideos.has(i)) continue;
-        // Uploaded scene images default to being the scene's primary visual in final export
-        if (sceneCustomImages.has(i) && sc.sceneImageSource === 'uploaded') continue;
-        job.stepLabel = `Đang tạo video cảnh ${i + 1}/${scenes.length} bằng ${
-          useQwenVideo
-            ? 'AI Qwen (Alibaba Model Studio)'
-            : useMuseVideo
-            ? 'Muse2API (muse-video)'
-            : 'Gemini Omni Flash'
-        }...`;
+        if (sceneOmniVideos.has(i)) {
+          touchScene(i, {
+            status: 'running',
+            videoStatus: job.scenes[i]?.videoStatus === 'completed' ? 'completed' : 'reused',
+            progress: Math.max(job.scenes[i]?.progress || 0, 72),
+            error: undefined,
+            failedStage: undefined,
+            stageLabel: 'Đã có video sẵn — chờ dựng & ghép MP4',
+          });
+          continue;
+        }
+
+        const hasStep2Img = Boolean(sc.sceneImageDataUrl);
+        job.stepLabel = hasStep2Img
+          ? `Phân cảnh ${i + 1}/${scenes.length}: Dùng ảnh Bước 2 → Đang tạo video bằng ${engineLabel}...`
+          : `Đang tạo video phân cảnh ${i + 1}/${scenes.length} bằng ${engineLabel}...`;
         job.progress = 10 + Math.round(((i + 1) / scenes.length) * 26);
+
+        touchScene(i, {
+          status: 'running',
+          videoStatus: 'running',
+          progress: hasStep2Img ? 42 : 35,
+          error: undefined,
+          failedStage: undefined,
+          stageLabel: hasStep2Img
+            ? `Dùng ảnh Bước 2 → Đang tạo video (${engineLabel})...`
+            : `Đang tạo video phân cảnh (${engineLabel})...`,
+        });
+
         try {
           const customStyleHint = blueprint.videoStyle === 'custom' ? blueprint.visualStyleBible || '' : '';
           const allowFreeCostumeChange = blueprint.allowFreeCostumeChange === true;
@@ -8501,62 +8861,104 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
             mediaType: 'video',
             allowFreeCostumeChange,
           });
-          const clipRes = await generateSceneVideoWithOmniFlash({
-            engine: useQwenVideo ? 'qwen' : useMuseVideo ? 'muse2api' : 'gemini',
-            prompt: consistentPrompt,
-            aspectRatio: blueprint.aspectRatio,
-            durationSec: Math.min(useQwenVideo ? 10 : useMuseVideo ? 12 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
-            videoStyle: blueprint.videoStyle,
-            customStylePrompt: customStyleHint,
-            characterBible: blueprint.characterBible,
-            settingBible: blueprint.settingBible,
-            visualStyleBible: blueprint.visualStyleBible,
-            costumeBible: blueprint.costumeBible,
-            continuityBible: blueprint.continuityBible,
-            sceneIndex: sc.sceneIndex || i + 1,
-            totalScenes: scenes.length,
-            sceneTitle: sc.sceneTitle,
-            settingDetail: sc.settingDetail,
-            cameraMovement: sc.cameraMovement,
-            cameraEquipment: sc.cameraEquipment,
-            charactersInScene: sc.charactersInScene,
-            actionDetail: sc.actionDetail,
-            dialogue: sc.dialogue,
-            narration: effectiveVoiceMode !== 'none' ? sc.narration : '',
-            videoTimeline: sc.videoTimeline,
-            enableVoiceover: effectiveVoiceMode !== 'none',
-            sceneSummary: sc.sceneSummary,
-            costume: sc.costume,
-            cameraAngle: sc.cameraAngle,
-            vfxNotes: sc.vfxNotes,
-            selectedCharacterIds: sc.selectedCharacterIds,
-            sceneImageDataUrl: sc.sceneImageDataUrl,
-            characterRefs: params.characterRefs,
-            allowFreeCostumeChange,
-            musicMode: params.musicMode,
-            musicStyle: params.musicStyle,
-            musicPrompt: params.musicPrompt,
-            musicVolume: params.musicVolume,
-            musicInstrumentalOnly: params.musicInstrumentalOnly,
-          });
+          const clipRes = await withHardTimeout(
+            generateSceneVideoWithOmniFlash({
+              engine: useQwenVideo ? 'qwen' : useMuseVideo ? 'muse2api' : 'gemini',
+              prompt: consistentPrompt,
+              aspectRatio: blueprint.aspectRatio,
+              durationSec: Math.min(useQwenVideo ? 10 : useMuseVideo ? 12 : 15, Math.max(4, Math.round(sceneTargetDurations[i]))),
+              videoStyle: blueprint.videoStyle,
+              customStylePrompt: customStyleHint,
+              characterBible: blueprint.characterBible,
+              settingBible: blueprint.settingBible,
+              visualStyleBible: blueprint.visualStyleBible,
+              costumeBible: blueprint.costumeBible,
+              continuityBible: blueprint.continuityBible,
+              sceneIndex: sc.sceneIndex || i + 1,
+              totalScenes: scenes.length,
+              sceneTitle: sc.sceneTitle,
+              settingDetail: sc.settingDetail,
+              cameraMovement: sc.cameraMovement,
+              cameraEquipment: sc.cameraEquipment,
+              charactersInScene: sc.charactersInScene,
+              actionDetail: sc.actionDetail,
+              dialogue: sc.dialogue,
+              narration: effectiveVoiceMode !== 'none' ? sc.narration : '',
+              videoTimeline: sc.videoTimeline,
+              enableVoiceover: effectiveVoiceMode !== 'none',
+              sceneSummary: sc.sceneSummary,
+              costume: sc.costume,
+              cameraAngle: sc.cameraAngle,
+              vfxNotes: sc.vfxNotes,
+              selectedCharacterIds: sc.selectedCharacterIds,
+              sceneImageDataUrl: sc.sceneImageDataUrl,
+              characterRefs: params.characterRefs,
+              allowFreeCostumeChange,
+              musicMode: params.musicMode,
+              musicStyle: params.musicStyle,
+              musicPrompt: params.musicPrompt,
+              musicVolume: params.musicVolume,
+              musicInstrumentalOnly: params.musicInstrumentalOnly,
+            }),
+            sceneVideoTimeoutMs,
+            `Tạo video phân cảnh #${i + 1}`
+          );
           const asset = getStudioAsset(clipRes.assetId);
           if (asset) {
+            sc.omniClipAssetId = clipRes.assetId;
+            sc.omniClipPreviewUrl = `/api/studio/assets/${clipRes.assetId}`;
             sceneOmniVideos.set(i, {
               path: asset.filePath,
               duration: asset.durationSec || 8,
               hasAudio: clipRes.hasAudio,
             });
+            touchScene(i, {
+              status: 'running',
+              videoStatus: 'completed',
+              videoAssetId: clipRes.assetId,
+              videoPreviewUrl: `/api/studio/assets/${clipRes.assetId}`,
+              progress: 75,
+              error: undefined,
+              failedStage: undefined,
+              stageLabel: 'Đã xong video phân cảnh · chờ dựng & ghép MP4',
+            });
+          } else {
+            throw new Error('Máy chủ không tìm thấy tệp video vừa tạo trên đĩa.');
           }
         } catch (clipErr: any) {
-          if (i === 0 && scenes.length === 1) {
-            throw clipErr;
-          }
-          job.warnings.push(
-            `Cảnh ${i + 1}: Không tạo được clip AI (${clipErr?.message || 'Lỗi'}), tự động chuyển sang tư liệu dự phòng.`
-          );
+          // Isolate error to this scene ONLY so remaining scenes continue without hanging the entire pipeline
+          const errMsg = formatGeminiError(clipErr);
+          touchScene(i, {
+            status: 'error',
+            videoStatus: 'error',
+            failedStage: 'video',
+            error: errMsg,
+            stageLabel: 'Lỗi tạo video phân cảnh',
+          });
+          job.warnings.push(`Phân cảnh #${i + 1}: Không tạo được video AI (${errMsg}).`);
         }
       }
     }
+  }
+
+  // Checkpoint: if any scene failed image/video generation and user didn't request fallback, pause cleanly into partial_error
+  // so user can retry ONLY the failed scenes (image/video/full) or resume without losing completed scenes!
+  const failedMediaScenes = job.scenes.filter((s) => s.status === 'error');
+  if (failedMediaScenes.length > 0 && !allowFallbackOnError) {
+    for (let i = 0; i < job.scenes.length; i += 1) {
+      if (job.scenes[i].status !== 'error') {
+        touchScene(i, {
+          status: 'completed',
+          stageLabel: 'Đã hoàn tất phân cảnh này · đang chờ các cảnh lỗi để ghép MP4',
+        });
+      }
+    }
+    const okCount = scenes.length - failedMediaScenes.length;
+    job.status = 'partial_error';
+    job.progress = Math.max(15, Math.round((okCount / Math.max(1, scenes.length)) * 70));
+    job.error = `Có ${failedMediaScenes.length}/${scenes.length} phân cảnh gặp lỗi (${okCount} phân cảnh đã xong và được giữ nguyên). Hãy bấm tạo lại ảnh/video ở phân cảnh lỗi rồi bấm "Khởi tạo lại tiến trình & Xuất MP4".`;
+    job.stepLabel = `Tạm dừng: ${failedMediaScenes.length}/${scenes.length} phân cảnh cần xử lý lỗi trước khi ghép MP4`;
+    return;
   }
 
   // 2. Voiceover generation (Online AI TTS + Offline VieNeu TTS with Per-Character Voice Routing & Lip-Sync Preservation)
@@ -8639,7 +9041,15 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
 
     for (let i = 0; i < scenes.length; i += 1) {
       const segs = sceneSegments[i];
-      if (segs.length === 0) continue;
+      if (segs.length === 0) {
+        touchScene(i, { audioStatus: 'skipped' });
+        continue;
+      }
+
+      touchScene(i, {
+        audioStatus: 'running',
+        stageLabel: 'Đang tổng hợp giọng đọc cho phân cảnh...',
+      });
 
       const producedSegFiles: string[] = [];
       for (let g = 0; g < segs.length; g += 1) {
@@ -8688,7 +9098,12 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
         if (audioDur > 0.5) {
           sceneTargetDurations[i] = Math.max(sceneTargetDurations[i], audioDur + 0.45);
         }
+        touchScene(i, {
+          audioStatus: 'completed',
+          progress: Math.max(job.scenes[i]?.progress || 0, 80),
+        });
       } else {
+        touchScene(i, { audioStatus: 'skipped' });
         job.warnings.push(`Cảnh ${i + 1}: Không tạo được giọng đọc, giữ nhạc/nền tĩnh cho cảnh này.`);
       }
 
@@ -8696,6 +9111,9 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
       job.progress = 38 + Math.round(((i + 1) / scenes.length) * 14);
     }
   } else {
+    for (let i = 0; i < scenes.length; i += 1) {
+      touchScene(i, { audioStatus: 'skipped' });
+    }
     job.progress = 48;
   }
 
@@ -8948,6 +9366,14 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     job.stepLabel = `Đang dựng phân cảnh ${i + 1}/${scenes.length} bằng FFmpeg...`;
     job.progress = 62 + Math.round(((i + 1) / scenes.length) * 26);
 
+    touchScene(i, {
+      status: 'running',
+      renderStatus: 'running',
+      progress: 86,
+      stageLabel: 'Đang dựng phân cảnh bằng FFmpeg...',
+    });
+
+    try {
     const outScenePath = path.join(job.workDir, `scene_${i}.mp4`);
     const audioWav = sceneAudioPaths[i];
     const omniClip = sceneOmniVideos.get(i);
@@ -9332,6 +9758,33 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
     });
     cursorSec += actualDur;
     sceneVideoFiles.push(path.basename(outScenePath));
+    touchScene(i, {
+      status: 'completed',
+      renderStatus: 'completed',
+      progress: 95,
+      error: undefined,
+      failedStage: undefined,
+      stageLabel: 'Đã dựng xong · chờ ghép MP4 cuối',
+    });
+    } catch (renderErr: any) {
+      const errMsg = formatGeminiError(renderErr);
+      touchScene(i, {
+        status: 'error',
+        renderStatus: 'error',
+        failedStage: 'render',
+        error: errMsg,
+        stageLabel: 'Lỗi dựng FFmpeg phân cảnh',
+      });
+      job.warnings.push(`Phân cảnh #${i + 1}: ${errMsg}`);
+    }
+  }
+
+  const failedRenderScenes = job.scenes.filter((s) => s.renderStatus === 'error');
+  if (failedRenderScenes.length > 0 || sceneVideoFiles.length === 0) {
+    job.status = 'partial_error';
+    job.error = `Có ${failedRenderScenes.length}/${scenes.length} phân cảnh gặp lỗi khi dựng FFmpeg. Hãy tạo lại ảnh/video ở phân cảnh lỗi rồi bấm "Khởi tạo lại tiến trình & Xuất MP4".`;
+    job.stepLabel = 'Tạm dừng: có phân cảnh lỗi ở bước dựng FFmpeg';
+    return;
   }
 
   // 4. Concatenate all scenes + burn ASS subtitles + mix optional background music + faststart
@@ -9488,10 +9941,358 @@ async function runDerivativePipeline(job: DerivativeJobRecord, params: StartDeri
   const stat = fs.statSync(finalOutPath);
   const totalDuration = (await probeDurationSeconds(finalOutPath, job.workDir)) || cursorSec;
 
+  for (let i = 0; i < job.scenes.length; i += 1) {
+    if (job.scenes[i].status !== 'error') {
+      touchScene(i, {
+        status: 'completed',
+        progress: 100,
+        stageLabel: 'Hoàn tất & đã xuất MP4',
+      });
+    }
+  }
+
   job.outputPath = finalOutPath;
   job.fileSize = stat.size;
   job.durationSec = Math.round(totalDuration * 10) / 10;
   job.status = 'completed';
   job.progress = 100;
+  job.error = undefined;
   job.stepLabel = 'Hoàn tất video phái sinh!';
+  } finally {
+    job.isRunning = false;
+  }
+}
+
+export async function retryDerivativeJobScene(
+  jobId: string,
+  sceneIdx: number,
+  action: 'image' | 'video' | 'full',
+  opts?: { imageEngine?: 'gemini' | 'muse2api' | 'qwen' | 'xingchi' }
+): Promise<{
+  ok: boolean;
+  error?: string;
+  job: ReturnType<typeof getDerivativeJobPublicView>;
+  sceneImageDataUrl?: string;
+  videoAssetId?: string;
+  videoPreviewUrl?: string;
+}> {
+  const job = derivativeJobs.get(jobId);
+  if (!job || !job.paramsSnapshot) {
+    throw new Error('Tác vụ dựng video không tồn tại hoặc đã hết hạn.');
+  }
+  if (job.isRunning) {
+    throw new Error('Tiến trình tổng đang chạy — vui lòng chờ bước hiện tại hoàn tất trước khi tạo lại riêng phân cảnh.');
+  }
+
+  const params = job.paramsSnapshot;
+  const scenes = params.blueprint.scenes;
+  if (!Number.isInteger(sceneIdx) || sceneIdx < 0 || sceneIdx >= scenes.length) {
+    throw new Error('Chỉ số phân cảnh không hợp lệ.');
+  }
+
+  const sc = scenes[sceneIdx];
+  const sp = job.scenes[sceneIdx];
+  if (!sp) {
+    throw new Error('Không tìm thấy trạng thái tiến trình của phân cảnh này.');
+  }
+  if (sp.status === 'running') {
+    throw new Error(`Phân cảnh #${sceneIdx + 1} đang chạy, vui lòng đợi hoàn tất.`);
+  }
+
+  const blueprint = params.blueprint;
+  const customStyleHint = blueprint.videoStyle === 'custom' ? blueprint.visualStyleBible || '' : '';
+  const allowFreeCostumeChange = blueprint.allowFreeCostumeChange === true;
+  const effectiveVoiceMode: DerivativeVoiceMode =
+    blueprint.enableVoiceover === false
+      ? 'none'
+      : params.voiceMode || (params.voice === 'none' ? 'none' : 'ai_online');
+
+  const updateSp = (patch: Partial<DerivativeSceneProgress>) => {
+    Object.assign(sp, patch, { updatedAt: Date.now() });
+  };
+
+  let producedImageDataUrl: string | undefined;
+  let producedVideoAssetId: string | undefined;
+  let producedVideoPreviewUrl: string | undefined;
+
+  const runRegenerateImage = async () => {
+    const imgEngine = opts?.imageEngine || resolveDefaultImageEngineForVisualMode(params.visualMode);
+    updateSp({
+      status: 'running',
+      imageStatus: 'running',
+      progress: 22,
+      error: undefined,
+      failedStage: undefined,
+      stageLabel: 'Đang tạo lại ảnh phân cảnh...',
+    });
+
+    const consistentPrompt = compileConsistentScenePrompt({
+      scene: sc,
+      videoStyle: blueprint.videoStyle,
+      customStylePrompt: customStyleHint,
+      characterBible: blueprint.characterBible,
+      settingBible: blueprint.settingBible,
+      visualStyleBible: blueprint.visualStyleBible,
+      costumeBible: blueprint.costumeBible,
+      continuityBible: blueprint.continuityBible,
+      characterRefs: params.characterRefs,
+      enableVoiceover: effectiveVoiceMode !== 'none',
+      totalScenes: scenes.length,
+      mediaType: 'image',
+      allowFreeCostumeChange,
+    });
+
+    const imgRes = await withHardTimeout(
+      generateStudioImage({
+        mode: 'scene',
+        prompt: consistentPrompt,
+        aspectRatio: blueprint.aspectRatio,
+        engine: imgEngine,
+        videoStyle: blueprint.videoStyle,
+        customStylePrompt: customStyleHint,
+        characterBible: blueprint.characterBible,
+        settingBible: blueprint.settingBible,
+        visualStyleBible: blueprint.visualStyleBible,
+        costumeBible: blueprint.costumeBible,
+        continuityBible: blueprint.continuityBible,
+        sceneIndex: sc.sceneIndex || sceneIdx + 1,
+        totalScenes: scenes.length,
+        sceneTitle: sc.sceneTitle,
+        charactersInScene: sc.charactersInScene,
+        settingDetail: sc.settingDetail,
+        actionDetail: sc.actionDetail,
+        dialogue: sc.dialogue,
+        sceneSummary: sc.sceneSummary,
+        costume: sc.costume,
+        cameraAngle: sc.cameraAngle,
+        vfxNotes: sc.vfxNotes,
+        selectedCharacterIds: sc.selectedCharacterIds,
+        characterRefs: params.characterRefs,
+        allowFreeCostumeChange,
+      }),
+      95_000,
+      `Tạo lại ảnh phân cảnh #${sceneIdx + 1}`
+    );
+
+    sc.sceneImageDataUrl = imgRes.dataUrl;
+    sc.sceneImageSource = 'ai';
+    // Clear stale video clip if user explicitly regenerated the scene image
+    if (action === 'image') {
+      sc.omniClipAssetId = undefined;
+      sc.omniClipPreviewUrl = undefined;
+    }
+    saveSceneImageToWorkDir(job.workDir, sceneIdx, imgRes.dataUrl);
+    producedImageDataUrl = imgRes.dataUrl;
+
+    updateSp({
+      imageStatus: 'completed',
+      imageSource: 'generated',
+      imagePreviewUrl: `/api/derivative/jobs/${job.jobId}/scene-image/${sceneIdx}?t=${Date.now()}`,
+      videoStatus: action === 'image' ? 'pending' : sp.videoStatus,
+      videoAssetId: action === 'image' ? undefined : sp.videoAssetId,
+      videoPreviewUrl: action === 'image' ? undefined : sp.videoPreviewUrl,
+      progress: action === 'image' ? 45 : 38,
+      status: action === 'image' ? 'completed' : 'running',
+      error: undefined,
+      failedStage: undefined,
+      stageLabel:
+        action === 'image'
+          ? 'Đã tạo lại ảnh phân cảnh — sẵn sàng tạo video hoặc ghép MP4'
+          : 'Đã tạo lại ảnh · đang chuyển sang tạo video...',
+    });
+  };
+
+  const runRegenerateVideo = async () => {
+    const useQwenVideo = params.visualMode === 'qwen_video';
+    const useMuseVideo = params.visualMode === 'muse2api_video';
+    const videoEngine: 'gemini' | 'muse2api' | 'qwen' = useQwenVideo
+      ? 'qwen'
+      : useMuseVideo
+      ? 'muse2api'
+      : 'gemini';
+    const timeoutMs = useMuseVideo ? 240_000 : 180_000;
+
+    updateSp({
+      status: 'running',
+      videoStatus: 'running',
+      progress: 55,
+      error: undefined,
+      failedStage: undefined,
+      stageLabel: sc.sceneImageDataUrl
+        ? 'Đang tạo lại video từ ảnh phân cảnh...'
+        : 'Đang tạo lại video phân cảnh AI...',
+    });
+
+    const consistentPrompt = compileConsistentScenePrompt({
+      scene: sc,
+      videoStyle: blueprint.videoStyle,
+      customStylePrompt: customStyleHint,
+      characterBible: blueprint.characterBible,
+      settingBible: blueprint.settingBible,
+      visualStyleBible: blueprint.visualStyleBible,
+      costumeBible: blueprint.costumeBible,
+      continuityBible: blueprint.continuityBible,
+      characterRefs: params.characterRefs,
+      enableVoiceover: effectiveVoiceMode !== 'none',
+      totalScenes: scenes.length,
+      mediaType: 'video',
+      allowFreeCostumeChange,
+    });
+
+    const targetDur = Math.max(2.0, Number(sc.durationSec || 6));
+    const clipRes = await withHardTimeout(
+      generateSceneVideoWithOmniFlash({
+        engine: videoEngine,
+        prompt: consistentPrompt,
+        aspectRatio: blueprint.aspectRatio,
+        durationSec: Math.min(useQwenVideo ? 10 : useMuseVideo ? 12 : 15, Math.max(4, Math.round(targetDur))),
+        videoStyle: blueprint.videoStyle,
+        customStylePrompt: customStyleHint,
+        characterBible: blueprint.characterBible,
+        settingBible: blueprint.settingBible,
+        visualStyleBible: blueprint.visualStyleBible,
+        costumeBible: blueprint.costumeBible,
+        continuityBible: blueprint.continuityBible,
+        sceneIndex: sc.sceneIndex || sceneIdx + 1,
+        totalScenes: scenes.length,
+        sceneTitle: sc.sceneTitle,
+        settingDetail: sc.settingDetail,
+        cameraMovement: sc.cameraMovement,
+        cameraEquipment: sc.cameraEquipment,
+        charactersInScene: sc.charactersInScene,
+        actionDetail: sc.actionDetail,
+        dialogue: sc.dialogue,
+        narration: effectiveVoiceMode !== 'none' ? sc.narration : '',
+        videoTimeline: sc.videoTimeline,
+        enableVoiceover: effectiveVoiceMode !== 'none',
+        sceneSummary: sc.sceneSummary,
+        costume: sc.costume,
+        cameraAngle: sc.cameraAngle,
+        vfxNotes: sc.vfxNotes,
+        selectedCharacterIds: sc.selectedCharacterIds,
+        sceneImageDataUrl: sc.sceneImageDataUrl,
+        characterRefs: params.characterRefs,
+        allowFreeCostumeChange,
+        musicMode: params.musicMode,
+        musicStyle: params.musicStyle,
+        musicPrompt: params.musicPrompt,
+        musicVolume: params.musicVolume,
+        musicInstrumentalOnly: params.musicInstrumentalOnly,
+      }),
+      timeoutMs,
+      `Tạo lại video phân cảnh #${sceneIdx + 1}`
+    );
+
+    const asset = getStudioAsset(clipRes.assetId);
+    if (!asset) {
+      throw new Error('Máy chủ không tìm thấy tệp video vừa tạo trên đĩa.');
+    }
+
+    sc.omniClipAssetId = clipRes.assetId;
+    sc.omniClipPreviewUrl = `/api/studio/assets/${clipRes.assetId}`;
+    producedVideoAssetId = clipRes.assetId;
+    producedVideoPreviewUrl = sc.omniClipPreviewUrl;
+
+    updateSp({
+      status: 'completed',
+      videoStatus: 'completed',
+      videoAssetId: clipRes.assetId,
+      videoPreviewUrl: sc.omniClipPreviewUrl,
+      progress: 80,
+      error: undefined,
+      failedStage: undefined,
+      stageLabel: 'Đã tạo lại video — sẵn sàng ghép xuất MP4',
+    });
+  };
+
+  try {
+    if (action === 'image') {
+      await runRegenerateImage();
+    } else if (action === 'video') {
+      await runRegenerateVideo();
+    } else {
+      // 'full': preserve Step 2 image if present & valid (unless image itself failed), then generate video
+      if (!sc.sceneImageDataUrl || sp.failedStage === 'image') {
+        await runRegenerateImage();
+      }
+      if (params.visualMode !== 'storyboard_motion') {
+        await runRegenerateVideo();
+      }
+    }
+
+    const remainingErrors = job.scenes.filter((s) => s.status === 'error').length;
+    if (remainingErrors === 0 && (job.status === 'partial_error' || job.status === 'error')) {
+      job.error = undefined;
+      job.stepLabel = 'Tất cả phân cảnh đã sẵn sàng — bấm "Khởi tạo lại tiến trình & Xuất MP4" để ghép xuất video.';
+    }
+
+    return {
+      ok: true,
+      job: getDerivativeJobPublicView(job),
+      sceneImageDataUrl: producedImageDataUrl,
+      videoAssetId: producedVideoAssetId,
+      videoPreviewUrl: producedVideoPreviewUrl,
+    };
+  } catch (err: any) {
+    const errMsg = formatGeminiError(err);
+    const failedStage: 'image' | 'video' =
+      action === 'image' || (action === 'full' && !sc.sceneImageDataUrl) ? 'image' : 'video';
+    updateSp({
+      status: 'error',
+      imageStatus: failedStage === 'image' ? 'error' : sp.imageStatus,
+      videoStatus: failedStage === 'video' ? 'error' : sp.videoStatus,
+      failedStage,
+      error: errMsg,
+      stageLabel: failedStage === 'image' ? 'Lỗi tạo lại ảnh phân cảnh' : 'Lỗi tạo lại video phân cảnh',
+    });
+    return {
+      ok: false,
+      error: errMsg,
+      job: getDerivativeJobPublicView(job),
+    };
+  }
+}
+
+export function resumeDerivativeJobPipeline(
+  jobId: string,
+  opts?: { allowFallbackOnError?: boolean }
+): DerivativeJobRecord {
+  const job = derivativeJobs.get(jobId);
+  if (!job || !job.paramsSnapshot) {
+    throw new Error('Tác vụ dựng video không tồn tại hoặc đã hết hạn.');
+  }
+  if (job.isRunning) {
+    return job;
+  }
+
+  for (let i = 0; i < job.scenes.length; i += 1) {
+    const sp = job.scenes[i];
+    if (sp.status === 'error') {
+      sp.status = 'pending';
+      sp.error = undefined;
+      sp.failedStage = undefined;
+      if (sp.imageStatus === 'error') sp.imageStatus = 'pending';
+      if (sp.videoStatus === 'error') sp.videoStatus = 'pending';
+      if (sp.renderStatus === 'error') sp.renderStatus = 'pending';
+      sp.stageLabel = opts?.allowFallbackOnError
+        ? 'Dùng tư liệu dự phòng để ghép MP4...'
+        : 'Đang khởi tạo lại tiến trình phân cảnh...';
+      sp.updatedAt = Date.now();
+    }
+  }
+
+  job.status = 'queued';
+  job.error = undefined;
+  job.stepLabel = opts?.allowFallbackOnError
+    ? 'Đang bỏ qua cảnh lỗi (dùng ảnh/tư liệu dự phòng) & ghép xuất MP4...'
+    : 'Đang khởi tạo lại tiến trình (giữ nguyên các phân cảnh đã xong) & ghép xuất MP4...';
+
+  void runDerivativePipeline(job, job.paramsSnapshot, opts).catch((err: any) => {
+    job.isRunning = false;
+    job.status = 'error';
+    job.error = formatGeminiError(err);
+    job.stepLabel = 'Tạo video thất bại';
+  });
+
+  return job;
 }

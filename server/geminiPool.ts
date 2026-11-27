@@ -309,6 +309,55 @@ export function pickWorkerGeminiAccount(params?: {
   return { id: picked.id, label: picked.label, apiKey: picked.apiKey };
 }
 
+export function listHealthyGeminiWorkerAccounts(params?: {
+  allowedAccountIds?: string[];
+  excludeAccountIds?: string[];
+  includeChairman?: boolean;
+}): { id: string; label: string; apiKey: string }[] {
+  const excluded = new Set(params?.excludeAccountIds || []);
+  const chairmanId = resolveEffectiveChairmanId();
+  const candidates: { id: string; label: string; apiKey: string; status: GeminiAccountStatus }[] = [];
+
+  if (hasEnvDefaultKey() && poolStore.envDefaultEnabled) {
+    candidates.push({
+      id: ENV_DEFAULT_GEMINI_ACCOUNT_ID,
+      label: poolStore.envDefaultLabel || 'Gemini Hệ thống (Mặc định)',
+      apiKey: process.env.GEMINI_API_KEY!.trim(),
+      status: poolStore.envDefaultStatus,
+    });
+  }
+  for (const acc of poolStore.accounts) {
+    if (acc.enabled && acc.apiKey.trim()) {
+      candidates.push({
+        id: acc.id,
+        label: acc.label,
+        apiKey: acc.apiKey.trim(),
+        status: acc.status,
+      });
+    }
+  }
+
+  let filtered = candidates.filter((c) => !excluded.has(c.id));
+  if (params?.allowedAccountIds && params.allowedAccountIds.length > 0) {
+    const allowedSet = new Set(params.allowedAccountIds);
+    const matched = filtered.filter((c) => allowedSet.has(c.id));
+    if (matched.length > 0) filtered = matched;
+  }
+
+  const healthy = filtered.filter((c) => c.status !== 'auth_error' && c.status !== 'quota_exceeded');
+  const activePool = healthy.length > 0 ? healthy : filtered;
+
+  // Put dedicated worker accounts first, and place chairman at the end (or omit if explicitly excluded and others exist)
+  const nonChairman = activePool.filter((c) => c.id !== chairmanId);
+  const chairmanList = activePool.filter((c) => c.id === chairmanId);
+  const ordered =
+    params?.includeChairman === false && nonChairman.length > 0
+      ? nonChairman
+      : [...nonChairman, ...chairmanList];
+
+  return ordered.map((c) => ({ id: c.id, label: c.label, apiKey: c.apiKey }));
+}
+
 export function recordGeminiAccountUsage(
   accountId: string | undefined,
   ok: boolean,

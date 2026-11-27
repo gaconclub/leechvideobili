@@ -744,11 +744,49 @@ export interface DerivativeBlueprint {
   usedModel?: string;
 }
 
+export type DerivativeSceneStageStatus =
+  | 'pending'
+  | 'reused'
+  | 'running'
+  | 'completed'
+  | 'error'
+  | 'skipped';
+
+export interface DerivativeSceneProgress {
+  sceneIndex: number;
+  sceneNumber: number;
+  sceneTitle: string;
+  progress: number;
+  status: 'pending' | 'running' | 'completed' | 'error';
+  stageLabel: string;
+  imageStatus: DerivativeSceneStageStatus;
+  imageSource?: 'step2_reused' | 'generated' | 'none';
+  imagePreviewUrl?: string;
+  videoStatus: DerivativeSceneStageStatus;
+  videoAssetId?: string;
+  videoPreviewUrl?: string;
+  audioStatus: DerivativeSceneStageStatus;
+  renderStatus: DerivativeSceneStageStatus;
+  error?: string;
+  failedStage?: 'image' | 'video' | 'audio' | 'render';
+  updatedAt: number;
+}
+
 export interface DerivativeJobState {
   jobId: string;
-  status: 'queued' | 'learning' | 'downloading' | 'tts' | 'rendering' | 'completed' | 'error';
+  status:
+    | 'queued'
+    | 'learning'
+    | 'downloading'
+    | 'tts'
+    | 'rendering'
+    | 'partial_error'
+    | 'completed'
+    | 'error';
   progress: number;
   stepLabel: string;
+  visualMode?: DerivativeVisualMode;
+  scenes?: DerivativeSceneProgress[];
   fileName?: string;
   fileSize?: number;
   durationSec?: number;

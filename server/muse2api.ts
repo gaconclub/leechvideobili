@@ -674,6 +674,33 @@ export async function listMuse2ApiAccounts() {
   return parseMuseResponseJson<{ accounts: any[]; stats: any }>(res);
 }
 
+export async function listHealthyMuse2ApiAccounts(): Promise<{ id: string; label: string }[]> {
+  try {
+    const st = await getMuse2ApiStatus(false);
+    const rawList = Array.isArray(st.accounts) ? st.accounts : [];
+    const enabled = rawList.filter((a: any) => a && a.enabled !== false && (a.id || a.account_id));
+    if (enabled.length === 0) return [];
+
+    const healthy = enabled.filter((a: any) => {
+      const statusStr = String(a.status || '').toLowerCase();
+      if (a.ok === false) return false;
+      if (statusStr === 'error' || statusStr === 'expired' || statusStr === 'auth_error' || statusStr === 'invalid') {
+        return false;
+      }
+      return true;
+    });
+
+    const chosen = healthy.length > 0 ? healthy : enabled;
+    return chosen.map((a: any, idx: number) => {
+      const id = String(a.id || a.account_id);
+      const label = String(a.label || a.name || a.email || `Muse #${idx + 1}`).trim();
+      return { id, label };
+    });
+  } catch {
+    return [];
+  }
+}
+
 export async function addMuse2ApiAccount(payload: { label?: string; cookieHeader?: string; batch?: string }) {
   const body: any = {};
   if (payload.batch?.trim()) {

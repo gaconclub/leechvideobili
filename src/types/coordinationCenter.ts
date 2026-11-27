@@ -83,6 +83,8 @@ export interface CoordinationTaskRow {
   instructions: string;
   videoSourceLock: IndependentVideoSource;
   assignedAiLabel: string;
+  assignedAccountId?: string;
+  assignedAccountLabel?: string;
   dependsOnTaskCodes: string[];
   inputRefIds: string[];
   inputDriveLinks: string[];
@@ -147,6 +149,7 @@ export interface CoordinationSession {
   finalVideoDriveUrl?: string;
   lastSheetsSyncAt?: number;
   lastError?: string;
+  parallelDispatchSummary?: string;
   musicConfig?: {
     musicMode: 'none' | 'auto_adaptive' | 'ai_lyria' | 'public_free' | 'uploaded';
     musicStyle?: string;
