@@ -12,6 +12,7 @@ import type {
   CoordinationSession,
   CoordinationSessionStatus,
   CoordinationTaskRow,
+  CoordinationVoiceConfig,
   CoordinationWorkspaceConfig,
   IndependentVideoSource,
   MeetingRoomMessage,
@@ -27,6 +28,7 @@ import {
   generateSceneVideoWithOmniFlash,
   generateStudioImage,
   getStudioAsset,
+  synthesizeNarrationAudioForText,
   type StudioCharacterRefInput,
 } from './derivative';
 import { getAlibabaModelStudioStatus } from './alibabaModelStudio';
@@ -1489,6 +1491,8 @@ export async function createSessionFromStudio(
     characterRefs?: StudioCharacterRef[];
     blueprint?: any;
     sourceAction?: 'studio_dispatch' | 'manual_order';
+    productionFormat?: 'dialogue_film' | 'narration_story';
+    voiceConfig?: Partial<CoordinationVoiceConfig>;
     musicConfig?: {
       musicMode?: 'none' | 'auto_adaptive' | 'ai_lyria' | 'public_free' | 'uploaded';
       musicStyle?: string;
@@ -1707,6 +1711,25 @@ export async function createSessionFromStudio(
     musicDirective,
   });
 
+  const rawVoice = payload.voiceConfig;
+  const resolvedEnableVoiceover =
+    rawVoice?.enableVoiceover !== undefined
+      ? Boolean(rawVoice.enableVoiceover)
+      : payload.blueprint?.enableVoiceover !== false;
+  const resolvedVoiceMode: CoordinationVoiceConfig['voiceMode'] = !resolvedEnableVoiceover
+    ? 'none'
+    : rawVoice?.voiceMode === 'offline_system'
+      ? 'offline_system'
+      : rawVoice?.voiceMode === 'none'
+        ? 'none'
+        : 'ai_online';
+  const resolvedProductionFormat: 'dialogue_film' | 'narration_story' =
+    rawVoice?.productionFormat === 'narration_story' ||
+    payload.productionFormat === 'narration_story' ||
+    payload.blueprint?.productionFormat === 'narration_story'
+      ? 'narration_story'
+      : 'dialogue_film';
+
   const session: CoordinationSession = {
     sessionId,
     title,
@@ -1726,6 +1749,14 @@ export async function createSessionFromStudio(
     scenes,
     references,
     tasks,
+    voiceConfig: {
+      enableVoiceover: resolvedVoiceMode !== 'none',
+      voiceMode: resolvedVoiceMode,
+      voice: rawVoice?.voice || 'Kore',
+      voiceStyle: String(rawVoice?.voiceStyle || '').trim() || undefined,
+      offlineVoice: String(rawVoice?.offlineVoice || '').trim() || undefined,
+      productionFormat: resolvedProductionFormat,
+    },
     musicConfig:
       normalizedMusicMode !== 'none'
         ? {
@@ -1999,10 +2030,58 @@ async function resolveSessionBgmPath(
   return null;
 }
 
+function extractSpokenTextForCoordinationScene(
+  scene: CoordinationSceneSpec | undefined,
+  productionFormat: 'dialogue_film' | 'narration_story'
+): string {
+  if (!scene) return '';
+  const narration = String(scene.narration || '').trim();
+  const dialogue = String(scene.dialogue || '').trim();
+  const stripSpeakerLabels = (txt: string) =>
+    txt
+      .split(/\n+/)
+      .map((line) => line.replace(/^[^:：]{1,36}[:：]\s*/, '').trim())
+      .filter(Boolean)
+      .join('. ');
+
+  if (productionFormat === 'narration_story') {
+    return narration || stripSpeakerLabels(dialogue);
+  }
+  const cleanDialogue = stripSpeakerLabels(dialogue);
+  if (narration && cleanDialogue) {
+    const nNorm = narration.toLowerCase().replace(/\s+/g, ' ');
+    const dNorm = cleanDialogue.toLowerCase().replace(/\s+/g, ' ');
+    if (nNorm === dNorm || nNorm.includes(dNorm)) return narration;
+    if (dNorm.includes(nNorm)) return cleanDialogue;
+    return `${narration}. ${cleanDialogue}`;
+  }
+  return narration || cleanDialogue;
+}
+
+async function probeMediaDurationSec(filePath: string): Promise<number> {
+  try {
+    const probe = await execFileAsync(
+      'ffprobe',
+      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', filePath],
+      { timeout: 10_000 }
+    );
+    const val = Number(String(probe.stdout || '').trim());
+    return Number.isFinite(val) && val > 0 ? val : 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function assembleFinalFilmWithFfmpeg(
   session: CoordinationSession,
-  clipPaths: string[]
-): Promise<{ fileName: string; localUrl: string; bgmSummary?: string }> {
+  clipEntries: { clipPath: string; scene?: CoordinationSceneSpec; sceneIndex: number }[]
+): Promise<{
+  fileName: string;
+  localUrl: string;
+  bgmSummary?: string;
+  voiceSummary?: string;
+  voiceWarnings?: string[];
+}> {
   const dir = getSessionArtifactDir(session.sessionId);
   const outFileName = `final_${sanitizeIdSegment(session.sessionId, 'film')}.mp4`;
   const outPath = path.resolve(dir, outFileName);
@@ -2012,22 +2091,83 @@ async function assembleFinalFilmWithFfmpeg(
 
   const bgm = await resolveSessionBgmPath(session, dir).catch(() => null);
 
-  if (clipPaths.length === 1 && !bgm) {
-    fs.copyFileSync(clipPaths[0], outPath);
-    return { fileName: outFileName, localUrl: artifactUrlFor(session.sessionId, outFileName) };
+  // Synthesize Vietnamese script narration / dialogue voiceover per scene (enabled by default unless explicitly muted)
+  const voiceCfg = session.voiceConfig;
+  const voiceEnabled =
+    voiceCfg?.enableVoiceover !== false && voiceCfg?.voiceMode !== 'none';
+  const voiceMode: 'ai_online' | 'offline_system' =
+    voiceCfg?.voiceMode === 'offline_system' ? 'offline_system' : 'ai_online';
+  const productionFormat: 'dialogue_film' | 'narration_story' =
+    voiceCfg?.productionFormat === 'narration_story' ? 'narration_story' : 'dialogue_film';
+
+  const sceneVoicePaths: (string | null)[] = new Array(clipEntries.length).fill(null);
+  const sceneVoiceDurations: number[] = new Array(clipEntries.length).fill(0);
+  const voiceWarnings: string[] = [];
+  let spokenScenesTotal = 0;
+  let voicedScenesCount = 0;
+
+  if (voiceEnabled) {
+    for (let i = 0; i < clipEntries.length; i += 1) {
+      const entry = clipEntries[i];
+      const spokenText = extractSpokenTextForCoordinationScene(entry.scene, productionFormat);
+      if (!spokenText) continue;
+      spokenScenesTotal += 1;
+      const voiceWavPath = path.resolve(
+        dir,
+        `voice_scene_${String(entry.sceneIndex).padStart(2, '0')}.wav`
+      );
+      if (!voiceWavPath.startsWith(ARTIFACTS_ROOT + path.sep)) continue;
+
+      const ttsRes = await synthesizeNarrationAudioForText({
+        text: spokenText,
+        outWavPath: voiceWavPath,
+        mode: voiceMode,
+        voice: voiceCfg?.voice || 'Kore',
+        voiceStyle: voiceCfg?.voiceStyle,
+        offlineVoice: voiceCfg?.offlineVoice,
+      });
+      if (ttsRes.ok && fs.existsSync(voiceWavPath) && fs.statSync(voiceWavPath).size > 44) {
+        sceneVoicePaths[i] = voiceWavPath;
+        sceneVoiceDurations[i] = await probeMediaDurationSec(voiceWavPath);
+        voicedScenesCount += 1;
+      } else {
+        voiceWarnings.push(
+          `Cảnh #${entry.sceneIndex}: Chưa tạo được giọng đọc thuyết minh${ttsRes.error ? ` (${ttsRes.error.slice(0, 140)})` : ''}.`
+        );
+      }
+    }
+  }
+
+  const anyVoiceSynthesized = voicedScenesCount > 0;
+  const voiceSummary =
+    voicedScenesCount > 0
+      ? `lồng tiếng thuyết minh ${voicedScenesCount}/${spokenScenesTotal} phân cảnh`
+      : spokenScenesTotal > 0 && voiceEnabled
+        ? `chưa tạo được giọng đọc (0/${spokenScenesTotal} cảnh)`
+        : undefined;
+
+  if (clipEntries.length === 1 && !bgm && !anyVoiceSynthesized) {
+    fs.copyFileSync(clipEntries[0].clipPath, outPath);
+    return {
+      fileName: outFileName,
+      localUrl: artifactUrlFor(session.sessionId, outFileName),
+      voiceSummary,
+      voiceWarnings: voiceWarnings.length > 0 ? voiceWarnings : undefined,
+    };
   }
 
   const targetW = session.aspectRatio === '9:16' ? 720 : 1280;
   const targetH = session.aspectRatio === '9:16' ? 1280 : 720;
   const normalizedPaths: string[] = [];
 
-  for (let i = 0; i < clipPaths.length; i += 1) {
+  for (let i = 0; i < clipEntries.length; i += 1) {
+    const entry = clipEntries[i];
     const normPath = path.resolve(dir, `norm_${String(i + 1).padStart(2, '0')}.mp4`);
     let clipHasAudio = false;
     try {
       const probe = await execFileAsync(
         'ffprobe',
-        ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', clipPaths[i]],
+        ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', entry.clipPath],
         { timeout: 10_000 }
       );
       clipHasAudio = Boolean(String(probe.stdout || '').trim());
@@ -2035,43 +2175,99 @@ async function assembleFinalFilmWithFfmpeg(
       clipHasAudio = false;
     }
 
-    await execFileAsync(
-      'ffmpeg',
-      [
-        '-y',
-        '-i',
-        clipPaths[i],
-        '-f',
-        'lavfi',
-        '-t',
-        '60',
-        '-i',
-        'anullsrc=channel_layout=stereo:sample_rate=44100',
-        '-vf',
-        `scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease,pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2,fps=24,format=yuv420p`,
-        '-map',
-        '0:v:0',
-        '-map',
-        clipHasAudio ? '0:a:0' : '1:a:0',
-        '-c:v',
-        'libx264',
-        '-preset',
-        'veryfast',
-        '-crf',
-        '22',
-        '-c:a',
-        'aac',
-        '-ar',
-        '44100',
-        '-ac',
-        '2',
-        '-shortest',
-        '-movflags',
-        '+faststart',
-        normPath,
-      ],
-      { timeout: 120_000 }
-    );
+    const voiceWavPath = sceneVoicePaths[i];
+    const voiceDur = sceneVoiceDurations[i] || 0;
+    const clipDur = await probeMediaDurationSec(entry.clipPath);
+    const targetDur =
+      voiceWavPath && voiceDur > 0.2
+        ? Math.max(clipDur || 5, voiceDur + 0.35)
+        : clipDur || 5;
+    const needsPad = Boolean(voiceWavPath && clipDur > 0 && clipDur < targetDur - 0.15);
+    const padFilter = needsPad
+      ? `,tpad=stop_mode=clone:stop_duration=${(targetDur - clipDur + 0.35).toFixed(2)}`
+      : '';
+    const vFilter = `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease,pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2,fps=24${padFilter},format=yuv420p[vout]`;
+
+    if (voiceWavPath) {
+      const audioFilter = clipHasAudio
+        ? `[0:a]aresample=44100,apad,volume=0.18[aclip];[1:a]aresample=44100,apad,volume=1.35[avoice];[aclip][avoice]amix=inputs=2:duration=longest:dropout_transition=0.2:normalize=0[aout]`
+        : `[1:a]aresample=44100,apad,volume=1.35[aout]`;
+
+      await execFileAsync(
+        'ffmpeg',
+        [
+          '-y',
+          '-i',
+          entry.clipPath,
+          '-i',
+          voiceWavPath,
+          '-filter_complex',
+          `${vFilter};${audioFilter}`,
+          '-map',
+          '[vout]',
+          '-map',
+          '[aout]',
+          '-t',
+          targetDur.toFixed(2),
+          '-c:v',
+          'libx264',
+          '-preset',
+          'veryfast',
+          '-crf',
+          '22',
+          '-c:a',
+          'aac',
+          '-ar',
+          '44100',
+          '-ac',
+          '2',
+          '-b:a',
+          '160k',
+          '-movflags',
+          '+faststart',
+          normPath,
+        ],
+        { timeout: 150_000 }
+      );
+    } else {
+      await execFileAsync(
+        'ffmpeg',
+        [
+          '-y',
+          '-i',
+          entry.clipPath,
+          '-f',
+          'lavfi',
+          '-t',
+          '60',
+          '-i',
+          'anullsrc=channel_layout=stereo:sample_rate=44100',
+          '-vf',
+          `scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease,pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2,fps=24,format=yuv420p`,
+          '-map',
+          '0:v:0',
+          '-map',
+          clipHasAudio ? '0:a:0' : '1:a:0',
+          '-c:v',
+          'libx264',
+          '-preset',
+          'veryfast',
+          '-crf',
+          '22',
+          '-c:a',
+          'aac',
+          '-ar',
+          '44100',
+          '-ac',
+          '2',
+          '-shortest',
+          '-movflags',
+          '+faststart',
+          normPath,
+        ],
+        { timeout: 120_000 }
+      );
+    }
     normalizedPaths.push(normPath);
   }
 
@@ -2124,6 +2320,8 @@ async function assembleFinalFilmWithFfmpeg(
       fileName: outFileName,
       localUrl: artifactUrlFor(session.sessionId, outFileName),
       bgmSummary: `trộn nhạc nền (${bgm.label} · âm lượng ${volPct}%)`,
+      voiceSummary,
+      voiceWarnings: voiceWarnings.length > 0 ? voiceWarnings : undefined,
     };
   }
 
@@ -2146,7 +2344,7 @@ async function assembleFinalFilmWithFfmpeg(
       '-c:a',
       'aac',
       '-b:a',
-      '128k',
+      '160k',
       '-movflags',
       '+faststart',
       outPath,
@@ -2154,7 +2352,12 @@ async function assembleFinalFilmWithFfmpeg(
     { timeout: 180_000 }
   );
 
-  return { fileName: outFileName, localUrl: artifactUrlFor(session.sessionId, outFileName) };
+  return {
+    fileName: outFileName,
+    localUrl: artifactUrlFor(session.sessionId, outFileName),
+    voiceSummary,
+    voiceWarnings: voiceWarnings.length > 0 ? voiceWarnings : undefined,
+  };
 }
 
 export async function runSingleCoordinationTask(params: {
@@ -2502,27 +2705,47 @@ export async function runSingleCoordinationTask(params: {
       }
     }
 
-    // ── STEP 3: Direct Final Film Assembly (No cross-check / QA loop) ──
+    // ── STEP 3: Direct Final Film Assembly + Script Narration Voiceover ──
     else if (isFinalTask) {
       const videoTasks = session.tasks
         .filter((t) => t.taskCode.includes('-VID-'))
         .sort((a, b) => (a.sceneIndex || 0) - (b.sceneIndex || 0));
-      const clipPaths: string[] = [];
+      const clipEntries: { clipPath: string; scene?: CoordinationSceneSpec; sceneIndex: number }[] = [];
       for (const vt of videoTasks) {
         if (vt.status !== 'HOAN_THANH' || !vt.localOutputFileName) continue;
         const fp = resolveCoordinationArtifactPath(session.sessionId, vt.localOutputFileName);
-        if (fp) clipPaths.push(fp);
+        if (!fp) continue;
+        const matchedScene =
+          session.scenes.find((s) => s.sceneIndex === vt.sceneIndex || (vt.sceneId && s.sceneId === vt.sceneId)) ||
+          session.scenes[clipEntries.length];
+        clipEntries.push({
+          clipPath: fp,
+          scene: matchedScene,
+          sceneIndex: vt.sceneIndex || matchedScene?.sceneIndex || clipEntries.length + 1,
+        });
       }
-      if (clipPaths.length === 0) {
+      if (clipEntries.length === 0) {
         throw new Error('Chưa có clip phân cảnh nào hoàn thành để ghép phim MP4.');
       }
-      const assembled = await assembleFinalFilmWithFfmpeg(session, clipPaths);
+      const assembled = await assembleFinalFilmWithFfmpeg(session, clipEntries);
       task.localOutputFileName = assembled.fileName;
       task.localOutputUrl = assembled.localUrl;
       session.finalVideoLocalUrl = assembled.localUrl;
-      task.resultSummary = assembled.bgmSummary
-        ? `Đã ghép ${clipPaths.length} clip & ${assembled.bgmSummary} thành phim MP4 hoàn chỉnh.`
-        : `Đã ghép trực tiếp ${clipPaths.length} clip thành phim MP4 hoàn chỉnh.`;
+      const summaryParts = [assembled.voiceSummary, assembled.bgmSummary].filter(Boolean);
+      task.resultSummary = summaryParts.length > 0
+        ? `Đã ghép ${clipEntries.length} clip (${summaryParts.join(' · ')}) thành phim MP4 hoàn chỉnh.`
+        : `Đã ghép trực tiếp ${clipEntries.length} clip thành phim MP4 hoàn chỉnh.`;
+      if (assembled.voiceWarnings && assembled.voiceWarnings.length > 0) {
+        pushMeetingMessage({
+          sessionId: session.sessionId,
+          senderId: 'coordinator',
+          senderName: 'Lồng tiếng Thuyết minh',
+          senderRole: 'Cảnh báo giọng đọc',
+          kind: 'report',
+          taskCode: task.taskCode,
+          content: assembled.voiceWarnings.join(' | '),
+        });
+      }
       task.status = 'HOAN_THANH';
       task.completedAt = Date.now();
       task.updatedAt = Date.now();

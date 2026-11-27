@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chairmanAccountId": "gemini-env-default",
+  "envDefaultEnabled": true,
+  "envDefaultLabel": "Gemini Hệ thống (Mặc định)",
+  "envDefaultNote": "Tài khoản mặc định nạp từ cấu hình môi trường máy chủ",
+  "envDefaultStatus": "healthy",
+  "envDefaultRequestsCount": 4,
+  "envDefaultSuccessCount": 3,
+  "envDefaultErrorCount": 1,
+  "accounts": [],
+  "envDefaultQuotaStatus": "Khả dụng",
+  "envDefaultLastCheckedAt": 1795747332286,
+  "envDefaultLastLatencyMs": 230
+}

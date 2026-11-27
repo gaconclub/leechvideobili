@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.35",
+    "version": "1.0.36",
     "date": "27/11/2026",
-    "title": "feat(derivative): add job scene tracking and retry logic",
+    "title": "feat: implement voiceover configuration in studio",
     "changes": [
-      "feat(derivative): add job scene tracking and retry logic"
+      "feat: implement voiceover configuration in studio"
     ]
   },
   {
