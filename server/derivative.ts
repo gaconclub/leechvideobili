@@ -2497,7 +2497,7 @@ export function compileConsistentScenePrompt(params: {
   if (sc.sceneSummary?.trim()) {
     parts.push(`Primary Scene Content / Main Plot Event (MUST depict faithfully): ${sc.sceneSummary.trim()}.`);
   }
-  if (sc.sceneTitle?.trim()) {
+  if (mediaType === 'video' && sc.sceneTitle?.trim()) {
     parts.push(`${sceneNumLabel} Title: ${sc.sceneTitle.trim()}.`);
   }
 
@@ -5586,7 +5586,6 @@ export async function generateStudioImage(params: {
           params.sceneSummary?.trim()
             ? `MAIN SCENE CONTENT & PLOT EVENT TO DEPICT (HIGHEST PRIORITY — strictly illustrate this exact narrative moment): ${params.sceneSummary.trim()}.`
             : '',
-          params.sceneTitle?.trim() ? `Scene Title: ${params.sceneTitle.trim()}.` : '',
           params.actionDetail?.trim() ? `Exact Character Action & Pose: ${params.actionDetail.trim()}.` : '',
           params.charactersInScene?.trim() ? `Characters Appearing: ${params.charactersInScene.trim()}.` : '',
           params.settingDetail?.trim() ? `Scene Setting & Location: ${params.settingDetail.trim()}.` : '',
@@ -5604,9 +5603,6 @@ export async function generateStudioImage(params: {
       ? `Learned Lighting & Atmosphere: ${styleMeta.learnedStyle.lightingStyle}.`
       : '',
     params.visualStyleBible?.trim() ? `Visual Style & Color Palette: ${params.visualStyleBible.trim()}.` : '',
-    params.sceneIndex
-      ? `Sequential Storyboard Frame: Scene ${String(params.sceneIndex).padStart(2, '0')}${params.totalScenes ? `/${String(params.totalScenes).padStart(2, '0')}` : ''}.`
-      : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -5649,9 +5645,9 @@ export async function generateStudioImage(params: {
       const lockClause = allowFreeCostumeChange
         ? `strictly preserving the exact character identities, faces, hairstyles, hair colors, body proportions & distinguishing marks of ALL attached character reference photos (${refNames}) while adapting outfits strictly as directed by the scene prompt`
         : `strictly preserving the exact character identities, faces, hairstyles, hair colors, body proportions, AND exact outfits, garment colors & accessories of ALL attached character reference photos (${refNames}) with ZERO unauthorized wardrobe changes`;
-      basePrompt = `${sceneNarrativeAnchor} ${mapping} Create a cohesive storyboard illustration depicting the EXACT Main Scene Content above while ${lockClause}. ${styleBlock} Detailed visual instructions: ${params.prompt}. ${bibleTailBlock} No overlaid subtitles, speech bubbles, or watermarks.`;
+      basePrompt = `${sceneNarrativeAnchor} ${mapping} Create a single clean full-bleed cinematic still frame depicting the EXACT Main Scene Content above while ${lockClause}. ${styleBlock} Detailed visual instructions: ${params.prompt}. ${bibleTailBlock} STRICT NO-TEXT POLICY: Pure full-bleed image with zero overlaid text, zero scene numbering labels, zero titles, zero subtitles, zero speech bubbles, zero panel borders, and zero watermarks — only depict natural in-scene text if explicitly requested by the script.`;
     } else {
-      basePrompt = `${sceneNarrativeAnchor} Create a crisp, cohesive storyboard illustration depicting the EXACT Main Scene Content above. ${styleBlock} Detailed visual instructions: ${params.prompt}. ${bibleTailBlock} No overlaid subtitles, text, or watermarks.`;
+      basePrompt = `${sceneNarrativeAnchor} Create a single clean full-bleed cinematic still frame depicting the EXACT Main Scene Content above. ${styleBlock} Detailed visual instructions: ${params.prompt}. ${bibleTailBlock} STRICT NO-TEXT POLICY: Pure full-bleed image with zero overlaid text, zero scene numbering labels, zero titles, zero subtitles, zero speech bubbles, zero panel borders, and zero watermarks — only depict natural in-scene text if explicitly requested by the script.`;
     }
     const styled =
       params.mode === 'scene' && params.videoStyle === 'cinematic_filmmaking'
@@ -5678,11 +5674,16 @@ export async function generateStudioImage(params: {
 
   if (params.engine === 'muse2api') {
     const finalMusePrompt = buildScenePrompt(selectedRefs, mappingDirective);
+    const museExtraGuard =
+      params.mode === 'scene'
+        ? 'PURE FULL-BLEED CINEMATIC STILL FRAME (NOT a storyboard panel or comic layout). STRICT TEXT POLICY: Never render, print, stamp, or overlay any unrequested text, numbers, scene numbering labels, headers, titles, subtitles, captions, speech bubbles, panel borders, or watermarks onto the image. Only render natural diegetic text on physical objects (signs, banners, papers, screens) when explicitly requested by the script prompt.'
+        : 'Clean studio character portrait reference with zero overlaid titles, labels, captions, or watermarks.';
     const res = await generateImageViaMuse2Api({
       prompt: finalMusePrompt,
       aspectRatio,
       referenceImageDataUrl: selectedRefs[0]?.dataUrl,
       referenceImages: selectedRefs.map((r) => r.dataUrl),
+      extra: museExtraGuard,
       accountId: params.museAccountId,
     });
     return { dataUrl: res.dataUrl, model: 'muse-image (Muse2API)' };
