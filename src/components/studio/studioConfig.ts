@@ -595,7 +595,7 @@ export function compileScenePromptClient(params: {
   if (sc.sceneSummary?.trim()) {
     segments.push(`Diễn biến chính của phân cảnh (BẮT BUỘC bám sát nội dung này): ${sc.sceneSummary.trim()}`);
   }
-  if (sc.sceneTitle?.trim()) {
+  if (mediaType === 'video' && sc.sceneTitle?.trim()) {
     segments.push(`Tên phân cảnh: ${sc.sceneTitle.trim()}`);
   }
 
@@ -621,7 +621,9 @@ export function compileScenePromptClient(params: {
     }
     segments.push('Không chèn chữ hiển thị trên màn hình (No on-screen text, no titles, no captions, no watermarks)');
   } else {
-    segments.push('Không chèn chữ hiển thị trên khung hình (No on-screen text, no captions, no watermarks)');
+    segments.push(
+      'Khung hình điện ảnh toàn khung sạch (không phải bảng storyboard): tuyệt đối không chèn chữ, tiêu đề, số thứ tự phân cảnh, phụ đề hay watermark ngoài kịch bản — chỉ hiển thị chữ tự nhiên trong bối cảnh nếu prompt yêu cầu rõ ràng'
+    );
   }
 
   if (sc.actionDetail?.trim()) {

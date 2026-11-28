@@ -179,23 +179,39 @@ const VISUAL_SAFETY_REPLACEMENTS: [RegExp, string][] = [
 ];
 
 const FLUFF_TOKENS_TO_TRIM: RegExp[] = [
-  /\b(?:masterpiece|best quality|ultra[- ]?detailed|8k uhd|hyper[- ]?realistic|award[- ]?winning|trending on artstation|golden ratio composition|negative space|no overlaid watermarks?,?\s*subtitles?,?\s*or\s*(?:ui\s*)?text\.?)\b/gi,
+  /\b(?:masterpiece|best quality|ultra[- ]?detailed|8k uhd|hyper[- ]?realistic|award[- ]?winning|trending on artstation|golden ratio composition|negative space)\b/gi,
 ];
 
 const MACRO_SHOT_PATTERN =
   /(?:macro|extreme close[- ]?up|detail insert|cận cực đại|cận đặc tả|đặc tả mắt|đặc tả tay|bàn tay|đồng tử|iris catchlight|insert shot)/i;
 
+const MUSE_IMAGE_NO_UNREQUESTED_TEXT_GUARD =
+  'PURE FULL-BLEED CINEMATIC FRAME (NOT a storyboard panel): strictly zero overlaid text, zero scene numbers, zero panel labels, zero titles, zero subtitles, zero speech bubbles, zero watermarks — only depict natural in-scene text if explicitly requested in the script.';
+
 /**
  * Cleans internal script metadata, stray measurement digits, and high-failure filter words
  */
-export function sanitizeVisualPromptForModel(rawPrompt: string, options?: { isSceneMode?: boolean }): string {
+export function sanitizeVisualPromptForModel(
+  rawPrompt: string,
+  options?: { isSceneMode?: boolean; mediaType?: 'image' | 'video'; targetEngine?: 'muse2api' | 'gemini' }
+): string {
   let out = String(rawPrompt || '').trim();
   if (!out) return '';
 
   // 1. Strip internal script tags/metadata markers leaked from LLM outputs (preserve per-second timeline stamps like 1s - 3s)
   out = out
-    .replace(/\[(?:SC|SHOT|SCENE|CONTINUITY|LIÊN TỤC|CHECK|NOTE)[-_:\s]*\d*[^\]]*\]/gi, ' ')
+    .replace(/\[(?:SC|SHOT|SCENE|CONTINUITY|LIÊN TỤC|CHECK|NOTE|PHIÊN)[-_:\s]*\d*[^\]]*\]/gi, ' ')
     .replace(/\b(?:SC|SHOT)[-_]?\d{1,3}\s*[:：-]/gi, ' ');
+
+  // 1b. For scene IMAGE generation, strip scene numbers/titles & "storyboard" cues so image models (especially Muse AI)
+  // NEVER stamp "Phân cảnh 1", "Phân cảnh 2", "Scene 1" or title headers onto the image unless explicitly scripted.
+  if (options?.isSceneMode && options?.mediaType === 'image') {
+    out = out
+      .replace(/Sequential\s+Storyboard\s+Frame\s*:[^.\n]*\.?/gi, ' ')
+      .replace(/(?:Scene(?:\s+\d+(?:\/\d+)?)?\s+Title|Tên\s+phân\s+cảnh|Tiêu\s+đề\s+cảnh)\s*[:：][^\n.;]*[.;]?/gi, ' ')
+      .replace(/(?:^|(?<=[.\n;]\s*))(?:Phân\s*cảnh|Cảnh|Scene)\s*#?\s*\d{1,3}(?:\s*\/\s*\d{1,3})?\s*[:：\-–—]\s*/gi, '')
+      .replace(/\b(?:cohesive\s+)?storyboard\s+(?:illustration|frame|panel|sheet)\b/gi, 'single clean full-bleed cinematic still frame');
+  }
 
   // 2. Strip stray unquoted physical measurement numbers that cause garbled text artifacts
   out = out.replace(/\b\d+(?:[.,]\d+)?\s*(?:cm|mm|km|mét|met|m)\b(?![^"“”«»]*["”»])/gi, '');
@@ -238,13 +254,26 @@ export function compileProductionModelPrompt(params: {
   allowFreeCostumeChange?: boolean;
 }): { prompt: string; trimmed: boolean; skippedCostumeForMacro: boolean } {
   const isSceneMode = params.mode === 'scene';
-  const maxChars = params.targetEngine === 'muse2api' ? 1440 : 2400;
+  const needsMuseImageTextGuard =
+    isSceneMode && params.mediaType === 'image' && params.targetEngine === 'muse2api';
+  const rawMaxChars = params.targetEngine === 'muse2api' ? 1440 : 2400;
+  const maxChars = needsMuseImageTextGuard
+    ? rawMaxChars - MUSE_IMAGE_NO_UNREQUESTED_TEXT_GUARD.length - 2
+    : rawMaxChars;
 
-  let text = sanitizeVisualPromptForModel(params.rawCompiledPrompt, { isSceneMode });
+  let text = sanitizeVisualPromptForModel(params.rawCompiledPrompt, {
+    isSceneMode,
+    mediaType: params.mediaType,
+    targetEngine: params.targetEngine,
+  });
 
   // Append concise VFX descriptor if available and within budget
   if (isSceneMode && params.vfxNotes?.trim()) {
-    const cleanVfx = sanitizeVisualPromptForModel(params.vfxNotes, { isSceneMode: true });
+    const cleanVfx = sanitizeVisualPromptForModel(params.vfxNotes, {
+      isSceneMode: true,
+      mediaType: params.mediaType,
+      targetEngine: params.targetEngine,
+    });
     if (cleanVfx && !text.toLowerCase().includes(cleanVfx.slice(0, 20).toLowerCase())) {
       text = `${text} VFX & Materials: ${cleanVfx}.`;
     }
@@ -305,6 +334,10 @@ export function compileProductionModelPrompt(params: {
     const sliced = text.slice(0, maxChars - 1);
     const lastPeriod = Math.max(sliced.lastIndexOf('.'), sliced.lastIndexOf(','));
     text = (lastPeriod > maxChars * 0.65 ? sliced.slice(0, lastPeriod + 1) : sliced).trim();
+  }
+
+  if (needsMuseImageTextGuard) {
+    text = `${text.replace(/\s+$/, '')} ${MUSE_IMAGE_NO_UNREQUESTED_TEXT_GUARD}`.trim();
   }
 
   return { prompt: text, trimmed, skippedCostumeForMacro };

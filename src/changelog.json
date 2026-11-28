@@ -1,10 +1,10 @@
 [
   {
-    "version": "1.0.40",
-    "date": "27/11/2026",
-    "title": "feat(studio): add multi-engine support and cloud sync",
+    "version": "1.0.41",
+    "date": "28/11/2026",
+    "title": "feat(ai): prevent metadata leakage in image generation",
     "changes": [
-      "feat(studio): add multi-engine support and cloud sync"
+      "feat(ai): prevent metadata leakage in image generation"
     ]
   },
   {

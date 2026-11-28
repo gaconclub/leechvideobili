@@ -895,16 +895,32 @@ export async function generateImageViaMuse2Api(params: {
     )
   );
 
+  // Defense-in-depth for Muse AI image generation: strip leaked scene numbering/title metadata
+  // so Muse never prints "Phân cảnh 1", "Phân cảnh 2", "Scene 1", etc. onto the image unless explicitly scripted.
+  const sanitizedMusePrompt = String(params.prompt || '')
+    .replace(/\[(?:SC|SHOT|SCENE|PHIÊN)[-_:\s]*\d*[^\]]*\]/gi, ' ')
+    .replace(/Sequential\s+Storyboard\s+Frame\s*:[^.\n]*\.?/gi, ' ')
+    .replace(/(?:Scene(?:\s+\d+(?:\/\d+)?)?\s+Title|Tên\s+phân\s+cảnh|Tiêu\s+đề\s+cảnh)\s*[:：][^\n.;]*[.;]?/gi, ' ')
+    .replace(/(?:^|(?<=[.\n;]\s*))(?:Phân\s*cảnh|Cảnh|Scene)\s*#?\s*\d{1,3}(?:\s*\/\s*\d{1,3})?\s*[:：\-–—]\s*/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  const defaultNoUnrequestedTextExtra =
+    'PURE FULL-BLEED CINEMATIC FRAME: Never print, stamp, or overlay any unrequested text, numbers, scene numbering labels, headers, titles, subtitles, captions, panel borders, or watermarks anywhere on the image. Only depict natural in-scene text if explicitly instructed in the prompt.';
+  const effectiveExtra = params.extra?.trim()
+    ? params.extra.trim()
+    : defaultNoUnrequestedTextExtra;
+
   const created = await createMuseTaskWithQueueWait<{ id: string; status: string }>(
     '/v1/images/tasks',
     {
       model: 'muse-image',
-      prompt: params.prompt,
+      prompt: sanitizedMusePrompt || params.prompt,
       aspect_ratio: params.aspectRatio || '16:9',
       response_format: 'url',
       timeout: effectiveTimeout,
       ...(cleanAcc ? { account_id: cleanAcc } : {}),
-      ...(params.extra?.trim() ? { extra: params.extra.trim() } : {}),
+      extra: effectiveExtra,
       ...(combinedRefs[0] ? { reference_image: combinedRefs[0] } : {}),
       ...(combinedRefs.length > 0 ? { reference_images: combinedRefs } : {}),
     }
